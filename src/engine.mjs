@@ -27,6 +27,11 @@ import { generateBattedBall } from './sim/battedBall.mjs';
 import { battedType, computeGeometry, assignFielder, resolveBattedBall } from './sim/battedBallResult.mjs';
 import { selectPitch } from './sim/pitchGrid.mjs';
 import { buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore } from './sim/team.mjs';
+import {
+  neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,
+  buntAttemptProb, ibbProb, choosePinchHitter, choosePinchRunner, chooseDefensiveSub,
+  chooseReliever, starterPitchLimit,
+} from './sim/manager.mjs';
 import { simulateGame, advanceRunners } from './sim/game.mjs';
 import { simulateSeason, buildSchedule, winPct } from './sim/season.mjs';
 import { leagueBatting, leaguePitching, leagueSummary } from './sim/leagueStats.mjs';
@@ -35,7 +40,7 @@ import { playerBatting, playerPitching, playerBaserunning } from './sim/metrics.
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
-export const ENGINE_VERSION = '0.3.0-phaseA-s1';
+export const ENGINE_VERSION = '0.4.0-phaseA-s2';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {
@@ -52,6 +57,9 @@ export {
   PA_OUTCOME, paProbabilities, resolvePADiscipline,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,
   buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore,
+  neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,
+  buntAttemptProb, ibbProb, choosePinchHitter, choosePinchRunner, chooseDefensiveSub,
+  chooseReliever, starterPitchLimit,
   simulateGame, advanceRunners,
   simulateSeason, buildSchedule, winPct,
   leagueBatting, leaguePitching, leagueSummary,

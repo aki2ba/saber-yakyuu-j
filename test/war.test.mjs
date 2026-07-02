@@ -38,8 +38,12 @@ test('hitterWAR = (wRAA+BsR+UZR+posAdj+repl)/RPW（構成の整合）', () => {
 });
 
 test('DHに守備位置ペナルティ(-17.5/1350)が適用され、mainPositionがDHを正しく返す（監査A1/C2）', () => {
-  const dh = res.playerSeasons.find((s) => (s.fielding.positionOuts.DH || 0) > 1000); // フル出場DH（アウト単位）
-  assert.ok(dh, 'DHが存在（positionOuts.DHが計上される）');
+  // S2: DH有はL2主催試合のみ＝フルタイムDHでも~100試合分。最多DHアウトの選手（L2球団の正DH）で検証する。
+  const dh = res.playerSeasons.reduce(
+    (a, s) => ((s.fielding.positionOuts.DH || 0) > (a ? a.fielding.positionOuts.DH || 0 : 0) ? s : a),
+    null,
+  );
+  assert.ok(dh && (dh.fielding.positionOuts.DH || 0) > 1000, 'DHが存在（positionOuts.DHが計上される）');
   assert.ok(posAdjRuns(dh) < -10, `DHのposAdjは大きな負 (got ${posAdjRuns(dh).toFixed(1)})`);
   assert.equal(mainPosition(dh.fielding), 'DH', 'DHのmainPositionはDH（Cと誤判定しない）');
   // 守備イニング0の野手がCと誤ラベルされない（C2回帰: DHは今やDHイニングを持つ）

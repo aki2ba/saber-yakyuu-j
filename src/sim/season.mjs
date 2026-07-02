@@ -2,9 +2,10 @@
 // 日程生成・シーズン実行・順位表（1-4a/f）
 //
 // 12球団総当たり: 各ペア13試合（うちホーム7/6）→ 各チーム143試合・リーグ858試合。
-// ※S1は総当たり近似。リーグ内125＋交流戦18＋「節」カレンダーは S3 日程v2 で導入。
+// ※S2時点も総当たり近似。リーグ内125＋交流戦18＋「節」カレンダーは S3 日程v2 で導入。
 // 各試合は階層シードで独立・順序非依存に実行（並列化・再現の前提, §17/§19）。
 // 先発は各チームの登板数 % rotationSize（中6日=6人）でローテを回す。
+// S2: 試合のDH有無=ホーム球団の所属リーグ規則（DH無し試合は9番=投手）。監督プロファイルを試合へ接続。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { createPlayerSeason, createTeamSeason } from '../model/statline.mjs';
@@ -53,13 +54,24 @@ export function simulateSeason(league, cfg, opts = {}) {
   const seed = opts.seed ?? league.masterSeed ?? 20260701;
   const park = opts.park ?? NEUTRAL_PARK;
 
-  // 編成表
-  // TODO(S2): DH無し試合（L1主催）は initSide v2 で投手打席へ差し替える。S1では全試合DH打順で従来動作を維持。
-  const depthByTeam = new Map();
+  // 編成表（S2: 試合のDH有無=ホーム球団の所属リーグ規則。各チームDH用/DH無し用の両方を用意）
+  const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
+  const teamById = new Map(league.teams.map((t) => [t.id, t]));
+  const chartsByTeam = new Map();
   for (const t of league.teams) {
     const roster = league.players.filter((p) => p.teamId === t.id);
-    depthByTeam.set(t.id, buildDepthChart(roster, cfg, { dh: true }));
+    chartsByTeam.set(t.id, {
+      dh: buildDepthChart(roster, cfg, { dh: true }),
+      noDh: buildDepthChart(roster, cfg, { dh: false }),
+    });
   }
+  // 後方互換の depthByTeam: 各チームの所属リーグ規則での編成（リーグ未設定はDH有）
+  const depthByTeam = new Map(
+    league.teams.map((t) => {
+      const c = chartsByTeam.get(t.id);
+      return [t.id, (leagueDh.get(t.league) ?? true) ? c.dh : c.noDh];
+    }),
+  );
 
   // 集計器
   const stats = new Map();
@@ -100,9 +112,27 @@ export function simulateSeason(league, cfg, opts = {}) {
     const rng = makeRng(hashSeed(seed, 'game', gi));
     const hGC = gameCount.get(g.home);
     const aGC = gameCount.get(g.away);
+    // 試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2。両チームとも同じ規則で編成）
+    const gameDh = leagueDh.get(teamById.get(g.home).league) ?? true;
+    const hC = chartsByTeam.get(g.home);
+    const aC = chartsByTeam.get(g.away);
+    // TODO(S3): availableRelievers を疲労管理（連投制限・前日球数）でフィルタして渡し、
+    //           res.pitchers（投手使用ログ）を日次の可用性判定に蓄積する。
     const res = simulateGame(
-      { teamId: g.home, depth: depthByTeam.get(g.home), starterIdx: hGC % rotationSize },
-      { teamId: g.away, depth: depthByTeam.get(g.away), starterIdx: aGC % rotationSize },
+      {
+        teamId: g.home,
+        depth: gameDh ? hC.dh : hC.noDh,
+        starterIdx: hGC % rotationSize,
+        manager: teamById.get(g.home).manager,
+        dh: gameDh,
+      },
+      {
+        teamId: g.away,
+        depth: gameDh ? aC.dh : aC.noDh,
+        starterIdx: aGC % rotationSize,
+        manager: teamById.get(g.away).manager,
+        dh: gameDh,
+      },
       cfg,
       rng,
       statFor,

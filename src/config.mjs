@@ -7,7 +7,7 @@
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-export const CONFIG_VERSION = '0.0.4-phaseA-s1';
+export const CONFIG_VERSION = '0.0.5-phaseA-s2';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
@@ -123,10 +123,11 @@ export const TUNING_DEFAULT = {
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
     hitProb: 0.1, // 内野安打化
     maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
-    attemptBase: 0.25, // 非強打者×バント局面の基本試行率
+    attemptBase: 0.16, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.9, // 投手打席はほぼ必ずバント
-    weakBatterWoba: 0.31, // 「非強打者」の目安（観測wOBAがこれ未満）
+    weakBatterWoba: 0.3, // 「非強打者」の目安（観測wOBAがこれ未満）※S2予備調整
+    pitches: 2.5, // バント打席の投球数近似（S2）
   },
 
   // 敬遠（S2 maybeIBB が消費。§S2-5）: 一塁空き×2死or一死×終盤接戦×強打者（or次打者が投手）。
@@ -136,6 +137,7 @@ export const TUNING_DEFAULT = {
     minInning: 7, // 終盤のみ
     maxScoreDiff: 2, // 接戦のみ
     strongBatterWoba: 0.36, // 「強打者」の目安（観測wOBA上位）
+    pitches: 4, // 敬遠の投球数（ボール4球）
   },
 
   // 交代（S2 代打/代走/守備固め。§S2-3）
@@ -144,12 +146,40 @@ export const TUNING_DEFAULT = {
     phPitcherInning: 6, // 投手への代打は6回以降
     phMaxBehind: 3, // ビハインドこの点差以内（or接戦）の得点機で発動
     phGainMin: 5, // 代打起用に要する実効打力差（プラトーン込みhitScore相当）
+    phPlatoonW: 10, // プラトーン補正のhitScore換算（同利きの候補はこれだけ減点）
     prInning: 8, // 代走は8回以降
     prMaxScoreDiff: 2, // 2点差以内
     prSpeedGainMin: 10, // ベンチ最速との走力差がこれ以上
     defInning: 8, // 守備固めは8回以降
     defLeadMin: 1, // リード1〜3で発動
     defLeadMax: 3,
+    defGainMin: 8, // 守備固めに要する守備スコア差（習熟+素材。優位時のみ交代）
+  },
+
+  // 監督の観測評価（S2 manager.mjs）: インゲーム判断用の観測wOBA近似。
+  // 三層構造の原則: 采配は観測statlineのみを見る（trueAbility は編成時評価に限る）。
+  mgr: {
+    wobaScale: 1.24, // 生の得点価値/PA → wOBA 換算の簡易スケール（リーグ定数導出前の近似）
+    wobaPrior: 0.323, // 少打席の回帰先（リーグ平均wOBA相当）
+    wobaPriorPA: 60, // 回帰の事前打席数（PAが少ないほど平均へ寄せる）
+  },
+
+  // 継投（S2 継投v2。§S2-7）: 役割ベース（closer/setup8/setup7/middle/long）＋降板判定の閾値。
+  pen: {
+    saveLeadMax: 3, // セーブ機会のリード上限（1〜3点差）
+    leverageMinInning: 7, // 勝ちパターン継投の開始回（7回=setup7）
+    starterPitchBase: 82, // 先発の球数上限の基礎（+ stamina×starterPitchStamW）
+    starterPitchStamW: 0.6, // スタミナ→球数上限の感度
+    quickHookW: 0.5, // 監督quickHook(50中心)→球数上限の減分（早い継投ほど上限低）
+    starterMaxRuns: 6, // 先発の失点即降板ライン
+    tiredOuts: 18, // 6回以降（アウト数）で
+    tiredRuns: 4, // 4失点なら降板
+    starterStayRuns: 2, // 7-8回のセーブ機会でも失点これ以下の先発は続投
+    cgMinOuts: 21, // 9回続投（完投・完封狙い）に必要な先発アウト数（かつ無失点）
+    relieverMaxOuts: 3, // 救援は基本1イニング
+    relieverMaxRuns: 3, // 救援の失点降板ライン
+    longOuts: 8, // 敗戦処理ロングは2-3回を投げる
+    bigBehind: 5, // これ以上のビハインド=敗戦処理（longへ）
   },
 
   // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
@@ -183,6 +213,7 @@ export const TUNING_DEFAULT = {
   },
 
   // 走塁（2-4 wSB, §6）: 盗塁の試行・成否を 走者Steal/Speed × 投手Hold × 捕手Arm から生成。
+  // gate系はS2の采配ゲート（監督stealTend×状況。§S2-6）。
   steal: {
     attemptBase: 0.11, // 一塁走者が二塁を狙う基本試行率（機会あたり）
     attemptSlope: 0.45, // 走者の積極性感度（Steal/Speed）
@@ -190,6 +221,10 @@ export const TUNING_DEFAULT = {
     stealSlope: 0.32, // 成功率への走者寄与
     holdSlope: 0.28, // 投手クイックによる抑止
     armSlope: 0.3, // 捕手肩による抑止
+    tendW: 0.4, // 監督stealTend(50中心)の試行logit感度
+    gateBigDiff: 5, // 大差の目安（±この点差以上では走らない）
+    gateBigDiffLogit: 1.6, // 大差時の試行logit減
+    gateStrong2OutLogit: 0.8, // 2死×強打者（観測wOBA上位）での自重logit減
   },
   // 走塁 run値（§6）。NPB寄り: SB≈+0.19 / CS≈−0.38。UBRは走者Speed/IQで進塁確率を上下（2-5）。
   run: { runSB: 0.19, runCS: -0.38, ubrSlope: 0.008, runUBR: 0.4 },

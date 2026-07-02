@@ -17,10 +17,10 @@ export function rangeRating(player, cfg) {
   return w.positioningIQ * f.positioningIQ + w.reaction * c.reaction + w.speed * c.speed;
 }
 
-/** 選手シーズンの主守備位置（守備アウト最多） */
+/** 選手シーズンの主守備位置（守備アウト最多）。出場イニング0なら ''（S2: 代打のみの選手が出うる） */
 export function mainPosition(fieldingLine) {
   let pos = '';
-  let mx = -1;
+  let mx = 0;
   for (const k of Object.keys(fieldingLine.positionOuts)) {
     if (fieldingLine.positionOuts[k] > mx) {
       mx = fieldingLine.positionOuts[k];

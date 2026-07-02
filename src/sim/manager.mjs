@@ -263,16 +263,24 @@ export function chooseReliever(side, statFor, inning, lead, cfg) {
   }
   if (lead <= -pen.bigBehind && has(r.long)) return r.long; // 敗戦処理
 
-  // その他（僅差ビハインド・同点・大差リード等）: middle を負荷分散。closer/setup8 は温存。
-  let pool = avail.filter((pid) => pid !== r.closer && pid !== r.setup8);
+  // その他（僅差ビハインド・同点・大差リード等）: middle を負荷分散。
+  // closer/setup8 に加え setup7 も温存（7回接戦の役割登板と兼務させると登板数王が
+  // 70台へ膨らむため・S5較正。middle が尽きた時のみ setup7→closer 以外の順で繰り上げ）。
+  let pool = avail.filter((pid) => pid !== r.closer && pid !== r.setup8 && pid !== r.setup7);
+  if (!pool.length) pool = avail.filter((pid) => pid !== r.closer && pid !== r.setup8);
   if (!pool.length) pool = avail.filter((pid) => pid !== r.closer);
   if (!pool.length) return null; // closerしか残っていない → 現投手続投
+  // 負荷分散はG(登板数)基準・同数ならouts（S5較正: outs基準だと細切れ登板の投手に
+  // 登板数が偏り登板数王が70台へ膨らむ。Gを均せば45-65へ収まる）
   let best = null;
+  let bestG = Infinity;
   let bestOuts = Infinity;
   for (const pid of pool) {
-    const o = statFor(pid, side.teamId).pitching.outs;
-    if (o < bestOuts) {
-      bestOuts = o;
+    const p = statFor(pid, side.teamId).pitching;
+    const g = p.g ?? 0;
+    if (g < bestG || (g === bestG && p.outs < bestOuts)) {
+      bestG = g;
+      bestOuts = p.outs;
       best = pid;
     }
   }

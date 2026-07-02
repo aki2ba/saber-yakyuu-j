@@ -45,7 +45,7 @@ export function generateName(rng) {
 /** 投手を1人生成 */
 export function generatePitcher(rng, id) {
   const velocityKmh = Math.round(clamp(rng.normal(146, 4.5), 130, 165)); // NPB先発平均~146
-  const control = draw(rng, 50, 10);
+  const control = draw(rng, 50, 12); // S5較正: 分散を微拡大（平均不変）＝エース級FIPの裾→投手WAR王
   const stamina = draw(rng, 50, 12);
 
   // 球種数 2〜5（奪三振能力とは独立, §8.1）。fastball は必ず保有。
@@ -55,7 +55,7 @@ export function generatePitcher(rng, id) {
   const pitches = types.map((t) =>
     createPitch(t, {
       current: draw(rng, 50, 10),
-      whiff: draw(rng, 50, 12),
+      whiff: draw(rng, 50, 14), // S5較正: 分散を微拡大（平均不変）＝奪三振の裾→投手WAR王
       hrSuppress: draw(rng, 50, 10),
       contactQuality: draw(rng, 50, 10), // 被コンタクト質の抑止（EV抑止に接続・A-9修正）
     }),
@@ -74,9 +74,9 @@ export function generatePitcher(rng, id) {
       speed: draw(rng, 42, 9),
       hands: draw(rng, 48, 9),
       reaction: draw(rng, 48, 9),
-      power: draw(rng, 45, 9),
+      power: draw(rng, 40, 8), // S5較正: 投手打席を実NPB水準（打率~.13）へ＝セパ得点差の門番
     },
-    batting: { ev: draw(rng, 38, 8), la: draw(rng, 42, 8), contact: draw(rng, 38, 8), eye: draw(rng, 42, 8) },
+    batting: { ev: draw(rng, 25, 7), la: draw(rng, 40, 7), contact: draw(rng, 23, 7), eye: draw(rng, 32, 7) },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
     career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
   });
@@ -100,7 +100,8 @@ const POS_POWER_BIAS = { '1B': 8, RF: 6, LF: 6, '3B': 3, CF: 0, C: -2, '2B': -3,
 export function generateFielder(rng, id, primaryPos) {
   const speed = draw(rng, primaryPos === 'CF' || primaryPos === 'SS' ? 58 : 48, 11);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
-  const power = draw(rng, 50 + powerBias, 11);
+  const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
+  // 外れ値が野手WAR王を9.5超へ押し上げるのを抑える（打率王/HR王の裾もこのsdで同時較正）
 
   // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13）。
   const positionProf = {};
@@ -123,11 +124,11 @@ export function generateFielder(rng, id, primaryPos) {
       reaction: draw(rng, 50, 10),
     },
     batting: {
-      ev: draw(rng, 50 + powerBias, 10),
+      ev: draw(rng, 50 + powerBias, 9.5),
       la: draw(rng, 50, 10),
       pull: draw(rng, 50, 12),
-      contact: draw(rng, 50, 10),
-      eye: draw(rng, 50, 10),
+      contact: draw(rng, 50, 9.5),
+      eye: draw(rng, 50, 9.5),
       vsFastball: draw(rng, 50, 11), // 対速球適性（§4段階1）
       vsBreaking: draw(rng, 50, 11), // 対変化球適性
     },

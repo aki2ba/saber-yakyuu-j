@@ -45,9 +45,10 @@ test('DHに守備位置ペナルティ(-17.5/1350)が適用され、mainPosition
     null,
   );
   assert.ok(dh && (dh.fielding.positionOuts.DH || 0) > 1000, 'DHが存在（positionOuts.DHが計上される）');
-  // S3日次起用（休養・プラトーン・見直し）でDH出場が複数選手に分散するため、閾値は-4へ緩和
-  // TODO(S5較正): DH固定度が上がる較正後は -10 へ戻すことを検討
-  assert.ok(posAdjRuns(dh) < -4, `DHのposAdjは大きな負 (got ${posAdjRuns(dh).toFixed(1)})`);
+  // S3日次起用（休養・プラトーン・見直し）でDH出場が複数選手に分散する。
+  // S5較正後の正DHは~1340-1690守備アウト=posAdj -5.5〜-7.6（完全固定=-10には日次起用の性質上
+  // 至らない）→ 暫定-4から-5へ締める（S1 TODO(S5較正) の解消）
+  assert.ok(posAdjRuns(dh) < -5, `DHのposAdjは大きな負 (got ${posAdjRuns(dh).toFixed(1)})`);
   assert.equal(mainPosition(dh.fielding), 'DH', 'DHのmainPositionはDH（Cと誤判定しない）');
   // 守備イニング0の野手がCと誤ラベルされない（C2回帰: DHは今やDHイニングを持つ）
   const zeroInnC = res.playerSeasons.filter(

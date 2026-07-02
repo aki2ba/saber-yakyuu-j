@@ -674,7 +674,7 @@ function addPlayerSeason(dst, src) {
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-const CONFIG_VERSION = '0.0.6-phaseA-s3';
+const CONFIG_VERSION = '0.0.7-phaseA-s5';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
@@ -760,28 +760,28 @@ const CALIBRATION_TARGETS = {
  * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
  */
 const TUNING_DEFAULT = {
-  hrScale: 0.972, // 本塁打産出スケール（門番: hrPerTeam）※予備較正済み。⚠️HRは閾値のため感度大
+  hrScale: 0.9885, // 本塁打産出スケール（門番: hrPerTeam）※S5較正済み。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
-  replBatterPer600: 18, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
+  replBatterPer600: 19, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
   // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
   // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
-  replStarterPer9: 0.12, // 先発の代替水準（wins/9IP）
-  replRelieverPer9: 0.03, // 救援の代替水準（wins/9IP）
+  replStarterPer9: 0.155, // 先発の代替水準（wins/9IP）※S5較正（投手WAR王5.5-8の門番）
+  replRelieverPer9: 0.012, // 救援の代替水準（wins/9IP）※S5較正（総WAR≤430との両立）
 
   // 打席規律層（1-1）: log5/オッズ比で K/BB/HBP/インプレー を分岐する較正ノブ。
   // League は打席1回あたりの基準確率、Slope は能力(20-80)→logit の感度。
   pa: {
-    kLeague: 0.19, // リーグK率（NPB ~19%）
+    kLeague: 0.191, // リーグK率（NPB ~19%）※S5較正
     bbLeague: 0.0795, // リーグBB率 ※較正済み
     hbpLeague: 0.009, // リーグHBP率
     kSlope: 0.22, // K感度 ※較正済み（分布の裾M4を圧縮）
     bbSlope: 0.2, // BB感度 ※較正済み
     hbpSlope: 0.1, // HBP感度（投手制球の荒れ）
-    kContactW: 0.7, // 打者K傾向へのコンタクト寄与
+    kContactW: 0.65, // 打者K傾向へのコンタクト寄与 ※S5較正（打者側K裾の圧縮・投手側は不変）
     kEyeW: 0.3, // 打者K傾向への選球眼寄与
-    kVeloPerKmh: 0.6, // 投手奪三振への球速寄与（1km/h ≒ 0.6 レーティング）
+    kVeloPerKmh: 0.85, // 投手奪三振への球速寄与 ※S5較正（エース級K裾＝投手WAR王の門番）
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
@@ -811,7 +811,7 @@ const TUNING_DEFAULT = {
 
   // 敬遠（S2 maybeIBB が消費。§S2-5）: 一塁空き×2死or一死×終盤接戦×強打者（or次打者が投手）。
   ibb: {
-    base: 0.35, // 条件成立時の基本敬遠率
+    base: 0.7, // 条件成立時の基本敬遠率 ※S5較正（敬遠10-40/球団へ）
     tendW: 0.5, // 監督ibbTend(50中心)の感度
     minInning: 7, // 終盤のみ
     maxScoreDiff: 2, // 接戦のみ
@@ -848,14 +848,16 @@ const TUNING_DEFAULT = {
     saveLeadMax: 3, // セーブ機会のリード上限（1〜3点差）
     leverageMinInning: 7, // 勝ちパターン継投の開始回（7回=setup7）
     starterPitchBase: 82, // 先発の球数上限の基礎（+ stamina×starterPitchStamW）
-    starterPitchStamW: 0.6, // スタミナ→球数上限の感度
+    starterPitchStamW: 0.73, // スタミナ→球数上限の感度 ※S5較正（高スタミナ先発の深投~110球）
     quickHookW: 0.5, // 監督quickHook(50中心)→球数上限の減分（早い継投ほど上限低）
     starterMaxRuns: 6, // 先発の失点即降板ライン
     tiredOuts: 18, // 6回以降（アウト数）で
     tiredRuns: 4, // 4失点なら降板
-    starterStayRuns: 2, // 7-8回のセーブ機会でも失点これ以下の先発は続投
+    starterStayRuns: 1, // 7-8回のセーブ機会でも失点これ以下の先発は続投 ※S5較正（8回はセットアッパーへ＝HLD王の門番）
     cgMinOuts: 21, // 9回続投（完投・完封狙い）に必要な先発アウト数（かつ無失点）
-    relieverMaxOuts: 3, // 救援は基本1イニング
+    cgMaxPitches: 102, // 9回続投を許す球数上限（完投の門番・S5較正。リード有無に依らず適用）
+    relieverMaxOuts: 3, // 勝ちパターン役割（closer/setup8/setup7）は基本1イニング
+    middleMaxOuts: 6, // middle（非役割）は複数イニング可（登板数王の圧縮・S5較正）
     relieverMaxRuns: 3, // 救援の失点降板ライン
     longOuts: 8, // 敗戦処理ロングは2-3回を投げる
     bigBehind: 5, // これ以上のビハインド=敗戦処理（longへ）
@@ -863,29 +865,35 @@ const TUNING_DEFAULT = {
 
   // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
   rest: {
-    catcherRestProb: 0.18, // 捕手の休養基本率/試合
-    fielderRestProb: 0.02, // 野手の休養基本率/試合
+    catcherRestProb: 0.085, // 捕手の休養基本率/試合 ※S5較正（正捕手100-135試合へ）
+    fielderRestProb: 0.026, // 野手の休養基本率/試合 ※S5較正
     streakW: 0.004, // 連続出場1試合ごとの休養率加算
+    benchWoba: 0.295, // 不振ベンチの発動水準（観測ベース混合評価＋レンジ項がこれ未満・S5較正）
+    slumpBenchProb: 0.75, // 不振ベンチの発動率/試合（捕手は対象外・S5較正）
   },
 
   // 投手疲労・可用性（S3。連投制限・中6日の基盤）
   fatigue: {
     maxConsecDays: 2, // 2連投まで（3連投禁止）
-    prevDayPitchLimit: 30, // 前日30球以上→当日不可
+    prevDayPitchLimit: 24, // 前日この球数以上→当日不可 ※S5較正（SV/HLD/登板数の負荷分散）
     starterRestDays: 5, // 先発は中5日以上
   },
 
   // 観測成績ベース起用（S3 usage.mjs）。三層構造: 真値は直接見ない（観測statline＋スカウトノイズ）。
   usage: {
     reviewInterval: 25, // 見直し間隔（試合）
-    trustPA: 150, // 観測wOBAの信頼度加重の半飽和PA（少PAは回帰）
-    scoutSd: 6, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）
-    swapMargin: 0.01, // レギュラー入替に要する実効wOBA差
+    trustPA: 80, // 観測wOBAの信頼度加重の半飽和PA（少PAは回帰）※S5較正
+    scoutSd: 5, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）※S5較正
+    swapMargin: 0.005, // レギュラー入替に要する実効wOBA差 ※S5較正
+    catcherSwapMargin: 0.04, // 捕手のみ厚め（リード面の継続性＝正捕手100-135試合の門番・S5較正）
     platoonMargin: 0.005, // プラトーン入替に要する実効wOBA差
     scoutWobaPerPt: 0.0035, // スカウト打撃評価(50中心rating)1pt → wOBA換算
+    defWobaPerPt: 0.0005, // ポジション守備評価(習熟項)1pt → wOBA換算（同一ポジション内比較のみ・S5較正）
+    rangeWobaPerPt: 0.0015, // レンジ評価(50中心)1pt → wOBA換算（UZR産出に比例する成分・S5較正）
     platoonWobaPenalty: 0.014, // 同利き手の実効wOBA減（相手先発でのプラトーン入替判断用）
-    promoteStep: 0.34, // 見直しごとに挑戦者の先発シェアを増やす幅（1.0で完全昇格＝漸進的な入替）
-    candidatesPerPos: 4, // ポジション候補 = 編成時 positionRank の上位この人数
+    promoteStep: 0.45, // 見直しごとに挑戦者の先発シェアを増やす幅（1.0で完全昇格＝漸進的な入替。<0.5=3回の見直しで昇格）※S5較正
+    candidatesPerPos: 6, // ポジション候補 = 編成時 positionRank の上位この人数 ※S5較正
+    windowMinPA: 60, // 直近フォーム窓（前々回見直し以降）の採用に要する窓内PA（未満は累積で評価・S5較正）
   },
 
   // 日程v2（S3 buildSchedule）: 「節」カレンダーの休日規則
@@ -915,13 +923,13 @@ const TUNING_DEFAULT = {
     gateStrong2OutLogit: 0.8, // 2死×強打者（観測wOBA上位）での自重logit減
   },
   // 走塁 run値（§6）。NPB寄り: SB≈+0.19 / CS≈−0.38。UBRは走者Speed/IQで進塁確率を上下（2-5）。
-  run: { runSB: 0.19, runCS: -0.38, ubrSlope: 0.008, runUBR: 0.4 },
+  run: { runSB: 0.19, runCS: -0.38, ubrSlope: 0.007, runUBR: 0.36 }, // ubr系はS5較正（BsR裾）
   // 併殺（2-6 wGDP, §6）: GBアウト×走者一塁×2アウト未満で併殺成立。打者の足で回避。
-  gdp: { base: 0.42, speedW: 0.005, runGDP: -0.42 },
+  gdp: { base: 0.42, speedW: 0.007, runGDP: -0.42 }, // speedWはS5較正（足↔併殺回避の結線を統計的に頑健へ）
 
   // 守備（2-7/2-8, §7）: 野手個人のRangeを期待アウトに接続し、OAAに個人スキルを乗せる。
   field: {
-    rangePerRating: 0.0016, // Range 1pt → 実効被安打率をこれだけ下げる（OAAの個人シグナル）
+    rangePerRating: 0.0015, // Range 1pt → 実効被安打率をこれだけ下げる（OAAの個人シグナル）※S5較正（UZR裾。0.0016→0.0015）
     wRange: { positioningIQ: 0.45, reaction: 0.3, speed: 0.25 }, // Range合成重み（§7.1）
     runPerOutInfield: 0.75, // OAA→run換算（内野・Statcast FRV）
     runPerOutOutfield: 0.9, // 外野
@@ -942,15 +950,15 @@ const TUNING_DEFAULT = {
   bb: {
     // EV(打球速度 km/h)
     evBase: 139, // 平均打球速度の中心
-    evPerEV: 0.45, // 打者EV適性1pt → km/h ※較正済み（裾圧縮）
-    evPerPower: 0.22, // 生体power1pt → km/h ※較正済み
+    evPerEV: 0.355, // 打者EV適性1pt → km/h ※S5較正（裾圧縮＝野手WAR王7-9.5）
+    evPerPower: 0.2, // 生体power1pt → km/h ※S5較正
     evPitchSuppress: 0.3, // 投手の被コンタクト質抑止1pt → km/h減（選択球種のcontactQuality）
     evHrSuppressW: 0.25, // 選択球種のhrSuppressが高いほどEV減（弱い打球＝M3の結線）
     evAptW: 0.26, // 打者の対該当クラス適性が高いほどEV増（§4段階1）
     evSd: 14,
     // LA(打球角度 度)
     laBase: 12,
-    laPerLA: 0.35, // 打者LA適性 → 角度中心シフト ※較正済み
+    laPerLA: 0.42, // 打者LA適性 → 角度中心シフト ※S5較正（HR王の裾はLA側で確保）
     laPitchGB: 0.22, // 投手ゴロ率 → 角度を下げる
     laSd: 23,
     // 方向(spray 度: 0=中堅, ±45=ライン)。pull適性で引っ張り側へ。
@@ -959,12 +967,12 @@ const TUNING_DEFAULT = {
     // 飛距離モデル
     carry: 0.6, // v^2/g に掛ける実効係数（空気抵抗込みの縮み）
     // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
-    hitGB: 0.218,
+    hitGB: 0.2195, // ※S5較正
     hitLD: 0.672, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束
-    hitFB: 0.122,
+    hitFB: 0.131, // ※S5較正
     hitPU: 0.02,
-    evHitW: 0.004, // (evKmh-140)×これ を hit率に加算 ※較正済み
-    gapDistM: 90, // 単打/二塁打の境界（外野手到達圏）。これ未満の空中安打は単打（監査B1: 84→90で二塁打過剰是正＋得点環境較正）
+    evHitW: 0.003, // (evKmh-140)×これ を hit率に加算 ※S5較正（BABIP裾＝打率王≤.355）
+    gapDistM: 85.5, // 単打/二塁打の境界（外野手到達圏）。これ未満の空中安打は単打（監査B1で84→90、S5較正でSLG帯確保のため85.5へ。fbHitBonusM=84より上を維持）
     fbHitBonusM: 84, // FB警告帯ヒット加点(+0.15)の閾値。BABIP環境を保つため二塁打境界と分離（監査B1）
     tripleDistM: 94, // 二塁打/三塁打候補の深さ。これ以上の深いギャップ/ライン際球が三塁打になりうる（監査B1）
     tripleBase: 0.32, // 深いギャップ球の三塁打基本率（打者speedで上下）※較正済み
@@ -974,7 +982,7 @@ const TUNING_DEFAULT = {
     errBase: 0.023,
     errHandsW: 0.0006,
     // 走者進塁の確率（Phase1簡易。UBRの精緻化は2-5）
-    singleScore2: 0.56, // 単打で二塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
+    singleScore2: 0.6, // 単打で二塁走者が生還する確率（残りは三塁止まり）※S5較正（得点環境・rpw）
     doubleScore1: 0.50, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
   },
 };
@@ -1093,7 +1101,7 @@ function generateName(rng) {
 /** 投手を1人生成 */
 function generatePitcher(rng, id) {
   const velocityKmh = Math.round(clamp(rng.normal(146, 4.5), 130, 165)); // NPB先発平均~146
-  const control = draw(rng, 50, 10);
+  const control = draw(rng, 50, 12); // S5較正: 分散を微拡大（平均不変）＝エース級FIPの裾→投手WAR王
   const stamina = draw(rng, 50, 12);
 
   // 球種数 2〜5（奪三振能力とは独立, §8.1）。fastball は必ず保有。
@@ -1103,7 +1111,7 @@ function generatePitcher(rng, id) {
   const pitches = types.map((t) =>
     createPitch(t, {
       current: draw(rng, 50, 10),
-      whiff: draw(rng, 50, 12),
+      whiff: draw(rng, 50, 14), // S5較正: 分散を微拡大（平均不変）＝奪三振の裾→投手WAR王
       hrSuppress: draw(rng, 50, 10),
       contactQuality: draw(rng, 50, 10), // 被コンタクト質の抑止（EV抑止に接続・A-9修正）
     }),
@@ -1122,9 +1130,9 @@ function generatePitcher(rng, id) {
       speed: draw(rng, 42, 9),
       hands: draw(rng, 48, 9),
       reaction: draw(rng, 48, 9),
-      power: draw(rng, 45, 9),
+      power: draw(rng, 40, 8), // S5較正: 投手打席を実NPB水準（打率~.13）へ＝セパ得点差の門番
     },
-    batting: { ev: draw(rng, 38, 8), la: draw(rng, 42, 8), contact: draw(rng, 38, 8), eye: draw(rng, 42, 8) },
+    batting: { ev: draw(rng, 25, 7), la: draw(rng, 40, 7), contact: draw(rng, 23, 7), eye: draw(rng, 32, 7) },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
     career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
   });
@@ -1148,7 +1156,8 @@ const POS_POWER_BIAS = { '1B': 8, RF: 6, LF: 6, '3B': 3, CF: 0, C: -2, '2B': -3,
 function generateFielder(rng, id, primaryPos) {
   const speed = draw(rng, primaryPos === 'CF' || primaryPos === 'SS' ? 58 : 48, 11);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
-  const power = draw(rng, 50 + powerBias, 11);
+  const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
+  // 外れ値が野手WAR王を9.5超へ押し上げるのを抑える（打率王/HR王の裾もこのsdで同時較正）
 
   // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13）。
   const positionProf = {};
@@ -1171,11 +1180,11 @@ function generateFielder(rng, id, primaryPos) {
       reaction: draw(rng, 50, 10),
     },
     batting: {
-      ev: draw(rng, 50 + powerBias, 10),
+      ev: draw(rng, 50 + powerBias, 9.5),
       la: draw(rng, 50, 10),
       pull: draw(rng, 50, 12),
-      contact: draw(rng, 50, 10),
-      eye: draw(rng, 50, 10),
+      contact: draw(rng, 50, 9.5),
+      eye: draw(rng, 50, 9.5),
       vsFastball: draw(rng, 50, 11), // 対速球適性（§4段階1）
       vsBreaking: draw(rng, 50, 11), // 対変化球適性
     },
@@ -2375,16 +2384,24 @@ function chooseReliever(side, statFor, inning, lead, cfg) {
   }
   if (lead <= -pen.bigBehind && has(r.long)) return r.long; // 敗戦処理
 
-  // その他（僅差ビハインド・同点・大差リード等）: middle を負荷分散。closer/setup8 は温存。
-  let pool = avail.filter((pid) => pid !== r.closer && pid !== r.setup8);
+  // その他（僅差ビハインド・同点・大差リード等）: middle を負荷分散。
+  // closer/setup8 に加え setup7 も温存（7回接戦の役割登板と兼務させると登板数王が
+  // 70台へ膨らむため・S5較正。middle が尽きた時のみ setup7→closer 以外の順で繰り上げ）。
+  let pool = avail.filter((pid) => pid !== r.closer && pid !== r.setup8 && pid !== r.setup7);
+  if (!pool.length) pool = avail.filter((pid) => pid !== r.closer && pid !== r.setup8);
   if (!pool.length) pool = avail.filter((pid) => pid !== r.closer);
   if (!pool.length) return null; // closerしか残っていない → 現投手続投
+  // 負荷分散はG(登板数)基準・同数ならouts（S5較正: outs基準だと細切れ登板の投手に
+  // 登板数が偏り登板数王が70台へ膨らむ。Gを均せば45-65へ収まる）
   let best = null;
+  let bestG = Infinity;
   let bestOuts = Infinity;
   for (const pid of pool) {
-    const o = statFor(pid, side.teamId).pitching.outs;
-    if (o < bestOuts) {
-      bestOuts = o;
+    const p = statFor(pid, side.teamId).pitching;
+    const g = p.g ?? 0;
+    if (g < bestG || (g === bestG && p.outs < bestOuts)) {
+      bestG = g;
+      bestOuts = p.outs;
       best = pid;
     }
   }
@@ -3101,18 +3118,20 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
     const limit = starterPitchLimit(fielding.manager, fielding.byId.get(c.pid), cfg);
     const due =
       c.pitches >= limit || c.runs >= pen.starterMaxRuns || (c.outs >= pen.tiredOuts && c.runs >= pen.tiredRuns);
-    if (saveSitu) {
+    if (inning >= 9) {
+      // 9回以降の続投＝完投狙いは、リード有無に依らず「完封継続中×球数余裕（cgMaxPitches）」
+      // のみに絞る（完投の門番・S5較正。大差リード/同点の漫然続投で完投が溢れるのを防ぐ）
       const stay =
-        inning <= 8
-          ? c.runs <= pen.starterStayRuns && c.pitches < limit
-          : c.runs === 0 && c.outs >= pen.cgMinOuts && c.pitches < limit; // 完封中のエースのみ9回続投
+        c.runs === 0 && c.outs >= pen.cgMinOuts && c.pitches < Math.min(limit, pen.cgMaxPitches);
+      change = due || !stay;
+    } else if (saveSitu) {
+      const stay = c.runs <= pen.starterStayRuns && c.pitches < limit; // 好投中の先発は7-8回を任せる
       change = due || !stay;
     } else {
       change = due;
     }
   } else {
-    const maxOuts = c.pid === fielding.roles.long ? pen.longOuts : pen.relieverMaxOuts;
-    const due = c.outs >= maxOuts || c.runs >= pen.relieverMaxRuns;
+    const due = c.outs >= relieverMaxOutsFor(fielding, c.pid, pen) || c.runs >= pen.relieverMaxRuns;
     change = due || saveSitu; // セーブ機会は回頭で適役へ繋ぐ（8回setup8→9回closer等）
   }
   if (!change) return;
@@ -3120,6 +3139,15 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
+}
+
+/** 救援の役割別イニング上限（アウト数）。long=敗戦処理は長め・勝ちパターン役割は1イニング・
+ *  middle（非役割）は複数イニング可＝同じ救援IPを少ない登板数で消化する（登板数王の圧縮・S5較正）。 */
+function relieverMaxOutsFor(fielding, pid, pen) {
+  const r = fielding.roles;
+  if (pid === r.long) return pen.longOuts;
+  if (pid === r.closer || pid === r.setup8 || pid === r.setup7) return pen.relieverMaxOuts;
+  return pen.middleMaxOuts;
 }
 
 /** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。 */
@@ -3134,8 +3162,7 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
     remove =
       c.pitches >= limit || c.runs >= pen.starterMaxRuns || (c.outs >= pen.tiredOuts && c.runs >= pen.tiredRuns);
   } else {
-    const maxOuts = c.pid === fielding.roles.long ? pen.longOuts : pen.relieverMaxOuts;
-    remove = c.outs >= maxOuts || c.runs >= pen.relieverMaxRuns;
+    remove = c.outs >= relieverMaxOutsFor(fielding, c.pid, pen) || c.runs >= pen.relieverMaxRuns;
   }
   if (!remove) return;
 
@@ -3275,6 +3302,7 @@ function assignDecisions(home, away, statFor, runLog) {
 
 
 
+
 /**
  * チームの起用状態を作る（シーズン開始時に1回）。
  * @param {{id:string}} team
@@ -3290,6 +3318,18 @@ function createUsageState(team, charts, cfg) {
     const noise = makeRng(hashSeed(p.scoutSeed ?? hashSeed(pid, 'scout'), 'usageScout')).normal(0, u.scoutSd);
     scoutEval.set(pid, hitScore(p) / 4.5 - 50 + noise);
   }
+  // 守備の当日メモ（編成時評価と同じ扱い＝manager.buildPregameEval と同輪。S5較正:
+  // 見直し/日次起用が打撃観測のみだと「打撃並×守備最悪」の選手が降格されず
+  // WAR下限を破る＝守備をwOBA換算で加味してポジション適性を守る）
+  const defEval = buildPregameEval(chart.byId, cfg);
+  // レンジ評価（S5較正）: 実際の守備run産出（OAA→UZR）は習熟でなく rangeRating に比例する。
+  // 習熟主導の defEval だけでは「習熟高×レンジ最悪」のCF/LFが定着し UZR -20級 → WAR-3級を生むため、
+  // 50中心のレンジ項を別途持つ（rangeWobaPerPt で換算）。
+  const rangeEval = new Map();
+  for (const [pid, p] of chart.byId) {
+    if (p.role !== 'fielder') continue;
+    rangeEval.set(pid, rangeRating(p, cfg));
+  }
   // ポジション担当: regular=編成時のスタメン、challenger=見直しで浮上した控え（share=先発シェア）
   const assign = {};
   for (const pos of Object.keys(chart.defense)) {
@@ -3301,7 +3341,10 @@ function createUsageState(team, charts, cfg) {
     teamId: team.id,
     charts,
     scoutEval,
+    defEval,
+    rangeEval,
     assign,
+    lastSnap: null, // 直近フォーム窓の起点（前回見直し時の観測スナップショット・S5較正）
     games: 0, // 消化試合数（見直しタイマー）
     consecStarts: new Map(), // 野手 pid → 連続先発出場数（休養確率の入力）
     startsByPid: new Map(), // 野手 pid → 先発出場数（較正・検証用）
@@ -3325,6 +3368,38 @@ function blendedWoba(state, pid, getBat, cfg) {
   const w = b.pa / (b.pa + u.trustPA); // PAが積み上がるほど観測を信じる
   const scout = cfg.tuning.mgr.wobaPrior + (state.scoutEval.get(pid) ?? 0) * u.scoutWobaPerPt;
   return w * obs + (1 - w) * scout;
+}
+
+/** ポジション守備の wOBA換算加点（S5較正）。DHは守備なし=0。同一ポジション内の比較にのみ使う
+ *  （習熟項の絶対値は50中心でないため、ポジションをまたぐ比較には持ち込まない）。
+ *  習熟（ポジション適性）＋レンジ（実際のUZR産出に比例する成分・50中心）の2項構成。 */
+function defWobaAt(state, pid, pos, cfg) {
+  if (pos === 'DH' || !state.defEval) return 0;
+  const u = cfg.tuning.usage;
+  const e = state.defEval.get(pid);
+  if (!e) return 0;
+  const range = state.rangeEval ? (state.rangeEval.get(pid) ?? 50) : 50;
+  return u.defWobaPerPt * e.def[pos] + u.rangeWobaPerPt * (range - 50);
+}
+
+// --- 直近フォーム窓（S5較正・WAR下限>-2.5の門番） --------------------------------
+// 累積観測は「好スタート→長い不振」の選手の真の不調を数百打席も隠す（WAR-4級の主因）。
+// 見直しは前回スナップショット以降（≈25試合）の観測ウィンドウで評価し、
+// 窓の打席が windowMinPA 未満（控え・出場僅少）は従来通り累積を使う。
+// （窓のノイズは blendedWoba の trustPA 回帰と share の漸進昇格が受け止める）
+
+/** 打撃ラインの数値カウントだけを複製（スナップショット用。ネストのスプリットは対象外） */
+function copyBatCounts(b) {
+  const o = {};
+  for (const k of Object.keys(b)) if (typeof b[k] === 'number') o[k] = b[k];
+  return o;
+}
+
+/** 現在の累積 − スナップショット ＝ ウィンドウ観測ライン */
+function diffBatCounts(cur, snap) {
+  const o = {};
+  for (const k of Object.keys(snap)) o[k] = (cur[k] ?? 0) - snap[k];
+  return o;
 }
 
 /** 当日の先発投手（中 starterRestDays 日以上のローテ投手をローテ順に）。§S3-2投手可用性 */
@@ -3377,6 +3452,7 @@ function selectLineup(state, ctx, cfg) {
   for (const [pid, p] of byId) if (p.role === 'fielder') fielders.push(pid);
 
   // 評価（当日メモ）: 混合評価＋相手先発とのプラトーン補正（スイッチは常に有利側=減点なし）
+  // ＋守備のwOBA換算（同一ポジション内の比較のみ・S5較正: 守備破綻選手の起用を防ぐ）
   const cache = new Map();
   const baseEval = (pid) => {
     let v = cache.get(pid);
@@ -3386,8 +3462,10 @@ function selectLineup(state, ctx, cfg) {
     }
     return v;
   };
-  const effEval = (pid) =>
-    baseEval(pid) - (ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher) ? u.platoonWobaPenalty : 0);
+  const effEval = (pid, pos) =>
+    baseEval(pid) -
+    (ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher) ? u.platoonWobaPenalty : 0) +
+    defWobaAt(state, pid, pos, cfg);
 
   const used = new Set(); // 今日すでにスタメンへ入れた選手
   const resting = new Set(); // 今日休養させる選手（スタメン候補から外す。代打等ベンチ待機は可）
@@ -3404,7 +3482,7 @@ function selectLineup(state, ctx, cfg) {
       let bv = -Infinity;
       for (const pid of list) {
         if (excluded(pid)) continue;
-        const v = effEval(pid);
+        const v = effEval(pid, pos);
         if (v > bv) {
           bv = v;
           best = pid;
@@ -3426,14 +3504,27 @@ function selectLineup(state, ctx, cfg) {
         pid = null;
       }
     }
+    // (2b) 不振ベンチ（S5較正・WAR下限>-2.5の門番）: 観測ベース評価＋レンジ評価（50中心・
+    // UZR産出に比例する静的成分）がベンチ水準を割る担当は、見直し(25試合)の周期を待たず
+    // 日次でPA蓄積を絞る（打撃崩壊型・レンジ破綻型の双方が数百打席積むのを防ぐ）。
+    // 逆に「守備の名手×貧打」はレンジ加点で先発が保たれる（現実のNPBの守備型レギュラー）。
+    // 捕手は守備優先の起用が現実（打撃基準では座らせない）につき対象外。
+    if (pid != null && pos !== 'C') {
+      const benchEval =
+        baseEval(pid) + (pos === 'DH' ? 0 : u.rangeWobaPerPt * ((state.rangeEval?.get(pid) ?? 50) - 50));
+      if (benchEval < r.benchWoba && ctx.rng.next() < r.slumpBenchProb) {
+        resting.add(pid);
+        pid = null;
+      }
+    }
 
     // (3) 空席の充填: 候補プールの実効評価最良（全滅なら positionRank/全野手から最初の未使用）
     if (pid == null) {
       pid = bestOf(pool) ?? (pos === 'DH' ? fielders : chart.positionRank[pos]).find((x) => !excluded(x));
     } else if (pos !== 'C' && ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher)) {
-      // (4) プラトーン: 同利きの担当に対し、実効評価で上回る候補がいれば当日限りの入替
+      // (4) プラトーン: 同利きの担当に対し、実効評価（守備込み）で上回る候補がいれば当日限りの入替
       const alt = bestOf(pool.filter((x) => x !== pid));
-      if (alt != null && effEval(alt) - effEval(pid) > u.platoonMargin) pid = alt;
+      if (alt != null && effEval(alt, pos) - effEval(pid, pos) > u.platoonMargin) pid = alt;
     }
     used.add(pid);
     today[pos] = pid;
@@ -3506,12 +3597,22 @@ function reviewAssignments(state, getBat, cfg) {
   const chart = state.charts.dh;
   const fielders = [];
   for (const [pid, p] of chart.byId) if (p.role === 'fielder') fielders.push(pid);
-  const ev = new Map(fielders.map((pid) => [pid, blendedWoba(state, pid, getBat, cfg)]));
+  // 直近フォーム窓: 前回見直し以降の観測で評価（窓PAが少なければ累積へフォールバック）
+  const getBatWin = (pid) => {
+    const cur = getBat(pid);
+    const snap = state.lastSnap ? state.lastSnap.get(pid) : null;
+    if (!snap) return cur;
+    const win = diffBatCounts(cur, snap);
+    return win.pa >= u.windowMinPA ? win : cur;
+  };
+  const bat = new Map(fielders.map((pid) => [pid, blendedWoba(state, pid, getBatWin, cfg)]));
 
   const used = new Set();
   for (const pos of [...POSITION_DIFFICULTY, 'DH']) {
     const a = state.assign[pos];
     if (!a) continue;
+    // 評価 = 混合打撃評価 + ポジション守備のwOBA換算（同一ポジション内の比較・S5較正）
+    const ev = new Map(fielders.map((pid) => [pid, bat.get(pid) + defWobaAt(state, pid, pos, cfg)]));
     const pool = (pos === 'DH' ? fielders : chart.positionRank[pos].slice(0, u.candidatesPerPos)).filter(
       (pid) => !used.has(pid),
     );
@@ -3526,7 +3627,9 @@ function reviewAssignments(state, getBat, cfg) {
     }
     let top = a.regular;
     for (const pid of pool) if (ev.get(pid) > ev.get(top)) top = pid;
-    if (top === a.regular || ev.get(top) - ev.get(a.regular) <= u.swapMargin) {
+    // 入替マージン: 捕手のみ厚め（リード面の継続性＝正捕手の出場を100-135試合へ保つ・S5較正）
+    const margin = pos === 'C' ? u.catcherSwapMargin : u.swapMargin;
+    if (top === a.regular || ev.get(top) - ev.get(a.regular) <= margin) {
       // 現状維持: 挑戦者のシェアは減衰（差が消えたら挑戦解消）
       a.share = Math.max(0, a.share - u.promoteStep);
       if (a.share === 0) a.challenger = null;
@@ -3544,6 +3647,9 @@ function reviewAssignments(state, getBat, cfg) {
     }
     used.add(a.regular);
   }
+
+  // スナップショットの更新（次回見直しの直近フォーム窓の起点）
+  state.lastSnap = new Map(fielders.map((pid) => [pid, copyBatCounts(getBat(pid))]));
 }
 
 
@@ -4222,7 +4328,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.6.0-phaseA-s4';
+const ENGINE_VERSION = '0.7.0-phaseA-s5';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 

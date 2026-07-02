@@ -222,9 +222,9 @@ test('シーズン統合: 休養AIの発現＝143試合フル先発の野手が�
     topCatcherStarts.push(top);
   }
   // 正捕手（捕手先発最多）の出場: 目標帯は100-135（S4較正指標）。
-  // TODO(S5較正): 見直しAIの捕手分担が厚く平均~85。catcherRestProb/swapMargin較正後に[100,135]へ締める
+  // S5較正済み: catcherRestProb 0.085 + catcherSwapMargin 0.04 で平均~104（暫定帯[70,138]から復帰）
   const avg = topCatcherStarts.reduce((a, b) => a + b, 0) / topCatcherStarts.length;
-  assert.ok(avg >= 70 && avg <= 138, `正捕手の平均先発 (got ${avg.toFixed(1)})`);
+  assert.ok(avg >= 100 && avg <= 135, `正捕手の平均先発 (got ${avg.toFixed(1)})`);
   for (const c of topCatcherStarts) assert.ok(c >= 55 && c < G, `正捕手の先発数が妥当 (got ${c})`);
 });
 

@@ -719,18 +719,20 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
     const limit = starterPitchLimit(fielding.manager, fielding.byId.get(c.pid), cfg);
     const due =
       c.pitches >= limit || c.runs >= pen.starterMaxRuns || (c.outs >= pen.tiredOuts && c.runs >= pen.tiredRuns);
-    if (saveSitu) {
+    if (inning >= 9) {
+      // 9回以降の続投＝完投狙いは、リード有無に依らず「完封継続中×球数余裕（cgMaxPitches）」
+      // のみに絞る（完投の門番・S5較正。大差リード/同点の漫然続投で完投が溢れるのを防ぐ）
       const stay =
-        inning <= 8
-          ? c.runs <= pen.starterStayRuns && c.pitches < limit
-          : c.runs === 0 && c.outs >= pen.cgMinOuts && c.pitches < limit; // 完封中のエースのみ9回続投
+        c.runs === 0 && c.outs >= pen.cgMinOuts && c.pitches < Math.min(limit, pen.cgMaxPitches);
+      change = due || !stay;
+    } else if (saveSitu) {
+      const stay = c.runs <= pen.starterStayRuns && c.pitches < limit; // 好投中の先発は7-8回を任せる
       change = due || !stay;
     } else {
       change = due;
     }
   } else {
-    const maxOuts = c.pid === fielding.roles.long ? pen.longOuts : pen.relieverMaxOuts;
-    const due = c.outs >= maxOuts || c.runs >= pen.relieverMaxRuns;
+    const due = c.outs >= relieverMaxOutsFor(fielding, c.pid, pen) || c.runs >= pen.relieverMaxRuns;
     change = due || saveSitu; // セーブ機会は回頭で適役へ繋ぐ（8回setup8→9回closer等）
   }
   if (!change) return;
@@ -738,6 +740,15 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
+}
+
+/** 救援の役割別イニング上限（アウト数）。long=敗戦処理は長め・勝ちパターン役割は1イニング・
+ *  middle（非役割）は複数イニング可＝同じ救援IPを少ない登板数で消化する（登板数王の圧縮・S5較正）。 */
+function relieverMaxOutsFor(fielding, pid, pen) {
+  const r = fielding.roles;
+  if (pid === r.long) return pen.longOuts;
+  if (pid === r.closer || pid === r.setup8 || pid === r.setup7) return pen.relieverMaxOuts;
+  return pen.middleMaxOuts;
 }
 
 /** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。 */
@@ -752,8 +763,7 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
     remove =
       c.pitches >= limit || c.runs >= pen.starterMaxRuns || (c.outs >= pen.tiredOuts && c.runs >= pen.tiredRuns);
   } else {
-    const maxOuts = c.pid === fielding.roles.long ? pen.longOuts : pen.relieverMaxOuts;
-    remove = c.outs >= maxOuts || c.runs >= pen.relieverMaxRuns;
+    remove = c.outs >= relieverMaxOutsFor(fielding, c.pid, pen) || c.runs >= pen.relieverMaxRuns;
   }
   if (!remove) return;
 

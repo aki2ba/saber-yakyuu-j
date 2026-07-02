@@ -18,8 +18,9 @@
 // 采配（試合中の判断）は manager.mjs、ここは「試合前の起用」を担う（フェーズCの差し替えフック）。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
-import { observedWoba } from './manager.mjs';
+import { observedWoba, buildPregameEval } from './manager.mjs';
 import { hitScore } from './team.mjs';
+import { rangeRating } from './fielding.mjs';
 import { isSameHand } from '../model/player.mjs';
 import { POSITION_DIFFICULTY } from '../model/positions.mjs';
 
@@ -38,6 +39,18 @@ export function createUsageState(team, charts, cfg) {
     const noise = makeRng(hashSeed(p.scoutSeed ?? hashSeed(pid, 'scout'), 'usageScout')).normal(0, u.scoutSd);
     scoutEval.set(pid, hitScore(p) / 4.5 - 50 + noise);
   }
+  // 守備の当日メモ（編成時評価と同じ扱い＝manager.buildPregameEval と同輪。S5較正:
+  // 見直し/日次起用が打撃観測のみだと「打撃並×守備最悪」の選手が降格されず
+  // WAR下限を破る＝守備をwOBA換算で加味してポジション適性を守る）
+  const defEval = buildPregameEval(chart.byId, cfg);
+  // レンジ評価（S5較正）: 実際の守備run産出（OAA→UZR）は習熟でなく rangeRating に比例する。
+  // 習熟主導の defEval だけでは「習熟高×レンジ最悪」のCF/LFが定着し UZR -20級 → WAR-3級を生むため、
+  // 50中心のレンジ項を別途持つ（rangeWobaPerPt で換算）。
+  const rangeEval = new Map();
+  for (const [pid, p] of chart.byId) {
+    if (p.role !== 'fielder') continue;
+    rangeEval.set(pid, rangeRating(p, cfg));
+  }
   // ポジション担当: regular=編成時のスタメン、challenger=見直しで浮上した控え（share=先発シェア）
   const assign = {};
   for (const pos of Object.keys(chart.defense)) {
@@ -49,7 +62,10 @@ export function createUsageState(team, charts, cfg) {
     teamId: team.id,
     charts,
     scoutEval,
+    defEval,
+    rangeEval,
     assign,
+    lastSnap: null, // 直近フォーム窓の起点（前回見直し時の観測スナップショット・S5較正）
     games: 0, // 消化試合数（見直しタイマー）
     consecStarts: new Map(), // 野手 pid → 連続先発出場数（休養確率の入力）
     startsByPid: new Map(), // 野手 pid → 先発出場数（較正・検証用）
@@ -73,6 +89,38 @@ export function blendedWoba(state, pid, getBat, cfg) {
   const w = b.pa / (b.pa + u.trustPA); // PAが積み上がるほど観測を信じる
   const scout = cfg.tuning.mgr.wobaPrior + (state.scoutEval.get(pid) ?? 0) * u.scoutWobaPerPt;
   return w * obs + (1 - w) * scout;
+}
+
+/** ポジション守備の wOBA換算加点（S5較正）。DHは守備なし=0。同一ポジション内の比較にのみ使う
+ *  （習熟項の絶対値は50中心でないため、ポジションをまたぐ比較には持ち込まない）。
+ *  習熟（ポジション適性）＋レンジ（実際のUZR産出に比例する成分・50中心）の2項構成。 */
+function defWobaAt(state, pid, pos, cfg) {
+  if (pos === 'DH' || !state.defEval) return 0;
+  const u = cfg.tuning.usage;
+  const e = state.defEval.get(pid);
+  if (!e) return 0;
+  const range = state.rangeEval ? (state.rangeEval.get(pid) ?? 50) : 50;
+  return u.defWobaPerPt * e.def[pos] + u.rangeWobaPerPt * (range - 50);
+}
+
+// --- 直近フォーム窓（S5較正・WAR下限>-2.5の門番） --------------------------------
+// 累積観測は「好スタート→長い不振」の選手の真の不調を数百打席も隠す（WAR-4級の主因）。
+// 見直しは前回スナップショット以降（≈25試合）の観測ウィンドウで評価し、
+// 窓の打席が windowMinPA 未満（控え・出場僅少）は従来通り累積を使う。
+// （窓のノイズは blendedWoba の trustPA 回帰と share の漸進昇格が受け止める）
+
+/** 打撃ラインの数値カウントだけを複製（スナップショット用。ネストのスプリットは対象外） */
+function copyBatCounts(b) {
+  const o = {};
+  for (const k of Object.keys(b)) if (typeof b[k] === 'number') o[k] = b[k];
+  return o;
+}
+
+/** 現在の累積 − スナップショット ＝ ウィンドウ観測ライン */
+function diffBatCounts(cur, snap) {
+  const o = {};
+  for (const k of Object.keys(snap)) o[k] = (cur[k] ?? 0) - snap[k];
+  return o;
 }
 
 /** 当日の先発投手（中 starterRestDays 日以上のローテ投手をローテ順に）。§S3-2投手可用性 */
@@ -125,6 +173,7 @@ export function selectLineup(state, ctx, cfg) {
   for (const [pid, p] of byId) if (p.role === 'fielder') fielders.push(pid);
 
   // 評価（当日メモ）: 混合評価＋相手先発とのプラトーン補正（スイッチは常に有利側=減点なし）
+  // ＋守備のwOBA換算（同一ポジション内の比較のみ・S5較正: 守備破綻選手の起用を防ぐ）
   const cache = new Map();
   const baseEval = (pid) => {
     let v = cache.get(pid);
@@ -134,8 +183,10 @@ export function selectLineup(state, ctx, cfg) {
     }
     return v;
   };
-  const effEval = (pid) =>
-    baseEval(pid) - (ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher) ? u.platoonWobaPenalty : 0);
+  const effEval = (pid, pos) =>
+    baseEval(pid) -
+    (ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher) ? u.platoonWobaPenalty : 0) +
+    defWobaAt(state, pid, pos, cfg);
 
   const used = new Set(); // 今日すでにスタメンへ入れた選手
   const resting = new Set(); // 今日休養させる選手（スタメン候補から外す。代打等ベンチ待機は可）
@@ -152,7 +203,7 @@ export function selectLineup(state, ctx, cfg) {
       let bv = -Infinity;
       for (const pid of list) {
         if (excluded(pid)) continue;
-        const v = effEval(pid);
+        const v = effEval(pid, pos);
         if (v > bv) {
           bv = v;
           best = pid;
@@ -174,14 +225,27 @@ export function selectLineup(state, ctx, cfg) {
         pid = null;
       }
     }
+    // (2b) 不振ベンチ（S5較正・WAR下限>-2.5の門番）: 観測ベース評価＋レンジ評価（50中心・
+    // UZR産出に比例する静的成分）がベンチ水準を割る担当は、見直し(25試合)の周期を待たず
+    // 日次でPA蓄積を絞る（打撃崩壊型・レンジ破綻型の双方が数百打席積むのを防ぐ）。
+    // 逆に「守備の名手×貧打」はレンジ加点で先発が保たれる（現実のNPBの守備型レギュラー）。
+    // 捕手は守備優先の起用が現実（打撃基準では座らせない）につき対象外。
+    if (pid != null && pos !== 'C') {
+      const benchEval =
+        baseEval(pid) + (pos === 'DH' ? 0 : u.rangeWobaPerPt * ((state.rangeEval?.get(pid) ?? 50) - 50));
+      if (benchEval < r.benchWoba && ctx.rng.next() < r.slumpBenchProb) {
+        resting.add(pid);
+        pid = null;
+      }
+    }
 
     // (3) 空席の充填: 候補プールの実効評価最良（全滅なら positionRank/全野手から最初の未使用）
     if (pid == null) {
       pid = bestOf(pool) ?? (pos === 'DH' ? fielders : chart.positionRank[pos]).find((x) => !excluded(x));
     } else if (pos !== 'C' && ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher)) {
-      // (4) プラトーン: 同利きの担当に対し、実効評価で上回る候補がいれば当日限りの入替
+      // (4) プラトーン: 同利きの担当に対し、実効評価（守備込み）で上回る候補がいれば当日限りの入替
       const alt = bestOf(pool.filter((x) => x !== pid));
-      if (alt != null && effEval(alt) - effEval(pid) > u.platoonMargin) pid = alt;
+      if (alt != null && effEval(alt, pos) - effEval(pid, pos) > u.platoonMargin) pid = alt;
     }
     used.add(pid);
     today[pos] = pid;
@@ -254,12 +318,22 @@ export function reviewAssignments(state, getBat, cfg) {
   const chart = state.charts.dh;
   const fielders = [];
   for (const [pid, p] of chart.byId) if (p.role === 'fielder') fielders.push(pid);
-  const ev = new Map(fielders.map((pid) => [pid, blendedWoba(state, pid, getBat, cfg)]));
+  // 直近フォーム窓: 前回見直し以降の観測で評価（窓PAが少なければ累積へフォールバック）
+  const getBatWin = (pid) => {
+    const cur = getBat(pid);
+    const snap = state.lastSnap ? state.lastSnap.get(pid) : null;
+    if (!snap) return cur;
+    const win = diffBatCounts(cur, snap);
+    return win.pa >= u.windowMinPA ? win : cur;
+  };
+  const bat = new Map(fielders.map((pid) => [pid, blendedWoba(state, pid, getBatWin, cfg)]));
 
   const used = new Set();
   for (const pos of [...POSITION_DIFFICULTY, 'DH']) {
     const a = state.assign[pos];
     if (!a) continue;
+    // 評価 = 混合打撃評価 + ポジション守備のwOBA換算（同一ポジション内の比較・S5較正）
+    const ev = new Map(fielders.map((pid) => [pid, bat.get(pid) + defWobaAt(state, pid, pos, cfg)]));
     const pool = (pos === 'DH' ? fielders : chart.positionRank[pos].slice(0, u.candidatesPerPos)).filter(
       (pid) => !used.has(pid),
     );
@@ -274,7 +348,9 @@ export function reviewAssignments(state, getBat, cfg) {
     }
     let top = a.regular;
     for (const pid of pool) if (ev.get(pid) > ev.get(top)) top = pid;
-    if (top === a.regular || ev.get(top) - ev.get(a.regular) <= u.swapMargin) {
+    // 入替マージン: 捕手のみ厚め（リード面の継続性＝正捕手の出場を100-135試合へ保つ・S5較正）
+    const margin = pos === 'C' ? u.catcherSwapMargin : u.swapMargin;
+    if (top === a.regular || ev.get(top) - ev.get(a.regular) <= margin) {
       // 現状維持: 挑戦者のシェアは減衰（差が消えたら挑戦解消）
       a.share = Math.max(0, a.share - u.promoteStep);
       if (a.share === 0) a.challenger = null;
@@ -292,4 +368,7 @@ export function reviewAssignments(state, getBat, cfg) {
     }
     used.add(a.regular);
   }
+
+  // スナップショットの更新（次回見直しの直近フォーム窓の起点）
+  state.lastSnap = new Map(fielders.map((pid) => [pid, copyBatCounts(getBat(pid))]));
 }

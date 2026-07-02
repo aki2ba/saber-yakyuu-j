@@ -1,0 +1,14 @@
+{
+  "name": "saber-yakyuu-j",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "架空選手ペナント・シミュレーション（セイバー指標ベース / 12球団143試合 / Web+Capacitor）",
+  "scripts": {
+    "test": "node --test",
+    "build": "node tools/build.mjs",
+    "verify": "node tools/build.mjs && node tools/verify-identity.mjs",
+    "smoke": "node tools/build.mjs && node tools/smoke-ui.mjs",
+    "calibrate": "node tools/calibrate.mjs"
+  }
+}

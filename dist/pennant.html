@@ -1,0 +1,3080 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>架空選手ペナント</title>
+<style>
+  :root { --bg:#0f3d2e; --panel:#123d2a; --ink:#f4f1e6; --clay:#c9a06a; --gold:#e8b84b;
+          --muted:#9fb8ac; --line:#2f6b4a; --chalk:#e9e4d0; }
+  * { box-sizing:border-box; }
+  body { font-family: system-ui,-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;
+         background:var(--bg); color:var(--ink); margin:0; padding:16px; line-height:1.5; }
+  h2 { font-size:17px; margin:6px 0; }
+  .muted { color:var(--muted); font-size:12px; }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--line); background:#0c3122;
+           color:var(--ink); border-radius:6px; padding:6px 12px; }
+  button.primary { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  button.link { border:none; background:none; color:var(--muted); padding:2px 6px; }
+  input { background:#0c3122; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:5px; }
+  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+  .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
+  .tabs { display:flex; gap:6px; margin:10px 0; flex-wrap:wrap; }
+  .tab { padding:6px 14px; }
+  .tab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+  table.stat { border-collapse:collapse; width:100%; font-size:13px; white-space:nowrap; }
+  table.stat th { position:sticky; top:0; background:#0c3122; color:var(--chalk); padding:6px 8px;
+                  text-align:right; cursor:pointer; user-select:none; border-bottom:1px solid var(--line); }
+  table.stat th.left, table.stat td.left { text-align:left; }
+  table.stat th.sorted { color:var(--gold); }
+  table.stat td { padding:5px 8px; text-align:right; border-bottom:1px solid #1c4a34; }
+  tr.clickable:hover { background:#174a34; cursor:pointer; }
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
+             justify-content:center; padding:20px; overflow:auto; z-index:10; }
+  .modal { background:var(--panel); border:1px solid var(--clay); border-radius:10px; padding:16px;
+           max-width:560px; width:100%; }
+  .modalhead { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .pname { font-size:18px; font-weight:700; }
+  .kvgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+  .kv { background:#0c3122; border-radius:6px; padding:6px; text-align:center; }
+  .kvk { font-size:10px; color:var(--muted); } .kvv { font-size:15px; font-weight:700; }
+  .abilities { display:grid; grid-template-columns:1fr 1fr; gap:6px 16px; margin-top:4px; }
+  .abtitle { font-size:11px; color:var(--gold); margin:4px 0 2px; }
+  .barrow { display:flex; align-items:center; gap:6px; font-size:11px; margin:2px 0; }
+  .barlabel { width:64px; color:var(--muted); } .barval { width:22px; text-align:right; }
+  .bartrack { flex:1; height:8px; background:#0c3122; border-radius:4px; overflow:hidden; }
+  .barfill { display:block; height:100%; }
+  .spraywrap { margin-top:10px; text-align:center; }
+  svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
+  .warlist { display:flex; flex-direction:column; gap:6px; }
+  .warcard { display:flex; align-items:center; gap:12px; background:var(--panel);
+             border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .warcard:hover { background:#174a34; cursor:pointer; }
+  .warrank { width:24px; color:var(--muted); text-align:right; font-size:13px; }
+  .warval { width:54px; font-size:20px; font-weight:800; color:var(--gold); text-align:right; }
+  .warname { flex:1; font-size:14px; } .wn1 { font-weight:700; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ===== src/rng.mjs =====
+// ============================================================================
+// 決定論RNG基盤（§3.1 §17 §19 / 自己レビュー M2・F35・F41）
+//
+// 設計:
+//   - 階層シード: masterSeed → hashSeed(season, game, pa, ...) で打席ごとに独立RNG。
+//     「実行順序に依存しない」＝ 任意の試合/打席を単独・任意順で再現できる（並列化・§19突合に必須）。
+//   - PRNG: mulberry32（素のLCGでなくカウンタ系。1状態語で高品質・自己完結）。
+//   - Box-Muller: 予備値をキャッシュしない（毎回2一様乱数を消費し1つ返す）。
+//     → 隠れ状態ゼロで版間・端末間・シリアライズ跨ぎでも完全再現（F41）。
+//   - 直列化: 状態は uint32 一語。serializeRng→number / makeRng(number) で復元（セーブ対象）。
+// ============================================================================
+
+/** mulberry32 の1ステップ。state.a を進めて float[0,1) を返す。 */
+function step(state) {
+  const a = (state.a + 0x6d2b79f5) | 0;
+  state.a = a;
+  let t = Math.imul(a ^ (a >>> 15), 1 | a);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+/** 素の関数版PRNG（selfCheck等の軽用途） */
+function mulberry32(seed) {
+  const state = { a: seed >>> 0 };
+  return () => step(state);
+}
+
+/**
+ * 複数の整数/文字列を 32bit シードへ決定論的に畳み込む（FNV-1a派生）。
+ * hashSeed(masterSeed, seasonId, gameId, paIndex) の形で階層シードを作る。
+ */
+function hashSeed(...parts) {
+  let h = 0x811c9dc5 >>> 0;
+  const byte = (b) => {
+    h ^= b & 0xff;
+    h = Math.imul(h, 0x01000193);
+  };
+  for (const p of parts) {
+    if (typeof p === 'string') {
+      for (let i = 0; i < p.length; i++) byte(p.charCodeAt(i));
+    } else {
+      let n = Math.trunc(p) >>> 0;
+      byte(n);
+      byte(n >>> 8);
+      byte(n >>> 16);
+      byte(n >>> 24);
+    }
+  }
+  // 最終ミックス
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+
+/**
+ * RNGオブジェクト。状態は state.a（uint32）に閉じる＝シリアライズ可能。
+ */
+function makeRng(seed) {
+  const state = { a: seed >>> 0 };
+  const rng = {
+    state,
+    /** float [0,1) */
+    next() {
+      return step(state);
+    },
+    /** 整数 [0,n) */
+    int(n) {
+      return Math.floor(step(state) * n);
+    },
+    /** 実数 [lo,hi) */
+    range(lo, hi) {
+      return lo + step(state) * (hi - lo);
+    },
+    /** 標準正規（Box-Muller・予備値キャッシュなし＝隠れ状態ゼロ） */
+    normal(mean = 0, sd = 1) {
+      let u1 = step(state);
+      if (u1 < 1e-12) u1 = 1e-12; // log(0) 回避
+      const u2 = step(state);
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      return mean + sd * z;
+    },
+    /** 確率 p で true */
+    chance(p) {
+      return step(state) < p;
+    },
+    /** 子RNGを決定論的に派生（順序非依存） */
+    fork(...parts) {
+      return makeRng(hashSeed(state.a, ...parts));
+    },
+  };
+  return rng;
+}
+
+/**
+ * 階層シードから、指定座標(season/game/pa等)の打席用RNGを作る。
+ * 実行順序に依存せず、同じ座標は常に同じ列を返す。
+ */
+function rngFor(masterSeed, ...coords) {
+  return makeRng(hashSeed(masterSeed, ...coords));
+}
+
+/** 状態を数値へ（セーブ用） */
+function serializeRng(rng) {
+  return rng.state.a >>> 0;
+}
+
+/** 数値状態から復元（makeRng(state) はその地点から続きを再現する） */
+function deserializeRng(stateNumber) {
+  return makeRng(stateNumber >>> 0);
+}
+
+
+// ===== src/model/positions.mjs =====
+// ポジション・球種などの定数（§7 §9 §13 §4）。
+// ⚠️ ここの数値（posAdj等）はMLB標準の初期値。143試合/NPBへの再スケールは
+//    中央config(0-4)＋較正(2-9)で行う。定数の"出発点"としてのみ置く。
+
+/** 守備位置（投手Pはroleで扱う。DHは守備なし打撃専念） */
+const POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH'];
+
+/** 野手の守備位置のみ（DH除く） */
+const FIELD_POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'];
+
+/**
+ * 位置補正（1350守備イニングあたりの Run 値・MLB標準の初期値）。§9。
+ * 難ポジほど+、易ポジほど−。143試合較正で config から再スケールする。
+ */
+const POSITION_ADJUST_PER_1350 = {
+  C: 12.5,
+  SS: 7.5,
+  '2B': 2.5,
+  '3B': 2.5,
+  CF: 2.5,
+  RF: -7.5,
+  LF: -7.5,
+  '1B': -12.5,
+  DH: -17.5,
+};
+
+/** 守備難易度の序列（難→易）。§9/§13。コンバート成否・延命判定に流用。 */
+const POSITION_DIFFICULTY = ['C', 'SS', 'CF', '2B', '3B', 'RF', 'LF', '1B'];
+
+/** 球種（§2.4）。各投手はこの一部を保有する。 */
+const PITCH_TYPES = [
+  'fastball', // ストレート
+  'sinker', // シンカー/ツーシーム
+  'cutter', // カット
+  'slider', // スライダー
+  'curve', // カーブ
+  'changeup', // チェンジアップ
+  'fork', // フォーク/スプリット
+];
+
+/** 速球系（対速球/対変化球の2軸分類・§4段階1） */
+const FASTBALL_TYPES = new Set(['fastball', 'sinker', 'cutter']);
+
+/** 球種を2クラス（速球/変化球）に分類 */
+function pitchClass(type) {
+  return FASTBALL_TYPES.has(type) ? 'fastball' : 'breaking';
+}
+
+
+// ===== src/model/player.mjs =====
+// ============================================================================
+// 選手データモデル（§2）
+//
+// 三層構造（§1・本作の背骨）:
+//   layer1 真の実力  = player.trueAbility        … 隠しパラメータ（本人の本当の能力）
+//   layer2 観測成績  = player.career.seasons[...] … 真値+打席ノイズ（simで湧く。§5集計）
+//   layer3 球団の評価 = 球団AI側が trueAbility+スカウト誤差 で持つ（フェーズ3）。
+//                       ここでは誤差シードの器 player.scoutSeed のみ用意。
+//
+// 能力素材は登録(role)に依らず常時両方保持する（§2.1 転向で重要）。
+// レーティングは 20–80 スカウティングスケール（50=リーグ平均）。球速のみ km/h 実数（§2.4）。
+// 本ステップ(0-3)は"形"を確定するのが目的。分布からの生成は 0-6。
+// ============================================================================
+
+
+/**
+ * @typedef {Object} PitchRating 1球種の能力（§2.4）
+ * @property {string} type
+ * @property {number} current   現在値(20-80)
+ * @property {number} potential 潜在値(20-80)
+ * @property {number} whiff     空振り寄与
+ * @property {number} hrSuppress 被弾抑止（高いほど打たれにくい）
+ * @property {number} contactQuality 被コンタクト質の抑止
+ */
+
+/** 1球種レーティングを生成（空振り率と被弾率は別能力＝別プロファイル。§4） */
+function createPitch(type, over = {}) {
+  return {
+    type,
+    current: 50,
+    potential: 50,
+    whiff: 50,
+    hrSuppress: 50,
+    contactQuality: 50,
+    ...over,
+  };
+}
+
+/**
+ * 真の実力（layer1）。全軸を常時保持。§2.2〜§2.7。
+ */
+function createTrueAbility(over = {}) {
+  const base = {
+    // §2.2 共通素材（登録・ポジション非依存の本人の持ち物）
+    common: {
+      speed: 50, // 走力（走塁/守備範囲のスピード成分）— 早く落ちる
+      arm: 50, // 肩（送球/投手なら球速の素地）— 中間
+      hands: 50, // 手・確実性（エラー回避/コンタクト素地）— 安定
+      reaction: 50, // 反応・初動（守備範囲の初動成分）— やや弱い
+      power: 50, // 生体パワー（打球速度EVの素地）— 20代天井後 維持
+    },
+    // §2.3 打撃系
+    batting: {
+      ev: 50, // EV適性（打球速度ポテンシャル＝生体Power×スイング効率）
+      la: 50, // LA適性（打球角度の最適化スキル）— 技術寄り・加齢に強い
+      pull: 50, // 方向適性（>50 引っ張り / <50 流し）
+      contact: 50, // コンタクト資質（芯を食う頻度）— 技術寄り
+      eye: 50, // 選球眼 — 加齢でむしろ伸びる
+      vsFastball: 50, // 対速球適性（§4段階1）
+      vsBreaking: 50, // 対変化球適性（§4段階1）
+      // hot/cold ゾーン（球種格子 段階2〜, §4）は後付け（フェーズ2以降）
+    },
+    // §2.4 投手系
+    pitching: {
+      velocityKmh: 145, // 球速（km/h 実数・レーティングとは別枠）
+      control: 50, // 制球 — 技巧寄り・加齢に強い
+      stamina: 50, // スタミナ（イニング耐性軸, §16）
+      gbRate: 50, // ゴロ率（打たせて取るタイプ）
+      hold: 50, // クイック/Hold（盗塁抑止・§6 wSBの入力。0-3で追加）
+      pitches: [], // PitchRating[]（球種構成＝投手タイプ, §8）
+    },
+    // §2.5 野手守備系
+    fielding: {
+      positionProf: fielderProfInit(), // ポジション別習熟テーブル（経験で上下, §13）
+      positioningIQ: 50, // ポジショニングIQ — 経験・技巧寄り・加齢に強い
+      framing: 50, // フレーミング（捕手専用）
+    },
+    // §2.6 走塁系
+    baserunning: {
+      steal: 50, // 盗塁技術（スタート/スライディング）— 足の速さと別物
+      baserunIQ: 50, // 走塁IQ（進塁判断）— 経験で伸び加齢に強い
+    },
+    // §2.7 キャリア・パラメータ（分布から引く: §10.2, §12.4。0-6/フェーズ3で使用）
+    career: {
+      peakAge: 27, // ピーク年齢
+      declineRate: 0.5, // 衰え速度（能力タイプと相関, §10.2）
+      injuryHistory: [], // 故障歴（最大リスク・再発, §10.5）
+      breakEvents: [], // ブレイクイベント履歴（上下, §10.4）
+    },
+  };
+  return deepMerge(base, over);
+}
+
+function fielderProfInit() {
+  const m = {};
+  for (const p of FIELD_POSITIONS) m[p] = 20; // 新ポジションは低スタート（§13）
+  return m;
+}
+
+/**
+ * 選手（三層のコンテナ）。
+ * @param {Object} o
+ * @param {string} o.id
+ * @param {string} o.name  完全架空の名前（§0法的前提）。生成は0-6。
+ * @param {'pitcher'|'fielder'} o.role 登録区分（能力素材は両方保持）
+ */
+function createPlayer(o = {}) {
+  return {
+    id: o.id ?? null,
+    name: o.name ?? '',
+    role: o.role ?? 'fielder',
+    bats: o.bats ?? 'R', // 'R'|'L'|'S'
+    throws: o.throws ?? 'R', // 'R'|'L'
+    age: o.age ?? 24,
+    birthSeason: o.birthSeason ?? null,
+    teamId: o.teamId ?? null,
+    rosterStatus: o.rosterStatus ?? 'active', // active|minor(育成)|fa|retired（フェーズ3で活用）
+
+    trueAbility: o.trueAbility ?? createTrueAbility(), // layer1（隠し）
+
+    // layer3 の基盤: 球団評価はスカウト誤差で歪む（§1, §13）。
+    // 誤差は球団×選手で決まるので、選手側は再現用シードのみ持つ（評価値は球団AIが算出, フェーズ3）。
+    scoutSeed: o.scoutSeed ?? null,
+
+    // layer2 観測成績: シーズン別スタットライン（simが埋める, §5）。season -> PlayerSeason
+    career: { seasons: {} },
+  };
+}
+
+/** 浅い階層のディープマージ（配列は置換） */
+function deepMerge(base, over) {
+  if (over == null) return base;
+  const out = Array.isArray(base) ? base.slice() : { ...base };
+  for (const k of Object.keys(over)) {
+    const bv = base[k];
+    const ov = over[k];
+    out[k] =
+      bv && ov && typeof bv === 'object' && typeof ov === 'object' && !Array.isArray(bv)
+        ? deepMerge(bv, ov)
+        : ov;
+  }
+  return out;
+}
+
+/** 最低限のスキーマ検証（スキーマ・ドリフトの早期検出用） */
+function validatePlayer(p) {
+  const errors = [];
+  if (!p || typeof p !== 'object') return ['player is not an object'];
+  if (p.role !== 'pitcher' && p.role !== 'fielder') errors.push(`bad role: ${p.role}`);
+  const t = p.trueAbility;
+  if (!t) errors.push('missing trueAbility');
+  else {
+    for (const grp of ['common', 'batting', 'pitching', 'fielding', 'baserunning', 'career']) {
+      if (!t[grp]) errors.push(`missing trueAbility.${grp}`);
+    }
+    if (t.pitching && typeof t.pitching.hold !== 'number') errors.push('missing pitching.hold');
+  }
+  return errors;
+}
+
+
+// ===== src/model/battedball.mjs =====
+// ============================================================================
+// 打球イベントオブジェクト＋球場ジオメトリ（§3.2）—「一粒五度おいしい」の単一入力
+//
+// 接触した瞬間に打球3要素(EV/LA/方向)を先に生成し、球場ジオメトリと突き合わせて
+// 落下点・滞空時間を出す。この"1個の打球レコード"から、
+//   スプレーチャート(§16) / OAA好守拙守(§7.2) / UBR進塁(§6) / 対球種成績(§4)
+// が全部派生する。結果を先に決めてゾーンを後付けする旧来設計を逆転させる。
+//
+// 座標系: 本塁を原点、+y をセンター方向、x を横（−=三塁側/左, +=一塁側/右）。単位はメートル。
+// 方向角 sprayAngle: 0=センター, −45=左翼線, +45=右翼線（度）。
+// EV は km/h（NPB表記に合わせる）、LA は度。
+// ============================================================================
+
+/**
+ * @typedef {Object} BattedBall
+ * @property {number} evKmh       打球速度 km/h（§3.2: 打者EV適性×投球の質×芯度）
+ * @property {number} laDeg       打球角度 度（§3.2: 打者LA適性×投手GB%相性）
+ * @property {number} sprayDeg    方向角 度（§3.2: 引っ張り/流し×投球コース）
+ * @property {number|null} landingX 落下点X(m)
+ * @property {number|null} landingY 落下点Y(m)
+ * @property {number|null} distanceM 飛距離(m)
+ * @property {number|null} hangTimeS 滞空時間(秒)
+ * @property {string|null} pitchType 対戦球種（§4集計の素）
+ * @property {string|null} batterId
+ * @property {string|null} pitcherId
+ * @property {string|null} fielderPos 担当野手ポジション（OAAの主語）
+ * @property {number} baseState   塁状況 0..7（bit0:一塁, bit1:二塁, bit2:三塁）
+ * @property {number} outs        アウトカウント 0..2
+ * @property {string|null} result 最終結果（'1B'|'2B'|'3B'|'HR'|'out'|'error'...）simが確定
+ */
+
+/** 打球イベントを生成（3要素は必須、幾何・結果は後段で埋める） */
+function createBattedBall(o = {}) {
+  return {
+    evKmh: o.evKmh ?? 0,
+    laDeg: o.laDeg ?? 0,
+    sprayDeg: o.sprayDeg ?? 0,
+    landingX: o.landingX ?? null,
+    landingY: o.landingY ?? null,
+    distanceM: o.distanceM ?? null,
+    hangTimeS: o.hangTimeS ?? null,
+    pitchType: o.pitchType ?? null,
+    batterId: o.batterId ?? null,
+    pitcherId: o.pitcherId ?? null,
+    fielderPos: o.fielderPos ?? null,
+    baseState: o.baseState ?? 0,
+    outs: o.outs ?? 0,
+    result: o.result ?? null,
+  };
+}
+
+/**
+ * 球場ジオメトリ。中立球場は左右対称。フェンス距離は方向角の関数で表す（パークファクターはフェーズ4）。
+ * NPB標準寄りの中立値: 両翼 100m / 中堅 122m / フェンス高 4m。
+ */
+function createBallpark(o = {}) {
+  return {
+    name: o.name ?? 'Neutral Park',
+    lineDistM: o.lineDistM ?? 100, // 両翼（ファウルライン上, |spray|=45）
+    centerDistM: o.centerDistM ?? 122, // 中堅（spray=0）
+    gapDistM: o.gapDistM ?? 116, // 左右中間の目安（|spray|≈20）
+    fenceHeightM: o.fenceHeightM ?? 4,
+  };
+}
+
+/** 中立球場（既定） */
+const NEUTRAL_PARK = createBallpark();
+
+/**
+ * 指定方向角のフェンスまでの距離(m)。ライン(100)〜中堅(122)を滑らかに補間。
+ * cos ベースの単純近似（中堅で最大、ライン方向で最小）。パーク非対称はフェーズ4で拡張。
+ */
+function fenceDistanceAt(sprayDeg, park = NEUTRAL_PARK) {
+  const a = Math.min(Math.abs(sprayDeg), 45) / 45; // 0(中堅)..1(ライン)
+  return park.centerDistM + (park.lineDistM - park.centerDistM) * a;
+}
+
+
+// ===== src/model/util.mjs =====
+// モデル共通の小ヘルパー（ブラウザ安全・依存ゼロ）。
+// バンドル後は全モジュールが同一スコープに並ぶため、共有ヘルパーはここ一箇所に定義する。
+
+/** 値を [min,max] に丸める */
+function clamp(v, min, max) {
+  return v < min ? min : v > max ? max : v;
+}
+
+/** 能力のスカウティングスケール（20=最低, 50=リーグ平均, 80=最高）に丸める */
+function clampRating(v) {
+  return clamp(Math.round(v), 20, 80);
+}
+
+/** src の数値プロパティを dst に加算（両者フラットな数値マップ前提の集計ヘルパー） */
+function addNumeric(dst, src) {
+  for (const k of Object.keys(src)) {
+    if (typeof src[k] === 'number') dst[k] = (dst[k] || 0) + src[k];
+  }
+  return dst;
+}
+
+
+// ===== src/model/statline.mjs =====
+// ============================================================================
+// 統一スタットライン・スキーマ（§5 §6 §7 §9）
+//
+// 集計器が場当たり的に肥大しないよう、per-(player,season) / per-(team,season) の
+// 器をここで一括確定する（自己レビュー M5）。フィールドはフェーズをまたいで段階的に
+// 埋めてよいが、"箱"は最初に固定する。特に posAdj/UZR の土台となる
+// 「ポジション別 守備アウト(=イニング)」勘定を最初から持たせる。
+//
+// 指標値（AVG/wOBA/FIP/WAR…）はここには持たない。生カウントだけを保持し、
+// 指標は集計後にリーグ定数(1-6)と合わせて算出する（2パス構造・M2/F2）。
+// ============================================================================
+
+
+
+/** 打撃の生カウント（§5）。個人R(得点者)は保留、RBIのみ（§18）。 */
+function createBattingLine() {
+  return {
+    pa: 0,
+    ab: 0,
+    h: 0,
+    b1: 0, // 単打
+    b2: 0, // 二塁打
+    b3: 0, // 三塁打
+    hr: 0,
+    bb: 0,
+    ibb: 0, // 敬遠（wOBA/FIPで別扱いしうる）
+    hbp: 0,
+    so: 0,
+    sf: 0, // 犠飛
+    sh: 0, // 犠打
+    gdp: 0, // 併殺打（wGDPの素, §6）
+    sb: 0, // 盗塁（wSBの素, §6）
+    cs: 0, // 盗塁死
+    rbi: 0,
+    // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
+    vsFastball: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
+    vsBreaking: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
+  };
+}
+
+/** 投手の生カウント（§8 §9）。IPは outs で持つ（1/3イニングの丸め誤差回避）。 */
+function createPitchingLine() {
+  return {
+    g: 0, // 登板
+    gs: 0, // 先発
+    outs: 0, // 記録アウト（IP = outs/3）
+    bf: 0, // 対戦打者
+    h: 0,
+    hr: 0,
+    bb: 0,
+    ibb: 0,
+    hbp: 0,
+    so: 0,
+    r: 0, // 失点
+    er: 0, // 自責点
+    w: 0,
+    l: 0,
+    sv: 0, // セーブ
+    hld: 0, // ホールド（監査B3で計上）
+    bs: 0, // ブローンセーブ（監査B3で計上）
+    cg: 0, // 完投（監査B4で計上）
+    sho: 0, // 完封（監査B4で計上）
+    pitches: 0, // 投球数
+  };
+}
+
+/** 走塁（盗塁以外の進塁。§6 UBR/wGDPの素）。盗塁数自体は打撃側にも計上。 */
+function createBaserunningLine() {
+  return {
+    advOpp: 0, // 進塁機会（単打で2→本 / 二塁打で1→本 の判断が発生した回数。UBRの分母）
+    advTaken: 0, // うち追加進塁（生還）を取った回数
+    outsOnBase: 0, // 走塁死
+    gdpOpp: 0, // 併殺機会（wGDPの分母）
+  };
+}
+
+/** 守備（§7 §9）。posAdj/UZRの土台＝ポジション別 守備アウト勘定を必ず持つ。 */
+function createFieldingLine() {
+  const positionOuts = {}; // ポジション -> 守備アウト数（イニング=outs/3）
+  for (const p of FIELD_POSITIONS) positionOuts[p] = 0;
+  return {
+    positionOuts,
+    chances: 0,
+    po: 0, // 刺殺
+    a: 0, // 補殺
+    e: 0, // 失策
+    oaaOuts: 0, // OAA（実アウト − 期待アウト、outs単位）§7.2。集計で加算
+    framingRuns: 0, // フレーミング(捕手)。集計で加算
+  };
+}
+
+/** 選手×シーズンの器（layer2 観測成績の実体） */
+function createPlayerSeason(playerId, season) {
+  return {
+    playerId,
+    season,
+    teamId: null,
+    batting: createBattingLine(),
+    pitching: createPitchingLine(),
+    baserunning: createBaserunningLine(),
+    fielding: createFieldingLine(),
+  };
+}
+
+/** チーム×シーズンの器（順位表の実体）。RS/RAはチーム得点＝個人R保留とは別（§18・F6）。 */
+function createTeamSeason(teamId, season) {
+  return {
+    teamId,
+    season,
+    g: 0,
+    w: 0,
+    l: 0,
+    t: 0, // 引分（NPBは延長規定あり）
+    rs: 0, // 得点（チーム）
+    ra: 0, // 失点（チーム）
+  };
+}
+
+// --- 集計ヘルパー（2パス集計・通算集計で使用） -------------------------------
+
+/** バッティングを加算（dst に src を足し込む） */
+function addBattingLine(dst, src) {
+  return addNumeric(dst, src);
+}
+
+/** ピッチングを加算 */
+function addPitchingLine(dst, src) {
+  return addNumeric(dst, src);
+}
+
+/** 走塁を加算 */
+function addBaserunningLine(dst, src) {
+  return addNumeric(dst, src);
+}
+
+/** 守備を加算（positionOuts マップは個別に、他は数値加算） */
+function addFieldingLine(dst, src) {
+  for (const p of Object.keys(src.positionOuts || {})) {
+    dst.positionOuts[p] = (dst.positionOuts[p] || 0) + src.positionOuts[p];
+  }
+  for (const k of Object.keys(src)) {
+    if (k !== 'positionOuts' && typeof src[k] === 'number') dst[k] = (dst[k] || 0) + src[k];
+  }
+  return dst;
+}
+
+/** 選手シーズンを別の器へ加算（通算/リーグ集計用） */
+function addPlayerSeason(dst, src) {
+  addBattingLine(dst.batting, src.batting);
+  addPitchingLine(dst.pitching, src.pitching);
+  addBaserunningLine(dst.baserunning, src.baserunning);
+  addFieldingLine(dst.fielding, src.fielding);
+  return dst;
+}
+
+
+// ===== src/config.mjs =====
+// ============================================================================
+// 中央パラメータ（config）モジュール（自己レビュー M6 / F43）
+//
+// 較正の可変係数・NPB目標帯・試合数依存の媒介変数・リーグ定数の器を一箇所に集約する。
+//   - 較正(1-11/2-11)は「このモジュールだけ」を調整対象にする（マジックナンバーを散らさない）
+//   - §19が要求する「エンジンバージョン固定＝定数セットの凍結」の単一面を兼ねる
+//   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
+// ============================================================================
+
+const CONFIG_VERSION = '0.0.3-config';
+
+/** リーグ設定（6球団×140試合＝単一リーグ / Q6: 全球団DH有）。
+ *  最終形は12球団/2リーグ/交流戦（ロードマップ記録）。numTeams/gamesPerSeasonはここで可変。 */
+const LEAGUE_DEFAULT = {
+  numTeams: 6,
+  gamesPerSeason: 140, // 6球団: 5対戦相手×28試合=140（完全均等・ホーム14/14）
+  dh: 'all', // Q6=A 全球団DH有（投手は打席に立たない）
+  rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
+};
+
+/**
+ * 較正目標帯（古典寄り・確定 / Q5・Q7）。各値は [min,max]。
+ * 1-11/2-11 の機械判定に使う。分布形状の基準(M4)はフェーズ1較正時に追加する。
+ */
+const CALIBRATION_TARGETS = {
+  batting: {
+    avg: [0.255, 0.262],
+    obp: [0.32, 0.328],
+    slg: [0.39, 0.41],
+    ops: [0.72, 0.735],
+    kPct: [0.18, 0.2],
+    bbPct: [0.078, 0.083],
+    hrPerTeam: [110, 130], // per team / 140G ⚠️過剰HR＝最大の地雷＝第一の門番指標
+    runsPerTeamPerGame: [3.9, 4.3],
+    wobaLeague: [0.325, 0.335],
+  },
+  pitching: {
+    era: [3.5, 3.9],
+    fip: [3.6, 4.0],
+  },
+  war: {
+    totalLeague: [175, 205], // 6球団×140試合（≈teams×games×0.224）。12球団/2リーグ化で要再設定
+    hitterShare: [0.53, 0.57], // 野手:投手 ≈ 55:45
+    leaderHitter: [7, 9],
+    leaderPitcher: [6, 8],
+    uzrTop: [20, 30],
+  },
+};
+
+/**
+ * エンジン調整ノブ（初期値・較正で動かす）。§18主要定数＋新EV/LAエンジン固有ノブ。
+ * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
+ */
+const TUNING_DEFAULT = {
+  hrScale: 0.972, // 本塁打産出スケール（門番: hrPerTeam）※予備較正済み。⚠️HRは閾値のため感度大
+  babipBase: 0.3, // インプレー打球の安打基準
+  fieldingCoef: 0.0009, // 守備係数（§18）
+  // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
+  replBatterPer600: 18, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
+  replFipMult: 1.25, // replFIP = lgFIP × 1.25 ※WAR較正。投手WAR王は~4.2でやや低(aces IP・FIP spread起因,後で拡大)
+
+  // 打席規律層（1-1）: log5/オッズ比で K/BB/HBP/インプレー を分岐する較正ノブ。
+  // League は打席1回あたりの基準確率、Slope は能力(20-80)→logit の感度。
+  pa: {
+    kLeague: 0.19, // リーグK率（NPB ~19%）
+    bbLeague: 0.0795, // リーグBB率 ※較正済み
+    hbpLeague: 0.009, // リーグHBP率
+    kSlope: 0.22, // K感度 ※較正済み（分布の裾M4を圧縮）
+    bbSlope: 0.2, // BB感度 ※較正済み
+    hbpSlope: 0.1, // HBP感度（投手制球の荒れ）
+    kContactW: 0.7, // 打者K傾向へのコンタクト寄与
+    kEyeW: 0.3, // 打者K傾向への選球眼寄与
+    kVeloPerKmh: 0.6, // 投手奪三振への球速寄与（1km/h ≒ 0.6 レーティング）
+    // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
+    fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
+    whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
+  },
+
+  // 走塁（2-4 wSB, §6）: 盗塁の試行・成否を 走者Steal/Speed × 投手Hold × 捕手Arm から生成。
+  steal: {
+    attemptBase: 0.11, // 一塁走者が二塁を狙う基本試行率（機会あたり）
+    attemptSlope: 0.45, // 走者の積極性感度（Steal/Speed）
+    successBase: 0.72, // 基本成功率（損益分岐~70%近辺・NPB）
+    stealSlope: 0.32, // 成功率への走者寄与
+    holdSlope: 0.28, // 投手クイックによる抑止
+    armSlope: 0.3, // 捕手肩による抑止
+  },
+  // 走塁 run値（§6）。NPB寄り: SB≈+0.19 / CS≈−0.38。UBRは走者Speed/IQで進塁確率を上下（2-5）。
+  run: { runSB: 0.19, runCS: -0.38, ubrSlope: 0.008, runUBR: 0.4 },
+  // 併殺（2-6 wGDP, §6）: GBアウト×走者一塁×2アウト未満で併殺成立。打者の足で回避。
+  gdp: { base: 0.42, speedW: 0.005, runGDP: -0.42 },
+
+  // 守備（2-7/2-8, §7）: 野手個人のRangeを期待アウトに接続し、OAAに個人スキルを乗せる。
+  field: {
+    rangePerRating: 0.0016, // Range 1pt → 実効被安打率をこれだけ下げる（OAAの個人シグナル）
+    wRange: { positioningIQ: 0.45, reaction: 0.3, speed: 0.25 }, // Range合成重み（§7.1）
+    runPerOutInfield: 0.75, // OAA→run換算（内野・Statcast FRV）
+    runPerOutOutfield: 0.9, // 外野
+    runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（監査A3・§7.2）
+    framePerInning: 0.0005, // 捕手フレーミング: (framing-50)×これ×守備イニング をrun換算（監査B5・§7.3）
+  },
+
+  // 対戦巡目（1-5, §3.3）: 同一投手を1試合に複数回見るほど打者有利。
+  // Phase1は一律係数のプレースホルダ。球種数重み付けは 2-1/2-2 後に有効化。
+  tto: {
+    kPerTime: 0.025, // 2巡目以降、K の logit を巡目あたり減らす（打者は三振しにくく）
+    evPerTime: 0.7, // 2巡目以降、打球EV を巡目あたり +km/h（芯を捉えやすく）
+  },
+
+  // 打球生成(1-2)＋結果解決(1-3)。EV/LA/方向を先に作り、球場ジオメトリで結果を導く（§3.2）。
+  // ※ bb 群は予備較正済み（5リーグ平均で AVG.258/OBP.323/SLG.401/HR118/ERA3.85/得点4.22、
+  //    かつ分布の裾も 打率王.348/HR王47 まで圧縮=M4対応。RBI王~145は満員打線ゆえ構造的に高め）。
+  bb: {
+    // EV(打球速度 km/h)
+    evBase: 139, // 平均打球速度の中心
+    evPerEV: 0.45, // 打者EV適性1pt → km/h ※較正済み（裾圧縮）
+    evPerPower: 0.22, // 生体power1pt → km/h ※較正済み
+    evPitchSuppress: 0.3, // 投手の被コンタクト質抑止1pt → km/h減（選択球種のcontactQuality）
+    evHrSuppressW: 0.25, // 選択球種のhrSuppressが高いほどEV減（弱い打球＝M3の結線）
+    evAptW: 0.26, // 打者の対該当クラス適性が高いほどEV増（§4段階1）
+    evSd: 14,
+    // LA(打球角度 度)
+    laBase: 12,
+    laPerLA: 0.35, // 打者LA適性 → 角度中心シフト ※較正済み
+    laPitchGB: 0.22, // 投手ゴロ率 → 角度を下げる
+    laSd: 23,
+    // 方向(spray 度: 0=中堅, ±45=ライン)。pull適性で引っ張り側へ。
+    sprayPull: 0.55,
+    spraySd: 17,
+    // 飛距離モデル
+    carry: 0.6, // v^2/g に掛ける実効係数（空気抵抗込みの縮み）
+    // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
+    hitGB: 0.218,
+    hitLD: 0.672, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束
+    hitFB: 0.122,
+    hitPU: 0.02,
+    evHitW: 0.004, // (evKmh-140)×これ を hit率に加算 ※較正済み
+    gapDistM: 90, // 単打/二塁打の境界（外野手到達圏）。これ未満の空中安打は単打（監査B1: 84→90で二塁打過剰是正＋得点環境較正）
+    fbHitBonusM: 84, // FB警告帯ヒット加点(+0.15)の閾値。BABIP環境を保つため二塁打境界と分離（監査B1）
+    tripleDistM: 94, // 二塁打/三塁打候補の深さ。これ以上の深いギャップ/ライン際球が三塁打になりうる（監査B1）
+    tripleBase: 0.32, // 深いギャップ球の三塁打基本率（打者speedで上下）※較正済み
+    tripleSpeedW: 0.007, // 打者speed(50中心)→三塁打率への寄与
+    // 失策（ROE・§7 Hands）。インプレーのアウトが確率 errBase−(Hands−50)×errHandsW で失策になる。
+    // 失策以降その回の得点は非自責（ERA<失点 の差＝未自責点を生む・較正の整合に必須）。
+    errBase: 0.023,
+    errHandsW: 0.0006,
+    // 走者進塁の確率（Phase1簡易。UBRの精緻化は2-5）
+    singleScore2: 0.56, // 単打で二塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
+    doubleScore1: 0.50, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
+  },
+};
+
+/**
+ * シムのラン環境から 1-6（リーグ定数導出パス）で埋める定数の器。
+ * §18の 13.3/1.216 等は「初期値」であって、ここに導出値を上書きしてから指標を確定する（2パス）。
+ */
+function createLeagueConstants() {
+  return {
+    linearWeights: null, // {bb,hbp,b1,b2,b3,hr, outValue,...}
+    wobaScale: null,
+    lgwOBA: null,
+    lgFIP: null,
+    fipConstant: null,
+    rpw: null, // Runs Per Win
+    posAdjPer1350: null, // 143試合へ再スケール後の位置補正（§9・M3）
+  };
+}
+
+/** 設定一式のディープコピーを配る（較正ランごとに独立させる） */
+function createConfig(overrides = {}) {
+  const cfg = {
+    version: CONFIG_VERSION,
+    league: clone(LEAGUE_DEFAULT),
+    targets: clone(CALIBRATION_TARGETS),
+    tuning: clone(TUNING_DEFAULT),
+    leagueConstants: createLeagueConstants(),
+  };
+  return deepAssign(cfg, overrides);
+}
+
+// --- 試合数依存の媒介変数（M3: 162試合MLB定数を143へ再スケール） -------------
+/** 規定打席（≒ games×3.1） */
+function qualifiedPA(games = LEAGUE_DEFAULT.gamesPerSeason) {
+  return Math.round(games * 3.1);
+}
+/** 規定投球回（= games×1） */
+function qualifiedIP(games = LEAGUE_DEFAULT.gamesPerSeason) {
+  return games;
+}
+/** フル出場の守備イニング（= games×9）。posAdj の分母（旧1350の置換） */
+function fieldingInningsFull(games = LEAGUE_DEFAULT.gamesPerSeason) {
+  return games * 9;
+}
+
+/** 値が [min,max] に収まるか（較正の合否判定ヘルパー） */
+function inRange(v, range) {
+  return v >= range[0] && v <= range[1];
+}
+
+// --- 内部ヘルパー -----------------------------------------------------------
+function clone(o) {
+  return JSON.parse(JSON.stringify(o));
+}
+function deepAssign(base, over) {
+  for (const k of Object.keys(over)) {
+    const ov = over[k];
+    if (base[k] && ov && typeof base[k] === 'object' && typeof ov === 'object' && !Array.isArray(ov)) {
+      deepAssign(base[k], ov);
+    } else if (ov !== null && typeof ov === 'object') {
+      base[k] = clone(ov); // 葉のオブジェクト/配列は複製し、override元との状態共有を断つ
+    } else {
+      base[k] = ov; // null・プリミティブは葉として代入
+    }
+  }
+  return base;
+}
+
+
+// ===== src/generate.mjs =====
+// ============================================================================
+// 架空選手・チーム・リーグのジェネレータ（§0法的前提 / §1 / §10.2 / 0-6）
+//
+// 方針:
+//   - 名前は完全架空（実在選手名・そのもじりを使わない）。姓名パーツの手続き合成。
+//   - 能力は分布から個体ごとに引く（§1「合わせるのは集団の分布」）。中心50/裾でばらす。
+//   - 三層の器を埋める: layer1=trueAbility（ここで生成）/ layer3=scoutSeed / layer2=空。
+//   - declineRateは能力タイプと相関（§10.2: 速球・走力高＆制球・技巧低→衰え速い）。
+//   - 分布の平均/分散は初期値。最終的な"リアルさ"は較正(1-11)でこのノブを回して合わせる。
+//   - masterSeed＋階層シードで、生成は決定論・順序非依存（誰が回しても同じリーグ）。
+// ============================================================================
+
+
+
+
+
+// --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
+const SURNAMES = [
+  '青柳', '石垣', '大空', '海堂', '桐生', '黒瀬', '小鳥遊', '相良',
+  '志摩', '瀬川', '立花', '茅野', '鶴見', '灯野', '成瀬', '羽鳥',
+  '氷室', '深沢', '真壁', '御影', '柳沢', '結城', '芳賀', '鷲尾',
+];
+const GIVEN = [
+  '陽', '駿', '空良', '樹', '奏太', '海斗', '大河', '蒼真',
+  '悠人', '玲', '湊', '一颯', '隼', '楓', '直', '和',
+  '琉生', '碧', '慶', '拓実', '真澄', '航', '創', '燿',
+];
+
+// --- 架空チーム名（実在NPB球団名を避けた造語） -------------------------------
+const TEAM_NAMES = [
+  '白鷺ホワイトス', '疾風ゲイルズ', '蒼波ブルーズ', '紅蓮フレイムス',
+  '雷鳴サンダー', '黒曜オブシディアン', '翠嶺グリーンズ', '金獅子ライオネル',
+  '銀翼シルバーズ', '暁アヴローラ', '嵐山ストームズ', '夜叉ナイツ',
+];
+
+function draw(rng, mean = 50, sd = 10) {
+  return clampRating(rng.normal(mean, sd));
+}
+
+/** 完全架空の姓名を合成 */
+function generateName(rng) {
+  return SURNAMES[rng.int(SURNAMES.length)] + '　' + GIVEN[rng.int(GIVEN.length)];
+}
+
+/** 投手を1人生成 */
+function generatePitcher(rng, id) {
+  const velocityKmh = Math.round(clamp(rng.normal(146, 4.5), 130, 165)); // NPB先発平均~146
+  const control = draw(rng, 50, 10);
+  const stamina = draw(rng, 50, 12);
+
+  // 球種数 2〜5（奪三振能力とは独立, §8.1）。fastball は必ず保有。
+  const nPitches = 2 + rng.int(4);
+  const pool = shuffle(rng, PITCH_TYPES.filter((t) => t !== 'fastball'));
+  const types = ['fastball', ...pool.slice(0, nPitches - 1)];
+  const pitches = types.map((t) =>
+    createPitch(t, {
+      current: draw(rng, 50, 10),
+      whiff: draw(rng, 50, 12),
+      hrSuppress: draw(rng, 50, 10),
+      contactQuality: draw(rng, 50, 10), // 被コンタクト質の抑止（EV抑止に接続・A-9修正）
+    }),
+  );
+
+  // §10.2 衰え相関: 速球高＆制球低 → 衰え速い（技巧派だけ長生き）。
+  const declineRate = clamp(
+    0.5 + (velocityKmh - 146) * 0.03 - (control - 50) * 0.012 + rng.normal(0, 0.15),
+    0.1,
+    1.3,
+  );
+
+  const t = createTrueAbility({
+    common: {
+      arm: draw(rng, 56, 9),
+      speed: draw(rng, 42, 9),
+      hands: draw(rng, 48, 9),
+      reaction: draw(rng, 48, 9),
+      power: draw(rng, 45, 9),
+    },
+    batting: { ev: draw(rng, 38, 8), la: draw(rng, 42, 8), contact: draw(rng, 38, 8), eye: draw(rng, 42, 8) },
+    pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
+    career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
+  });
+
+  return createPlayer({
+    id,
+    name: generateName(rng),
+    role: 'pitcher',
+    bats: rng.chance(0.3) ? 'L' : 'R',
+    throws: rng.chance(0.28) ? 'L' : 'R',
+    age: 18 + rng.int(20),
+    trueAbility: t,
+    scoutSeed: hashSeed(id, 'scout'),
+  });
+}
+
+// ポジション別の打撃バイアス（守備難ポジは打撃控えめ＝現実の傾向。較正で微調整）
+const POS_POWER_BIAS = { '1B': 8, RF: 6, LF: 6, '3B': 3, CF: 0, C: -2, '2B': -3, SS: -5 };
+
+/** 野手を1人生成（primaryPos を主守備位置に） */
+function generateFielder(rng, id, primaryPos) {
+  const speed = draw(rng, primaryPos === 'CF' || primaryPos === 'SS' ? 58 : 48, 11);
+  const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
+  const power = draw(rng, 50 + powerBias, 11);
+
+  // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13）。
+  const positionProf = {};
+  for (const p of FIELD_POSITIONS) positionProf[p] = draw(rng, 24, 5);
+  positionProf[primaryPos] = draw(rng, 60, 8);
+  if (rng.chance(0.35)) {
+    // ユーティリティ寄り: もう1ポジ育つ
+    const alt = FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)];
+    positionProf[alt] = Math.max(positionProf[alt], draw(rng, 48, 8));
+  }
+
+  const declineRate = clamp(0.5 + (speed - 50) * 0.012 + rng.normal(0, 0.15), 0.1, 1.3);
+
+  const t = createTrueAbility({
+    common: {
+      speed,
+      power,
+      arm: draw(rng, primaryPos === 'RF' || primaryPos === 'C' ? 58 : 50, 10),
+      hands: draw(rng, 50, 10),
+      reaction: draw(rng, 50, 10),
+    },
+    batting: {
+      ev: draw(rng, 50 + powerBias, 10),
+      la: draw(rng, 50, 10),
+      pull: draw(rng, 50, 12),
+      contact: draw(rng, 50, 10),
+      eye: draw(rng, 50, 10),
+      vsFastball: draw(rng, 50, 11), // 対速球適性（§4段階1）
+      vsBreaking: draw(rng, 50, 11), // 対変化球適性
+    },
+    fielding: {
+      positionProf,
+      positioningIQ: draw(rng, 50, 10),
+      framing: primaryPos === 'C' ? draw(rng, 50, 10) : draw(rng, 30, 6),
+    },
+    baserunning: { steal: draw(rng, speed > 55 ? 55 : 46, 12), baserunIQ: draw(rng, 50, 10) },
+    career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
+  });
+
+  return createPlayer({
+    id,
+    name: generateName(rng),
+    role: 'fielder',
+    bats: rng.chance(0.35) ? 'L' : rng.chance(0.08) ? 'S' : 'R',
+    throws: rng.chance(0.15) ? 'L' : 'R',
+    age: 18 + rng.int(20),
+    trueAbility: t,
+    scoutSeed: hashSeed(id, 'scout'),
+  });
+}
+
+// 1チームの守備位置配分（合計20野手＋13投手＝33人）
+const FIELDER_PLAN = [
+  'C', 'C', 'C',
+  '1B', '1B',
+  '2B', '2B', '2B',
+  '3B', '3B',
+  'SS', 'SS', 'SS',
+  'LF', 'LF',
+  'CF', 'CF', 'CF',
+  'RF', 'RF',
+];
+const PITCHERS_PER_TEAM = 13;
+
+/** 1チームのロスターを生成 */
+function generateTeam(rng, teamId) {
+  const roster = [];
+  for (let i = 0; i < PITCHERS_PER_TEAM; i++) {
+    roster.push(generatePitcher(rng, `${teamId}P${i + 1}`));
+  }
+  FIELDER_PLAN.forEach((pos, i) => {
+    roster.push(generateFielder(rng, `${teamId}F${i + 1}`, pos));
+  });
+  return roster;
+}
+
+/**
+ * リーグ全体を生成。masterSeed＋階層シードで決定論・順序非依存。
+ * @returns {{masterSeed:number, teams:Array, players:Array}}
+ */
+function generateLeague(masterSeed, config) {
+  const numTeams = config.league.numTeams;
+  const teams = [];
+  const players = [];
+  for (let ti = 0; ti < numTeams; ti++) {
+    const teamId = `T${ti + 1}`;
+    const trng = makeRng(hashSeed(masterSeed, 'team', ti));
+    const roster = generateTeam(trng, teamId);
+    for (const p of roster) p.teamId = teamId;
+    teams.push({ id: teamId, name: TEAM_NAMES[ti] ?? teamId, playerIds: roster.map((p) => p.id) });
+    players.push(...roster);
+  }
+  return { masterSeed, teams, players };
+}
+
+/** Fisher–Yates（rng使用・決定論） */
+function shuffle(rng, arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rng.int(i + 1);
+    const tmp = a[i];
+    a[i] = a[j];
+    a[j] = tmp;
+  }
+  return a;
+}
+
+
+// ===== src/sim/rates.mjs =====
+// 確率合成の基本関数（log5/オッズ比の土台。§3.1）。
+// logit/expit と、レーティング(20-80, 50=平均)を logit の増分へ写す変換。
+
+/** ロジット（オッズの対数） */
+function logit(p) {
+  return Math.log(p / (1 - p));
+}
+
+/** 逆ロジット（シグモイド） */
+function expit(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * レーティング(50=平均)を logit 増分に変換。
+ * 例: slope=0.30 なら 80(=+30) で +0.9（オッズ約2.5倍）。
+ */
+function ratingDelta(rating, slope) {
+  return (slope * (rating - 50)) / 10;
+}
+
+/**
+ * log5 / オッズ比合成: リーグ基準率に打者側・投手側の logit 増分を足し込む（§3.1）。
+ * logit(P) = logit(L) + Δbatter + Δpitcher。両者が平均なら L に戻る。
+ */
+function log5(leagueRate, batterDelta, pitcherDelta) {
+  return expit(logit(leagueRate) + batterDelta + pitcherDelta);
+}
+
+
+// ===== src/sim/plateAppearance.mjs =====
+// ============================================================================
+// 打席解決の規律層（1-1）— 2段パイプラインの第1段（§3.1 / 自己レビュー F29）
+//
+// ここでは打者能力 vs 投手能力を log5/オッズ比で合成し、打席の分岐だけを決める:
+//   { K(三振) / BB(四球) / HBP(死球) / IN_PLAY(インプレー=打球化) }
+// 安打/アウト/長打は決めない。IN_PLAY は第2段(1-2/1-3 EV/LA→球場→守備)へ渡す。
+// 「結果を先に決めてゾーンを後付け」を避け、決定権をこの1箇所に閉じる。
+// ============================================================================
+
+
+
+const PA_OUTCOME = { K: 'K', BB: 'BB', HBP: 'HBP', IN_PLAY: 'inPlay' };
+
+/** 投手の平均空振り資質（球種whiffの平均）。球種未設定なら平均50。 */
+function meanWhiff(pit) {
+  const arr = pit.pitches;
+  if (!arr || arr.length === 0) return 50;
+  let s = 0;
+  for (const p of arr) s += p.whiff;
+  return s / arr.length;
+}
+
+/**
+ * 打席の分岐確率（pK, pBB, pHBP）を log5 合成で算出。IN_PLAY は残余。
+ * @returns {{pK:number, pBB:number, pHBP:number, pInPlay:number}}
+ */
+function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
+  const pa = cfg.tuning.pa;
+  const b = batter.trueAbility.batting;
+  const p = pitcher.trueAbility.pitching;
+
+  // --- K: 打者のK傾向（コンタクト/選球眼＋対該当球種クラス適性）×投手の奪三振資質 ---
+  // 球種格子(§4段階1): pitch があればその球種の whiff を使い、打者の対クラス適性で補正。
+  const whiffVal = pitch ? pitch.whiff : meanWhiff(p);
+  let aptAdj = 0;
+  if (pitch) {
+    const apt = pitchClass(pitch.type) === 'fastball' ? b.vsFastball : b.vsBreaking;
+    aptAdj = pa.whiffAptW * (apt - 50); // 適性高い→Kしにくい
+  }
+  // 巡目(tto)が進むほど打者はK を回避しやすい（§3.3）。
+  const kProne = 50 - pa.kContactW * (b.contact - 50) - pa.kEyeW * (b.eye - 50) - aptAdj;
+  const kStuff = whiffVal + pa.kVeloPerKmh * (p.velocityKmh - 146);
+  let pK = expit(
+    logit(pa.kLeague) + ratingDelta(kProne, pa.kSlope) + ratingDelta(kStuff, pa.kSlope) - tto * cfg.tuning.tto.kPerTime,
+  );
+
+  // --- BB: 打者選球眼（高→増）×投手制球（高→減） ---
+  let pBB = expit(
+    logit(pa.bbLeague) + ratingDelta(b.eye, pa.bbSlope) - ratingDelta(p.control, pa.bbSlope),
+  );
+
+  // --- HBP: 小。投手制球が低いほどわずかに増 ---
+  let pHBP = expit(logit(pa.hbpLeague) - ratingDelta(p.control, pa.hbpSlope));
+
+  // 端の組み合わせで合計が1に近づき過ぎないようガード（IN_PLAY を最低限残す）
+  const sum = pK + pBB + pHBP;
+  const cap = 0.95;
+  if (sum > cap) {
+    const s = cap / sum;
+    pK *= s;
+    pBB *= s;
+    pHBP *= s;
+  }
+  return { pK, pBB, pHBP, pInPlay: 1 - pK - pBB - pHBP };
+}
+
+/**
+ * 打席の分岐を1回抽選（決定論・rng使用）。
+ * @returns {'K'|'BB'|'HBP'|'inPlay'}
+ */
+function resolvePADiscipline(batter, pitcher, cfg, rng, tto = 0, pitch = null) {
+  const { pK, pBB, pHBP } = paProbabilities(batter, pitcher, cfg, tto, pitch);
+  const u = rng.next();
+  if (u < pK) return PA_OUTCOME.K;
+  if (u < pK + pBB) return PA_OUTCOME.BB;
+  if (u < pK + pBB + pHBP) return PA_OUTCOME.HBP;
+  return PA_OUTCOME.IN_PLAY;
+}
+
+
+// ===== src/sim/battedBall.mjs =====
+// ============================================================================
+// 打球生成（1-2）— 2段パイプラインの第2段・前半（§3.2）
+//
+// IN_PLAY になった打席で、接触の瞬間に打球3要素を先に生成する:
+//   EV（打球速度 km/h） = 打者EV適性 × 生体power × 投球の質（抑止）＋ノイズ
+//   LA（打球角度 度）   = 打者LA適性 × 投手ゴロ率相性 ＋ノイズ
+//   方向（spray 度）    = 打者引っ張り/流し（利き手で符号）＋ノイズ
+// ここでは結果（安打/アウト）は決めない。落下点・結果は 1-3 が球場ジオメトリで導く。
+//
+// Phase1簡略（自己レビューF34）: 「投球の質」は集約スカラー、方向は打者傾向のみ
+//   （×投球コースは球種格子 段階2まで保留）。球種別は 2-1 で差し替える。
+// ============================================================================
+
+
+
+/** 投手の被コンタクト質抑止（球種contactQualityの平均。高いほど強い打球を許さない） */
+function meanContactSuppress(pit) {
+  const arr = pit.pitches;
+  if (!arr || arr.length === 0) return 50;
+  let s = 0;
+  for (const p of arr) s += p.contactQuality;
+  return s / arr.length;
+}
+
+/**
+ * 打球3要素を生成して BattedBall を返す（幾何・結果は null のまま）。
+ */
+function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
+  const bb = cfg.tuning.bb;
+  const bat = batter.trueAbility;
+  const pit = pitcher.trueAbility.pitching;
+
+  // EV: 打者EV適性＋power − 投手抑止(選択球種) − 被弾抑止(M3) ＋対クラス適性 ＋巡目 ＋ノイズ
+  const tto = ctx.tto ?? 0;
+  const pitch = ctx.pitch ?? null;
+  const contactSup = pitch ? pitch.contactQuality : meanContactSuppress(pit);
+  const hrSup = pitch ? pitch.hrSuppress : 50;
+  const apt = pitch
+    ? pitchClass(pitch.type) === 'fastball'
+      ? bat.batting.vsFastball
+      : bat.batting.vsBreaking
+    : 50;
+  const evMean =
+    bb.evBase +
+    bb.evPerEV * (bat.batting.ev - 50) +
+    bb.evPerPower * (bat.common.power - 50) -
+    bb.evPitchSuppress * (contactSup - 50) -
+    bb.evHrSuppressW * (hrSup - 50) +
+    bb.evAptW * (apt - 50) +
+    tto * cfg.tuning.tto.evPerTime;
+  const evKmh = Math.max(40, rng.normal(evMean, bb.evSd));
+
+  // LA: 打者LA適性で中心シフト、投手ゴロ率で下げる ＋ノイズ
+  const laMean = bb.laBase + bb.laPerLA * (bat.batting.la - 50) - bb.laPitchGB * (pit.gbRate - 50);
+  const laDeg = rng.normal(laMean, bb.laSd);
+
+  // 方向: pull適性で引っ張り側へ。右打ちは左方向(−)、左打ちは右方向(+)へ引っ張る。
+  const pullMag = bb.sprayPull * (bat.batting.pull - 50);
+  const pullSign = batter.bats === 'L' ? +1 : -1; // Sは簡易に右扱い→後で強化
+  const sprayMean = pullSign * pullMag;
+  let sprayDeg = rng.normal(sprayMean, bb.spraySd);
+  if (sprayDeg < -50) sprayDeg = -50;
+  if (sprayDeg > 50) sprayDeg = 50;
+
+  const bb2 = createBattedBall({
+    evKmh,
+    laDeg,
+    sprayDeg,
+    pitchType: ctx.pitchType ?? null,
+    batterId: batter.id,
+    pitcherId: pitcher.id,
+    baseState: ctx.baseState ?? 0,
+    outs: ctx.outs ?? 0,
+  });
+  bb2.runnerSpeed = batter.trueAbility.common.speed; // 三塁打の脚力依存に使用（監査B1）
+  return bb2;
+}
+
+
+// ===== src/sim/battedBallResult.mjs =====
+// ============================================================================
+// 打球結果解決（1-3）— 2段パイプラインの第2段・後半（§3.2 / 自己レビュー F29）
+//
+// 打球3要素(EV/LA/方向)＋球場ジオメトリから落下点・滞空時間を出し、
+//   - フェンス越え → HR
+//   - それ以外 → 「そのポジション平均の期待アウト率」で安打/アウトを確定し、
+//     安打種別(1B/2B/3B)を落下点から導く
+// を行う。ここで守備者"個人"の巧拙は入れない（＝ポジション平均）。
+// 個人の上手さは OAA(1-9) と守備モデル(2-7)で "期待からの差分" として後付けする。
+// ============================================================================
+
+
+
+const G = 9.8;
+
+/** 打球種別（角度で分類） */
+function battedType(laDeg) {
+  if (laDeg < 10) return 'GB'; // ゴロ（負角含む）
+  if (laDeg < 25) return 'LD'; // ライナー
+  if (laDeg <= 50) return 'FB'; // フライ
+  return 'PU'; // ポップ
+}
+
+/** 飛距離・滞空・落下点を計算して bb に書き込む */
+function computeGeometry(bb, cfg, park = NEUTRAL_PARK) {
+  const v = bb.evKmh / 3.6; // m/s
+  const laRad = (bb.laDeg * Math.PI) / 180;
+  let distanceM;
+  let hangTimeS;
+  if (bb.laDeg <= 0) {
+    // ゴロ: 地面を転がる想定。内野到達距離の目安のみ。
+    distanceM = Math.max(0, ((v * v) / G) * 0.15);
+    hangTimeS = 0;
+  } else {
+    // キャリー効率: 最適LA ~26°を中心に山（空気抵抗込みの現実近似。真空sin(2θ)より現実的）
+    const lift = Math.exp(-Math.pow((bb.laDeg - 26) / 24, 2));
+    distanceM = Math.max(0, cfg.tuning.bb.carry * ((v * v) / G) * lift);
+    hangTimeS = (2 * v * Math.sin(laRad)) / G;
+  }
+  const sprayRad = (bb.sprayDeg * Math.PI) / 180;
+  bb.distanceM = distanceM;
+  bb.hangTimeS = hangTimeS;
+  bb.landingX = distanceM * Math.sin(sprayRad);
+  bb.landingY = distanceM * Math.cos(sprayRad);
+  return bb;
+}
+
+/** 落下点・打球種別から担当野手ポジションを決める（OAAの主語） */
+function assignFielder(bb, type) {
+  const s = bb.sprayDeg;
+  const infield = type === 'GB' || type === 'PU' || (type === 'LD' && bb.distanceM < 45);
+  if (infield) {
+    if (s <= -18) return '3B';
+    if (s <= -4) return 'SS';
+    if (s < 6) return s < 0 ? 'SS' : '2B';
+    if (s < 20) return '2B';
+    return '1B';
+  }
+  // 外野: CFの担当角を狭め（±15→±10）、モード(0°)集中による機会・UZR過大を緩和（監査B6）
+  if (s <= -10) return 'LF';
+  if (s < 10) return 'CF';
+  return 'RF';
+}
+
+/** 打球種別ごとの基準hit率（ポジション平均のxBABIP的な値） */
+function baseHitProb(type, cfg) {
+  const bb = cfg.tuning.bb;
+  return type === 'GB' ? bb.hitGB : type === 'LD' ? bb.hitLD : type === 'FB' ? bb.hitFB : bb.hitPU;
+}
+
+/** 安打種別を落下点から決める（監査B1: 単打/二塁打境界＝gapDistM、深いギャップ球は打者脚力で三塁打化） */
+function decideBases(bb, type, cfg, rng) {
+  const g = cfg.tuning.bb;
+  if (type === 'GB') {
+    return Math.abs(bb.sprayDeg) > 38 && rng.next() < 0.2 ? '2B' : '1B';
+  }
+  // 外野手到達圏(gapDistM)手前に前落ちする空中安打は単打
+  if (bb.distanceM < g.gapDistM) return '1B';
+  // 深い打球は二塁打ベース。さらに深いギャップ/ライン際(|spray|>18)は打者speedで三塁打になりうる
+  if (bb.distanceM >= g.tripleDistM && Math.abs(bb.sprayDeg) > 18) {
+    const speed = bb.runnerSpeed ?? 50;
+    const pTriple = clamp(g.tripleBase + (speed - 50) * g.tripleSpeedW, 0.02, 0.55);
+    if (rng.next() < pTriple) return '3B';
+  }
+  return '2B';
+}
+
+/**
+ * 打球を解決。bb.result と bb.fielderPos を確定し、要約を返す。
+ * @returns {{result:string, type:string, expOut:number, fielderPos:string, distanceM:number}}
+ */
+/**
+ * @param {Function} [fielderRangeFor] (pos) => Rangeレーティング(50=平均)。守備者個人の
+ *   レンジで実効被安打率を上下させる（2-7）。省略時は50＝リーグ平均（Phase1互換）。
+ */
+function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
+  computeGeometry(bb, cfg, park);
+  const type = battedType(bb.laDeg);
+
+  // --- HR判定: 適角のフライ/ライナーが（hrScale込みで）フェンスを越える ---
+  if ((type === 'FB' || type === 'LD') && bb.laDeg >= 15 && bb.laDeg <= 48) {
+    const fence = fenceDistanceAt(bb.sprayDeg, park);
+    if (bb.distanceM * cfg.tuning.hrScale >= fence) {
+      bb.fielderPos = assignFielder(bb, type);
+      bb.result = 'HR';
+      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM };
+    }
+  }
+
+  // --- インプレー: ポジション平均の期待アウト率で安打/アウト ---
+  let pHit = baseHitProb(type, cfg) + (bb.evKmh - 140) * cfg.tuning.bb.evHitW;
+  if (type === 'FB' && bb.distanceM >= cfg.tuning.bb.fbHitBonusM) pHit += 0.15; // 警告帯FBの被安打（BABIP環境維持のため二塁打境界と別閾値）
+  pHit = clamp(pHit, 0.01, 0.97);
+
+  const fielderPos = assignFielder(bb, type);
+  bb.fielderPos = fielderPos;
+  const expOut = 1 - pHit; // リーグ平均基準（OAAのベースライン・ポジション中立）
+
+  // 守備者個人のRangeで実効被安打率を上下（good fielder→outを増やす）。OAAの個人シグナル源。
+  const rangeR = fielderRangeFor ? fielderRangeFor(fielderPos) : 50;
+  const effPHit = clamp(pHit - (rangeR - 50) * cfg.tuning.field.rangePerRating, 0.01, 0.99);
+
+  if (rng.next() >= effPHit) {
+    bb.result = 'out';
+    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM };
+  }
+  const base = decideBases(bb, type, cfg, rng);
+  bb.result = base;
+  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM };
+}
+
+
+// ===== src/sim/pitchGrid.mjs =====
+// ============================================================================
+// 球種格子 段階1（2-1/2-2 / §4）
+// 1打席ごとに投手の球種を1つ選び、その球種の (whiff/hrSuppress/contactQuality) と
+// 打者の (対速球/対変化球) 適性で解決する。これにより:
+//   - 対ストレート成績が球種別ログの集計として湧く
+//   - フォーク習得で開花（列が一本生える＝新しい優秀な球種の追加）
+//   - 球種構成＝投手タイプ / 先発・リリーフ適性
+// ============================================================================
+
+
+/** その打席で投げる球種を1つ選ぶ（速球系を重く重み付け） */
+function selectPitch(pitcher, rng, cfg) {
+  const pitches = pitcher.trueAbility.pitching.pitches;
+  if (!pitches || pitches.length === 0) return null;
+  const fw = cfg.tuning.pa.fastballWeight;
+  let total = 0;
+  for (const p of pitches) total += FASTBALL_TYPES.has(p.type) ? fw : 1;
+  let r = rng.next() * total;
+  for (const p of pitches) {
+    r -= FASTBALL_TYPES.has(p.type) ? fw : 1;
+    if (r <= 0) return p;
+  }
+  return pitches[pitches.length - 1];
+}
+
+
+// ===== src/sim/team.mjs =====
+// ============================================================================
+// チーム編成（1-4a/b/d の一部）— ロスターから打順・守備配置・ローテ・ブルペンを組む
+//
+// 守備配置: 各ポジションに習熟が最も高い野手を割当（全球団DH有＝投手は打席に立たない）。
+// 打順:     選抜9人を打撃スコア降順に並べる（Phase1簡略。OBP最適化等は後で）。
+// ローテ:   先発スコア上位5人。残りをブルペン（最小投球回起用は game/season 側）。
+// ============================================================================
+
+
+/** 打撃スコア（打順選抜・DH選抜に使用） */
+function hitScore(p) {
+  const b = p.trueAbility.batting;
+  const c = p.trueAbility.common;
+  return b.ev + b.contact + b.eye + c.power + b.la * 0.5;
+}
+
+/** 先発スコア（スタミナ主・§16。球種数も加点） */
+function starterScore(p) {
+  const pt = p.trueAbility.pitching;
+  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
+  return pt.stamina * 1.6 + pt.control + whiff + pt.pitches.length * 8 + (pt.velocityKmh - 140);
+}
+
+/** リリーフの質（クローザー/最良中継ぎ判定） */
+function relieverScore(p) {
+  const pt = p.trueAbility.pitching;
+  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
+  return whiff + pt.control + (pt.velocityKmh - 140) * 1.2;
+}
+
+/**
+ * ロスターから編成表を作る。
+ * @returns {{lineup:Array<{playerId:string,pos:string}>, defense:Object, rotation:string[], bullpen:string[], byId:Map}}
+ */
+function buildDepthChart(roster) {
+  const pitchers = roster.filter((p) => p.role === 'pitcher');
+  const fielders = roster.filter((p) => p.role === 'fielder');
+  const byId = new Map(roster.map((p) => [p.id, p]));
+
+  // 守備配置: 各ポジションの習熟最高の野手（重複なし）
+  const used = new Set();
+  const defense = {};
+  for (const pos of FIELD_POSITIONS) {
+    let best = null;
+    let bestv = -1;
+    for (const f of fielders) {
+      if (used.has(f.id)) continue;
+      const v = f.trueAbility.fielding.positionProf[pos];
+      if (v > bestv) {
+        bestv = v;
+        best = f;
+      }
+    }
+    used.add(best.id);
+    defense[pos] = best.id;
+  }
+  // DH = 残りで最良打者
+  const remaining = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
+  const dhId = remaining.length ? remaining[0].id : defense['1B'];
+
+  // 打順: 守備8＋DH の9人を打撃スコア降順
+  const nine = [...FIELD_POSITIONS.map((pos) => ({ playerId: defense[pos], pos })), { playerId: dhId, pos: 'DH' }];
+  nine.sort((a, b) => hitScore(byId.get(b.playerId)) - hitScore(byId.get(a.playerId)));
+
+  // ローテ＆ブルペン
+  const sortedP = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
+  const rotation = sortedP.slice(0, 5).map((p) => p.id);
+  const bullpen = sortedP
+    .slice(5)
+    .sort((a, b) => relieverScore(b) - relieverScore(a))
+    .map((p) => p.id);
+
+  return { lineup: nine, defense, rotation, bullpen, byId };
+}
+
+
+// ===== src/sim/fielding.mjs =====
+// ============================================================================
+// 守備の能力→結果 結線（2-7）＋ OAA→UZR run換算（2-8）（§7 / 自己レビュー M1・B-7）
+//
+// Range（守備範囲）= ポジショニングIQ + 初動(Reaction) + 走力(Speed)（§7.1）を合成し、
+// 打球結果解決(resolveBattedBall)に注入して「実効被安打率」を個人スキルで上下させる。
+// 期待アウトのベースラインはリーグ平均(ポジション中立)のままなので、
+// 実結果 − 期待 の累積(oaaOuts)が個人のレンジ・シグナルになる（MLBAM OAAと同型）。
+// ============================================================================
+
+const OUTFIELD = new Set(['LF', 'CF', 'RF']);
+
+/** 野手のRangeレーティング（50=リーグ平均）。§7.1 の Range = ポジIQ+初動+走力 */
+function rangeRating(player, cfg) {
+  const f = player.trueAbility.fielding;
+  const c = player.trueAbility.common;
+  const w = cfg.tuning.field.wRange;
+  return w.positioningIQ * f.positioningIQ + w.reaction * c.reaction + w.speed * c.speed;
+}
+
+/** 選手シーズンの主守備位置（守備アウト最多） */
+function mainPosition(fieldingLine) {
+  let pos = '';
+  let mx = -1;
+  for (const k of Object.keys(fieldingLine.positionOuts)) {
+    if (fieldingLine.positionOuts[k] > mx) {
+      mx = fieldingLine.positionOuts[k];
+      pos = k;
+    }
+  }
+  return pos;
+}
+
+/** 選手の総守備イニング */
+function totalFieldInnings(fieldingLine) {
+  let o = 0;
+  for (const k of Object.keys(fieldingLine.positionOuts)) o += fieldingLine.positionOuts[k];
+  return o / 3;
+}
+
+/**
+ * ポジション別に中心化した OAA（アウト単位）。
+ * 生の oaaOuts はリーグ中立基準ゆえ「出場している守備者（＝上手い選手ばかり）」が全員プラスに
+ * 偏る。正しくは「そのポジションで実際に守る選手の平均」を0とすべき（UZRの定義）。
+ * lc.oaaCenterPerInn（主ポジ別のOAA/イニング平均）を差し引いて中心化する。
+ */
+function centeredOAAOuts(ps, lc) {
+  const raw = ps.fielding.oaaOuts;
+  if (!lc || !lc.oaaCenterPerInn) return raw;
+  const pos = mainPosition(ps.fielding);
+  const inn = totalFieldInnings(ps.fielding);
+  return raw - (lc.oaaCenterPerInn[pos] || 0) * inn;
+}
+
+/**
+ * 失策run成分（ErrR・§7.2 / 監査A3）。OAAは失策"前"の判定で範囲成分のみを表すため、
+ * 捕球ミス（Hands）の価値はここで別勘定する（二重計上しない）。
+ * ポジション平均の失策率で中心化し、平均より失策が少ない＝プラス。
+ */
+function errRunsAboveAvg(ps, cfg, lc) {
+  if (!lc || !lc.errCenterPerInn) return 0;
+  const pos = mainPosition(ps.fielding);
+  const inn = totalFieldInnings(ps.fielding);
+  const expE = (lc.errCenterPerInn[pos] || 0) * inn;
+  return -((ps.fielding.e || 0) - expE) * cfg.tuning.field.runPerError;
+}
+
+/**
+ * UZR相当(run単位) = 範囲成分(中心化OAA×run/out) + 失策成分(ErrR) + 捕手フレーミング(framingRuns)。
+ * 内野0.75 / 外野0.90（Statcast FRV, §7.2）。捕手は範囲=0で framing が主成分（監査B5）。
+ */
+function uzrRuns(ps, cfg, lc) {
+  const pos = mainPosition(ps.fielding);
+  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
+  return centeredOAAOuts(ps, lc) * rpo + errRunsAboveAvg(ps, cfg, lc) + (ps.fielding.framingRuns || 0);
+}
+
+
+// ===== src/sim/game.mjs =====
+// ============================================================================
+// 試合状態機械（1-4c/e）— 9イニング/27アウト・塁状況・得点・投手交代・守備イニング計上
+//
+// 打席は 1-1(規律層)→1-2/1-3(打球)で解決。走者は簡易進塁ルールで動かす（UBRの精緻化は2-5）。
+// 継投は「最小投球回起用」（§18）。SP勝敗は簡易判定（§18: 指標は近似）。
+// 個人R(得点者)は保留、チーム得点(RS/RA)と投手失点のみ計上（§18・自己レビューF6）。
+// ============================================================================
+
+
+
+
+
+
+
+
+
+const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
+
+/**
+ * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
+ * @param {boolean} isAirOut アウトが空中打球（犠飛判定用）
+ */
+function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ctx) {
+  let runs = 0;
+  const b1 = bases[0];
+  const b2 = bases[1];
+  const b3 = bases[2];
+
+  if (result === 'BB' || result === 'HBP' || result === 'E') {
+    // 押し出し（フォース）のみ。失策(E)も batter は一塁到達＝フォース進塁で近似
+    if (b1) {
+      if (b2) {
+        if (b3) runs++; // 満塁押し出し
+        bases[2] = b2;
+      } else {
+        bases[2] = b3; // 二塁が空なら三塁走者は残る
+      }
+      bases[1] = b1;
+    } else {
+      bases[1] = b2;
+      bases[2] = b3;
+    }
+    bases[0] = batterId;
+    return runs;
+  }
+
+  if (result === 'out') {
+    // 犠飛: 空中アウト・2アウト未満・三塁走者 → 生還
+    if (isAirOut && outs < 2 && b3) {
+      runs++;
+      bases[2] = null;
+    }
+    return runs; // それ以外は走者そのまま（併殺/進塁打は wGDP/UBR で後日）
+  }
+
+  if (result === '1B') {
+    const nb = [null, null, null];
+    if (b3) runs++; // 三塁は生還
+    if (b2) {
+      // 二塁走者の生還（走者Speed/IQ依存＝UBR, 2-5）
+      if (resolveAdv(b2, cfg ? cfg.tuning.bb.singleScore2 : 0.55, ctx, cfg, rng)) runs++;
+      else nb[2] = b2; // 三塁止まり
+    }
+    if (b1) nb[1] = b1; // 一塁→二塁（station to station）
+    nb[0] = batterId; // 打者→一塁
+    bases[0] = nb[0];
+    bases[1] = nb[1];
+    bases[2] = nb[2];
+    return runs;
+  }
+  if (result === '2B') {
+    const nb = [null, null, null];
+    if (b3) runs++;
+    if (b2) runs++;
+    if (b1) {
+      if (resolveAdv(b1, cfg ? cfg.tuning.bb.doubleScore1 : 0.45, ctx, cfg, rng)) runs++; // 一塁→生還
+      else nb[2] = b1; // 三塁止まり
+    }
+    nb[1] = batterId; // 打者→二塁
+    bases[0] = nb[0];
+    bases[1] = nb[1];
+    bases[2] = nb[2];
+    return runs;
+  }
+  if (result === '3B') {
+    if (b1) runs++;
+    if (b2) runs++;
+    if (b3) runs++;
+    bases[0] = null;
+    bases[1] = null;
+    bases[2] = batterId;
+    return runs;
+  }
+  if (result === 'HR') {
+    if (b1) runs++;
+    if (b2) runs++;
+    if (b3) runs++;
+    runs++; // 打者
+    bases[0] = bases[1] = bases[2] = null;
+    return runs;
+  }
+  return runs;
+}
+
+/**
+ * 追加進塁（生還）の判定（§6 UBR, 2-5）。走者Speed/走塁IQで基準確率を上下し、
+ * ctx があれば進塁機会(advOpp)と成否(advTaken)を走者に記録する。ctxなし=能力非依存（テスト互換）。
+ */
+function resolveAdv(pid, baseProb, ctx, cfg, rng) {
+  let p = baseProb;
+  if (ctx) {
+    const t = ctx.byId.get(pid).trueAbility;
+    const tool = (t.common.speed + t.baserunning.baserunIQ) / 2;
+    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope, 0.05, 0.95);
+    const bs = ctx.statFor(pid, ctx.teamId).baserunning;
+    bs.advOpp++;
+    const took = (rng ? rng.next() : 1) < p;
+    if (took) bs.advTaken++;
+    return took;
+  }
+  return (rng ? rng.next() : 1) < baseProb;
+}
+
+/** 投球数の近似（除去判定用） */
+function pitchesFor(outcome) {
+  if (outcome === 'K') return 4.8;
+  if (outcome === 'BB') return 5.2;
+  if (outcome === 'HBP') return 3.5;
+  return 3.6;
+}
+
+function baseBits(bases) {
+  return (bases[0] ? 1 : 0) | (bases[1] ? 2 : 0) | (bases[2] ? 4 : 0);
+}
+
+/** 盗塁の試行・成否（§6 wSB）。走者Steal/Speed × 投手Hold × 捕手Arm。outs を返す。 */
+function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
+  if (!bases[0] || bases[1]) return outs; // 一塁走者かつ二塁が空いている時のみ
+  const runner = batting.byId.get(bases[0]);
+  const s = cfg.tuning.steal;
+  const br = runner.trueAbility.baserunning;
+  const sp = runner.trueAbility.common.speed;
+
+  // 試行判断: 走者のSteal/Speedが高いほど走る
+  const aggr = expit(
+    logit(s.attemptBase) + ratingDelta(br.steal, s.attemptSlope) + ratingDelta(sp, s.attemptSlope * 0.5),
+  );
+  if (rng.next() >= aggr) return outs;
+
+  // 成功確率: 走者Steal/Speed↑、投手Hold↑・捕手Arm↑で↓
+  const pitcher = fielding.byId.get(fielding.curPid);
+  const catcher = fielding.byId.get(fielding.defense.C);
+  const succ = expit(
+    logit(s.successBase) +
+      ratingDelta(br.steal, s.stealSlope) +
+      ratingDelta(sp, s.stealSlope * 0.6) -
+      ratingDelta(pitcher.trueAbility.pitching.hold, s.holdSlope) -
+      ratingDelta(catcher ? catcher.trueAbility.common.arm : 50, s.armSlope),
+  );
+
+  const rStat = statFor(bases[0], batting.teamId);
+  if (rng.next() < succ) {
+    bases[1] = bases[0]; // 二塁へ
+    bases[0] = null;
+    rStat.batting.sb++;
+  } else {
+    bases[0] = null; // 盗塁死
+    rStat.batting.cs++;
+    // 盗塁死は投手在籍中の記録アウト＝投手IPに算入（監査A2: ΣpositionOuts==8·Σpitcher.outs を回復）。
+    statFor(fielding.curPid, fielding.teamId).pitching.outs++;
+    fielding.cur.outs++;
+    return outs + 1;
+  }
+  return outs;
+}
+
+/**
+ * 1試合をシミュレート。statFor(pid,teamId)=PlayerSeason を返す関数。
+ * @param {Function} [onBattedBall] (batterId, teamId, battedBall, result) スプレー収集用（任意）
+ */
+function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall) {
+  const home = initSide(homeInit);
+  const away = initSide(awayInit);
+
+  // 得点推移ログ（勝敗の正確な判定用）: 得点が入るたびに両軍のスコアと現投手を記録
+  const runLog = [];
+  const recordRun = () =>
+    runLog.push({ homeScore: home.score, awayScore: away.score, homePid: home.curPid, awayPid: away.curPid });
+
+  let inning = 1;
+  while (true) {
+    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning); // 表: away攻撃
+    if (inning >= 9 && home.score > away.score) break; // 裏を省略（ホームリード）
+    const bottomWalkoff = inning >= 9;
+    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning); // 裏: home攻撃
+    if (inning >= 9 && home.score !== away.score) break;
+    inning++;
+    if (inning > MAX_INNINGS) break;
+  }
+
+  flushPitcher(home, away.score);
+  flushPitcher(away, home.score);
+  assignDecisions(home, away, statFor, runLog);
+
+  return { homeScore: home.score, awayScore: away.score, innings: inning, tie: home.score === away.score };
+}
+
+function initSide(init) {
+  const d = init.depth;
+  const starterId = d.rotation[init.starterIdx % d.rotation.length];
+  const dhEntry = d.lineup.find((s) => s.pos === 'DH');
+  return {
+    teamId: init.teamId,
+    byId: d.byId,
+    order: d.lineup.map((s) => s.playerId),
+    dhId: dhEntry ? dhEntry.playerId : null, // 守備に就かないDH（守備位置補正=-17.5の主語）
+    defense: { ...d.defense },
+    orderIdx: 0,
+    starterId,
+    closerId: d.bullpen.length ? d.bullpen[0] : null, // relieverScore最上位＝抑え（締め局面で固定起用・監査B2）
+    curPid: starterId,
+    used: new Set([starterId]),
+    bullpen: d.bullpen.slice(),
+    // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
+    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: 0, enterInning: 1 },
+    log: [],
+    score: 0,
+  };
+}
+
+/** 半イニングを消化（batting=攻撃側, fielding=守備側） */
+function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning) {
+  // 継投(高レバレッジ): リード1-3の守備側に 8回=セットアッパー / 9回+=抑え を投入（監査B2/B3）。
+  maybeBringLeverageReliever(fielding, batting.score, inning, statFor);
+  const bases = [null, null, null];
+  let outs = 0;
+  let errorInInning = false; // 失策発生後の得点は非自責（§ERA整合）
+  while (outs < 3) {
+    // 盗塁機会（走者一塁・二塁空き）。§6 wSB。PA解決の前に処理。
+    outs = attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng);
+    if (outs >= 3) break;
+
+    const batterId = batting.order[batting.orderIdx];
+    batting.orderIdx = (batting.orderIdx + 1) % 9;
+    const batter = batting.byId.get(batterId);
+    const pitcher = fielding.byId.get(fielding.curPid);
+
+    const bStat = statFor(batterId, batting.teamId);
+    const pStat = statFor(fielding.curPid, fielding.teamId);
+
+    // 対戦巡目（この登板でこの投手が何度打線を通過したか。§3.3）
+    const tto = Math.floor(fielding.cur.bf / 9);
+    // 球種格子(§4段階1): この打席で投げる球種を1つ選ぶ
+    const pitch = selectPitch(pitcher, rng, cfg);
+    const outcome = resolvePADiscipline(batter, pitcher, cfg, rng, tto, pitch);
+    const pc = pitchesFor(outcome);
+    fielding.cur.pitches += pc;
+    fielding.cur.bf++;
+    pStat.pitching.pitches += Math.round(pc);
+    pStat.pitching.bf++;
+    bStat.batting.pa++;
+
+    let result;
+    let isAirOut = false;
+    let bType = null;
+    if (outcome === 'K') {
+      result = 'out';
+      bStat.batting.ab++;
+      bStat.batting.so++;
+      pStat.pitching.so++;
+    } else if (outcome === 'BB') {
+      result = 'BB';
+      bStat.batting.bb++;
+      pStat.pitching.bb++;
+    } else if (outcome === 'HBP') {
+      result = 'HBP';
+      bStat.batting.hbp++;
+      pStat.pitching.hbp++;
+    } else {
+      const bb = generateBattedBall(batter, pitcher, cfg, rng, { baseState: baseBits(bases), outs, tto, pitch });
+      // 守備者個人のRangeを注入（2-7）: 担当ポジションの野手能力で被安打率を上下
+      const r = resolveBattedBall(bb, cfg, rng, park, (pos) => {
+        const fp = fielding.byId.get(fielding.defense[pos]);
+        return fp ? rangeRating(fp, cfg) : 50;
+      });
+      result = r.result;
+      bType = battedType(bb.laDeg);
+      isAirOut = result === 'out' && bType !== 'GB';
+      recordBattedBallStat(bStat, pStat, result);
+      // 失策(ROE)判定: インプレーのアウトを Hands 依存で出塁に変える
+      if (result === 'out') {
+        const fPid = fielding.defense[r.fielderPos];
+        const fielder = fielding.byId.get(fPid);
+        const hands = fielder ? fielder.trueAbility.common.hands : 50;
+        const pErr = clamp(cfg.tuning.bb.errBase - (hands - 50) * cfg.tuning.bb.errHandsW, 0.004, 0.06);
+        if (rng.next() < pErr) {
+          statFor(fPid, fielding.teamId).fielding.e++;
+          errorInInning = true;
+          result = 'E';
+          isAirOut = false;
+        }
+      }
+      // OAA累積: ポジション平均の期待アウトからの差分＝レンジ成分（§7.2）。
+      // 失策前の r.result（アウト/安打）で判定＝OAAはリーグ平均0に中心化される。
+      // 失策(Hands)は別成分（fielding.e→UZRで別途）として扱い、二重計上しない。
+      const fielderPid = fielding.defense[r.fielderPos];
+      if (fielderPid) {
+        const actual = r.result === 'out' ? 1 : 0; // 失策前の判定: アウト=1, 安打=0
+        statFor(fielderPid, fielding.teamId).fielding.oaaOuts += actual - r.expOut;
+      }
+      // スプレー収集（1-8, 任意）
+      if (onBattedBall) onBattedBall(batterId, batting.teamId, bb, result);
+    }
+
+    // 対球種スプリット記録（§4段階1: 対ストレート成績等の素）
+    if (pitch) {
+      const sl = pitchClass(pitch.type) === 'fastball' ? bStat.batting.vsFastball : bStat.batting.vsBreaking;
+      sl.pa++;
+      if (outcome === 'BB') sl.bb++;
+      else if (outcome !== 'HBP') {
+        sl.ab++;
+        if (outcome === 'K') sl.so++;
+        else if (result === '1B' || result === '2B' || result === '3B' || result === 'HR') {
+          sl.h++;
+          if (result === 'HR') sl.hr++;
+        }
+      }
+    }
+
+    const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId };
+    const runs = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+
+    if (result === 'out') {
+      if (isAirOut && runs > 0) {
+        // 犠飛: ABを取り消してSF計上
+        bStat.batting.ab--;
+        bStat.batting.sf++;
+      }
+      const outsBefore = outs;
+      outs++;
+      fielding.cur.outs++;
+      pStat.pitching.outs++;
+      // 併殺（GB・走者一塁・2アウト未満）§6 wGDP。打者の足で回避。
+      if (bType === 'GB' && bases[0] && outsBefore < 2) {
+        bStat.baserunning.gdpOpp++;
+        const gp = clamp(
+          cfg.tuning.gdp.base - (batter.trueAbility.common.speed - 50) * cfg.tuning.gdp.speedW,
+          0.02,
+          0.45,
+        );
+        if (rng.next() < gp) {
+          bases[0] = null; // 一塁走者もアウト
+          bStat.batting.gdp++;
+          outs++;
+          fielding.cur.outs++;
+          pStat.pitching.outs++;
+        }
+      }
+    }
+    if (runs > 0) {
+      batting.score += runs;
+      if (result !== 'E') bStat.batting.rbi += runs; // 失策の得点は打点なし
+      pStat.pitching.r += runs;
+      pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
+      fielding.cur.runs += runs;
+      if (recordRun) recordRun(); // 得点推移を記録（勝敗判定用）
+    }
+
+    maybeChangePitcher(fielding, statFor, batting.score, inning);
+
+    if (walkoff && batting.score > fielding.score) break; // サヨナラ
+  }
+
+  // 守備イニング計上（守備側の8人に outs を加算）
+  for (const pos of Object.keys(fielding.defense)) {
+    statFor(fielding.defense[pos], fielding.teamId).fielding.positionOuts[pos] += outs;
+  }
+  // 捕手フレーミング（監査B5・§7.3）: 当該イニング分の (framing-50) をrun換算して framingRuns に加算。
+  // 死蔵していた捕手フレーミング能力を守備価値としてWARに接続する。
+  const cPid = fielding.defense.C;
+  if (cPid) {
+    const framing = fielding.byId.get(cPid).trueAbility.fielding.framing;
+    statFor(cPid, fielding.teamId).fielding.framingRuns += (framing - 50) * cfg.tuning.field.framePerInning * (outs / 3);
+  }
+  // DHの出場イニング相当を計上（守備に就かないDHにも守備位置補正 -17.5/1350 を効かせる。
+  // 攻撃側ハーフのアウト数＝そのイニング数分の在籍。§9・監査A1）。
+  if (batting.dhId) {
+    const dl = statFor(batting.dhId, batting.teamId).fielding.positionOuts;
+    dl.DH = (dl.DH || 0) + outs;
+  }
+}
+
+function recordBattedBallStat(bStat, pStat, result) {
+  bStat.batting.ab++;
+  if (result === 'out') return;
+  bStat.batting.h++;
+  pStat.pitching.h++;
+  if (result === '1B') bStat.batting.b1++;
+  else if (result === '2B') bStat.batting.b2++;
+  else if (result === '3B') bStat.batting.b3++;
+  else if (result === 'HR') {
+    bStat.batting.hr++;
+    pStat.pitching.hr++;
+  }
+}
+
+/** 現投手を必要なら交代。先発は球数/失点ベースで好投時は完投まで届く（監査B4）。 */
+function maybeChangePitcher(fielding, statFor, oppScore, inning) {
+  const c = fielding.cur;
+  const pitcher = fielding.byId.get(c.pid);
+  const stamina = pitcher.trueAbility.pitching.stamina;
+  const isStarter = c.pid === fielding.starterId;
+
+  // B4: 一律21アウト上限を撤廃。球数(82+stamina*0.6)・失点・疲労で降板し、
+  //     好投の高スタミナ先発は8-9回=完投/完封まで届く。
+  const remove = isStarter
+    ? c.pitches >= 82 + stamina * 0.6 || c.runs >= 6 || (c.outs >= 18 && c.runs >= 4)
+    : c.outs >= 3 || c.runs >= 3;
+  if (!remove) return;
+
+  const lead = fielding.score - oppScore;
+  const next = pickReliever(fielding, statFor, inning, lead);
+  if (!next) return;
+
+  flushPitcher(fielding, oppScore);
+  fielding.curPid = next;
+  fielding.used.add(next);
+  fielding.cur = { pid: next, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: lead, enterInning: inning };
+}
+
+/**
+ * 高レバレッジ継投（監査B2/B3）: リード1-3の守備側に、9回+は抑え(closerId)、8回はセットアッパーを
+ * 半イニング開始時に投入。締め投手を固定してセーブを集中させ、セットアッパーにホールドを生む。
+ * 完封中の絶対的エース（自責0・21アウト以上）は続投を許し、稀な完投完封を残す。
+ */
+function maybeBringLeverageReliever(fielding, oppScore, inning, statFor) {
+  if (inning == null || inning < 8) return;
+  const lead = fielding.score - oppScore;
+  if (lead < 1 || lead > 3) return; // 保護すべき僅差リードがない
+  const c = fielding.cur;
+  const isStarter = c.pid === fielding.starterId;
+  if (isStarter && c.runs === 0 && c.outs >= 21) return; // 完封中のエースは続投
+  const avail = fielding.bullpen.filter((pid) => !fielding.used.has(pid));
+  if (!avail.length) return;
+  const target = inning >= 9 ? avail[0] : avail.find((pid) => pid !== fielding.closerId) || avail[0];
+  if (!target || target === c.pid) return;
+  flushPitcher(fielding, oppScore);
+  fielding.curPid = target;
+  fielding.used.add(target);
+  fielding.cur = { pid: target, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: lead, enterInning: inning };
+}
+
+/** リリーバー選択（監査B2）: 締め局面は抑え/セットアッパーを固定、それ以外は投球回最少で負荷分散。 */
+function pickReliever(fielding, statFor, inning, lead) {
+  const avail = fielding.bullpen.filter((pid) => !fielding.used.has(pid));
+  if (!avail.length) return null;
+  if (lead >= 1 && lead <= 3 && inning != null) {
+    if (inning >= 9) return avail[0]; // 抑え（relieverScore最上位の未使用）
+    if (inning === 8) return avail.find((pid) => pid !== fielding.closerId) || avail[0]; // セットアッパー
+  }
+  let best = null;
+  let bestOuts = Infinity;
+  for (const pid of avail) {
+    const s = statFor(pid, fielding.teamId);
+    if (s.pitching.outs < bestOuts) {
+      bestOuts = s.pitching.outs;
+      best = pid;
+    }
+  }
+  return best;
+}
+
+/** 現投手のゲーム成績を log に確定（bf>0の実登板のみ・幽霊リリーフ除外）。
+ *  exitDiff=退場時の投手側リード差（ホールド/ブローンセーブ判定用・監査B3）。 */
+function flushPitcher(side, oppScore) {
+  if (side.cur.bf > 0) {
+    side.cur.exitDiff = side.score - (oppScore ?? side.score);
+    side.log.push({ ...side.cur });
+  }
+}
+
+/**
+ * 勝敗・セーブ（決勝点＝go-ahead run ベース。§18の簡易判定を精緻化）。
+ * - 決勝点 = 勝者が最後にリードを取り以降維持した得点。
+ * - 負け投手 = その決勝点を許した投手（敗者側の当時の投手）。
+ * - 勝ち投手 = 決勝点時の勝者側の投手（先発は5回以上、さもなくば最多アウト救援）。
+ * これにより「同点で降板」「リード継投」等で先発に無決着が自然に出る。
+ */
+function assignDecisions(home, away, statFor, runLog) {
+  // 登板・先発は勝敗に関わらず付与（引分試合でも計上する。early-returnの前に置く）
+  for (const side of [home, away]) {
+    const seen = new Set();
+    for (const ap of side.log) {
+      if (seen.has(ap.pid)) continue;
+      seen.add(ap.pid);
+      const s = statFor(ap.pid, side.teamId);
+      s.pitching.g++;
+      if (ap.pid === side.starterId) s.pitching.gs++;
+    }
+  }
+
+  // 完投・完封（監査B4）: そのチームの投手が先発1人のみで投げ切った＝完投。無失点なら完封。
+  for (const side of [home, away]) {
+    if (side.log.length === 1 && side.log[0].pid === side.starterId) {
+      const s = statFor(side.starterId, side.teamId);
+      s.pitching.cg++;
+      if (side.log[0].runs === 0) s.pitching.sho++;
+    }
+  }
+
+  if (home.score === away.score) return; // 引分は勝敗・セーブなし
+  const homeWins = home.score > away.score;
+  const winner = homeWins ? home : away;
+  const loser = homeWins ? away : home;
+
+  // 決勝点(go-ahead run)を特定: 勝者が「同点or負け」だった最後の得点イベントの、次の得点。
+  const winSc = (e) => (homeWins ? e.homeScore : e.awayScore);
+  const loseSc = (e) => (homeWins ? e.awayScore : e.homeScore);
+  let goIdx = 0;
+  for (let i = runLog.length - 1; i >= 0; i--) {
+    if (winSc(runLog[i]) <= loseSc(runLog[i])) {
+      goIdx = i + 1;
+      break;
+    }
+  }
+  const go = runLog[goIdx] || runLog[runLog.length - 1];
+
+  // 負け投手 = 決勝点を許した敗者側の当時の投手
+  const lossPid = homeWins ? go.awayPid : go.homePid;
+  statFor(lossPid, loser.teamId).pitching.l++;
+
+  // 勝ち投手 = 決勝点時の勝者側の投手（先発5回未満なら最多アウト救援）
+  let wPid = homeWins ? go.homePid : go.awayPid;
+  if (wPid === winner.starterId) {
+    const st = winner.log.find((a) => a.pid === winner.starterId);
+    if (!st || st.outs < 15) {
+      let mx = -1;
+      for (const a of winner.log) {
+        if (a.pid === winner.starterId) continue;
+        if (a.outs > mx) {
+          mx = a.outs;
+          wPid = a.pid;
+        }
+      }
+    }
+  }
+  statFor(wPid, winner.teamId).pitching.w++;
+
+  // セーブ: 3点差以内・最後に投げたリリーフ（勝ち投手と別）。抑え固定化(B2)でクローザーに集中。
+  const last = winner.log[winner.log.length - 1];
+  const margin = Math.abs(home.score - away.score);
+  let savePid = null;
+  if (last && last.pid !== wPid && margin <= 3 && last.outs >= 1) {
+    statFor(last.pid, winner.teamId).pitching.sv++;
+    savePid = last.pid;
+  }
+
+  // ホールド／ブローンセーブ（監査B3）: 救援の登板時/退場時リード差から判定。
+  // リード1-3(セーブ機会)で7回以降に登板した救援が、リード保持で降板し勝ちでもセーブでもない→ホールド。
+  // リードを吐き出して同点/逆転を許した→ブローンセーブ（敗退側・勝利側を問わず）。
+  for (const side of [home, away]) {
+    for (const ap of side.log) {
+      if (ap.pid === side.starterId) continue; // 先発は対象外
+      if (!(ap.enterDiff >= 1 && ap.enterDiff <= 3 && ap.enterInning >= 7)) continue; // セーブ機会で登板していない
+      const s = statFor(ap.pid, side.teamId);
+      if (ap.exitDiff <= 0) {
+        s.pitching.bs++; // リードを吐き出した
+      } else if (ap.pid !== wPid && ap.pid !== savePid && ap.outs >= 1) {
+        s.pitching.hld++; // リード保持で降板
+      }
+    }
+  }
+}
+
+
+// ===== src/sim/season.mjs =====
+// ============================================================================
+// 日程生成・シーズン実行・順位表（1-4a/f）
+//
+// 12球団総当たり: 各ペア13試合（うちホーム7/6）→ 各チーム143試合・リーグ858試合。
+// 各試合は階層シードで独立・順序非依存に実行（並列化・再現の前提, §17/§19）。
+// 先発は各チームの登板数 % 5 でローテを回す。継投・守備イニングは game.mjs が計上。
+// ============================================================================
+
+
+
+
+
+
+/**
+ * 総当たり日程を生成（{home,away} のリスト）。
+ * 対戦相手ごとの試合数 = round(gamesPerSeason / (球団数-1))。
+ * 6球団×140 → 5相手×28、12球団×143 → 11相手×13。ホスト側はペアごとに交互（C-6均衡化）。
+ */
+function buildSchedule(teams, rng, gamesPerSeason) {
+  const ids = teams.map((t) => t.id);
+  const n = ids.length;
+  const perPair = Math.round(gamesPerSeason / (n - 1));
+  const games = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const startHome = (i + j) % 2; // ペアごとにホスト開始を入替（低index偏りを解消）
+      for (let k = 0; k < perPair; k++) {
+        const iHosts = k % 2 === startHome;
+        games.push(iHosts ? { home: ids[i], away: ids[j] } : { home: ids[j], away: ids[i] });
+      }
+    }
+  }
+  // 順序をシャッフル（同一チームの試合が偏らないように）
+  for (let i = games.length - 1; i > 0; i--) {
+    const j = rng.int(i + 1);
+    const t = games[i];
+    games[i] = games[j];
+    games[j] = t;
+  }
+  return games;
+}
+
+/**
+ * 1シーズンを実行。
+ * @param {{teams:Array,players:Array,masterSeed:number}} league
+ * @param {Object} cfg
+ * @param {{season?:number, seed?:number, park?:Object}} opts
+ * @returns {{season:number, standings:Array, playerSeasons:Array, statsById:Map, depthByTeam:Map}}
+ */
+function simulateSeason(league, cfg, opts = {}) {
+  const season = opts.season ?? 2026;
+  const seed = opts.seed ?? league.masterSeed ?? 20260701;
+  const park = opts.park ?? NEUTRAL_PARK;
+
+  // 編成表
+  const depthByTeam = new Map();
+  for (const t of league.teams) {
+    const roster = league.players.filter((p) => p.teamId === t.id);
+    depthByTeam.set(t.id, buildDepthChart(roster));
+  }
+
+  // 集計器
+  const stats = new Map();
+  const statFor = (pid, teamId) => {
+    let s = stats.get(pid);
+    if (!s) {
+      s = createPlayerSeason(pid, season);
+      s.teamId = teamId;
+      stats.set(pid, s);
+    }
+    return s;
+  };
+  const standings = new Map();
+  for (const t of league.teams) standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name });
+
+  // スプレー収集（§16, §17: 生イベントは最新シーズンのみ保持）。opts.collectSpray で有効化。
+  const spray = opts.collectSpray ? new Map() : null;
+  const capPerBatter = opts.sprayCap ?? 600;
+  const onBattedBall = spray
+    ? (batterId, teamId, bb, result) => {
+        let arr = spray.get(batterId);
+        if (!arr) {
+          arr = [];
+          spray.set(batterId, arr);
+        }
+        if (arr.length < capPerBatter) {
+          arr.push({ sprayDeg: bb.sprayDeg, distanceM: bb.distanceM, laDeg: bb.laDeg, evKmh: bb.evKmh, result });
+        }
+      }
+    : undefined;
+
+  // 日程実行
+  const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg.league.gamesPerSeason);
+  const gameCount = new Map(league.teams.map((t) => [t.id, 0]));
+
+  schedule.forEach((g, gi) => {
+    const rng = makeRng(hashSeed(seed, 'game', gi));
+    const hGC = gameCount.get(g.home);
+    const aGC = gameCount.get(g.away);
+    const res = simulateGame(
+      { teamId: g.home, depth: depthByTeam.get(g.home), starterIdx: hGC % 5 },
+      { teamId: g.away, depth: depthByTeam.get(g.away), starterIdx: aGC % 5 },
+      cfg,
+      rng,
+      statFor,
+      park,
+      onBattedBall,
+    );
+    gameCount.set(g.home, hGC + 1);
+    gameCount.set(g.away, aGC + 1);
+
+    const H = standings.get(g.home);
+    const A = standings.get(g.away);
+    H.g++;
+    A.g++;
+    H.rs += res.homeScore;
+    H.ra += res.awayScore;
+    A.rs += res.awayScore;
+    A.ra += res.homeScore;
+    if (res.tie) {
+      H.t++;
+      A.t++;
+    } else if (res.homeScore > res.awayScore) {
+      H.w++;
+      A.l++;
+    } else {
+      A.w++;
+      H.l++;
+    }
+  });
+
+  const table = [...standings.values()].sort((a, b) => winPct(b) - winPct(a) || b.rs - b.ra - (a.rs - a.ra));
+  return { season, standings: table, playerSeasons: [...stats.values()], statsById: stats, depthByTeam, spray };
+}
+
+/** 勝率（引分除く） */
+function winPct(t) {
+  const dec = t.w + t.l;
+  return dec === 0 ? 0 : t.w / dec;
+}
+
+
+// ===== src/sim/leagueStats.mjs =====
+// ============================================================================
+// リーグ集計指標（1-7の一部・1-11較正で再利用）
+// シーズン結果(playerSeasons + standings)から、レート指標を算出する。
+// ============================================================================
+
+/** リーグ打撃集計 */
+function leagueBatting(playerSeasons) {
+  const s = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0 };
+  for (const ps of playerSeasons) {
+    const b = ps.batting;
+    s.pa += b.pa; s.ab += b.ab; s.h += b.h; s.b1 += b.b1; s.b2 += b.b2; s.b3 += b.b3;
+    s.hr += b.hr; s.bb += b.bb; s.hbp += b.hbp; s.so += b.so; s.sf += b.sf;
+  }
+  const tb = s.b1 + 2 * s.b2 + 3 * s.b3 + 4 * s.hr;
+  const avg = s.ab ? s.h / s.ab : 0;
+  const obp = s.ab + s.bb + s.hbp + s.sf ? (s.h + s.bb + s.hbp) / (s.ab + s.bb + s.hbp + s.sf) : 0;
+  const slg = s.ab ? tb / s.ab : 0;
+  const babipDen = s.ab - s.so - s.hr + s.sf;
+  return {
+    ...s,
+    tb,
+    avg,
+    obp,
+    slg,
+    ops: obp + slg,
+    iso: slg - avg,
+    kPct: s.pa ? s.so / s.pa : 0,
+    bbPct: s.pa ? s.bb / s.pa : 0,
+    babip: babipDen ? (s.h - s.hr) / babipDen : 0,
+  };
+}
+
+/** リーグ投手集計 */
+function leaguePitching(playerSeasons) {
+  const s = { outs: 0, bf: 0, h: 0, hr: 0, bb: 0, hbp: 0, so: 0, r: 0, er: 0 };
+  for (const ps of playerSeasons) {
+    const p = ps.pitching;
+    s.outs += p.outs; s.bf += p.bf; s.h += p.h; s.hr += p.hr; s.bb += p.bb;
+    s.hbp += p.hbp; s.so += p.so; s.r += p.r; s.er += p.er;
+  }
+  const ip = s.outs / 3;
+  return { ...s, ip, era: ip ? (s.er / ip) * 9 : 0, whip: ip ? (s.h + s.bb) / ip : 0 };
+}
+
+/**
+ * シーズン結果からリーグ全体のサマリを作る（較正の判定用）。
+ * @param {{playerSeasons:Array, standings:Array}} res
+ * @param {number} numTeams
+ */
+function leagueSummary(res, numTeams) {
+  const bat = leagueBatting(res.playerSeasons);
+  const pit = leaguePitching(res.playerSeasons);
+  const totalRS = res.standings.reduce((a, t) => a + t.rs, 0);
+  const totalG = res.standings.reduce((a, t) => a + t.g, 0); // = リーグ延べ試合数(=2×試合)
+  const gamesPerTeam = totalG / numTeams;
+  return {
+    batting: bat,
+    pitching: pit,
+    hrPerTeam: bat.hr / numTeams,
+    runsPerTeamPerGame: totalRS / numTeams / gamesPerTeam,
+    gamesPerTeam,
+  };
+}
+
+
+// ===== src/sim/leagueConstants.mjs =====
+// ============================================================================
+// リーグ定数導出パス（1-6 / 自己レビュー F2・F31・F46）
+//
+// 2パス構造: pass1 でシーズンを実走・集計 → 本モジュールでシムのラン環境から
+// 線形ウェイト・lgwOBA・wOBAscale・FIP定数・RPW を導出 → pass2 で各指標を確定。
+// §18 の 13.3/1.216 等は「初期値」であり、ここで 12球団143試合NPB環境へ再導出する。
+// ============================================================================
+
+
+
+// 各イベントの得点価値（アウト基準=0の線形ウェイト・runs単位）。FanGraphs標準の
+// "runs above out" 系（wRAAが正しいラン単位になり、WARの絶対値が文献スケールに乗る・レビューB-2）。
+// run-expectancy からの厳密導出は将来（コード自身の予告）。
+const LINEAR_WEIGHTS = {
+  bb: 0.55,
+  hbp: 0.58,
+  b1: 0.7,
+  b2: 1.0,
+  b3: 1.27,
+  hr: 1.65,
+};
+
+/** 打撃イベント合計から「アウト基準の得点価値/打席」を出す（wOBAの素） */
+function rawRunValuePerPA(bat, W = LINEAR_WEIGHTS) {
+  const denom = bat.ab + bat.bb + bat.hbp + bat.sf;
+  if (!denom) return 0;
+  const num = W.bb * bat.bb + W.hbp * bat.hbp + W.b1 * bat.b1 + W.b2 * bat.b2 + W.b3 * bat.b3 + W.hr * bat.hr;
+  return num / denom;
+}
+
+/**
+ * シーズン結果からリーグ定数を導出。cfg.leagueConstants に相当する構造を返す。
+ * @param {{playerSeasons:Array, standings:Array}} res
+ */
+function deriveLeagueConstants(res) {
+  const bat = leagueBatting(res.playerSeasons);
+  const pit = leaguePitching(res.playerSeasons);
+
+  // --- wOBA 系（lgwOBA を lgOBP スケールへ正規化）---
+  const lgRawPerPA = rawRunValuePerPA(bat); // アウト基準の得点価値/打席
+  const lgOBP = bat.obp;
+  const wobaScale = lgRawPerPA > 0 ? lgOBP / lgRawPerPA : 1; // wOBA = wobaScale × raw で lgwOBA=lgOBP
+  const lgwOBA = lgOBP;
+
+  // wRC+ 用: リーグの総得点/打席
+  const totalRuns = res.standings.reduce((a, t) => a + t.rs, 0);
+  const lgRunsPerPA = bat.pa ? totalRuns / bat.pa : 0;
+
+  // --- FIP 定数（lgFIP を lgERA に一致させる）---
+  const ip = pit.outs / 3;
+  const fipRawLeague = ip ? (13 * pit.hr + 3 * (pit.bb + pit.hbp) - 2 * pit.so) / ip : 0;
+  const lgERA = pit.era;
+  const fipConstant = lgERA - fipRawLeague;
+  const lgFIP = lgERA; // 定義上一致
+
+  // --- RPW（Runs Per Win, Tango近似 1.5×RG+3。RG=1チーム1試合の得点）---
+  const gamesPerTeam = res.standings.reduce((a, t) => a + t.g, 0) / res.standings.length;
+  const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
+  const rpw = 1.5 * runsPerGamePerTeam + 3;
+
+  // 併殺リーグ率（wGDPの基準・§6）
+  let totGDP = 0;
+  let totGDPOpp = 0;
+  for (const ps of res.playerSeasons) {
+    totGDP += ps.batting.gdp;
+    totGDPOpp += ps.baserunning.gdpOpp;
+  }
+  const lgGDPrate = totGDPOpp ? totGDP / totGDPOpp : 0;
+
+  // 追加進塁リーグ率（UBRの基準・§6）
+  let totAdv = 0;
+  let totAdvOpp = 0;
+  for (const ps of res.playerSeasons) {
+    totAdv += ps.baserunning.advTaken;
+    totAdvOpp += ps.baserunning.advOpp;
+  }
+  const lgAdvRate = totAdvOpp ? totAdv / totAdvOpp : 0;
+
+  // wSB中心化の基準（監査C1・§6）: リーグの盗塁/盗塁死と、盗塁母数=一塁到達(1B+BB+HBP-IBB)。
+  // metrics側で lgwSB = (ΣSB×runSB+ΣCS×runCS)/Σ機会 を作り、走者の機会分だけ基準控除する。
+  let lgSB = 0;
+  let lgCS = 0;
+  let lgSBOpp = 0;
+  for (const ps of res.playerSeasons) {
+    const b = ps.batting;
+    lgSB += b.sb;
+    lgCS += b.cs;
+    lgSBOpp += b.b1 + b.bb + b.hbp - b.ibb;
+  }
+
+  // ポジション別 OAA/イニング・失策/イニング 平均（UZRの範囲成分/失策成分を
+  // 「そのポジションで守る選手の平均=0」に中心化するため。§7.2・監査A3）
+  const posAgg = {};
+  for (const ps of res.playerSeasons) {
+    const inn = totalFieldInnings(ps.fielding);
+    if (inn < 1) continue;
+    const pos = mainPosition(ps.fielding);
+    if (!posAgg[pos]) posAgg[pos] = { oaa: 0, inn: 0, err: 0 };
+    posAgg[pos].oaa += ps.fielding.oaaOuts;
+    posAgg[pos].inn += inn;
+    posAgg[pos].err += ps.fielding.e || 0;
+  }
+  const oaaCenterPerInn = {};
+  const errCenterPerInn = {};
+  for (const pos of Object.keys(posAgg)) {
+    oaaCenterPerInn[pos] = posAgg[pos].oaa / posAgg[pos].inn;
+    errCenterPerInn[pos] = posAgg[pos].err / posAgg[pos].inn;
+  }
+
+  return {
+    lgGDPrate,
+    lgAdvRate,
+    lgSB,
+    lgCS,
+    lgSBOpp,
+    oaaCenterPerInn,
+    errCenterPerInn,
+    linearWeights: { ...LINEAR_WEIGHTS },
+    lgRawPerPA,
+    wobaScale,
+    lgwOBA,
+    lgOBP,
+    lgRunsPerPA,
+    lgERA,
+    lgFIP,
+    fipConstant,
+    rpw,
+    // WAR 用の位置補正は §9/positions の per-1350 値を使う（143試合再スケールはWAR算出2-9で）
+  };
+}
+
+/** シーズンを走らせてから cfg.leagueConstants を埋める（2パスの糊） */
+function fillLeagueConstants(cfg, res) {
+  cfg.leagueConstants = { ...cfg.leagueConstants, ...deriveLeagueConstants(res) };
+  return cfg.leagueConstants;
+}
+
+
+// ===== src/sim/metrics.mjs =====
+// ============================================================================
+// 選手別セイバー指標（1-7 / §5 §9）
+// 生カウント(PlayerSeason)＋リーグ定数(1-6) から打撃・投手指標を算出する。
+// 指標は「後付け」でなく、打席・打球のシミュレートの副産物である生カウントから湧く（付録原則1）。
+// ============================================================================
+
+
+const div = (a, b) => (b ? a / b : 0);
+
+/** 打撃指標（wOBA/wRAA/wRC+ 含む） */
+function playerBatting(ps, lc) {
+  const b = ps.batting;
+  const tb = b.b1 + 2 * b.b2 + 3 * b.b3 + 4 * b.hr;
+  const avg = div(b.h, b.ab);
+  const obp = div(b.h + b.bb + b.hbp, b.ab + b.bb + b.hbp + b.sf);
+  const slg = div(tb, b.ab);
+  const babip = div(b.h - b.hr, b.ab - b.so - b.hr + b.sf);
+
+  const raw = rawRunValuePerPA(b, lc.linearWeights);
+  const woba = lc.wobaScale ? lc.wobaScale * raw : 0;
+  const wraa = (raw - (lc.lgRawPerPA || 0)) * b.pa;
+  const wrcPlus =
+    lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+
+  return {
+    pa: b.pa,
+    ab: b.ab,
+    h: b.h,
+    hr: b.hr,
+    rbi: b.rbi,
+    sb: b.sb,
+    bb: b.bb,
+    so: b.so,
+    avg,
+    obp,
+    slg,
+    ops: obp + slg,
+    iso: slg - avg,
+    babip,
+    kPct: div(b.so, b.pa),
+    bbPct: div(b.bb, b.pa),
+    woba,
+    wraa,
+    wrcPlus,
+    tb,
+  };
+}
+
+/**
+ * 走塁指標（§6）。現状 wSB のみ実装（UBR/wGDPは2-5/2-6で追加）。
+ * BsR = wSB + UBR + wGDP。
+ */
+function playerBaserunning(ps, cfg, lc) {
+  const b = ps.batting;
+  // wSB（監査C1）: リーグ基準 lgwSB×(一塁到達機会) を控除して中心化する。
+  // 走らない選手は僅かに負の基準、盗塁者は正味加点というゼロ点になり、リーグwSB総和≈0。
+  const sbOpp = (b.b1 || 0) + (b.bb || 0) + (b.hbp || 0) - (b.ibb || 0);
+  const lgwSBrate =
+    lc && lc.lgSBOpp ? (lc.lgSB * cfg.tuning.run.runSB + lc.lgCS * cfg.tuning.run.runCS) / lc.lgSBOpp : 0;
+  const wSB = b.sb * cfg.tuning.run.runSB + b.cs * cfg.tuning.run.runCS - lgwSBrate * sbOpp;
+  const br = ps.baserunning || {};
+  // wGDP: 期待併殺(リーグ率×機会)より少なく併殺した分がプラス。§6
+  const gdpOpp = br.gdpOpp || 0;
+  const wGDP =
+    lc && lc.lgGDPrate != null ? (lc.lgGDPrate * gdpOpp - (b.gdp || 0)) * Math.abs(cfg.tuning.gdp.runGDP) : 0;
+  // UBR: 追加進塁を平均より多く取った分がプラス（走者Speed/IQ）。§6
+  const advOpp = br.advOpp || 0;
+  const ubr =
+    lc && lc.lgAdvRate != null ? ((br.advTaken || 0) - lc.lgAdvRate * advOpp) * cfg.tuning.run.runUBR : 0;
+  return {
+    sb: b.sb,
+    cs: b.cs,
+    sbPct: b.sb + b.cs ? b.sb / (b.sb + b.cs) : 0,
+    gdp: b.gdp,
+    wSB,
+    ubr,
+    wGDP,
+    bsr: wSB + ubr + wGDP,
+  };
+}
+
+/** 投手指標（ERA/FIP 含む） */
+function playerPitching(ps, lc) {
+  const p = ps.pitching;
+  const ip = p.outs / 3;
+  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb + p.hbp) - 2 * p.so) / ip : 0;
+  return {
+    g: p.g,
+    gs: p.gs,
+    ip,
+    bf: p.bf,
+    w: p.w,
+    l: p.l,
+    sv: p.sv,
+    hld: p.hld,
+    so: p.so,
+    bb: p.bb,
+    h: p.h,
+    hr: p.hr,
+    era: div(p.er * 9, ip),
+    fip: ip ? fipRaw + (lc.fipConstant || 0) : 0,
+    whip: div(p.h + p.bb, ip),
+    kPer9: div(p.so * 9, ip),
+    bbPer9: div(p.bb * 9, ip),
+    kPct: div(p.so, p.bf),
+    bbPct: div(p.bb, p.bf),
+  };
+}
+
+
+// ===== src/sim/war.mjs =====
+// ============================================================================
+// WAR算出（2-9 / §9）— 企画の一番の売り「WARまで自然に出る」
+//
+// 野手WAR = (wRAA + BsR + UZR + posAdj + repl) / RPW
+// 投手WAR = (IP/9 × (replFIP − FIP)) / RPW,  replFIP = lgFIP × replFipMult
+//
+// 各項はここまでの副産物（wRAA=1-7, BsR=2-4/2-6, UZR=2-8, posAdj=位置補正, repl=代替水準）。
+// 位置価値は posAdj の一箇所のみで計上（UZR側で二重計上しない・レビューB-5）。
+// 試合数依存定数(1350/600)は §18/M3 に従い config・143試合基準を尊重。
+// ============================================================================
+
+
+
+
+/** 守備位置補正（runs）。各ポジションの守備イニングに比例（§9・BR式 /1350）。 */
+function posAdjRuns(ps) {
+  let adj = 0;
+  for (const pos of Object.keys(ps.fielding.positionOuts)) {
+    const innings = ps.fielding.positionOuts[pos] / 3;
+    adj += (POSITION_ADJUST_PER_1350[pos] || 0) * (innings / 1350);
+  }
+  return adj;
+}
+
+/** 野手WAR（構成要素つき） */
+function hitterWAR(ps, cfg, lc) {
+  const bat = playerBatting(ps, lc);
+  const bsr = playerBaserunning(ps, cfg, lc).bsr;
+  const uzr = uzrRuns(ps, cfg, lc);
+  const posAdj = posAdjRuns(ps);
+  const repl = (ps.batting.pa / 600) * cfg.tuning.replBatterPer600;
+  const rpw = lc.rpw || 9.3;
+  const raRuns = bat.wraa + bsr + uzr + posAdj + repl;
+  return {
+    wraa: bat.wraa,
+    bsr,
+    uzr,
+    posAdj,
+    repl,
+    war: raRuns / rpw,
+  };
+}
+
+/** 投手WAR */
+function pitcherWAR(ps, cfg, lc) {
+  const pit = playerPitching(ps, lc);
+  const lgFIP = lc.lgFIP || 3.8;
+  const replFIP = lgFIP * cfg.tuning.replFipMult;
+  const rpw = lc.rpw || 9.3;
+  const war = ((pit.ip / 9) * (replFIP - pit.fip)) / rpw;
+  return { ip: pit.ip, fip: pit.fip, replFIP, war };
+}
+
+/** 選手のWAR（役割で分岐） */
+function playerWAR(player, ps, cfg, lc) {
+  return player.role === 'pitcher' ? pitcherWAR(ps, cfg, lc).war : hitterWAR(ps, cfg, lc).war;
+}
+
+
+// ===== src/engine.mjs =====
+// ============================================================================
+// 架空選手ペナント・シミュレーション — エンジン核（ESモジュール・単一エントリ）
+//
+// このファイルが「唯一の真実のソース」。
+//   - Node（ヘッドレス実走 / テスト / 較正）  : そのまま 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const ENGINE_VERSION = '0.2.4-audit-a';
+
+// RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
+
+// --- エンジン同一性の門番 ---------------------------------------------------
+// 同一シードで固定長の決定論列を返す。Node出力と、build.mjs がHTMLへインライン化した
+// ブラウザ相当の出力が完全一致することを verify-identity.mjs が機械検証する。
+// （§17 決定論RNG / §19 全国対戦のチート突合 の再現性を、開発初日から担保するため）
+function selfCheck(seed = 20260701, n = 8) {
+  const rnd = mulberry32(seed);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(Math.round(rnd() * 1e9));
+  return out;
+}
+
+</script>
+<script>
+// ============================================================================
+// 結果表示UI（1-10 / §16 Lv1+Lv2 / §18）— ブラウザ専用（document使用）
+//
+// エンジン(engine.mjs)は build.mjs が先行<script>で読み込み済み。本ファイルは
+// その関数群（createConfig/generateLeague/simulateSeason/deriveLeagueConstants/
+// playerBatting/playerPitching/winPct 等）をグローバルスコープから参照する。
+// 開発時のNode解決用に 
+
+const state = {
+  league: null,
+  res: null,
+  lc: null,
+  cfg: null,
+  byId: new Map(), // playerId -> player
+  teamName: new Map(), // teamId -> name
+  tab: 'war',
+  sort: { key: 'wrcPlus', dir: -1 },
+};
+
+const el = (tag, attrs = {}, kids = []) => {
+  const e = document.createElement(tag);
+  for (const k of Object.keys(attrs)) {
+    if (k === 'class') e.className = attrs[k];
+    else if (k === 'onclick') e.onclick = attrs[k];
+    else if (k === 'html') e.innerHTML = attrs[k];
+    else e.setAttribute(k, attrs[k]);
+  }
+  for (const kid of [].concat(kids)) e.append(kid);
+  return e;
+};
+const fmt3 = (v) => (v < 1 ? '.' + Math.round(v * 1000).toString().padStart(3, '0') : v.toFixed(3));
+const f2 = (v) => v.toFixed(2);
+const pct = (v) => (v * 100).toFixed(1);
+
+function initApp() {
+  const root = document.getElementById('app');
+  if (!root) return;
+  root.innerHTML = '';
+  root.append(renderSetup());
+}
+
+function renderSetup() {
+  const seedInput = el('input', { type: 'number', value: '2026', id: 'seedInput', style: 'width:90px' });
+  const btn = el('button', { class: 'primary', onclick: () => runLeague(Number(seedInput.value) || 2026) }, 'リーグ生成＆シミュレート');
+  return el('div', { class: 'setup' }, [
+    el('h2', {}, '架空選手ペナント（6球団 / 140試合）'),
+    el('p', { class: 'muted' }, 'リーグシードごとに架空選手198人が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
+    el('div', { class: 'row' }, [el('label', {}, 'リーグシード: '), seedInput, btn]),
+    el('div', { id: 'status', class: 'muted' }, ''),
+  ]);
+}
+
+/** リーグ（選手）を生成し、最初のシーズンを回す */
+function runLeague(leagueSeed) {
+  const status = document.getElementById('status');
+  if (status) status.textContent = 'リーグ生成中…';
+  setTimeout(() => {
+    const cfg = createConfig();
+    const league = generateLeague(leagueSeed, cfg);
+    state.cfg = cfg;
+    state.league = league;
+    state.leagueSeed = leagueSeed;
+    state.seasonN = 0;
+    state.byId = new Map(league.players.map((p) => [p.id, p]));
+    state.teamName = new Map(league.teams.map((t) => [t.id, t.name]));
+    simulateNextSeason();
+  }, 20);
+}
+
+/** 同じリーグ（選手）で、別の乱数で1シーズン回す（押すたびに結果が変わる） */
+function simulateNextSeason() {
+  state.seasonN += 1;
+  const seed = state.leagueSeed * 100000 + state.seasonN; // シーズンごとに別シード（決定論は保つ）
+  const res = simulateSeason(state.league, state.cfg, { season: 2024 + state.seasonN, seed, collectSpray: true });
+  state.res = res;
+  state.lc = deriveLeagueConstants(res);
+  renderMain();
+}
+
+function renderMain() {
+  const root = document.getElementById('app');
+  root.innerHTML = '';
+  const tabs = [
+    ['war', 'WAR'],
+    ['standings', '順位表'],
+    ['batting', '打撃'],
+    ['pitching', '投手'],
+    ['fielding', '守備'],
+  ];
+  const bar = el('div', { class: 'tabs' }, tabs.map(([k, label]) =>
+    el('button', { class: 'tab' + (state.tab === k ? ' active' : ''), onclick: () => { state.tab = k; renderMain(); } }, label),
+  ));
+  const resim = el('button', { class: 'primary', onclick: () => simulateNextSeason() }, '▶ 再シミュレート');
+  const back = el('button', { class: 'link', onclick: () => initApp() }, '↺ 新しいリーグ');
+  const content = el('div', { id: 'content' });
+  root.append(
+    el('div', { class: 'header' }, [
+      el('h2', {}, `シーズン${state.seasonN}（リーグseed ${state.leagueSeed}）`),
+      el('div', { class: 'row' }, [resim, back]),
+    ]),
+    bar,
+    content,
+  );
+  if (state.tab === 'war') renderWAR(content);
+  else if (state.tab === 'standings') renderStandings(content);
+  else if (state.tab === 'batting') renderBatting(content);
+  else if (state.tab === 'pitching') renderPitching(content);
+  else renderFielding(content);
+}
+
+// --- WARランキング（カード型・§16 Lv2）------------------------------------
+function renderWAR(c) {
+  const rows = state.res.playerSeasons
+    .map((s) => {
+      const p = state.byId.get(s.playerId);
+      if (p.role === 'pitcher') {
+        const w = pitcherWAR(s, state.cfg, state.lc);
+        return { id: s.playerId, name: p.name, team: state.teamName.get(s.teamId) || s.teamId, role: '投', war: w.war, detail: `FIP ${w.fip.toFixed(2)} / ${w.ip.toFixed(0)}回` };
+      }
+      const w = hitterWAR(s, state.cfg, state.lc);
+      return { id: s.playerId, name: p.name, team: state.teamName.get(s.teamId) || s.teamId, role: primaryPos(p), war: w.war, detail: `打${w.wraa.toFixed(0)} 走${w.bsr.toFixed(0)} 守${w.uzr.toFixed(0)} 位${w.posAdj.toFixed(0)}` };
+    })
+    .sort((a, b) => b.war - a.war)
+    .slice(0, 50);
+  c.append(el('div', { class: 'muted', style: 'margin:4px 0' }, 'WAR = 打撃(wRAA)＋走塁(BsR)＋守備(UZR)＋位置補正 の総合。行タップで詳細。'));
+  c.append(el('div', { class: 'warlist' }, rows.map((r, i) =>
+    el('div', { class: 'warcard clickable', onclick: () => openModal(r.id) }, [
+      el('span', { class: 'warrank' }, String(i + 1)),
+      el('span', { class: 'warval' }, r.war.toFixed(1)),
+      el('span', { class: 'warname' }, [
+        el('div', { class: 'wn1' }, r.name),
+        el('div', { class: 'muted' }, `${r.team} / ${r.role}　${r.detail}`),
+      ]),
+    ]),
+  )));
+}
+
+// --- 順位表 ---------------------------------------------------------------
+function renderStandings(c) {
+  const rows = state.res.standings.map((t, i) => el('tr', {}, [
+    td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
+    td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+  ]));
+  c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差'], rows));
+}
+
+// --- 打撃 -----------------------------------------------------------------
+const BAT_COLS = [
+  ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['pos', '守', 'left'],
+  ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'],
+  ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['woba', 'wOBA'], ['wrcPlus', 'wRC+'],
+  ['bsr', 'BsR'], ['bbPct', 'BB%'], ['kPct', 'K%'],
+];
+function renderBatting(c) {
+  const data = state.res.playerSeasons
+    .filter((s) => s.batting.pa >= 100)
+    .map((s) => {
+      const m = playerBatting(s, state.lc);
+      const p = state.byId.get(s.playerId);
+      const war = p.role === 'fielder' ? hitterWAR(s, state.cfg, state.lc).war : 0;
+      const bsr = playerBaserunning(s, state.cfg, state.lc).bsr;
+      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, pos: primaryPos(p), war, bsr, ...m };
+    });
+  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba'], ['bbPct', 'kPct'], 'war', 1));
+}
+
+// --- 投手 -----------------------------------------------------------------
+const PIT_COLS = [
+  ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['war', 'WAR'],
+  ['w', '勝'], ['l', '敗'], ['sv', 'S'], ['ip', '回'], ['era', '防御'], ['fip', 'FIP'],
+  ['so', '奪三'], ['kPer9', 'K/9'], ['whip', 'WHIP'], ['bbPct', 'BB%'],
+];
+function renderPitching(c) {
+  const data = state.res.playerSeasons
+    .filter((s) => s.pitching.outs / 3 >= 20)
+    .map((s) => {
+      const m = playerPitching(s, state.lc);
+      const p = state.byId.get(s.playerId);
+      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, war: pitcherWAR(s, state.cfg, state.lc).war, ...m };
+    });
+  c.append(statTable(data, PIT_COLS, ['era', 'fip', 'whip'], ['bbPct'], 'war', 1));
+}
+
+// --- 守備 -----------------------------------------------------------------
+function renderFielding(c) {
+  const data = state.res.playerSeasons
+    .map((s) => {
+      let outs = 0;
+      let mainPos = '';
+      let mx = -1;
+      for (const k of Object.keys(s.fielding.positionOuts)) {
+        outs += s.fielding.positionOuts[k];
+        if (s.fielding.positionOuts[k] > mx) { mx = s.fielding.positionOuts[k]; mainPos = k; }
+      }
+      const p = state.byId.get(s.playerId);
+      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, pos: mainPos, inn: outs / 3, oaa: centeredOAAOuts(s, state.lc), uzr: uzrRuns(s, state.cfg, state.lc), e: s.fielding.e };
+    })
+    .filter((d) => d.inn >= 100 && d.pos !== 'DH'); // DHは守備表から除外（守備位置補正はWAR表に反映）
+  const cols = [['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['pos', '守', 'left'], ['inn', '守備回'], ['oaa', 'OAA'], ['uzr', 'UZR'], ['e', '失策']];
+  c.append(statTable(data, cols, [], [], 'uzr', 1));
+}
+
+// --- 汎用ソート可能テーブル ------------------------------------------------
+function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0) {
+  const wrap = el('div', { class: 'tablewrap' });
+  const render = () => {
+    wrap.innerHTML = '';
+    const { key, dir } = state.sort;
+    const sorted = [...data].sort((a, b) => {
+      const av = a[key]; const bv = b[key];
+      if (typeof av === 'string') return dir * av.localeCompare(bv);
+      return dir * ((av ?? 0) - (bv ?? 0));
+    }).slice(0, 100);
+    const head = el('tr', {}, cols.map(([k, label, align]) =>
+      el('th', { class: (align || '') + (state.sort.key === k ? ' sorted' : ''), onclick: () => { state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : -1 }; render(); } }, label + (state.sort.key === k ? (dir < 0 ? ' ▼' : ' ▲') : '')),
+    ));
+    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id) }, cols.map(([k, , align]) => {
+      let v = d[k];
+      if (typeof v === 'number') {
+        if (fmtDec3.includes(k)) v = fmt3(v);
+        else if (fmtPct.includes(k)) v = pct(v);
+        else if (k === 'ip' || k === 'inn') v = v.toFixed(1);
+        else if (k === 'war') v = v.toFixed(1);
+        else if (k === 'oaa' || k === 'uzr' || k === 'bsr') v = (v > 0 ? '+' : '') + v.toFixed(1);
+        else if (!Number.isInteger(v)) v = v.toFixed(dec);
+      }
+      return td(v, align);
+    })));
+    wrap.append(el('table', { class: 'stat' }, [el('thead', {}, head), el('tbody', {}, rows)]));
+  };
+  state.sort = { key: defaultSort, dir: defaultSort === 'era' || defaultSort === 'fip' ? 1 : -1 };
+  render();
+  return wrap;
+}
+
+// --- 選手モーダル（能力バー＋スプレーチャート） ----------------------------
+function openModal(playerId) {
+  const p = state.byId.get(playerId);
+  const s = state.res.statsById.get(playerId);
+  if (!p || !s) return;
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('div', {}, [el('span', { class: 'pname' }, p.name), el('span', { class: 'muted' }, `  ${state.teamName.get(p.teamId) || ''} / ${p.role === 'pitcher' ? '投手' : primaryPos(p)} / ${p.age}歳 / ${p.bats}打${p.throws}投`)]),
+    el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'),
+  ]));
+
+  // 成績サマリ
+  if (p.role === 'pitcher') {
+    const m = playerPitching(s, state.lc);
+    const pw = pitcherWAR(s, state.cfg, state.lc);
+    box.append(kv([['WAR', pw.war.toFixed(1)], ['登板', m.g], ['勝', m.w], ['敗', m.l], ['S', m.sv], ['投球回', m.ip.toFixed(1)], ['防御率', f2(m.era)], ['FIP', f2(m.fip)], ['奪三', m.so], ['K/9', f2(m.kPer9)]]));
+  } else {
+    const m = playerBatting(s, state.lc);
+    box.append(kv([['打席', m.pa], ['打率', fmt3(m.avg)], ['本塁打', m.hr], ['打点', m.rbi], ['盗塁', m.sb], ['出塁', fmt3(m.obp)], ['長打', fmt3(m.slg)], ['OPS', fmt3(m.ops)], ['wOBA', fmt3(m.woba)], ['wRC+', m.wrcPlus.toFixed(0)]]));
+    // WAR内訳（打/走/守/位）
+    const w = hitterWAR(s, state.cfg, state.lc);
+    box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `WAR ${w.war.toFixed(1)} 内訳`));
+    box.append(kv([['打wRAA', w.wraa.toFixed(1)], ['走BsR', w.bsr.toFixed(1)], ['守UZR', w.uzr.toFixed(1)], ['位置', w.posAdj.toFixed(1)], ['OAA', centeredOAAOuts(s, state.lc).toFixed(1)]]));
+    // 対球種成績（§4段階1）
+    const vf = s.batting.vsFastball;
+    const vb = s.batting.vsBreaking;
+    const avgOf = (x) => (x.ab ? fmt3(x.h / x.ab) : '-');
+    box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '対球種成績（打率 / 本）'));
+    box.append(kv([['対速球', `${avgOf(vf)} / ${vf.hr}`], ['対変化球', `${avgOf(vb)} / ${vb.hr}`]]));
+    // スプレーチャート
+    const arr = state.res.spray && state.res.spray.get(playerId);
+    if (arr && arr.length) box.append(el('div', { class: 'spraywrap' }, [el('div', { class: 'muted' }, `スプレーチャート（${arr.length}打球）`), sprayChart(arr)]));
+  }
+
+  // 能力バー
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
+  box.append(abilityBars(p.trueAbility, p.role));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
+}
+
+function kv(pairs) {
+  return el('div', { class: 'kvgrid' }, pairs.map(([k, v]) => el('div', { class: 'kv' }, [el('div', { class: 'kvk' }, k), el('div', { class: 'kvv' }, String(v))])));
+}
+
+function abilityBars(t, role) {
+  const groups = [];
+  const bar = (label, val) => el('div', { class: 'barrow' }, [
+    el('span', { class: 'barlabel' }, label),
+    el('span', { class: 'bartrack' }, [el('span', { class: 'barfill', style: `width:${((val - 20) / 60) * 100}%;background:${barColor(val)}` })]),
+    el('span', { class: 'barval' }, String(Math.round(val))),
+  ]);
+  const c = t.common;
+  groups.push(section('共通', [bar('走力', c.speed), bar('肩', c.arm), bar('確実', c.hands), bar('反応', c.reaction), bar('パワー', c.power)]));
+  if (role === 'pitcher') {
+    const p = t.pitching;
+    groups.push(section('投手', [bar('球速km/h', p.velocityKmh), bar('制球', p.control), bar('スタミナ', p.stamina), bar('ゴロ率', p.gbRate), bar('クイック', p.hold)]));
+    groups.push(section('球種', p.pitches.map((pi) => bar(pitchName(pi.type), pi.current))));
+  } else {
+    const b = t.batting;
+    groups.push(section('打撃', [bar('EV適性', b.ev), bar('LA適性', b.la), bar('引張', b.pull), bar('コンタクト', b.contact), bar('選球眼', b.eye)]));
+    groups.push(section('走塁', [bar('盗塁技術', t.baserunning.steal), bar('走塁IQ', t.baserunning.baserunIQ)]));
+    groups.push(section('守備', [bar('ポジIQ', t.fielding.positioningIQ), bar('捕手F', t.fielding.framing)]));
+  }
+  return el('div', { class: 'abilities' }, groups);
+}
+function section(title, bars) { return el('div', { class: 'abgroup' }, [el('div', { class: 'abtitle' }, title), ...bars]); }
+function barColor(v) { return v >= 70 ? '#e8b84b' : v >= 55 ? '#7bc47f' : v >= 45 ? '#cfc8b0' : '#9a8f78'; }
+
+// --- スプレーチャート SVG（1-8, Lv2）--------------------------------------
+function sprayChart(balls) {
+  const W = 320; const H = 300; const hx = W / 2; const hy = H - 24; const scale = (H - 40) / 135;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'spray' });
+  // 内野・外野の目安円 + フェンス弧
+  const pt = (deg, dist) => {
+    const r = (deg * Math.PI) / 180;
+    return [hx + dist * scale * Math.sin(r), hy - dist * scale * Math.cos(r)];
+  };
+  // フェア地帯（ファウルライン ±45°）
+  const [lx, ly] = pt(-45, 125); const [rx, ry] = pt(45, 125);
+  svg.append(svgEl('path', { d: `M ${hx} ${hy} L ${lx} ${ly} A ${125 * scale} ${125 * scale} 0 0 1 ${rx} ${ry} Z`, fill: '#123d2a', stroke: '#2f6b4a' }));
+  // 内野ダイヤ目安
+  const [b2x, b2y] = pt(0, 38);
+  svg.append(svgEl('circle', { cx: b2x, cy: b2y, r: 3, fill: '#c9a06a' }));
+  // 打球ドット
+  const color = (res) => res === 'HR' ? '#e8b84b' : res === '2B' || res === '3B' ? '#5aa9e6' : res === '1B' ? '#f4f1e6' : '#6d7f74';
+  for (const b of balls) {
+    const [x, y] = pt(b.sprayDeg, Math.min(b.distanceM, 130));
+    svg.append(svgEl('circle', { cx: x.toFixed(1), cy: y.toFixed(1), r: b.result === 'HR' ? 3.2 : 2.2, fill: color(b.result), opacity: 0.85 }));
+  }
+  svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, fill: '#fff' }));
+  return svg;
+}
+
+// --- 小物 -----------------------------------------------------------------
+function td(v, align) { return el('td', { class: align || '' }, String(v)); }
+function table(headers, rows) {
+  return el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
+    el('thead', {}, el('tr', {}, headers.map((h) => el('th', {}, h)))),
+    el('tbody', {}, rows),
+  ])]);
+}
+function svgEl(tag, attrs) {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+  return e;
+}
+function primaryPos(p) {
+  if (!p || p.role === 'pitcher') return 'P';
+  let mp = ''; let mx = -1;
+  const pp = p.trueAbility.fielding.positionProf;
+  for (const k of Object.keys(pp)) if (pp[k] > mx) { mx = pp[k]; mp = k; }
+  return mp;
+}
+function pitchName(t) {
+  return { fastball: '直球', slider: 'スラ', curve: 'カーブ', changeup: 'チェンジ', fork: 'フォーク', sinker: 'シンカー', cutter: 'カット' }[t] || t;
+}
+
+initApp();
+</script>
+</body>
+</html>

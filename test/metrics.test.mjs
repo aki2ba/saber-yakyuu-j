@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
-import { deriveLeagueConstants, fillLeagueConstants } from '../src/sim/leagueConstants.mjs';
+import { deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA } from '../src/sim/leagueConstants.mjs';
 import { playerBatting, playerPitching, playerBaserunning } from '../src/sim/metrics.mjs';
 import { leagueBatting } from '../src/sim/leagueStats.mjs';
+import { createBattingLine, createPitchingLine } from '../src/model/statline.mjs';
 
 const cfg = createConfig();
 const res = simulateSeason(generateLeague(2026, cfg), cfg, { season: 2026, seed: 2026 });
@@ -53,6 +54,24 @@ test('投手指標: 規定投手の ERA/FIP が妥当域・整合', () => {
     assert.ok(m.fip > 0 && m.fip < 8, `FIP ${m.fip}`);
     assert.ok(Math.abs(m.ip - s.pitching.outs / 3) < 1e-9);
   }
+});
+
+test('FIPはIBBを除外する（FG式 13HR+3(BB−IBB+HBP)−2K）（S3）', () => {
+  const mk = (ibb) => ({ pitching: { ...createPitchingLine(), outs: 300, hr: 10, bb: 40, ibb, hbp: 5, so: 90 } });
+  const a = playerPitching(mk(0), lc);
+  const b = playerPitching(mk(10), lc);
+  const ip = 100;
+  assert.ok(Math.abs(a.fip - b.fip - (3 * 10) / ip) < 1e-9, 'IBB10個で 3×10/IP だけFIPが低い');
+});
+
+test('wOBAの素(rawRunValuePerPA)はFG定義準拠: uBB・分母=AB+BB−IBB+SF+HBP（S3）', () => {
+  const base = { ...createBattingLine(), ab: 100, bb: 10, ibb: 0, hbp: 2, sf: 3, b1: 20, b2: 5, b3: 1, hr: 4 };
+  const withIbb = { ...base, bb: 15, ibb: 5 }; // 敬遠5個の追加は分子・分母から消える
+  assert.ok(Math.abs(rawRunValuePerPA(base) - rawRunValuePerPA(withIbb)) < 1e-12, 'IBBはwOBAに影響しない');
+  // 分母の確認: SF/HBP込み・IBB抜き
+  const denomBase = base.ab + base.bb - base.ibb + base.sf + base.hbp;
+  const num = 0.55 * 10 + 0.58 * 2 + 0.7 * 20 + 1.0 * 5 + 1.27 * 1 + 1.65 * 4;
+  assert.ok(Math.abs(rawRunValuePerPA(base) - num / denomBase) < 1e-12, '分母=AB+BB−IBB+SF+HBP');
 });
 
 test('fillLeagueConstants は cfg.leagueConstants を埋める（2パスの糊）', () => {

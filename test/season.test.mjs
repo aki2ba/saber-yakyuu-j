@@ -6,6 +6,7 @@ import { generateLeague } from '../src/generate.mjs';
 import { buildDepthChart, hitScore, obpScore, powerScore } from '../src/sim/team.mjs';
 import { advanceRunners } from '../src/sim/game.mjs';
 import { simulateSeason, buildSchedule, winPct } from '../src/sim/season.mjs';
+import { leagueSummaryByLeague } from '../src/sim/leagueStats.mjs';
 import { makeRng } from '../src/rng.mjs';
 import { FIELD_POSITIONS } from '../src/model/positions.mjs';
 
@@ -112,25 +113,54 @@ test('advanceRunners: 2アウトの空中アウトは犠飛不成立', () => {
   assert.deepEqual(bases, [null, null, 'r3']);
 });
 
-test('buildSchedule: 総当たりで各チーム規定試合・ホームほぼ均衡（12球団×143）', () => {
-  // TODO(S3): 日程v2（リーグ内125＋交流戦18・節カレンダー）でこのテストを置き換える
+test('buildSchedule v2: リーグ内125＋交流戦18＝143試合・858試合・ホーム71/72（S3）', () => {
   const lg = generateLeague(1, cfg);
   const G = cfg.league.gamesPerSeason;
-  const games = buildSchedule(lg.teams, makeRng(1), G);
+  const games = buildSchedule(lg.teams, makeRng(1), cfg);
   assert.equal(games.length, (cfg.league.numTeams * G) / 2); // 12×143/2=858
+  const leagueOf = new Map(lg.teams.map((t) => [t.id, t.league]));
   const count = new Map(lg.teams.map((t) => [t.id, 0]));
+  const inLeague = new Map(lg.teams.map((t) => [t.id, 0]));
+  const inter = new Map(lg.teams.map((t) => [t.id, 0]));
   const home = new Map(lg.teams.map((t) => [t.id, 0]));
   for (const g of games) {
-    count.set(g.home, count.get(g.home) + 1);
-    count.set(g.away, count.get(g.away) + 1);
+    const same = leagueOf.get(g.home) === leagueOf.get(g.away);
+    for (const tid of [g.home, g.away]) {
+      count.set(tid, count.get(tid) + 1);
+      (same ? inLeague : inter).set(tid, (same ? inLeague : inter).get(tid) + 1);
+    }
     home.set(g.home, home.get(g.home) + 1);
   }
   for (const t of lg.teams) {
     assert.equal(count.get(t.id), G, `${t.id} の試合数`);
-    // 各ペア13試合（7/6）なのでホームは71か72（143の半分±0.5）
+    assert.equal(inLeague.get(t.id), 125, `${t.id} のリーグ内試合数（5相手×25）`);
+    assert.equal(inter.get(t.id), 18, `${t.id} の交流戦試合数（6相手×3）`);
     const h = home.get(t.id);
-    assert.ok(Math.abs(h - G / 2) <= 0.5, `${t.id} のホーム数がほぼ均衡 (got ${h})`);
+    assert.ok(h === 71 || h === 72, `${t.id} のホーム数がほぼ均衡 (got ${h})`);
   }
+});
+
+test('buildSchedule v2: day直列化＝1日1試合・連続出場上限・休日が挟まる（S3）', () => {
+  const lg = generateLeague(1, cfg);
+  const games = buildSchedule(lg.teams, makeRng(1), cfg);
+  const maxConsec = cfg.tuning.schedule.maxTeamConsecDays;
+  let prevDay = 0;
+  const lastDay = new Map();
+  const consec = new Map();
+  for (const g of games) {
+    assert.ok(g.day >= prevDay, 'dayは昇順に直列化されている');
+    prevDay = g.day;
+    for (const tid of [g.home, g.away]) {
+      assert.notEqual(lastDay.get(tid), g.day, `1日1試合 (${tid} day=${g.day})`);
+      const c = lastDay.get(tid) === g.day - 1 ? consec.get(tid) + 1 : 1;
+      consec.set(tid, c);
+      assert.ok(c <= maxConsec, `連続出場は${maxConsec}日まで (${tid} day=${g.day})`);
+      lastDay.set(tid, g.day);
+    }
+  }
+  const totalDays = games[games.length - 1].day + 1;
+  assert.ok(totalDays >= 150, `休日が挟まりシーズンは143日より長い (days=${totalDays})`);
+  assert.ok(totalDays <= 220, `過剰な空白日はない (days=${totalDays})`);
 });
 
 test('simulateSeason: 各チーム規定試合・勝敗引分の整合', () => {
@@ -217,6 +247,27 @@ test('simulateSeason: 打席が回り主力に妥当なPA/投球回が付く', (
   const maxOuts = Math.max(...res.playerSeasons.map((s) => s.pitching.outs));
   assert.ok(maxPA > 400, `規定打席級が存在 (maxPA=${maxPA})`);
   assert.ok(maxOuts / 3 > 100, `100投球回超の投手が存在 (maxIP=${(maxOuts / 3).toFixed(0)})`);
+});
+
+test('リーグ別集計（leagueSummaryByLeague）とDH規則別の得点集計（runSplit）（S3）', () => {
+  const lg = generateLeague(2026, cfg);
+  const res = simulateSeason(lg, cfg, { seed: 2026 });
+  const by = leagueSummaryByLeague(res, lg.teams);
+  assert.ok(by.L1 && by.L2, '両リーグのサマリが出る');
+  assert.equal(by.L1.gamesPerTeam, cfg.league.gamesPerSeason);
+  assert.equal(by.L2.gamesPerTeam, cfg.league.gamesPerSeason);
+  assert.ok(by.L1.batting.pa > 0 && by.L2.batting.pa > 0, 'リーグ別の打撃集計');
+  assert.ok(by.L1.runsPerTeamPerGame > 2 && by.L2.runsPerTeamPerGame > 2);
+  // リーグ別順位表: 6球団ずつ・勝率降順
+  for (const l of ['L1', 'L2']) {
+    const rows = res.standingsByLeague[l];
+    assert.equal(rows.length, 6, `${l} は6球団`);
+    for (let i = 1; i < rows.length; i++) assert.ok(winPct(rows[i - 1]) >= winPct(rows[i]), `${l} 勝率降順`);
+  }
+  // runSplit: セパ得点差は「試合のDH規則単位」で集計する（S4較正が消費。所属リーグ単位はノイズが乗る）
+  assert.equal(res.runSplit.dh.games + res.runSplit.noDh.games, 858, '全試合が二分される');
+  assert.equal(res.runSplit.dh.games, 429, 'DH有試合 = L2主催429試合');
+  assert.ok(res.runSplit.dh.runs > 0 && res.runSplit.noDh.runs > 0);
 });
 
 test('継投: セーブが抑えに集中し、ホールド/BS/完投/完封が妥当に計上される（監査B2/B3/B4）', () => {

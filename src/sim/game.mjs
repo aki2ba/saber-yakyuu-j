@@ -210,13 +210,15 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
  * 1試合をシミュレート。statFor(pid,teamId)=PlayerSeason を返す関数。
  * @param {Object} homeInit initSide v2 参照（旧 {teamId,depth,starterIdx} も後方互換で受ける）
  * @param {Function} [onBattedBall] (batterId, teamId, battedBall, result) スプレー収集用（任意）
+ * @param {{maxInnings?:number}} [opts] ポストシーズンは maxInnings:Infinity（延長は決着まで・§S3-3）
  * @returns {{homeScore, awayScore, innings, tie, pitchers:{home,away}, subs:{home,away}}}
  *   pitchers: 投手使用ログ [{pid,pitches,outs,enterInning,enterDiff}]（S3疲労管理の素材）
  *   subs:     交代ログ [{type:'PH'|'PR'|'DEF'|'RP', inning, outPid, inPid}]
  */
-export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall) {
+export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall, opts = {}) {
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
+  const maxInnings = opts.maxInnings ?? MAX_INNINGS;
 
   // 得点推移ログ（勝敗の正確な判定用）: 得点が入るたびに両軍のスコアと現投手を記録
   const runLog = [];
@@ -231,7 +233,7 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
     playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning); // 裏: home攻撃
     if (inning >= 9 && home.score !== away.score) break;
     inning++;
-    if (inning > MAX_INNINGS) break;
+    if (inning > maxInnings) break;
   }
 
   flushPitcher(home, away.score);
@@ -270,6 +272,11 @@ function initSide(init, cfg) {
   const pitcherSlot = slots.findIndex((s) => s.pos === 'P'); // DH無し試合のみ >=0
   if (pitcherSlot >= 0) slots[pitcherSlot].playerId = starterId; // 9番=当日の先発
   const dhSlot = slots.findIndex((s) => s.pos === 'DH');
+  // 守備配置は「当日のスタメン」から導く（S3 日次スタメンAI: depth の初期配置と異なりうる）
+  const defense = {};
+  for (const s of slots) {
+    if (s.pos !== 'DH' && s.pos !== 'P') defense[s.pos] = s.playerId;
+  }
   const bullpen = (init.availableRelievers ?? d.bullpen).slice();
   const roles = d.bullpenRoles ?? {
     closer: bullpen[0] ?? null,
@@ -285,7 +292,7 @@ function initSide(init, cfg) {
     slots,
     pitcherSlot,
     dhSlot, // 守備に就かないDH（守備位置補正=-17.5の主語）のスロット
-    defense: { ...d.defense },
+    defense,
     orderIdx: 0,
     starterId,
     curPid: starterId,

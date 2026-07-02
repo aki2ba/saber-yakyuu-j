@@ -2,7 +2,9 @@
 // WAR算出（2-9 / §9）— 企画の一番の売り「WARまで自然に出る」
 //
 // 野手WAR = (wRAA + BsR + UZR + posAdj + repl) / RPW
-// 投手WAR = (IP/9 × (replFIP − FIP)) / RPW,  replFIP = lgFIP × replFipMult
+// 投手WAR = (lgFIP − FIP)/9 × IP / RPW + (IP/9) × replPer9(役割)
+//   役割別代替水準（S3・FanGraphs方式 B-5）: 先発 0.12 / 救援 0.03 wins/9IP を GS/G で按分
+//   （旧 replFIP = lgFIP × replFipMult は廃止）
 //
 // 各項はここまでの副産物（wRAA=1-7, BsR=2-4/2-6, UZR=2-8, posAdj=位置補正, repl=代替水準）。
 // 位置価値は posAdj の一箇所のみで計上（UZR側で二重計上しない・レビューB-5）。
@@ -41,14 +43,16 @@ export function hitterWAR(ps, cfg, lc) {
   };
 }
 
-/** 投手WAR */
+/** 投手WAR（役割別代替水準・S3）。平均比の価値 + 役割別の代替水準ボーナス。 */
 export function pitcherWAR(ps, cfg, lc) {
   const pit = playerPitching(ps, lc);
   const lgFIP = lc.lgFIP || 3.8;
-  const replFIP = lgFIP * cfg.tuning.replFipMult;
   const rpw = lc.rpw || 9.3;
-  const war = ((pit.ip / 9) * (replFIP - pit.fip)) / rpw;
-  return { ip: pit.ip, fip: pit.fip, replFIP, war };
+  // 役割 = GS/G 比で先発/救援を按分（スイングマンは中間の代替水準になる）
+  const gsShare = pit.g ? pit.gs / pit.g : 0;
+  const replPer9 = gsShare * cfg.tuning.replStarterPer9 + (1 - gsShare) * cfg.tuning.replRelieverPer9;
+  const war = (((lgFIP - pit.fip) / 9) * pit.ip) / rpw + (pit.ip / 9) * replPer9;
+  return { ip: pit.ip, fip: pit.fip, replPer9, war };
 }
 
 /** 選手のWAR（役割で分岐） */

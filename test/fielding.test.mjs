@@ -65,10 +65,12 @@ test('errRunsAboveAvg: ポジション中心化＋uzrRunsに失策成分が合�
     const sum = byPos[pos].reduce((a, b) => a + b, 0);
     assert.ok(Math.abs(sum) < byPos[pos].length * 2, `ErrR合計が0付近 (${pos}: ${sum.toFixed(1)})`);
   }
-  // uzrRuns = 範囲成分(中心化OAA×run/out) + ErrR の合成整合
+  // uzrRuns = 範囲成分(中心化OAA×run/out) + ErrR + フレーミング の合成整合
+  // （S3日次起用で複数ポジション出場が出るため、SS主戦でも捕手出場分の framingRuns を含めて検証）
   const s = res.playerSeasons.find((x) => totalFieldInnings(x.fielding) >= 100 && mainPosition(x.fielding) === 'SS');
   const rpo = cfg.tuning.field.runPerOutInfield;
-  assert.ok(Math.abs(uzrRuns(s, cfg, lc) - (centeredOAAOuts(s, lc) * rpo + errRunsAboveAvg(s, cfg, lc))) < 1e-9, 'UZR=範囲+ErrR');
+  const expSS = centeredOAAOuts(s, lc) * rpo + errRunsAboveAvg(s, cfg, lc) + (s.fielding.framingRuns || 0);
+  assert.ok(Math.abs(uzrRuns(s, cfg, lc) - expSS) < 1e-9, 'UZR=範囲+ErrR+フレーミング');
   // 失策がUZRに実際に効いている（ErrR非ゼロの野手が存在）
   const anyNonzero = res.playerSeasons.some(
     (x) => totalFieldInnings(x.fielding) >= 100 && Math.abs(errRunsAboveAvg(x, cfg, lc)) > 0.5,

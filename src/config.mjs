@@ -7,21 +7,30 @@
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-export const CONFIG_VERSION = '0.0.5-phaseA-s2';
+export const CONFIG_VERSION = '0.0.6-phaseA-s3';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
- *  日程はS3で「リーグ内125＋交流戦18」へ（S1は総当たり近似: 11相手×13=143）。 */
+ *  日程はS3日程v2: リーグ内5相手×25（ホーム13/12交互）＋交流戦6相手×3 → 143試合。 */
 export const LEAGUE_DEFAULT = {
   numTeams: 12,
-  gamesPerSeason: 143, // NPB準拠。最終形はリーグ内5相手×25＋交流戦6相手×3（S3日程v2）
+  gamesPerSeason: 143, // NPB準拠 = リーグ内125 + 交流戦18（S3日程v2）
   // 2リーグ制（名称は完全架空の造語）。dh=false のリーグは投手が打席に立つ（セ系）。
   leagues: [
     { id: 'L1', name: '陽炎リーグ', dh: false }, // セ・リーグ系（DH無し）
     { id: 'L2', name: '蒼天リーグ', dh: true }, // パ・リーグ系（DH有り）
   ],
+  inLeagueGamesPerOpp: 25, // リーグ内 同一相手との試合数（ホーム13/12を交互に）
+  interLeagueGamesPerOpp: 3, // 交流戦 同一相手との試合数（3連戦を一方の本拠地で）
   rotationSize: 6, // 先発ローテ人数（中6日・NPB標準）
   rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
+  // ポストシーズン規則（§S3-3）: CS1st=2戦先勝 → CSFinal=1位に1勝アド・4勝先取 → 日本シリーズ=4勝先取(2-3-2)
+  postseason: {
+    csFirstWins: 2, // CSファーストの必要勝数（2位本拠地）
+    csFinalWins: 4, // CSファイナルの必要勝数（アドバンテージ込み・1位本拠地）
+    csFinalAdv: 1, // リーグ1位のアドバンテージ勝数
+    japanSeriesWins: 4, // 日本シリーズの必要勝数
+  },
 };
 
 /**
@@ -89,7 +98,10 @@ export const TUNING_DEFAULT = {
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
   replBatterPer600: 18, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
-  replFipMult: 1.25, // replFIP = lgFIP × 1.25 ※WAR較正。投手WAR王は~4.2でやや低(aces IP・FIP spread起因,後で拡大)
+  // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
+  // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
+  replStarterPer9: 0.12, // 先発の代替水準（wins/9IP）
+  replRelieverPer9: 0.03, // 救援の代替水準（wins/9IP）
 
   // 打席規律層（1-1）: log5/オッズ比で K/BB/HBP/インプレー を分岐する較正ノブ。
   // League は打席1回あたりの基準確率、Slope は能力(20-80)→logit の感度。
@@ -203,6 +215,15 @@ export const TUNING_DEFAULT = {
     scoutSd: 6, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）
     swapMargin: 0.01, // レギュラー入替に要する実効wOBA差
     platoonMargin: 0.005, // プラトーン入替に要する実効wOBA差
+    scoutWobaPerPt: 0.0035, // スカウト打撃評価(50中心rating)1pt → wOBA換算
+    platoonWobaPenalty: 0.014, // 同利き手の実効wOBA減（相手先発でのプラトーン入替判断用）
+    promoteStep: 0.34, // 見直しごとに挑戦者の先発シェアを増やす幅（1.0で完全昇格＝漸進的な入替）
+    candidatesPerPos: 4, // ポジション候補 = 編成時 positionRank の上位この人数
+  },
+
+  // 日程v2（S3 buildSchedule）: 「節」カレンダーの休日規則
+  schedule: {
+    maxTeamConsecDays: 6, // 連続試合日はこの日数まで（超えたら休日を挟む＝NPBの週1休の近似）
   },
 
   // 編成・打順（S1 buildDepthChart v2。§S1-3）

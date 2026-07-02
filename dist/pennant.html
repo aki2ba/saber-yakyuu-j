@@ -669,21 +669,30 @@ function addPlayerSeason(dst, src) {
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-const CONFIG_VERSION = '0.0.5-phaseA-s2';
+const CONFIG_VERSION = '0.0.6-phaseA-s3';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
- *  日程はS3で「リーグ内125＋交流戦18」へ（S1は総当たり近似: 11相手×13=143）。 */
+ *  日程はS3日程v2: リーグ内5相手×25（ホーム13/12交互）＋交流戦6相手×3 → 143試合。 */
 const LEAGUE_DEFAULT = {
   numTeams: 12,
-  gamesPerSeason: 143, // NPB準拠。最終形はリーグ内5相手×25＋交流戦6相手×3（S3日程v2）
+  gamesPerSeason: 143, // NPB準拠 = リーグ内125 + 交流戦18（S3日程v2）
   // 2リーグ制（名称は完全架空の造語）。dh=false のリーグは投手が打席に立つ（セ系）。
   leagues: [
     { id: 'L1', name: '陽炎リーグ', dh: false }, // セ・リーグ系（DH無し）
     { id: 'L2', name: '蒼天リーグ', dh: true }, // パ・リーグ系（DH有り）
   ],
+  inLeagueGamesPerOpp: 25, // リーグ内 同一相手との試合数（ホーム13/12を交互に）
+  interLeagueGamesPerOpp: 3, // 交流戦 同一相手との試合数（3連戦を一方の本拠地で）
   rotationSize: 6, // 先発ローテ人数（中6日・NPB標準）
   rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
+  // ポストシーズン規則（§S3-3）: CS1st=2戦先勝 → CSFinal=1位に1勝アド・4勝先取 → 日本シリーズ=4勝先取(2-3-2)
+  postseason: {
+    csFirstWins: 2, // CSファーストの必要勝数（2位本拠地）
+    csFinalWins: 4, // CSファイナルの必要勝数（アドバンテージ込み・1位本拠地）
+    csFinalAdv: 1, // リーグ1位のアドバンテージ勝数
+    japanSeriesWins: 4, // 日本シリーズの必要勝数
+  },
 };
 
 /**
@@ -751,7 +760,10 @@ const TUNING_DEFAULT = {
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
   replBatterPer600: 18, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
-  replFipMult: 1.25, // replFIP = lgFIP × 1.25 ※WAR較正。投手WAR王は~4.2でやや低(aces IP・FIP spread起因,後で拡大)
+  // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
+  // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
+  replStarterPer9: 0.12, // 先発の代替水準（wins/9IP）
+  replRelieverPer9: 0.03, // 救援の代替水準（wins/9IP）
 
   // 打席規律層（1-1）: log5/オッズ比で K/BB/HBP/インプレー を分岐する較正ノブ。
   // League は打席1回あたりの基準確率、Slope は能力(20-80)→logit の感度。
@@ -865,6 +877,15 @@ const TUNING_DEFAULT = {
     scoutSd: 6, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）
     swapMargin: 0.01, // レギュラー入替に要する実効wOBA差
     platoonMargin: 0.005, // プラトーン入替に要する実効wOBA差
+    scoutWobaPerPt: 0.0035, // スカウト打撃評価(50中心rating)1pt → wOBA換算
+    platoonWobaPenalty: 0.014, // 同利き手の実効wOBA減（相手先発でのプラトーン入替判断用）
+    promoteStep: 0.34, // 見直しごとに挑戦者の先発シェアを増やす幅（1.0で完全昇格＝漸進的な入替）
+    candidatesPerPos: 4, // ポジション候補 = 編成時 positionRank の上位この人数
+  },
+
+  // 日程v2（S3 buildSchedule）: 「節」カレンダーの休日規則
+  schedule: {
+    maxTeamConsecDays: 6, // 連続試合日はこの日数まで（超えたら休日を挟む＝NPBの週1休の近似）
   },
 
   // 編成・打順（S1 buildDepthChart v2。§S1-3）
@@ -1863,11 +1884,11 @@ function buildDepthChart(roster, cfg, opts = {}) {
 
 /** リーグ打撃集計 */
 function leagueBatting(playerSeasons) {
-  const s = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0 };
+  const s = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, ibb: 0, hbp: 0, so: 0, sf: 0, sh: 0 };
   for (const ps of playerSeasons) {
     const b = ps.batting;
     s.pa += b.pa; s.ab += b.ab; s.h += b.h; s.b1 += b.b1; s.b2 += b.b2; s.b3 += b.b3;
-    s.hr += b.hr; s.bb += b.bb; s.hbp += b.hbp; s.so += b.so; s.sf += b.sf;
+    s.hr += b.hr; s.bb += b.bb; s.ibb += b.ibb; s.hbp += b.hbp; s.so += b.so; s.sf += b.sf; s.sh += b.sh;
   }
   const tb = s.b1 + 2 * s.b2 + 3 * s.b3 + 4 * s.hr;
   const avg = s.ab ? s.h / s.ab : 0;
@@ -1890,10 +1911,10 @@ function leagueBatting(playerSeasons) {
 
 /** リーグ投手集計 */
 function leaguePitching(playerSeasons) {
-  const s = { outs: 0, bf: 0, h: 0, hr: 0, bb: 0, hbp: 0, so: 0, r: 0, er: 0 };
+  const s = { outs: 0, bf: 0, h: 0, hr: 0, bb: 0, ibb: 0, hbp: 0, so: 0, r: 0, er: 0 };
   for (const ps of playerSeasons) {
     const p = ps.pitching;
-    s.outs += p.outs; s.bf += p.bf; s.h += p.h; s.hr += p.hr; s.bb += p.bb;
+    s.outs += p.outs; s.bf += p.bf; s.h += p.h; s.hr += p.hr; s.bb += p.bb; s.ibb += p.ibb;
     s.hbp += p.hbp; s.so += p.so; s.r += p.r; s.er += p.er;
   }
   const ip = s.outs / 3;
@@ -1920,6 +1941,26 @@ function leagueSummary(res, numTeams) {
   };
 }
 
+/**
+ * リーグ別（L1/L2）のサマリ（S3・セパ得点差の較正用）。チームの所属リーグ単位で集計する。
+ * ※DH規則単位（試合のDH有無別）の得点差は simulateSeason の runSplit を使うこと
+ *   （所属リーグ単位は球団戦力ノイズで符号が反転しうる・S2引き継ぎ注意）。
+ * @param {{playerSeasons:Array, standings:Array}} res simulateSeason の結果
+ * @param {Array<{id:string,league:?string}>} teams league.teams
+ * @returns {Object<string, ReturnType<leagueSummary>>} リーグid → サマリ
+ */
+function leagueSummaryByLeague(res, teams) {
+  const leagueOf = new Map(teams.map((t) => [t.id, t.league]));
+  const out = {};
+  for (const lid of new Set(teams.map((t) => t.league))) {
+    const ps = res.playerSeasons.filter((s) => leagueOf.get(s.teamId) === lid);
+    const rows = res.standings.filter((t) => leagueOf.get(t.teamId) === lid);
+    if (!rows.length) continue;
+    out[lid ?? 'ALL'] = leagueSummary({ playerSeasons: ps, standings: rows }, rows.length);
+  }
+  return out;
+}
+
 
 // ===== src/sim/leagueConstants.mjs =====
 // ============================================================================
@@ -1944,11 +1985,14 @@ const LINEAR_WEIGHTS = {
   hr: 1.65,
 };
 
-/** 打撃イベント合計から「アウト基準の得点価値/打席」を出す（wOBAの素） */
+/** 打撃イベント合計から「アウト基準の得点価値/打席」を出す（wOBAの素）。
+ *  FG定義準拠（S3）: 分子は uBB=BB−IBB（敬遠は打者の技量でない）、分母 = AB+BB−IBB+SF+HBP。 */
 function rawRunValuePerPA(bat, W = LINEAR_WEIGHTS) {
-  const denom = bat.ab + bat.bb + bat.hbp + bat.sf;
+  const ibb = bat.ibb || 0;
+  const denom = bat.ab + bat.bb - ibb + bat.sf + bat.hbp;
   if (!denom) return 0;
-  const num = W.bb * bat.bb + W.hbp * bat.hbp + W.b1 * bat.b1 + W.b2 * bat.b2 + W.b3 * bat.b3 + W.hr * bat.hr;
+  const num =
+    W.bb * (bat.bb - ibb) + W.hbp * bat.hbp + W.b1 * bat.b1 + W.b2 * bat.b2 + W.b3 * bat.b3 + W.hr * bat.hr;
   return num / denom;
 }
 
@@ -1970,9 +2014,9 @@ function deriveLeagueConstants(res) {
   const totalRuns = res.standings.reduce((a, t) => a + t.rs, 0);
   const lgRunsPerPA = bat.pa ? totalRuns / bat.pa : 0;
 
-  // --- FIP 定数（lgFIP を lgERA に一致させる）---
+  // --- FIP 定数（lgFIP を lgERA に一致させる。FG式＝IBB除外・S3）---
   const ip = pit.outs / 3;
-  const fipRawLeague = ip ? (13 * pit.hr + 3 * (pit.bb + pit.hbp) - 2 * pit.so) / ip : 0;
+  const fipRawLeague = ip ? (13 * pit.hr + 3 * (pit.bb - (pit.ibb || 0) + pit.hbp) - 2 * pit.so) / ip : 0;
   const lgERA = pit.era;
   const fipConstant = lgERA - fipRawLeague;
   const lgFIP = lgERA; // 定義上一致
@@ -2543,13 +2587,15 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
  * 1試合をシミュレート。statFor(pid,teamId)=PlayerSeason を返す関数。
  * @param {Object} homeInit initSide v2 参照（旧 {teamId,depth,starterIdx} も後方互換で受ける）
  * @param {Function} [onBattedBall] (batterId, teamId, battedBall, result) スプレー収集用（任意）
+ * @param {{maxInnings?:number}} [opts] ポストシーズンは maxInnings:Infinity（延長は決着まで・§S3-3）
  * @returns {{homeScore, awayScore, innings, tie, pitchers:{home,away}, subs:{home,away}}}
  *   pitchers: 投手使用ログ [{pid,pitches,outs,enterInning,enterDiff}]（S3疲労管理の素材）
  *   subs:     交代ログ [{type:'PH'|'PR'|'DEF'|'RP', inning, outPid, inPid}]
  */
-function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall) {
+function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall, opts = {}) {
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
+  const maxInnings = opts.maxInnings ?? MAX_INNINGS;
 
   // 得点推移ログ（勝敗の正確な判定用）: 得点が入るたびに両軍のスコアと現投手を記録
   const runLog = [];
@@ -2564,7 +2610,7 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall)
     playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning); // 裏: home攻撃
     if (inning >= 9 && home.score !== away.score) break;
     inning++;
-    if (inning > MAX_INNINGS) break;
+    if (inning > maxInnings) break;
   }
 
   flushPitcher(home, away.score);
@@ -2603,6 +2649,11 @@ function initSide(init, cfg) {
   const pitcherSlot = slots.findIndex((s) => s.pos === 'P'); // DH無し試合のみ >=0
   if (pitcherSlot >= 0) slots[pitcherSlot].playerId = starterId; // 9番=当日の先発
   const dhSlot = slots.findIndex((s) => s.pos === 'DH');
+  // 守備配置は「当日のスタメン」から導く（S3 日次スタメンAI: depth の初期配置と異なりうる）
+  const defense = {};
+  for (const s of slots) {
+    if (s.pos !== 'DH' && s.pos !== 'P') defense[s.pos] = s.playerId;
+  }
   const bullpen = (init.availableRelievers ?? d.bullpen).slice();
   const roles = d.bullpenRoles ?? {
     closer: bullpen[0] ?? null,
@@ -2618,7 +2669,7 @@ function initSide(init, cfg) {
     slots,
     pitcherSlot,
     dhSlot, // 守備に就かないDH（守備位置補正=-17.5の主語）のスロット
-    defense: { ...d.defense },
+    defense,
     orderIdx: 0,
     starterId,
     curPid: starterId,
@@ -3193,15 +3244,25 @@ function assignDecisions(home, away, statFor, runLog) {
 }
 
 
-// ===== src/sim/season.mjs =====
+// ===== src/sim/usage.mjs =====
 // ============================================================================
-// 日程生成・シーズン実行・順位表（1-4a/f）
+// 日次スタメンAI・疲労管理（フェーズA S3 / §S3-2 / 設計原則「起用はポリシー経由」）
 //
-// 12球団総当たり: 各ペア13試合（うちホーム7/6）→ 各チーム143試合・リーグ858試合。
-// ※S2時点も総当たり近似。リーグ内125＋交流戦18＋「節」カレンダーは S3 日程v2 で導入。
-// 各試合は階層シードで独立・順序非依存に実行（並列化・再現の前提, §17/§19）。
-// 先発は各チームの登板数 % rotationSize（中6日=6人）でローテを回す。
-// S2: 試合のDH有無=ホーム球団の所属リーグ規則（DH無し試合は9番=投手）。監督プロファイルを試合へ接続。
+// season.mjs から試合ごとに呼ばれる純関数群＋チームごとの起用状態（UsageState）:
+//   selectStarter    → 中5日以上のローテ先発を選ぶ（投手可用性）
+//   bullpenAvailable → 連投制限（3連投禁止）・前日30球以上をフィルタした救援可用リスト
+//   selectLineup     → 休養（捕手は厚め・連続出場で確率↑）、相手先発の利き手プラトーン、
+//                      観測ベースの担当（regular/challenger の先発シェア）で当日スタメンを組む
+//   recordGameUsage  → 出場・登板履歴を更新し、25試合ごとに reviewAssignments を回す
+//   reviewAssignments→ 観測成績ベースの見直し: 不振レギュラーの先発頻度が下がり、
+//                      好調の控えが「シェア」を上げて徐々に昇格する（急な全交代はしない。
+//                      これが「WAR -6 が出ない」仕組みの本体・§S3-2）
+//
+// 三層構造の原則: シーズン中の見直しは trueAbility を直接見ない。
+//   評価 = 観測wOBA（PAで信頼度加重・少PAはリーグ平均へ回帰）
+//        ＋ スカウト評価（真値 + scoutSeed 由来の決定論ノイズ。状態作成時に一度だけ固める）
+// 初期の担当（regular）とポジション候補（positionRank）だけは編成時評価（S1）を引き継ぐ。
+// 采配（試合中の判断）は manager.mjs、ここは「試合前の起用」を担う（フェーズCの差し替えフック）。
 // ============================================================================
 
 
@@ -3210,47 +3271,560 @@ function assignDecisions(home, away, statFor, runLog) {
 
 
 /**
- * 総当たり日程を生成（{home,away} のリスト）。
- * 対戦相手ごとの試合数 = round(gamesPerSeason / (球団数-1))。
- * 6球団×140 → 5相手×28、12球団×143 → 11相手×13。ホスト側はペアごとに交互（C-6均衡化）。
+ * チームの起用状態を作る（シーズン開始時に1回）。
+ * @param {{id:string}} team
+ * @param {{dh:Object, noDh:Object}} charts buildDepthChart のDH有/無ペア（byId等は共通）
  */
-function buildSchedule(teams, rng, gamesPerSeason) {
-  const ids = teams.map((t) => t.id);
-  const n = ids.length;
-  const perPair = Math.round(gamesPerSeason / (n - 1));
-  const games = [];
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const startHome = (i + j) % 2; // ペアごとにホスト開始を入替（低index偏りを解消）
-      for (let k = 0; k < perPair; k++) {
-        const iHosts = k % 2 === startHome;
-        games.push(iHosts ? { home: ids[i], away: ids[j] } : { home: ids[j], away: ids[i] });
+function createUsageState(team, charts, cfg) {
+  const u = cfg.tuning.usage;
+  const chart = charts.dh; // byId / positionRank / rotation / bullpen は dh/noDh で共通
+  // スカウト打撃評価（真値 + scoutSeed由来の決定論ノイズ。50中心rating相当）: ここで一度だけ固める
+  const scoutEval = new Map();
+  for (const [pid, p] of chart.byId) {
+    if (p.role !== 'fielder') continue;
+    const noise = makeRng(hashSeed(p.scoutSeed ?? hashSeed(pid, 'scout'), 'usageScout')).normal(0, u.scoutSd);
+    scoutEval.set(pid, hitScore(p) / 4.5 - 50 + noise);
+  }
+  // ポジション担当: regular=編成時のスタメン、challenger=見直しで浮上した控え（share=先発シェア）
+  const assign = {};
+  for (const pos of Object.keys(chart.defense)) {
+    assign[pos] = { regular: chart.defense[pos], challenger: null, share: 0 };
+  }
+  const dhSlot = chart.lineup.find((s) => s.pos === 'DH');
+  assign.DH = { regular: dhSlot ? dhSlot.playerId : null, challenger: null, share: 0 };
+  return {
+    teamId: team.id,
+    charts,
+    scoutEval,
+    assign,
+    games: 0, // 消化試合数（見直しタイマー）
+    consecStarts: new Map(), // 野手 pid → 連続先発出場数（休養確率の入力）
+    startsByPid: new Map(), // 野手 pid → 先発出場数（較正・検証用）
+    startsAtPos: new Map(), // 野手 pid → Map(pos→先発数)（正捕手出場の較正・検証用）
+    lastStartDay: new Map(), // 先発投手 pid → 前回先発day
+    startDaysByPid: new Map(), // 先発投手 pid → [day,...]（登板間隔の検証用）
+    pitchedByDay: new Map(), // 投手 pid → Map(day→球数)（連投制限・前日球数の判定）
+    rotIdx: 0, // ローテの次の先発候補index
+  };
+}
+
+/**
+ * 混合評価（§S3-2）: 観測wOBA（回帰込み）を打席数で信頼度加重し、スカウト評価と混合。
+ * 真値は直接見ない（観測statline＋scoutSeedノイズのみ）。
+ * @param {Function} getBat pid → 観測battingライン（読み取り専用）
+ */
+function blendedWoba(state, pid, getBat, cfg) {
+  const u = cfg.tuning.usage;
+  const b = getBat(pid);
+  const obs = observedWoba(b, cfg);
+  const w = b.pa / (b.pa + u.trustPA); // PAが積み上がるほど観測を信じる
+  const scout = cfg.tuning.mgr.wobaPrior + (state.scoutEval.get(pid) ?? 0) * u.scoutWobaPerPt;
+  return w * obs + (1 - w) * scout;
+}
+
+/** 当日の先発投手（中 starterRestDays 日以上のローテ投手をローテ順に）。§S3-2投手可用性 */
+function selectStarter(state, day, cfg) {
+  const rot = state.charts.dh.rotation;
+  const need = cfg.tuning.fatigue.starterRestDays;
+  let fallback = rot[state.rotIdx % rot.length];
+  let fallbackRest = -1;
+  for (let k = 0; k < rot.length; k++) {
+    const pid = rot[(state.rotIdx + k) % rot.length];
+    const last = state.lastStartDay.get(pid);
+    const rest = last == null ? Infinity : day - last - 1;
+    if (rest >= need) return pid;
+    if (rest > fallbackRest) {
+      fallbackRest = rest;
+      fallback = pid;
+    }
+  }
+  return fallback; // 1日1試合×ローテ6なら理論上ここへは来ない（安全弁: 最も休めた投手）
+}
+
+/** 救援の可用リスト: 直近 maxConsecDays 日連続登板（=3連投になる）と前日30球以上を除外。§S3-2 */
+function bullpenAvailable(state, day, cfg) {
+  const f = cfg.tuning.fatigue;
+  return state.charts.dh.bullpen.filter((pid) => {
+    const m = state.pitchedByDay.get(pid);
+    if (!m) return true;
+    if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
+    let consec = 0;
+    for (let d = 1; d <= f.maxConsecDays; d++) {
+      if ((m.get(day - d) ?? 0) > 0) consec++;
+      else break;
+    }
+    return consec < f.maxConsecDays; // 2連投まで（3連投禁止）
+  });
+}
+
+/**
+ * 当日スタメンを組む（§S3-2）。担当（regular/challengerシェア）→休養→プラトーン入替の順で解決。
+ * 捕手はリード面の継続性を優先しプラトーン入替の対象外（休養と見直しのみ）。
+ * @param {{day:number, dh:boolean, oppPitcher:?Object, rng:Object, getBat:Function}} ctx
+ * @returns {{lineup:Array<{playerId:?string,pos:string}>, bench:string[], rested:string[]}}
+ */
+function selectLineup(state, ctx, cfg) {
+  const u = cfg.tuning.usage;
+  const r = cfg.tuning.rest;
+  const chart = ctx.dh ? state.charts.dh : state.charts.noDh;
+  const byId = chart.byId;
+  const fielders = [];
+  for (const [pid, p] of byId) if (p.role === 'fielder') fielders.push(pid);
+
+  // 評価（当日メモ）: 混合評価＋相手先発とのプラトーン補正（スイッチは常に有利側=減点なし）
+  const cache = new Map();
+  const baseEval = (pid) => {
+    let v = cache.get(pid);
+    if (v === undefined) {
+      v = blendedWoba(state, pid, ctx.getBat, cfg);
+      cache.set(pid, v);
+    }
+    return v;
+  };
+  const effEval = (pid) =>
+    baseEval(pid) - (ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher) ? u.platoonWobaPenalty : 0);
+
+  const used = new Set(); // 今日すでにスタメンへ入れた選手
+  const resting = new Set(); // 今日休養させる選手（スタメン候補から外す。代打等ベンチ待機は可）
+  const excluded = (pid) => used.has(pid) || resting.has(pid);
+  const today = {}; // pos → 当日スタメン
+
+  const positions = ctx.dh ? [...POSITION_DIFFICULTY, 'DH'] : POSITION_DIFFICULTY;
+  for (const pos of positions) {
+    const a = state.assign[pos] ?? { regular: null, challenger: null, share: 0 };
+    // 候補プール: 守備ポジは編成時 positionRank 上位（守備適性の担保）、DHは全野手
+    const pool = pos === 'DH' ? fielders : chart.positionRank[pos].slice(0, u.candidatesPerPos);
+    const bestOf = (list) => {
+      let best = null;
+      let bv = -Infinity;
+      for (const pid of list) {
+        if (excluded(pid)) continue;
+        const v = effEval(pid);
+        if (v > bv) {
+          bv = v;
+          best = pid;
+        }
+      }
+      return best;
+    };
+
+    // (1) 担当: challenger は share の頻度で先発（観測ベース見直しの漸進昇格）
+    let pid = a.regular != null && !excluded(a.regular) ? a.regular : null;
+    if (a.challenger && !excluded(a.challenger) && ctx.rng.next() < a.share) pid = a.challenger;
+
+    // (2) 休養: 捕手は厚めに、連続出場が長いほど確率↑（正捕手100-135試合の機序）
+    if (pid != null) {
+      const restP =
+        (pos === 'C' ? r.catcherRestProb : r.fielderRestProb) + r.streakW * (state.consecStarts.get(pid) ?? 0);
+      if (ctx.rng.next() < restP) {
+        resting.add(pid);
+        pid = null;
+      }
+    }
+
+    // (3) 空席の充填: 候補プールの実効評価最良（全滅なら positionRank/全野手から最初の未使用）
+    if (pid == null) {
+      pid = bestOf(pool) ?? (pos === 'DH' ? fielders : chart.positionRank[pos]).find((x) => !excluded(x));
+    } else if (pos !== 'C' && ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher)) {
+      // (4) プラトーン: 同利きの担当に対し、実効評価で上回る候補がいれば当日限りの入替
+      const alt = bestOf(pool.filter((x) => x !== pid));
+      if (alt != null && effEval(alt) - effEval(pid) > u.platoonMargin) pid = alt;
+    }
+    used.add(pid);
+    today[pos] = pid;
+  }
+
+  // 打順スロットへ反映（交代者は同じ打順スロットを引き継ぐ）。9番'P'は initSide が当日先発を充填。
+  const lineup = chart.lineup.map((s) => ({ playerId: s.pos === 'P' ? null : today[s.pos], pos: s.pos }));
+  const inLineup = new Set(lineup.map((s) => s.playerId));
+  const bench = fielders.filter((pid) => !inLineup.has(pid)); // 休養者も代打要員としてベンチに残る
+  return { lineup, bench, rested: [...resting] };
+}
+
+/**
+ * 試合後の起用履歴の更新。ローテ進行・投手の日次球数（S2投手使用ログの接続）・
+ * 野手の連続出場/先発数を記録し、reviewInterval 試合ごとに見直しを回す。
+ */
+function recordGameUsage(state, { day, starterPid, lineup, pitcherLog }, getBat, cfg) {
+  // 先発ローテの進行と登板日の記録
+  const rot = state.charts.dh.rotation;
+  const ri = rot.indexOf(starterPid);
+  if (ri >= 0) state.rotIdx = (ri + 1) % rot.length;
+  state.lastStartDay.set(starterPid, day);
+  let sd = state.startDaysByPid.get(starterPid);
+  if (!sd) {
+    sd = [];
+    state.startDaysByPid.set(starterPid, sd);
+  }
+  sd.push(day);
+
+  // 投手の日次球数（連投制限・前日球数の判定材料）
+  for (const ap of pitcherLog) {
+    let m = state.pitchedByDay.get(ap.pid);
+    if (!m) {
+      m = new Map();
+      state.pitchedByDay.set(ap.pid, m);
+    }
+    m.set(day, (m.get(day) ?? 0) + ap.pitches);
+  }
+
+  // 野手の連続出場・先発数（先発した野手は+1、しなかった野手は0へリセット）
+  const started = new Set();
+  for (const s of lineup) {
+    if (s.pos === 'P' || !s.playerId) continue;
+    started.add(s.playerId);
+    state.startsByPid.set(s.playerId, (state.startsByPid.get(s.playerId) ?? 0) + 1);
+    let mp = state.startsAtPos.get(s.playerId);
+    if (!mp) {
+      mp = new Map();
+      state.startsAtPos.set(s.playerId, mp);
+    }
+    mp.set(s.pos, (mp.get(s.pos) ?? 0) + 1);
+  }
+  for (const [pid, p] of state.charts.dh.byId) {
+    if (p.role !== 'fielder') continue;
+    state.consecStarts.set(pid, started.has(pid) ? (state.consecStarts.get(pid) ?? 0) + 1 : 0);
+  }
+
+  // 観測成績ベースの見直し（25試合ごと・§S3-2）
+  state.games++;
+  if (state.games % cfg.tuning.usage.reviewInterval === 0) reviewAssignments(state, getBat, cfg);
+}
+
+/**
+ * 観測成績ベースの担当見直し（§S3-2）。ポジションごとに混合評価で候補を再ランクし、
+ * swapMargin を超えて上回る候補を challenger としてシェアを漸増（share≥1で完全昇格）。
+ * 差が縮めばシェアは減衰する（一時の好不調で振り回されない）。真値は見ない。
+ */
+function reviewAssignments(state, getBat, cfg) {
+  const u = cfg.tuning.usage;
+  const chart = state.charts.dh;
+  const fielders = [];
+  for (const [pid, p] of chart.byId) if (p.role === 'fielder') fielders.push(pid);
+  const ev = new Map(fielders.map((pid) => [pid, blendedWoba(state, pid, getBat, cfg)]));
+
+  const used = new Set();
+  for (const pos of [...POSITION_DIFFICULTY, 'DH']) {
+    const a = state.assign[pos];
+    if (!a) continue;
+    const pool = (pos === 'DH' ? fielders : chart.positionRank[pos].slice(0, u.candidatesPerPos)).filter(
+      (pid) => !used.has(pid),
+    );
+    if (!pool.length) continue;
+    // レギュラーが他ポジションの担当に取られた（or不在）なら評価最良を新担当に
+    if (a.regular == null || used.has(a.regular)) {
+      a.regular = pool.reduce((b, pid) => (ev.get(pid) > ev.get(b) ? pid : b));
+      a.challenger = null;
+      a.share = 0;
+      used.add(a.regular);
+      continue;
+    }
+    let top = a.regular;
+    for (const pid of pool) if (ev.get(pid) > ev.get(top)) top = pid;
+    if (top === a.regular || ev.get(top) - ev.get(a.regular) <= u.swapMargin) {
+      // 現状維持: 挑戦者のシェアは減衰（差が消えたら挑戦解消）
+      a.share = Math.max(0, a.share - u.promoteStep);
+      if (a.share === 0) a.challenger = null;
+    } else if (a.challenger === top) {
+      a.share += u.promoteStep;
+      if (a.share >= 1) {
+        // 完全昇格: 不振レギュラーはベンチ（次回見直しから挑戦者になりうる）
+        a.regular = top;
+        a.challenger = null;
+        a.share = 0;
+      }
+    } else {
+      a.challenger = top; // 新挑戦者はシェア漸増から（急な全交代をしない）
+      a.share = u.promoteStep;
+    }
+    used.add(a.regular);
+  }
+}
+
+
+// ===== src/sim/postseason.mjs =====
+// ============================================================================
+// ポストシーズン（フェーズA S3 / §S3-3）
+//
+// クライマックスシリーズ（CS）→ 日本シリーズを NPB 規則で実行する:
+//   CS 1st   : リーグ2位 vs 3位。csFirstWins(2)戦先勝・全試合2位の本拠地。
+//   CS Final : リーグ1位 vs CS1st勝者。1位に csFinalAdv(1)勝のアドバンテージ・
+//              csFinalWins(4)勝先取・全試合1位の本拠地。
+//   日本シリーズ: 両リーグ王者。japanSeriesWins(4)勝先取・2-3-2 の本拠地パターン
+//              （レギュラーシーズン勝率上位が第1,2,6,7戦を主催。同率は得失点差→先着）。
+// 延長は決着まで（引分なし・maxInnings:Infinity）。DH規則=ホーム球団のリーグ（§S2-2と同じ）。
+// 統計はレギュラーシーズンと分離集計（専用の stats Map。混ぜない・§S3-3）。
+// 起用はシリーズ内でローテを頭から回す簡易版（日次疲労の持ち越しはフェーズB以降）。
+// ============================================================================
+
+
+
+
+
+/**
+ * ポストシーズン一式を実行。
+ * @param {Object} input
+ * @param {Array<{id:string, rows:Array}>} input.rankings リーグ別順位（rows=順位表の行・勝率降順）
+ * @param {Map} input.chartsByTeam teamId → {dh,noDh} 編成表
+ * @param {Map} input.teamById teamId → チーム（league/manager 参照）
+ * @param {Map} input.leagueDh リーグid → DH有無
+ * @param {number} input.seed ポストシーズン用シード（レギュラーシーズンから分離）
+ * @returns {{csFirst:Object, csFinal:Object, japanSeries:?Object, champion:?string,
+ *   playerSeasons:Array, statsById:Map}}
+ */
+function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, park = NEUTRAL_PARK }) {
+  const rules = cfg.league.postseason ?? {};
+  const csFirstWins = rules.csFirstWins ?? 2;
+  const csFinalWins = rules.csFinalWins ?? 4;
+  const csFinalAdv = rules.csFinalAdv ?? 1;
+  const jsWins = rules.japanSeriesWins ?? 4;
+
+  // ポストシーズン専用の集計器（レギュラーシーズンと混ぜない）
+  const stats = new Map();
+  const statFor = (pid, teamId) => {
+    let s = stats.get(pid);
+    if (!s) {
+      s = createPlayerSeason(pid, 'postseason');
+      s.teamId = teamId;
+      stats.set(pid, s);
+    }
+    return s;
+  };
+  const psGames = new Map(); // teamId → ポストシーズン消化試合数（ローテを頭から回す）
+
+  /** 1試合（延長は決着まで）。DH規則=ホーム球団リーグ。 */
+  const playGame = (stage, gi, homeId, awayId) => {
+    const rng = makeRng(hashSeed(seed, stage, gi));
+    const dh = leagueDh.get(teamById.get(homeId).league) ?? true;
+    const init = (teamId) => {
+      const c = chartsByTeam.get(teamId);
+      const n = psGames.get(teamId) ?? 0;
+      psGames.set(teamId, n + 1);
+      return {
+        teamId,
+        depth: dh ? c.dh : c.noDh,
+        starterIdx: n, // シリーズはローテ頭から順に（中n日はシリーズ間隔で担保される簡易版）
+        manager: teamById.get(teamId).manager,
+        dh,
+      };
+    };
+    const res = simulateGame(init(homeId), init(awayId), cfg, rng, statFor, park, undefined, {
+      maxInnings: Infinity, // 延長は決着まで（引分なし・§S3-3）
+    });
+    return { home: homeId, away: awayId, homeScore: res.homeScore, awayScore: res.awayScore, innings: res.innings };
+  };
+
+  /** シリーズ（winsNeeded 勝先取。advA=チームaの初期アド、hosts=第n戦のホスト列・末尾を繰返し） */
+  const playSeries = (stage, a, b, { winsNeeded, advA = 0, hosts }) => {
+    const wins = { [a]: advA, [b]: 0 };
+    const games = [];
+    let gi = 0;
+    while (wins[a] < winsNeeded && wins[b] < winsNeeded) {
+      const home = hosts[Math.min(gi, hosts.length - 1)];
+      const away = home === a ? b : a;
+      const g = playGame(stage, gi, home, away);
+      games.push(g);
+      wins[g.homeScore > g.awayScore ? g.home : g.away]++;
+      gi++;
+    }
+    const winner = wins[a] >= winsNeeded ? a : b;
+    return { teams: [a, b], winsNeeded, advantage: advA > 0 ? a : null, wins, games, winner };
+  };
+
+  // --- リーグごとの CS ------------------------------------------------------
+  const csFirst = {};
+  const csFinal = {};
+  const finalists = []; // {league, teamId}
+  for (const l of rankings) {
+    const ids = l.rows.map((r) => r.teamId);
+    const [t1, t2, t3] = ids;
+    if (!t1) continue;
+    let challenger = t2 ?? null;
+    if (t2 && t3) {
+      csFirst[l.id] = playSeries(`csFirst:${l.id}`, t2, t3, { winsNeeded: csFirstWins, hosts: [t2] });
+      challenger = csFirst[l.id].winner;
+    }
+    if (challenger) {
+      csFinal[l.id] = playSeries(`csFinal:${l.id}`, t1, challenger, {
+        winsNeeded: csFinalWins,
+        advA: csFinalAdv,
+        hosts: [t1],
+      });
+      finalists.push({ league: l.id, teamId: csFinal[l.id].winner });
+    } else {
+      finalists.push({ league: l.id, teamId: t1 }); // 相手不在（縮小構成の安全弁）
+    }
+  }
+
+  // --- 日本シリーズ（2-3-2） -------------------------------------------------
+  let japanSeries = null;
+  let champion = finalists.length === 1 ? finalists[0].teamId : null;
+  if (finalists.length >= 2) {
+    const rowOf = (tid) => {
+      for (const l of rankings) {
+        const r = l.rows.find((x) => x.teamId === tid);
+        if (r) return r;
+      }
+      return { w: 0, l: 0, rs: 0, ra: 0 };
+    };
+    const pct = (r) => (r.w + r.l ? r.w / (r.w + r.l) : 0);
+    const [fa, fb] = [finalists[0].teamId, finalists[1].teamId];
+    const ra = rowOf(fa);
+    const rb = rowOf(fb);
+    // 本拠地アドバンテージ: レギュラーシーズン勝率上位（同率は得失点差→先のリーグ）
+    const aFirst = pct(ra) > pct(rb) || (pct(ra) === pct(rb) && ra.rs - ra.ra >= rb.rs - rb.ra);
+    const upper = aFirst ? fa : fb;
+    const lower = aFirst ? fb : fa;
+    const hosts = [upper, upper, lower, lower, lower, upper, upper]; // 2-3-2
+    japanSeries = playSeries('japanSeries', upper, lower, { winsNeeded: jsWins, hosts });
+    champion = japanSeries.winner;
+  }
+
+  return { csFirst, csFinal, japanSeries, champion, playerSeasons: [...stats.values()], statsById: stats };
+}
+
+
+// ===== src/sim/season.mjs =====
+// ============================================================================
+// 日程生成・シーズン実行・順位表（1-4a/f → フェーズA S3 で日程v2・日次起用AI・PSを導入）
+//
+// 日程v2（§S3-1）: リーグ内5相手×25（ホーム13/12交互）=125 ＋ 交流戦6相手×3=18 → 143試合。
+//   「節」（day）単位に直列化: 各チーム1日1試合・連続 maxTeamConsecDays 日で休日を挟む。
+//   試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2）。
+// 日次スタメンAI（§S3-2・usage.mjs）: 先発は中5日以上、救援は3連投禁止/前日30球で不可、
+//   捕手厚めの休養・プラトーン・25試合ごとの観測ベース見直しで当日スタメンを組む。
+// 各試合は階層シードで独立に実行（§17/§19）。起用状態（疲労・見直し）は day 順に逐次更新
+// されるため、日程は day 昇順で回す。
+// ポストシーズン（§S3-3・postseason.mjs）: CS→日本シリーズ。統計はレギュラーと分離集計。
+// ============================================================================
+
+
+
+
+
+
+
+
+/**
+ * 日程v2を生成し「節」（day）単位に直列化する（§S3-1）。
+ * 2リーグ×同数構成: リーグ内 各相手 inLeagueGamesPerOpp 試合（ホームは13/12を交互）＋
+ * 交流戦 各相手 interLeagueGamesPerOpp 試合（3連戦を一方の本拠地で・ホスト交互）。
+ * それ以外の構成は旧・総当たり近似にフォールバック（day直列化は同様に適用）。
+ * @param {Array} teams league.teams（t.league でリーグ判定）
+ * @param {Object} rng 決定論rng（シャッフル用）
+ * @param {Object} cfg createConfig() の設定
+ * @returns {Array<{home:string, away:string, day:number}>} day 昇順
+ */
+function buildSchedule(teams, rng, cfg) {
+  const byLeague = new Map();
+  for (const t of teams) {
+    const key = t.league ?? '';
+    if (!byLeague.has(key)) byLeague.set(key, []);
+    byLeague.get(key).push(t.id);
+  }
+  const groups = [...byLeague.values()];
+  const canV2 = groups.length === 2 && groups[0].length === groups[1].length && groups[0].length >= 2;
+
+  const flat = [];
+  if (canV2) {
+    const nIn = cfg.league.inLeagueGamesPerOpp ?? 25;
+    const nInter = cfg.league.interLeagueGamesPerOpp ?? 3;
+    // リーグ内: 各ペア nIn 試合。「追加ホーム」（13試合目）は (i+j) 偶奇で振り分け＝
+    // 各チームの追加ホスト数が2or3に均され、リーグ内ホームは62or63試合になる。
+    for (const g of groups) {
+      for (let i = 0; i < g.length; i++) {
+        for (let j = i + 1; j < g.length; j++) {
+          const extraToI = (i + j) % 2 === 0;
+          for (let k = 0; k < nIn; k++) {
+            const iHosts = (k % 2 === 0) === extraToI;
+            flat.push(iHosts ? { home: g[i], away: g[j] } : { home: g[j], away: g[i] });
+          }
+        }
+      }
+    }
+    // 交流戦: 各ペア nInter 試合を一方の本拠地で（(a+b) 偶奇でホスト交互＝各チーム3カード主催・
+    // 交流戦ホームは9試合。総ホームは71or72試合でほぼ均衡）。
+    const [A, B] = groups;
+    for (let a = 0; a < A.length; a++) {
+      for (let b = 0; b < B.length; b++) {
+        const hostA = (a + b) % 2 === 0;
+        for (let k = 0; k < nInter; k++) {
+          flat.push(hostA ? { home: A[a], away: B[b] } : { home: B[b], away: A[a] });
+        }
+      }
+    }
+  } else {
+    // フォールバック: 総当たり近似（対戦相手ごとの試合数 = round(G/(n-1))・ホストはペア内交互）
+    const ids = teams.map((t) => t.id);
+    const n = ids.length;
+    const perPair = Math.round((cfg.league.gamesPerSeason ?? 143) / (n - 1));
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const startHome = (i + j) % 2;
+        for (let k = 0; k < perPair; k++) {
+          const iHosts = k % 2 === startHome;
+          flat.push(iHosts ? { home: ids[i], away: ids[j] } : { home: ids[j], away: ids[i] });
+        }
       }
     }
   }
-  // 順序をシャッフル（同一チームの試合が偏らないように）
-  for (let i = games.length - 1; i > 0; i--) {
+
+  // シャッフル（同一カードの偏り解消）→ 節カレンダーへ直列化
+  for (let i = flat.length - 1; i > 0; i--) {
     const j = rng.int(i + 1);
-    const t = games[i];
-    games[i] = games[j];
-    games[j] = t;
+    const t = flat[i];
+    flat[i] = flat[j];
+    flat[j] = t;
   }
-  return games;
+  return serializeDays(flat, teams, cfg.tuning?.schedule?.maxTeamConsecDays ?? 6);
+}
+
+/**
+ * フラットな試合リストを day 単位へ直列化（§S3-1）。各チーム1日1試合。
+ * 連続 maxConsec 日出場したチームは翌日を休日にする（連投制限・中6日の時間基盤）。
+ */
+function serializeDays(flat, teams, maxConsec) {
+  const remaining = flat.slice();
+  const consec = new Map(teams.map((t) => [t.id, 0]));
+  const out = [];
+  let day = 0;
+  while (remaining.length) {
+    const busy = new Set(); // 今日もう試合が入った（or 休日の）チーム
+    for (const [tid, c] of consec) if (c >= maxConsec) busy.add(tid);
+    const played = new Set();
+    for (let i = 0; i < remaining.length; ) {
+      const g = remaining[i];
+      if (busy.has(g.home) || busy.has(g.away)) {
+        i++;
+        continue;
+      }
+      busy.add(g.home);
+      busy.add(g.away);
+      played.add(g.home);
+      played.add(g.away);
+      out.push({ home: g.home, away: g.away, day });
+      remaining.splice(i, 1);
+    }
+    for (const t of teams) consec.set(t.id, played.has(t.id) ? consec.get(t.id) + 1 : 0);
+    day++; // 誰も組めない日は全休日（consecがリセットされ翌日は必ず進む）
+  }
+  return out;
 }
 
 /**
  * 1シーズンを実行。
  * @param {{teams:Array,players:Array,masterSeed:number}} league
  * @param {Object} cfg
- * @param {{season?:number, seed?:number, park?:Object}} opts
- * @returns {{season:number, standings:Array, playerSeasons:Array, statsById:Map, depthByTeam:Map}}
+ * @param {{season?:number, seed?:number, park?:Object, postseason?:boolean}} opts
+ * @returns {{season:number, standings:Array, standingsByLeague:Object, playerSeasons:Array,
+ *   statsById:Map, depthByTeam:Map, runSplit:Object, usageByTeam:Map, postseason:?Object}}
  */
 function simulateSeason(league, cfg, opts = {}) {
   const season = opts.season ?? 2026;
   const seed = opts.seed ?? league.masterSeed ?? 20260701;
   const park = opts.park ?? NEUTRAL_PARK;
 
-  // 編成表（S2: 試合のDH有無=ホーム球団の所属リーグ規則。各チームDH用/DH無し用の両方を用意）
+  // 編成表（試合のDH有無=ホーム球団の所属リーグ規則。各チームDH用/DH無し用の両方を用意）
   const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
   const teamById = new Map(league.teams.map((t) => [t.id, t]));
   const chartsByTeam = new Map();
@@ -3280,8 +3854,16 @@ function simulateSeason(league, cfg, opts = {}) {
     }
     return s;
   };
+  // 観測成績の読み取り専用ビュー（S3 usage: 集計器を汚さない。未出場は空ライン＝priorへ回帰）
+  const emptyBat = createBattingLine();
+  const getBat = (pid) => {
+    const s = stats.get(pid);
+    return s ? s.batting : emptyBat;
+  };
   const standings = new Map();
-  for (const t of league.teams) standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name });
+  for (const t of league.teams) {
+    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league });
+  }
 
   // スプレー収集（§16, §17: 生イベントは最新シーズンのみ保持）。opts.collectSpray で有効化。
   const spray = opts.collectSpray ? new Map() : null;
@@ -3299,44 +3881,57 @@ function simulateSeason(league, cfg, opts = {}) {
       }
     : undefined;
 
-  // 日程実行
-  const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg.league.gamesPerSeason);
-  const gameCount = new Map(league.teams.map((t) => [t.id, 0]));
+  // 日程v2（day昇順）＋日次起用状態（S3）
+  const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
+  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
+  // 試合のDH規則別 得点集計（セパ得点差はDH規則単位で見る: 所属リーグ単位は球団戦力ノイズが乗る）
+  const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
 
-  const rotationSize = cfg.league.rotationSize;
   schedule.forEach((g, gi) => {
     const rng = makeRng(hashSeed(seed, 'game', gi));
-    const hGC = gameCount.get(g.home);
-    const aGC = gameCount.get(g.away);
     // 試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2。両チームとも同じ規則で編成）
     const gameDh = leagueDh.get(teamById.get(g.home).league) ?? true;
     const hC = chartsByTeam.get(g.home);
     const aC = chartsByTeam.get(g.away);
-    // TODO(S3): availableRelievers を疲労管理（連投制限・前日球数）でフィルタして渡し、
-    //           res.pitchers（投手使用ログ）を日次の可用性判定に蓄積する。
-    const res = simulateGame(
-      {
-        teamId: g.home,
-        depth: gameDh ? hC.dh : hC.noDh,
-        starterIdx: hGC % rotationSize,
-        manager: teamById.get(g.home).manager,
+    const hU = usageByTeam.get(g.home);
+    const aU = usageByTeam.get(g.away);
+
+    // 先発投手（中5日以上）を先に決める＝互いのスタメン（プラトーン）判断の入力になる
+    const hSp = selectStarter(hU, g.day, cfg);
+    const aSp = selectStarter(aU, g.day, cfg);
+
+    // 当日スタメン・ベンチ・救援可用リスト（usage.mjs）。乱数は試合ごとに独立の階層シード。
+    const mkInit = (teamId, chart, u, starterPid, oppStarter, sideIdx) => {
+      const sel = selectLineup(
+        u,
+        {
+          day: g.day,
+          dh: gameDh,
+          oppPitcher: oppStarter,
+          rng: makeRng(hashSeed(seed, 'lineup', gi, sideIdx)),
+          getBat,
+        },
+        cfg,
+      );
+      return {
+        teamId,
+        depth: chart,
+        starterPid,
+        lineup: sel.lineup,
+        bench: sel.bench,
+        availableRelievers: bullpenAvailable(u, g.day, cfg),
+        manager: teamById.get(teamId).manager,
         dh: gameDh,
-      },
-      {
-        teamId: g.away,
-        depth: gameDh ? aC.dh : aC.noDh,
-        starterIdx: aGC % rotationSize,
-        manager: teamById.get(g.away).manager,
-        dh: gameDh,
-      },
-      cfg,
-      rng,
-      statFor,
-      park,
-      onBattedBall,
-    );
-    gameCount.set(g.home, hGC + 1);
-    gameCount.set(g.away, aGC + 1);
+      };
+    };
+    const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
+    const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
+
+    const res = simulateGame(hInit, aInit, cfg, rng, statFor, park, onBattedBall);
+
+    // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新（S2引き継ぎのTODO(S3)を解消）
+    recordGameUsage(hU, { day: g.day, starterPid: hSp, lineup: hInit.lineup, pitcherLog: res.pitchers.home }, getBat, cfg);
+    recordGameUsage(aU, { day: g.day, starterPid: aSp, lineup: aInit.lineup, pitcherLog: res.pitchers.away }, getBat, cfg);
 
     const H = standings.get(g.home);
     const A = standings.get(g.away);
@@ -3356,10 +3951,45 @@ function simulateSeason(league, cfg, opts = {}) {
       A.w++;
       H.l++;
     }
+    const split = gameDh ? runSplit.dh : runSplit.noDh;
+    split.games++;
+    split.runs += res.homeScore + res.awayScore;
   });
 
   const table = [...standings.values()].sort((a, b) => winPct(b) - winPct(a) || b.rs - b.ra - (a.rs - a.ra));
-  return { season, standings: table, playerSeasons: [...stats.values()], statsById: stats, depthByTeam, spray };
+  // リーグ別順位表（table はソート済み→フィルタで順序が保たれる）
+  const standingsByLeague = {};
+  for (const row of table) {
+    const lid = row.league ?? 'ALL';
+    (standingsByLeague[lid] = standingsByLeague[lid] || []).push(row);
+  }
+
+  // ポストシーズン（§S3-3）: 2リーグ制のときのみ。統計はレギュラーシーズンと分離集計。
+  let postseason = null;
+  if ((opts.postseason ?? true) && (cfg.league.leagues ?? []).length === 2) {
+    postseason = simulatePostseason({
+      rankings: cfg.league.leagues.map((l) => ({ id: l.id, rows: standingsByLeague[l.id] ?? [] })),
+      chartsByTeam,
+      teamById,
+      leagueDh,
+      cfg,
+      seed: hashSeed(seed, 'postseason'),
+      park,
+    });
+  }
+
+  return {
+    season,
+    standings: table,
+    standingsByLeague,
+    playerSeasons: [...stats.values()],
+    statsById: stats,
+    depthByTeam,
+    spray,
+    runSplit,
+    usageByTeam,
+    postseason,
+  };
 }
 
 /** 勝率（引分除く） */
@@ -3451,11 +4081,11 @@ function playerBaserunning(ps, cfg, lc) {
   };
 }
 
-/** 投手指標（ERA/FIP 含む） */
+/** 投手指標（ERA/FIP 含む）。FIPはFG式 (13HR+3(BB−IBB+HBP)−2K)/IP + C（敬遠は投手の技量でないため除外・S3） */
 function playerPitching(ps, lc) {
   const p = ps.pitching;
   const ip = p.outs / 3;
-  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb + p.hbp) - 2 * p.so) / ip : 0;
+  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb - (p.ibb || 0) + p.hbp) - 2 * p.so) / ip : 0;
   return {
     g: p.g,
     gs: p.gs,
@@ -3485,7 +4115,9 @@ function playerPitching(ps, lc) {
 // WAR算出（2-9 / §9）— 企画の一番の売り「WARまで自然に出る」
 //
 // 野手WAR = (wRAA + BsR + UZR + posAdj + repl) / RPW
-// 投手WAR = (IP/9 × (replFIP − FIP)) / RPW,  replFIP = lgFIP × replFipMult
+// 投手WAR = (lgFIP − FIP)/9 × IP / RPW + (IP/9) × replPer9(役割)
+//   役割別代替水準（S3・FanGraphs方式 B-5）: 先発 0.12 / 救援 0.03 wins/9IP を GS/G で按分
+//   （旧 replFIP = lgFIP × replFipMult は廃止）
 //
 // 各項はここまでの副産物（wRAA=1-7, BsR=2-4/2-6, UZR=2-8, posAdj=位置補正, repl=代替水準）。
 // 位置価値は posAdj の一箇所のみで計上（UZR側で二重計上しない・レビューB-5）。
@@ -3524,14 +4156,16 @@ function hitterWAR(ps, cfg, lc) {
   };
 }
 
-/** 投手WAR */
+/** 投手WAR（役割別代替水準・S3）。平均比の価値 + 役割別の代替水準ボーナス。 */
 function pitcherWAR(ps, cfg, lc) {
   const pit = playerPitching(ps, lc);
   const lgFIP = lc.lgFIP || 3.8;
-  const replFIP = lgFIP * cfg.tuning.replFipMult;
   const rpw = lc.rpw || 9.3;
-  const war = ((pit.ip / 9) * (replFIP - pit.fip)) / rpw;
-  return { ip: pit.ip, fip: pit.fip, replFIP, war };
+  // 役割 = GS/G 比で先発/救援を按分（スイングマンは中間の代替水準になる）
+  const gsShare = pit.g ? pit.gs / pit.g : 0;
+  const replPer9 = gsShare * cfg.tuning.replStarterPer9 + (1 - gsShare) * cfg.tuning.replRelieverPer9;
+  const war = (((lgFIP - pit.fip) / 9) * pit.ip) / rpw + (pit.ip / 9) * replPer9;
+  return { ip: pit.ip, fip: pit.fip, replPer9, war };
 }
 
 /** 選手のWAR（役割で分岐） */
@@ -3567,7 +4201,9 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.4.0-phaseA-s2';
+
+
+const ENGINE_VERSION = '0.5.0-phaseA-s3';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 

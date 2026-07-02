@@ -79,11 +79,11 @@ export function playerBaserunning(ps, cfg, lc) {
   };
 }
 
-/** 投手指標（ERA/FIP 含む） */
+/** 投手指標（ERA/FIP 含む）。FIPはFG式 (13HR+3(BB−IBB+HBP)−2K)/IP + C（敬遠は投手の技量でないため除外・S3） */
 export function playerPitching(ps, lc) {
   const p = ps.pitching;
   const ip = p.outs / 3;
-  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb + p.hbp) - 2 * p.so) / ip : 0;
+  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb - (p.ibb || 0) + p.hbp) - 2 * p.so) / ip : 0;
   return {
     g: p.g,
     gs: p.gs,

@@ -20,11 +20,14 @@ export const LINEAR_WEIGHTS = {
   hr: 1.65,
 };
 
-/** 打撃イベント合計から「アウト基準の得点価値/打席」を出す（wOBAの素） */
+/** 打撃イベント合計から「アウト基準の得点価値/打席」を出す（wOBAの素）。
+ *  FG定義準拠（S3）: 分子は uBB=BB−IBB（敬遠は打者の技量でない）、分母 = AB+BB−IBB+SF+HBP。 */
 export function rawRunValuePerPA(bat, W = LINEAR_WEIGHTS) {
-  const denom = bat.ab + bat.bb + bat.hbp + bat.sf;
+  const ibb = bat.ibb || 0;
+  const denom = bat.ab + bat.bb - ibb + bat.sf + bat.hbp;
   if (!denom) return 0;
-  const num = W.bb * bat.bb + W.hbp * bat.hbp + W.b1 * bat.b1 + W.b2 * bat.b2 + W.b3 * bat.b3 + W.hr * bat.hr;
+  const num =
+    W.bb * (bat.bb - ibb) + W.hbp * bat.hbp + W.b1 * bat.b1 + W.b2 * bat.b2 + W.b3 * bat.b3 + W.hr * bat.hr;
   return num / denom;
 }
 
@@ -46,9 +49,9 @@ export function deriveLeagueConstants(res) {
   const totalRuns = res.standings.reduce((a, t) => a + t.rs, 0);
   const lgRunsPerPA = bat.pa ? totalRuns / bat.pa : 0;
 
-  // --- FIP 定数（lgFIP を lgERA に一致させる）---
+  // --- FIP 定数（lgFIP を lgERA に一致させる。FG式＝IBB除外・S3）---
   const ip = pit.outs / 3;
-  const fipRawLeague = ip ? (13 * pit.hr + 3 * (pit.bb + pit.hbp) - 2 * pit.so) / ip : 0;
+  const fipRawLeague = ip ? (13 * pit.hr + 3 * (pit.bb - (pit.ibb || 0) + pit.hbp) - 2 * pit.so) / ip : 0;
   const lgERA = pit.era;
   const fipConstant = lgERA - fipRawLeague;
   const lgFIP = lgERA; // 定義上一致

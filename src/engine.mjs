@@ -34,13 +34,18 @@ import {
 } from './sim/manager.mjs';
 import { simulateGame, advanceRunners } from './sim/game.mjs';
 import { simulateSeason, buildSchedule, winPct } from './sim/season.mjs';
-import { leagueBatting, leaguePitching, leagueSummary } from './sim/leagueStats.mjs';
+import {
+  createUsageState, blendedWoba, selectStarter, selectLineup, bullpenAvailable,
+  recordGameUsage, reviewAssignments,
+} from './sim/usage.mjs';
+import { simulatePostseason } from './sim/postseason.mjs';
+import { leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague } from './sim/leagueStats.mjs';
 import { deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS } from './sim/leagueConstants.mjs';
 import { playerBatting, playerPitching, playerBaserunning } from './sim/metrics.mjs';
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
-export const ENGINE_VERSION = '0.4.0-phaseA-s2';
+export const ENGINE_VERSION = '0.5.0-phaseA-s3';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {
@@ -62,7 +67,10 @@ export {
   chooseReliever, starterPitchLimit,
   simulateGame, advanceRunners,
   simulateSeason, buildSchedule, winPct,
-  leagueBatting, leaguePitching, leagueSummary,
+  createUsageState, blendedWoba, selectStarter, selectLineup, bullpenAvailable,
+  recordGameUsage, reviewAssignments,
+  simulatePostseason,
+  leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague,
   deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS,
   playerBatting, playerPitching, playerBaserunning,
   rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg,

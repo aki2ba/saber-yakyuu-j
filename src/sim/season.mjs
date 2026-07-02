@@ -175,7 +175,8 @@ export function simulateSeason(league, cfg, opts = {}) {
   };
   const standings = new Map();
   for (const t of league.teams) {
-    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league });
+    // il = 交流戦成績（S4 UI「2リーグ順位表＋交流戦成績」の素材。所属リーグが異なる対戦のみ勘定）
+    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
   }
 
   // スプレー収集（§16, §17: 生イベントは最新シーズンのみ保持）。opts.collectSpray で有効化。
@@ -263,6 +264,19 @@ export function simulateSeason(league, cfg, opts = {}) {
     } else {
       A.w++;
       H.l++;
+    }
+    // 交流戦成績（S4 UI）: 別リーグ同士の対戦を各チームの il へ計上
+    if (teamById.get(g.home).league !== teamById.get(g.away).league) {
+      if (res.tie) {
+        H.il.t++;
+        A.il.t++;
+      } else if (res.homeScore > res.awayScore) {
+        H.il.w++;
+        A.il.l++;
+      } else {
+        A.il.w++;
+        H.il.l++;
+      }
     }
     const split = gameDh ? runSplit.dh : runSplit.noDh;
     split.games++;

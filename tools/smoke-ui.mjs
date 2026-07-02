@@ -94,4 +94,53 @@ assert.ok(modalsOpened >= 4, `選手モーダルが開ける (opened ${modalsOpe
 const svgCount = walk(appDiv).filter((n) => n.tag === 'svg' || n.tag === 'circle' || n.tag === 'path').length;
 assert.ok(svgCount > 0, `スプレーチャートSVG要素が生成される (${svgCount})`);
 
-console.log('UI smoke OK: setup→simulate→5タブ(WAR含む)描画→モーダル%d回→SVG %d要素、例外なし', modalsOpened, svgCount);
+// --- S4検証: 2リーグ順位表＋交流戦成績＋ポストシーズンパネル -----------------
+// El木からテキストを回収（el() は文字列を children に直接 push する）
+const textOf = (n) => {
+  let s = typeof n._text === 'string' ? n._text : '';
+  for (const c of n.children) s += typeof c === 'string' ? c : textOf(c);
+  return s;
+};
+
+// 5) 順位表タブ: リーグ見出し2つ＋6球団×2テーブル＋交流戦列
+const standTab = tabs.find((t) => textOf(t) === '順位表');
+assert.ok(standTab, '順位表タブが存在');
+standTab._onclick();
+let nodes = walk(appDiv);
+const leagueHeads = nodes.filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+assert.ok(leagueHeads.filter((t) => t.includes('リーグ')).length >= 2, `2リーグの見出しが描画される (${leagueHeads.join('/')})`);
+assert.ok(leagueHeads.some((t) => t.includes('DH有')) && leagueHeads.some((t) => t.includes('DH無')), 'DH規則の表記');
+const standTables = nodes.filter((n) => n.tag === 'table');
+assert.equal(standTables.length, 2, `順位表は2リーグ分割 (found ${standTables.length})`);
+for (const tbl of standTables) {
+  const dataRows = walk(tbl).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
+  assert.equal(dataRows.length, 6, `各リーグ6球団 (got ${dataRows.length})`);
+}
+const standThs = nodes.filter((n) => n.tag === 'th').map(textOf);
+assert.ok(standThs.includes('交流戦'), '交流戦成績の列がある');
+
+// 6) ポストシーズンパネル: CS両ステージ・日本シリーズ・日本一
+const psPanel = nodes.find((n) => (n.className || '').includes('pspanel'));
+assert.ok(psPanel, 'ポストシーズンパネルが描画される');
+const psText = textOf(psPanel);
+assert.ok(psText.includes('CSファースト'), 'CSファーストの結果が表示される');
+assert.ok(psText.includes('CSファイナル'), 'CSファイナルの結果が表示される');
+assert.ok(psText.includes('日本シリーズ'), '日本シリーズの結果が表示される');
+assert.ok(psText.includes('日本一:'), '日本一チームが表示される');
+
+// 7) 打撃表に SH/IBB/PH 列、投手表に役割（先発/救援）列
+const battingTab = tabs.find((t) => textOf(t) === '打撃');
+battingTab._onclick();
+const batThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+for (const col of ['犠打', '敬遠', '代打']) {
+  assert.ok(batThs.some((t) => t.startsWith(col)), `打撃表に${col}列 (${batThs.join(',')})`);
+}
+const pitchingTab = tabs.find((t) => textOf(t) === '投手');
+pitchingTab._onclick();
+nodes = walk(appDiv);
+const pitThs = nodes.filter((n) => n.tag === 'th').map(textOf);
+assert.ok(pitThs.some((t) => t.startsWith('役割')), '投手表に役割列');
+const roleCells = nodes.filter((n) => n.tag === 'td').map(textOf);
+assert.ok(roleCells.includes('先発') && roleCells.includes('救援'), '役割セルに先発/救援の両方が現れる');
+
+console.log('UI smoke OK: setup→simulate→5タブ(WAR含む)描画→モーダル%d回→SVG %d要素→2リーグ順位表+交流戦列+PSパネル+SH/IBB/PH+役割列、例外なし', modalsOpened, svgCount);

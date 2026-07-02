@@ -10,7 +10,7 @@
 // ============================================================================
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve, relative } from 'node:path';
+import { dirname, join, resolve, relative, sep } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const entry = join(root, 'src', 'engine.mjs');
@@ -34,6 +34,15 @@ function load(absPath) {
   modules.set(absPath, { code, deps });
 }
 load(entry);
+
+// フェーズA新モジュール（manager/usage/postseason）の同梱確認（S4）:
+// engine.mjs の import が誤って剥がされてもビルド自体は黙って通ってしまうため、
+// バンドル対象のモジュールグラフに必ず入っていることをここで機械検証する。
+const REQUIRED_MODULES = ['sim/manager.mjs', 'sim/usage.mjs', 'sim/postseason.mjs'];
+for (const req of REQUIRED_MODULES) {
+  const found = [...modules.keys()].some((p) => relative(root, p).split(sep).join('/').endsWith(req));
+  if (!found) throw new Error(`bundle missing required module: ${req}（src/engine.mjs の import を確認）`);
+}
 
 /** トポロジカルソート（依存を先に） */
 const order = [];
@@ -112,6 +121,11 @@ const html = `<!DOCTYPE html>
   .barfill { display:block; height:100%; }
   .spraywrap { margin-top:10px; text-align:center; }
   svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
+  h3.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); }
+  .pspanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:12px; background:var(--panel); }
+  .psrow { display:flex; gap:8px; font-size:13px; margin:3px 0; flex-wrap:wrap; }
+  .pslabel { color:var(--muted); min-width:190px; }
+  .pschamp { margin-top:6px; font-weight:700; color:var(--gold); }
   .warlist { display:flex; flex-direction:column; gap:6px; }
   .warcard { display:flex; align-items:center; gap:12px; background:var(--panel);
              border:1px solid var(--line); border-radius:8px; padding:8px 12px; }

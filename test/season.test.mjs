@@ -270,6 +270,20 @@ test('リーグ別集計（leagueSummaryByLeague）とDH規則別の得点集計
   assert.ok(res.runSplit.dh.runs > 0 && res.runSplit.noDh.runs > 0);
 });
 
+test('交流戦成績: 各チーム18試合が il に計上され総勝=総敗（S4）', () => {
+  const lg = generateLeague(2026, cfg);
+  const res = simulateSeason(lg, cfg, { seed: 2026, postseason: false });
+  let w = 0;
+  let l = 0;
+  for (const t of res.standings) {
+    assert.equal(t.il.w + t.il.l + t.il.t, 18, `${t.teamId} の交流戦は18試合`);
+    assert.ok(t.il.w <= t.w && t.il.l <= t.l && t.il.t <= t.t, '交流戦成績は総成績の部分集合');
+    w += t.il.w;
+    l += t.il.l;
+  }
+  assert.equal(w, l, '交流戦の総勝=総敗');
+});
+
 test('継投: セーブが抑えに集中し、ホールド/BS/完投/完封が妥当に計上される（監査B2/B3/B4）', () => {
   const lg = generateLeague(2026, cfg);
   const res = simulateSeason(lg, cfg, { seed: 2026 });

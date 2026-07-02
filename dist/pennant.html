@@ -47,6 +47,11 @@
   .barfill { display:block; height:100%; }
   .spraywrap { margin-top:10px; text-align:center; }
   svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
+  h3.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); }
+  .pspanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:12px; background:var(--panel); }
+  .psrow { display:flex; gap:8px; font-size:13px; margin:3px 0; flex-wrap:wrap; }
+  .pslabel { color:var(--muted); min-width:190px; }
+  .pschamp { margin-top:6px; font-weight:700; color:var(--gold); }
   .warlist { display:flex; flex-direction:column; gap:6px; }
   .warcard { display:flex; align-items:center; gap:12px; background:var(--panel);
              border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
@@ -3862,7 +3867,8 @@ function simulateSeason(league, cfg, opts = {}) {
   };
   const standings = new Map();
   for (const t of league.teams) {
-    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league });
+    // il = 交流戦成績（S4 UI「2リーグ順位表＋交流戦成績」の素材。所属リーグが異なる対戦のみ勘定）
+    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
   }
 
   // スプレー収集（§16, §17: 生イベントは最新シーズンのみ保持）。opts.collectSpray で有効化。
@@ -3950,6 +3956,19 @@ function simulateSeason(league, cfg, opts = {}) {
     } else {
       A.w++;
       H.l++;
+    }
+    // 交流戦成績（S4 UI）: 別リーグ同士の対戦を各チームの il へ計上
+    if (teamById.get(g.home).league !== teamById.get(g.away).league) {
+      if (res.tie) {
+        H.il.t++;
+        A.il.t++;
+      } else if (res.homeScore > res.awayScore) {
+        H.il.w++;
+        A.il.l++;
+      } else {
+        A.il.w++;
+        H.il.l++;
+      }
     }
     const split = gameDh ? runSplit.dh : runSplit.noDh;
     split.games++;
@@ -4203,7 +4222,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.5.0-phaseA-s3';
+const ENGINE_VERSION = '0.6.0-phaseA-s4';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 
@@ -4265,8 +4284,8 @@ function renderSetup() {
   const seedInput = el('input', { type: 'number', value: '2026', id: 'seedInput', style: 'width:90px' });
   const btn = el('button', { class: 'primary', onclick: () => runLeague(Number(seedInput.value) || 2026) }, 'リーグ生成＆シミュレート');
   return el('div', { class: 'setup' }, [
-    el('h2', {}, '架空選手ペナント（6球団 / 140試合）'),
-    el('p', { class: 'muted' }, 'リーグシードごとに架空選手198人が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
+    el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
+    el('p', { class: 'muted' }, 'リーグシードごとに架空選手396人（12球団×33人）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
     el('div', { class: 'row' }, [el('label', {}, 'リーグシード: '), seedInput, btn]),
     el('div', { id: 'status', class: 'muted' }, ''),
   ]);
@@ -4357,13 +4376,56 @@ function renderWAR(c) {
   )));
 }
 
-// --- 順位表 ---------------------------------------------------------------
+// --- 順位表（S4: 2リーグ分割＋交流戦成績＋ポストシーズンパネル） -------------
 function renderStandings(c) {
-  const rows = state.res.standings.map((t, i) => el('tr', {}, [
-    td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
-    td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-  ]));
-  c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差'], rows));
+  const leagues = state.cfg.league.leagues ?? [];
+  const byLg = state.res.standingsByLeague ?? {};
+  const blocks = leagues.length
+    ? leagues.map((l) => ({ title: `${l.name}（DH${l.dh ? '有' : '無'}）`, rows: byLg[l.id] ?? [] }))
+    : [{ title: '総合', rows: state.res.standings }];
+  for (const blk of blocks) {
+    const rows = blk.rows.map((t, i) => el('tr', {}, [
+      td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
+      td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+      td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
+    ]));
+    c.append(el('h3', { class: 'leaguename' }, blk.title));
+    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差', '交流戦'], rows));
+  }
+  renderPostseasonPanel(c);
+}
+
+// --- ポストシーズン結果パネル（S4: CS/日本シリーズの勝敗） -------------------
+function renderPostseasonPanel(c) {
+  const ps = state.res.postseason;
+  if (!ps) return;
+  const name = (tid) => state.teamName.get(tid) || tid;
+  // シリーズ1行: 「ラベル  A w-l B（アド込み）→ 勝者」
+  const seriesRow = (label, s) => {
+    if (!s) return null;
+    const [a, b] = s.teams;
+    const adv = s.advantage ? `（${name(s.advantage)}のアド1勝込み）` : '';
+    return el('div', { class: 'psrow' }, [
+      el('span', { class: 'pslabel' }, label),
+      el('span', {}, `${name(a)} ${s.wins[a]} - ${s.wins[b]} ${name(b)}${adv} → ${name(s.winner)}`),
+    ]);
+  };
+  const box = el('div', { class: 'pspanel' });
+  box.append(el('h3', { class: 'leaguename' }, 'ポストシーズン'));
+  for (const l of state.cfg.league.leagues ?? []) {
+    const first = seriesRow(`${l.name} CSファースト`, ps.csFirst[l.id]);
+    const fin = seriesRow(`${l.name} CSファイナル`, ps.csFinal[l.id]);
+    if (first) box.append(first);
+    if (fin) box.append(fin);
+  }
+  if (ps.japanSeries) {
+    box.append(seriesRow('日本シリーズ', ps.japanSeries));
+    const scores = ps.japanSeries.games.map((g, i) =>
+      `第${i + 1}戦 ${name(g.home)} ${g.homeScore}-${g.awayScore} ${name(g.away)}${g.innings > 9 ? `（延長${g.innings}回）` : ''}`);
+    box.append(el('div', { class: 'muted' }, scores.join(' ／ ')));
+  }
+  if (ps.champion) box.append(el('div', { class: 'pschamp' }, `日本一: ${name(ps.champion)}`));
+  c.append(box);
 }
 
 // --- 打撃 -----------------------------------------------------------------
@@ -4372,6 +4434,7 @@ const BAT_COLS = [
   ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'],
   ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['woba', 'wOBA'], ['wrcPlus', 'wRC+'],
   ['bsr', 'BsR'], ['bbPct', 'BB%'], ['kPct', 'K%'],
+  ['sh', '犠打'], ['ibb', '敬遠'], ['ph', '代打'], // S4: 采配の発現（SH/IBB/PH）
 ];
 function renderBatting(c) {
   const data = state.res.playerSeasons
@@ -4381,15 +4444,16 @@ function renderBatting(c) {
       const p = state.byId.get(s.playerId);
       const war = p.role === 'fielder' ? hitterWAR(s, state.cfg, state.lc).war : 0;
       const bsr = playerBaserunning(s, state.cfg, state.lc).bsr;
-      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, pos: primaryPos(p), war, bsr, ...m };
+      const b = s.batting;
+      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, pos: primaryPos(p), war, bsr, sh: b.sh, ibb: b.ibb, ph: b.ph, ...m };
     });
   c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba'], ['bbPct', 'kPct'], 'war', 1));
 }
 
 // --- 投手 -----------------------------------------------------------------
 const PIT_COLS = [
-  ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['war', 'WAR'],
-  ['w', '勝'], ['l', '敗'], ['sv', 'S'], ['ip', '回'], ['era', '防御'], ['fip', 'FIP'],
+  ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['role', '役割', 'left'], ['war', 'WAR'],
+  ['w', '勝'], ['l', '敗'], ['sv', 'S'], ['hld', 'H'], ['ip', '回'], ['era', '防御'], ['fip', 'FIP'],
   ['so', '奪三'], ['kPer9', 'K/9'], ['whip', 'WHIP'], ['bbPct', 'BB%'],
 ];
 function renderPitching(c) {
@@ -4398,7 +4462,9 @@ function renderPitching(c) {
     .map((s) => {
       const m = playerPitching(s, state.lc);
       const p = state.byId.get(s.playerId);
-      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, war: pitcherWAR(s, state.cfg, state.lc).war, ...m };
+      // 役割は観測値（GS/G過半）で判定（S4。真値のローテ表は見ない＝statlineから湧く原則）
+      const role = m.g && m.gs * 2 >= m.g ? '先発' : '救援';
+      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, role, war: pitcherWAR(s, state.cfg, state.lc).war, ...m };
     });
   c.append(statTable(data, PIT_COLS, ['era', 'fip', 'whip'], ['bbPct'], 'war', 1));
 }
@@ -4463,7 +4529,7 @@ function openModal(playerId) {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [
-    el('div', {}, [el('span', { class: 'pname' }, p.name), el('span', { class: 'muted' }, `  ${state.teamName.get(p.teamId) || ''} / ${p.role === 'pitcher' ? '投手' : primaryPos(p)} / ${p.age}歳 / ${p.bats}打${p.throws}投`)]),
+    el('div', {}, [el('span', { class: 'pname' }, p.name), el('span', { class: 'muted' }, `  ${state.teamName.get(p.teamId) || ''} / ${p.role === 'pitcher' ? '投手' : primaryPos(p)} / ${p.age}歳 / ${handLabel(p.throws)}投${handLabel(p.bats)}打`)]),
     el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'),
   ]));
 
@@ -4572,6 +4638,10 @@ function primaryPos(p) {
 }
 function pitchName(t) {
   return { fastball: '直球', slider: 'スラ', curve: 'カーブ', changeup: 'チェンジ', fork: 'フォーク', sinker: 'シンカー', cutter: 'カット' }[t] || t;
+}
+/** 利き手の表示（S4: 選手モーダルの「右投左打」等。S=両打/両投） */
+function handLabel(h) {
+  return { R: '右', L: '左', S: '両' }[h] || h || '?';
 }
 
 initApp();

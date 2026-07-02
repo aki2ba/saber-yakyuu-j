@@ -2,8 +2,9 @@
 // 日程生成・シーズン実行・順位表（1-4a/f）
 //
 // 12球団総当たり: 各ペア13試合（うちホーム7/6）→ 各チーム143試合・リーグ858試合。
+// ※S1は総当たり近似。リーグ内125＋交流戦18＋「節」カレンダーは S3 日程v2 で導入。
 // 各試合は階層シードで独立・順序非依存に実行（並列化・再現の前提, §17/§19）。
-// 先発は各チームの登板数 % 5 でローテを回す。継投・守備イニングは game.mjs が計上。
+// 先発は各チームの登板数 % rotationSize（中6日=6人）でローテを回す。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { createPlayerSeason, createTeamSeason } from '../model/statline.mjs';
@@ -53,10 +54,11 @@ export function simulateSeason(league, cfg, opts = {}) {
   const park = opts.park ?? NEUTRAL_PARK;
 
   // 編成表
+  // TODO(S2): DH無し試合（L1主催）は initSide v2 で投手打席へ差し替える。S1では全試合DH打順で従来動作を維持。
   const depthByTeam = new Map();
   for (const t of league.teams) {
     const roster = league.players.filter((p) => p.teamId === t.id);
-    depthByTeam.set(t.id, buildDepthChart(roster));
+    depthByTeam.set(t.id, buildDepthChart(roster, cfg, { dh: true }));
   }
 
   // 集計器
@@ -93,13 +95,14 @@ export function simulateSeason(league, cfg, opts = {}) {
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg.league.gamesPerSeason);
   const gameCount = new Map(league.teams.map((t) => [t.id, 0]));
 
+  const rotationSize = cfg.league.rotationSize;
   schedule.forEach((g, gi) => {
     const rng = makeRng(hashSeed(seed, 'game', gi));
     const hGC = gameCount.get(g.home);
     const aGC = gameCount.get(g.away);
     const res = simulateGame(
-      { teamId: g.home, depth: depthByTeam.get(g.home), starterIdx: hGC % 5 },
-      { teamId: g.away, depth: depthByTeam.get(g.away), starterIdx: aGC % 5 },
+      { teamId: g.home, depth: depthByTeam.get(g.home), starterIdx: hGC % rotationSize },
+      { teamId: g.away, depth: depthByTeam.get(g.away), starterIdx: aGC % rotationSize },
       cfg,
       rng,
       statFor,

@@ -13,20 +13,20 @@
 
 import { mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng } from './rng.mjs';
 import { POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_1350, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass } from './model/positions.mjs';
-import { createPlayer, createTrueAbility, createPitch, validatePlayer } from './model/player.mjs';
+import { createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand } from './model/player.mjs';
 import { createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt } from './model/battedball.mjs';
 import { createPlayerSeason, createTeamSeason, addPlayerSeason } from './model/statline.mjs';
 import {
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
 } from './config.mjs';
-import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName } from './generate.mjs';
+import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager } from './generate.mjs';
 import { logit, expit, ratingDelta, log5 } from './sim/rates.mjs';
 import { PA_OUTCOME, paProbabilities, resolvePADiscipline } from './sim/plateAppearance.mjs';
 import { generateBattedBall } from './sim/battedBall.mjs';
 import { battedType, computeGeometry, assignFielder, resolveBattedBall } from './sim/battedBallResult.mjs';
 import { selectPitch } from './sim/pitchGrid.mjs';
-import { buildDepthChart, hitScore, starterScore } from './sim/team.mjs';
+import { buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore } from './sim/team.mjs';
 import { simulateGame, advanceRunners } from './sim/game.mjs';
 import { simulateSeason, buildSchedule, winPct } from './sim/season.mjs';
 import { leagueBatting, leaguePitching, leagueSummary } from './sim/leagueStats.mjs';
@@ -35,23 +35,23 @@ import { playerBatting, playerPitching, playerBaserunning } from './sim/metrics.
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
-export const ENGINE_VERSION = '0.2.4-audit-a';
+export const ENGINE_VERSION = '0.3.0-phaseA-s1';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {
   mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng,
   POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_1350, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass,
   selectPitch,
-  createPlayer, createTrueAbility, createPitch, validatePlayer,
+  createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand,
   createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt,
   createPlayerSeason, createTeamSeason, addPlayerSeason,
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
-  generateLeague, generateTeam, generatePitcher, generateFielder, generateName,
+  generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager,
   logit, expit, ratingDelta, log5,
   PA_OUTCOME, paProbabilities, resolvePADiscipline,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,
-  buildDepthChart, hitScore, starterScore,
+  buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore,
   simulateGame, advanceRunners,
   simulateSeason, buildSchedule, winPct,
   leagueBatting, leaguePitching, leagueSummary,

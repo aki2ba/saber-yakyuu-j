@@ -8,6 +8,7 @@
 // ============================================================================
 import { logit, expit, ratingDelta } from './rates.mjs';
 import { pitchClass } from '../model/positions.mjs';
+import { isSameHand } from '../model/player.mjs';
 
 export const PA_OUTCOME = { K: 'K', BB: 'BB', HBP: 'HBP', IN_PLAY: 'inPlay' };
 
@@ -29,6 +30,10 @@ export function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
   const b = batter.trueAbility.batting;
   const p = pitcher.trueAbility.pitching;
 
+  // --- 左右プラトーン（S1・M7解消）: 同利き（スイッチは常に有利側=逆打席）で K↑ BB↓ ---
+  const pl = cfg.tuning.platoon;
+  const same = pl && isSameHand(batter, pitcher);
+
   // --- K: 打者のK傾向（コンタクト/選球眼＋対該当球種クラス適性）×投手の奪三振資質 ---
   // 球種格子(§4段階1): pitch があればその球種の whiff を使い、打者の対クラス適性で補正。
   const whiffVal = pitch ? pitch.whiff : meanWhiff(p);
@@ -41,12 +46,19 @@ export function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
   const kProne = 50 - pa.kContactW * (b.contact - 50) - pa.kEyeW * (b.eye - 50) - aptAdj;
   const kStuff = whiffVal + pa.kVeloPerKmh * (p.velocityKmh - 146);
   let pK = expit(
-    logit(pa.kLeague) + ratingDelta(kProne, pa.kSlope) + ratingDelta(kStuff, pa.kSlope) - tto * cfg.tuning.tto.kPerTime,
+    logit(pa.kLeague) +
+      ratingDelta(kProne, pa.kSlope) +
+      ratingDelta(kStuff, pa.kSlope) -
+      tto * cfg.tuning.tto.kPerTime +
+      (same ? pl.kLogitSame : 0),
   );
 
   // --- BB: 打者選球眼（高→増）×投手制球（高→減） ---
   let pBB = expit(
-    logit(pa.bbLeague) + ratingDelta(b.eye, pa.bbSlope) - ratingDelta(p.control, pa.bbSlope),
+    logit(pa.bbLeague) +
+      ratingDelta(b.eye, pa.bbSlope) -
+      ratingDelta(p.control, pa.bbSlope) +
+      (same ? pl.bbLogitSame : 0),
   );
 
   // --- HBP: 小。投手制球が低いほどわずかに増 ---

@@ -178,11 +178,27 @@ export function generateTeam(rng, teamId) {
 }
 
 /**
+ * 監督プロファイルを生成（S1・§S2/S3の采配判断が参照する「監督ポリシー」の個性）。
+ * 20-80スケール(50=リーグ平均)。判断ロジック自体は src/sim/manager.mjs に置く（S2）。
+ */
+export function generateManager(rng) {
+  return {
+    buntTend: draw(rng, 50, 12), // 犠打の好み（高いほどバントさせる）
+    stealTend: draw(rng, 50, 12), // 盗塁の積極性
+    ibbTend: draw(rng, 50, 12), // 敬遠の使い方
+    quickHook: draw(rng, 50, 12), // 継投の早さ（高いほど早く投手を代える）
+  };
+}
+
+/**
  * リーグ全体を生成。masterSeed＋階層シードで決定論・順序非依存。
+ * 2リーグ制: 前半球団=leagues[0]（L1・DH無）、後半=leagues[1]（L2・DH有）。
  * @returns {{masterSeed:number, teams:Array, players:Array}}
  */
 export function generateLeague(masterSeed, config) {
   const numTeams = config.league.numTeams;
+  const leagues = config.league.leagues ?? null;
+  const perLeague = leagues ? Math.ceil(numTeams / leagues.length) : numTeams;
   const teams = [];
   const players = [];
   for (let ti = 0; ti < numTeams; ti++) {
@@ -190,7 +206,17 @@ export function generateLeague(masterSeed, config) {
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
     const roster = generateTeam(trng, teamId);
     for (const p of roster) p.teamId = teamId;
-    teams.push({ id: teamId, name: TEAM_NAMES[ti] ?? teamId, playerIds: roster.map((p) => p.id) });
+    // リーグ割当（前半6球団=L1 / 後半=L2）
+    const leagueId = leagues ? leagues[Math.min(Math.floor(ti / perLeague), leagues.length - 1)].id : null;
+    // 監督は別ストリームで生成（ロスター生成の決定論・順序非依存を汚さない）
+    const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
+    teams.push({
+      id: teamId,
+      name: TEAM_NAMES[ti] ?? teamId,
+      league: leagueId,
+      manager,
+      playerIds: roster.map((p) => p.id),
+    });
     players.push(...roster);
   }
   return { masterSeed, teams, players };

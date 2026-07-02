@@ -12,6 +12,7 @@
 // ============================================================================
 import { createBattedBall } from '../model/battedball.mjs';
 import { pitchClass } from '../model/positions.mjs';
+import { effectiveBats, isSameHand } from '../model/player.mjs';
 
 /** 投手の被コンタクト質抑止（球種contactQualityの平均。高いほど強い打球を許さない） */
 function meanContactSuppress(pit) {
@@ -40,6 +41,9 @@ export function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
       ? bat.batting.vsFastball
       : bat.batting.vsBreaking
     : 50;
+  // 左右プラトーン（S1・M7解消）: 同利き（スイッチは常に有利側）でEVの中心を下げる
+  const pl = cfg.tuning.platoon;
+  const platoonEv = pl && isSameHand(batter, pitcher) ? pl.evKmhSame : 0;
   const evMean =
     bb.evBase +
     bb.evPerEV * (bat.batting.ev - 50) +
@@ -47,7 +51,8 @@ export function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
     bb.evPitchSuppress * (contactSup - 50) -
     bb.evHrSuppressW * (hrSup - 50) +
     bb.evAptW * (apt - 50) +
-    tto * cfg.tuning.tto.evPerTime;
+    tto * cfg.tuning.tto.evPerTime +
+    platoonEv;
   const evKmh = Math.max(40, rng.normal(evMean, bb.evSd));
 
   // LA: 打者LA適性で中心シフト、投手ゴロ率で下げる ＋ノイズ
@@ -55,8 +60,9 @@ export function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
   const laDeg = rng.normal(laMean, bb.laSd);
 
   // 方向: pull適性で引っ張り側へ。右打ちは左方向(−)、左打ちは右方向(+)へ引っ張る。
+  // スイッチ(S)は実効打席サイド（常に投手と逆＝有利側）で引っ張る（S1でM7の簡易扱いを解消）。
   const pullMag = bb.sprayPull * (bat.batting.pull - 50);
-  const pullSign = batter.bats === 'L' ? +1 : -1; // Sは簡易に右扱い→後で強化
+  const pullSign = effectiveBats(batter, pitcher) === 'L' ? +1 : -1;
   const sprayMean = pullSign * pullMag;
   let sprayDeg = rng.normal(sprayMean, bb.spraySd);
   if (sprayDeg < -50) sprayDeg = -50;

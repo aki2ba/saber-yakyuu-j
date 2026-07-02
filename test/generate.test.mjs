@@ -49,6 +49,32 @@ test('全選手が validatePlayer を通過し、名前は非空・架空（実�
   }
 });
 
+test('リーグ割当: 前半6球団=L1（DH無）・後半6球団=L2（DH有）（S1）', () => {
+  const lg = generateLeague(7, cfg);
+  const l1 = lg.teams.filter((t) => t.league === 'L1');
+  const l2 = lg.teams.filter((t) => t.league === 'L2');
+  assert.equal(l1.length, 6);
+  assert.equal(l2.length, 6);
+  // 前半=L1・後半=L2 の並び
+  for (let i = 0; i < 6; i++) assert.equal(lg.teams[i].league, 'L1', `T${i + 1} は L1`);
+  for (let i = 6; i < 12; i++) assert.equal(lg.teams[i].league, 'L2', `T${i + 1} は L2`);
+});
+
+test('監督プロファイル: 各チームに buntTend/stealTend/ibbTend/quickHook（20-80・決定論）（S1）', () => {
+  const a = generateLeague(7, cfg);
+  const b = generateLeague(7, cfg);
+  for (const t of a.teams) {
+    for (const k of ['buntTend', 'stealTend', 'ibbTend', 'quickHook']) {
+      assert.ok(t.manager[k] >= 20 && t.manager[k] <= 80, `${t.id}.manager.${k}=${t.manager[k]}`);
+    }
+  }
+  // 決定論: 同一masterSeedで同一の監督
+  assert.deepEqual(a.teams.map((t) => t.manager), b.teams.map((t) => t.manager));
+  // チーム間で采配の個性が散っている（全員同値ではない）
+  const bunts = new Set(a.teams.map((t) => t.manager.buntTend));
+  assert.ok(bunts.size > 1, '監督の個性が分布から生成されている');
+});
+
 test('三層の器が埋まっている（trueAbility / scoutSeed / 空のcareer.seasons）', () => {
   const lg = generateLeague(3, cfg);
   const p = lg.players[0];

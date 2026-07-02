@@ -353,6 +353,20 @@ function createPlayer(o = {}) {
   };
 }
 
+/**
+ * 実効打席サイド（左右プラトーン・S1/M7解消）。
+ * スイッチ(S)は常に投手の利き腕と逆＝有利側に立つ（NPB/MLBの実運用どおり）。
+ */
+function effectiveBats(batter, pitcher) {
+  if (batter.bats === 'S') return pitcher.throws === 'L' ? 'R' : 'L';
+  return batter.bats;
+}
+
+/** 同利きマッチアップか（打者に不利な側。config.tuning.platoon の補正対象判定） */
+function isSameHand(batter, pitcher) {
+  return effectiveBats(batter, pitcher) === pitcher.throws;
+}
+
 /** 浅い階層のディープマージ（配列は置換） */
 function deepMerge(base, over) {
   if (over == null) return base;
@@ -518,6 +532,7 @@ function createBattingLine() {
     so: 0,
     sf: 0, // 犠飛
     sh: 0, // 犠打
+    ph: 0, // 代打打席数（S1で器を確定・計上はS2の代打導入で）
     gdp: 0, // 併殺打（wGDPの素, §6）
     sb: 0, // 盗塁（wSBの素, §6）
     cs: 0, // 盗塁死
@@ -654,43 +669,75 @@ function addPlayerSeason(dst, src) {
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-const CONFIG_VERSION = '0.0.3-config';
+const CONFIG_VERSION = '0.0.4-phaseA-s1';
 
-/** リーグ設定（6球団×140試合＝単一リーグ / Q6: 全球団DH有）。
- *  最終形は12球団/2リーグ/交流戦（ロードマップ記録）。numTeams/gamesPerSeasonはここで可変。 */
+/** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
+ *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
+ *  日程はS3で「リーグ内125＋交流戦18」へ（S1は総当たり近似: 11相手×13=143）。 */
 const LEAGUE_DEFAULT = {
-  numTeams: 6,
-  gamesPerSeason: 140, // 6球団: 5対戦相手×28試合=140（完全均等・ホーム14/14）
-  dh: 'all', // Q6=A 全球団DH有（投手は打席に立たない）
+  numTeams: 12,
+  gamesPerSeason: 143, // NPB準拠。最終形はリーグ内5相手×25＋交流戦6相手×3（S3日程v2）
+  // 2リーグ制（名称は完全架空の造語）。dh=false のリーグは投手が打席に立つ（セ系）。
+  leagues: [
+    { id: 'L1', name: '陽炎リーグ', dh: false }, // セ・リーグ系（DH無し）
+    { id: 'L2', name: '蒼天リーグ', dh: true }, // パ・リーグ系（DH有り）
+  ],
+  rotationSize: 6, // 先発ローテ人数（中6日・NPB標準）
   rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
 };
 
 /**
- * 較正目標帯（古典寄り・確定 / Q5・Q7）。各値は [min,max]。
- * 1-11/2-11 の機械判定に使う。分布形状の基準(M4)はフェーズ1較正時に追加する。
+ * 較正目標帯（フェーズA・12球団143試合2リーグ制 / phaseA_spec.md の表を全実装）。
+ * 各値は [min,max]（片側条件はスカラー）。tools/calibrate.mjs の機械判定に使う（S4で結線）。
  */
 const CALIBRATION_TARGETS = {
   batting: {
-    avg: [0.255, 0.262],
+    avg: [0.255, 0.262], // リーグ合算
     obp: [0.32, 0.328],
     slg: [0.39, 0.41],
-    ops: [0.72, 0.735],
+    ops: [0.715, 0.735], // 下限を.715へ僅かに緩和（フェーズA）
     kPct: [0.18, 0.2],
     bbPct: [0.078, 0.083],
-    hrPerTeam: [110, 130], // per team / 140G ⚠️過剰HR＝最大の地雷＝第一の門番指標
+    hrPerTeam: [110, 130], // per team / 143G ⚠️過剰HR＝最大の地雷＝第一の門番指標
     runsPerTeamPerGame: [3.9, 4.3],
     wobaLeague: [0.325, 0.335],
+    // セ・パ得点差: DH有リーグ(L2) − DH無リーグ(L1) の得点/球団/試合の差（DH差の発現）
+    runDiffDhMinusNoDh: [0.1, 0.45],
   },
   pitching: {
-    era: [3.5, 3.9],
+    era: [3.5, 3.9], // リーグ合算
     fip: [3.6, 4.0],
   },
+  // タイトル級（リーグリーダーの分布の裾）
+  leaders: {
+    avg: [0.32, 0.355], // 打率王（帯を.355へ拡大）
+    hr: [40, 55], // HR王
+    rbi: [95, 140], // 打点王（ベンチ導入で低下想定）
+    sb: [30, 65], // 盗塁王
+    ipStarter: [150, 195], // 先発IPリーダー（中6日でもエースは深く）
+    reliefG: [45, 65], // 登板数王（救援・連投制限下）
+    sv: [30, 45], // SV王
+    hld: [30, 45], // HLD王
+  },
+  // 采配の発現（犠打・敬遠・完投）
+  tactics: {
+    shPerTeamNoDh: [55, 110], // 犠打/球団平均（DH無リーグ=投手バント込みでセ>パ）
+    shPerTeamDh: [30, 75], // 犠打/球団平均（DH有リーグ）
+    ibbPerTeam: [10, 40], // 敬遠/球団平均
+    cgLeague: [5, 30], // 完投（リーグ計）
+  },
   war: {
-    totalLeague: [175, 205], // 6球団×140試合（≈teams×games×0.224）。12球団/2リーグ化で要再設定
+    totalLeague: [370, 430], // 12球団×143試合
     hitterShare: [0.53, 0.57], // 野手:投手 ≈ 55:45
-    leaderHitter: [7, 9],
-    leaderPitcher: [6, 8],
+    leaderHitter: [7, 9.5], // 野手WAR王
+    leaderPitcher: [5.5, 8], // 投手WAR王
+    floorMin200PA: -2.5, // 200PA以上の野手の最小WAR > この値（「WAR-6」の根絶＝起用AIの機能証明）
     uzrTop: [20, 30],
+  },
+  // 起用・休養の発現
+  usage: {
+    qualifiedPerTeam: [5, 9], // 規定打席到達者/球団
+    catcherStarterGames: [100, 135], // 正捕手の出場試合（143未満＝休養AIの発現）
   },
 };
 
@@ -721,6 +768,80 @@ const TUNING_DEFAULT = {
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
+  },
+
+  // 左右プラトーン（S1・M7解消）: 同利き手（実効打席サイド==投手の利き腕）へのペナルティ。
+  // スイッチ(S)は常に投手と逆打席＝有利側に立つ（同利きにならない）。
+  // 効果量の初期値は同利きで wOBA −.020〜.030 相当（S5較正で調整）。
+  platoon: {
+    kLogitSame: 0.1, // 同利きで K の logit 増（三振しやすい）
+    bbLogitSame: -0.08, // 同利きで BB の logit 減（四球を選びにくい）
+    evKmhSame: -1.2, // 同利きで打球EVの中心を下げる (km/h)
+  },
+
+  // 犠打（S2 maybeBunt が消費。§S2-4）: 試行判断・結果テーブル。2ストライク概念はフェーズB。
+  bunt: {
+    successProb: 0.78, // 成功（走者進塁・打者アウト・sh++・ABなし）
+    failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
+    hitProb: 0.1, // 内野安打化
+    maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
+    attemptBase: 0.25, // 非強打者×バント局面の基本試行率
+    tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
+    pitcherAttempt: 0.9, // 投手打席はほぼ必ずバント
+    weakBatterWoba: 0.31, // 「非強打者」の目安（観測wOBAがこれ未満）
+  },
+
+  // 敬遠（S2 maybeIBB が消費。§S2-5）: 一塁空き×2死or一死×終盤接戦×強打者（or次打者が投手）。
+  ibb: {
+    base: 0.35, // 条件成立時の基本敬遠率
+    tendW: 0.5, // 監督ibbTend(50中心)の感度
+    minInning: 7, // 終盤のみ
+    maxScoreDiff: 2, // 接戦のみ
+    strongBatterWoba: 0.36, // 「強打者」の目安（観測wOBA上位）
+  },
+
+  // 交代（S2 代打/代走/守備固め。§S2-3）
+  sub: {
+    phInning: 7, // 野手への代打は7回以降
+    phPitcherInning: 6, // 投手への代打は6回以降
+    phMaxBehind: 3, // ビハインドこの点差以内（or接戦）の得点機で発動
+    phGainMin: 5, // 代打起用に要する実効打力差（プラトーン込みhitScore相当）
+    prInning: 8, // 代走は8回以降
+    prMaxScoreDiff: 2, // 2点差以内
+    prSpeedGainMin: 10, // ベンチ最速との走力差がこれ以上
+    defInning: 8, // 守備固めは8回以降
+    defLeadMin: 1, // リード1〜3で発動
+    defLeadMax: 3,
+  },
+
+  // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
+  rest: {
+    catcherRestProb: 0.18, // 捕手の休養基本率/試合
+    fielderRestProb: 0.02, // 野手の休養基本率/試合
+    streakW: 0.004, // 連続出場1試合ごとの休養率加算
+  },
+
+  // 投手疲労・可用性（S3。連投制限・中6日の基盤）
+  fatigue: {
+    maxConsecDays: 2, // 2連投まで（3連投禁止）
+    prevDayPitchLimit: 30, // 前日30球以上→当日不可
+    starterRestDays: 5, // 先発は中5日以上
+  },
+
+  // 観測成績ベース起用（S3 usage.mjs）。三層構造: 真値は直接見ない（観測statline＋スカウトノイズ）。
+  usage: {
+    reviewInterval: 25, // 見直し間隔（試合）
+    trustPA: 150, // 観測wOBAの信頼度加重の半飽和PA（少PAは回帰）
+    scoutSd: 6, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）
+    swapMargin: 0.01, // レギュラー入替に要する実効wOBA差
+    platoonMargin: 0.005, // プラトーン入替に要する実効wOBA差
+  },
+
+  // 編成・打順（S1 buildDepthChart v2。§S1-3）
+  depth: {
+    posToolW: 0.4, // positionRank: 守備素材(Range,50中心)の重み（習熟=1基準）
+    posBatW: 0.2, // positionRank: 打撃(hitScoreを50中心スケール化)の重み
+    leadoffSpeedW: 1.0, // 1番選定: speed(50中心)の加点重み
   },
 
   // 走塁（2-4 wSB, §6）: 盗塁の試行・成否を 走者Steal/Speed × 投手Hold × 捕手Arm から生成。
@@ -1044,11 +1165,27 @@ function generateTeam(rng, teamId) {
 }
 
 /**
+ * 監督プロファイルを生成（S1・§S2/S3の采配判断が参照する「監督ポリシー」の個性）。
+ * 20-80スケール(50=リーグ平均)。判断ロジック自体は src/sim/manager.mjs に置く（S2）。
+ */
+function generateManager(rng) {
+  return {
+    buntTend: draw(rng, 50, 12), // 犠打の好み（高いほどバントさせる）
+    stealTend: draw(rng, 50, 12), // 盗塁の積極性
+    ibbTend: draw(rng, 50, 12), // 敬遠の使い方
+    quickHook: draw(rng, 50, 12), // 継投の早さ（高いほど早く投手を代える）
+  };
+}
+
+/**
  * リーグ全体を生成。masterSeed＋階層シードで決定論・順序非依存。
+ * 2リーグ制: 前半球団=leagues[0]（L1・DH無）、後半=leagues[1]（L2・DH有）。
  * @returns {{masterSeed:number, teams:Array, players:Array}}
  */
 function generateLeague(masterSeed, config) {
   const numTeams = config.league.numTeams;
+  const leagues = config.league.leagues ?? null;
+  const perLeague = leagues ? Math.ceil(numTeams / leagues.length) : numTeams;
   const teams = [];
   const players = [];
   for (let ti = 0; ti < numTeams; ti++) {
@@ -1056,7 +1193,17 @@ function generateLeague(masterSeed, config) {
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
     const roster = generateTeam(trng, teamId);
     for (const p of roster) p.teamId = teamId;
-    teams.push({ id: teamId, name: TEAM_NAMES[ti] ?? teamId, playerIds: roster.map((p) => p.id) });
+    // リーグ割当（前半6球団=L1 / 後半=L2）
+    const leagueId = leagues ? leagues[Math.min(Math.floor(ti / perLeague), leagues.length - 1)].id : null;
+    // 監督は別ストリームで生成（ロスター生成の決定論・順序非依存を汚さない）
+    const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
+    teams.push({
+      id: teamId,
+      name: TEAM_NAMES[ti] ?? teamId,
+      league: leagueId,
+      manager,
+      playerIds: roster.map((p) => p.id),
+    });
     players.push(...roster);
   }
   return { masterSeed, teams, players };
@@ -1118,6 +1265,7 @@ function log5(leagueRate, batterDelta, pitcherDelta) {
 
 
 
+
 const PA_OUTCOME = { K: 'K', BB: 'BB', HBP: 'HBP', IN_PLAY: 'inPlay' };
 
 /** 投手の平均空振り資質（球種whiffの平均）。球種未設定なら平均50。 */
@@ -1138,6 +1286,10 @@ function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
   const b = batter.trueAbility.batting;
   const p = pitcher.trueAbility.pitching;
 
+  // --- 左右プラトーン（S1・M7解消）: 同利き（スイッチは常に有利側=逆打席）で K↑ BB↓ ---
+  const pl = cfg.tuning.platoon;
+  const same = pl && isSameHand(batter, pitcher);
+
   // --- K: 打者のK傾向（コンタクト/選球眼＋対該当球種クラス適性）×投手の奪三振資質 ---
   // 球種格子(§4段階1): pitch があればその球種の whiff を使い、打者の対クラス適性で補正。
   const whiffVal = pitch ? pitch.whiff : meanWhiff(p);
@@ -1150,12 +1302,19 @@ function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
   const kProne = 50 - pa.kContactW * (b.contact - 50) - pa.kEyeW * (b.eye - 50) - aptAdj;
   const kStuff = whiffVal + pa.kVeloPerKmh * (p.velocityKmh - 146);
   let pK = expit(
-    logit(pa.kLeague) + ratingDelta(kProne, pa.kSlope) + ratingDelta(kStuff, pa.kSlope) - tto * cfg.tuning.tto.kPerTime,
+    logit(pa.kLeague) +
+      ratingDelta(kProne, pa.kSlope) +
+      ratingDelta(kStuff, pa.kSlope) -
+      tto * cfg.tuning.tto.kPerTime +
+      (same ? pl.kLogitSame : 0),
   );
 
   // --- BB: 打者選球眼（高→増）×投手制球（高→減） ---
   let pBB = expit(
-    logit(pa.bbLeague) + ratingDelta(b.eye, pa.bbSlope) - ratingDelta(p.control, pa.bbSlope),
+    logit(pa.bbLeague) +
+      ratingDelta(b.eye, pa.bbSlope) -
+      ratingDelta(p.control, pa.bbSlope) +
+      (same ? pl.bbLogitSame : 0),
   );
 
   // --- HBP: 小。投手制球が低いほどわずかに増 ---
@@ -1203,6 +1362,7 @@ function resolvePADiscipline(batter, pitcher, cfg, rng, tto = 0, pitch = null) {
 
 
 
+
 /** 投手の被コンタクト質抑止（球種contactQualityの平均。高いほど強い打球を許さない） */
 function meanContactSuppress(pit) {
   const arr = pit.pitches;
@@ -1230,6 +1390,9 @@ function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
       ? bat.batting.vsFastball
       : bat.batting.vsBreaking
     : 50;
+  // 左右プラトーン（S1・M7解消）: 同利き（スイッチは常に有利側）でEVの中心を下げる
+  const pl = cfg.tuning.platoon;
+  const platoonEv = pl && isSameHand(batter, pitcher) ? pl.evKmhSame : 0;
   const evMean =
     bb.evBase +
     bb.evPerEV * (bat.batting.ev - 50) +
@@ -1237,7 +1400,8 @@ function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
     bb.evPitchSuppress * (contactSup - 50) -
     bb.evHrSuppressW * (hrSup - 50) +
     bb.evAptW * (apt - 50) +
-    tto * cfg.tuning.tto.evPerTime;
+    tto * cfg.tuning.tto.evPerTime +
+    platoonEv;
   const evKmh = Math.max(40, rng.normal(evMean, bb.evSd));
 
   // LA: 打者LA適性で中心シフト、投手ゴロ率で下げる ＋ノイズ
@@ -1245,8 +1409,9 @@ function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
   const laDeg = rng.normal(laMean, bb.laSd);
 
   // 方向: pull適性で引っ張り側へ。右打ちは左方向(−)、左打ちは右方向(+)へ引っ張る。
+  // スイッチ(S)は実効打席サイド（常に投手と逆＝有利側）で引っ張る（S1でM7の簡易扱いを解消）。
   const pullMag = bb.sprayPull * (bat.batting.pull - 50);
-  const pullSign = batter.bats === 'L' ? +1 : -1; // Sは簡易に右扱い→後で強化
+  const pullSign = effectiveBats(batter, pitcher) === 'L' ? +1 : -1;
   const sprayMean = pullSign * pullMag;
   let sprayDeg = rng.normal(sprayMean, bb.spraySd);
   if (sprayDeg < -50) sprayDeg = -50;
@@ -1427,83 +1592,6 @@ function selectPitch(pitcher, rng, cfg) {
 }
 
 
-// ===== src/sim/team.mjs =====
-// ============================================================================
-// チーム編成（1-4a/b/d の一部）— ロスターから打順・守備配置・ローテ・ブルペンを組む
-//
-// 守備配置: 各ポジションに習熟が最も高い野手を割当（全球団DH有＝投手は打席に立たない）。
-// 打順:     選抜9人を打撃スコア降順に並べる（Phase1簡略。OBP最適化等は後で）。
-// ローテ:   先発スコア上位5人。残りをブルペン（最小投球回起用は game/season 側）。
-// ============================================================================
-
-
-/** 打撃スコア（打順選抜・DH選抜に使用） */
-function hitScore(p) {
-  const b = p.trueAbility.batting;
-  const c = p.trueAbility.common;
-  return b.ev + b.contact + b.eye + c.power + b.la * 0.5;
-}
-
-/** 先発スコア（スタミナ主・§16。球種数も加点） */
-function starterScore(p) {
-  const pt = p.trueAbility.pitching;
-  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
-  return pt.stamina * 1.6 + pt.control + whiff + pt.pitches.length * 8 + (pt.velocityKmh - 140);
-}
-
-/** リリーフの質（クローザー/最良中継ぎ判定） */
-function relieverScore(p) {
-  const pt = p.trueAbility.pitching;
-  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
-  return whiff + pt.control + (pt.velocityKmh - 140) * 1.2;
-}
-
-/**
- * ロスターから編成表を作る。
- * @returns {{lineup:Array<{playerId:string,pos:string}>, defense:Object, rotation:string[], bullpen:string[], byId:Map}}
- */
-function buildDepthChart(roster) {
-  const pitchers = roster.filter((p) => p.role === 'pitcher');
-  const fielders = roster.filter((p) => p.role === 'fielder');
-  const byId = new Map(roster.map((p) => [p.id, p]));
-
-  // 守備配置: 各ポジションの習熟最高の野手（重複なし）
-  const used = new Set();
-  const defense = {};
-  for (const pos of FIELD_POSITIONS) {
-    let best = null;
-    let bestv = -1;
-    for (const f of fielders) {
-      if (used.has(f.id)) continue;
-      const v = f.trueAbility.fielding.positionProf[pos];
-      if (v > bestv) {
-        bestv = v;
-        best = f;
-      }
-    }
-    used.add(best.id);
-    defense[pos] = best.id;
-  }
-  // DH = 残りで最良打者
-  const remaining = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
-  const dhId = remaining.length ? remaining[0].id : defense['1B'];
-
-  // 打順: 守備8＋DH の9人を打撃スコア降順
-  const nine = [...FIELD_POSITIONS.map((pos) => ({ playerId: defense[pos], pos })), { playerId: dhId, pos: 'DH' }];
-  nine.sort((a, b) => hitScore(byId.get(b.playerId)) - hitScore(byId.get(a.playerId)));
-
-  // ローテ＆ブルペン
-  const sortedP = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
-  const rotation = sortedP.slice(0, 5).map((p) => p.id);
-  const bullpen = sortedP
-    .slice(5)
-    .sort((a, b) => relieverScore(b) - relieverScore(a))
-    .map((p) => p.id);
-
-  return { lineup: nine, defense, rotation, bullpen, byId };
-}
-
-
 // ===== src/sim/fielding.mjs =====
 // ============================================================================
 // 守備の能力→結果 結線（2-7）＋ OAA→UZR run換算（2-8）（§7 / 自己レビュー M1・B-7）
@@ -1579,6 +1667,156 @@ function uzrRuns(ps, cfg, lc) {
   const pos = mainPosition(ps.fielding);
   const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
   return centeredOAAOuts(ps, lc) * rpo + errRunsAboveAvg(ps, cfg, lc) + (ps.fielding.framingRuns || 0);
+}
+
+
+// ===== src/sim/team.mjs =====
+// ============================================================================
+// チーム編成（1-4a/b/d → フェーズA S1 で v2 化）— ロスターから編成表を組む
+//
+// buildDepthChart v2（§S1-3）:
+//   守備配置:   positionRank（習熟×守備素材＋打撃考慮）の上位を難ポジ優先で割当。
+//   打順:       アーキタイプ制。1番=OBP×俊足 / 2番=コンタクト・出塁 / 3番=最強総合 /
+//               4番=最強パワー / 5番=次点パワー / 6-8番=残り降順 /
+//               9番=DH無なら投手（プレースホルダ・S2が当日の先発を充填）/ DH有なら最弱野手。
+//   ベンチ:     スタメン外野手の hitScore 降順（S2の代打/代走/守備固めの母集団）。
+//   ローテ:     cfg.league.rotationSize 人（中6日=6人）。
+//   ブルペン:   relieverScore 順に closer / setup8 / setup7 / middle[] / long（最下位）。
+// ここは「編成の初期値」なので trueAbility を直接参照してよい（三層構造の原則。
+// シーズン中の見直しは S3 usage.mjs が観測成績＋スカウトノイズで行う）。
+// ============================================================================
+
+
+
+/** 打撃スコア（総合打力。3番・DH・ベンチ序列に使用） */
+function hitScore(p) {
+  const b = p.trueAbility.batting;
+  const c = p.trueAbility.common;
+  return b.ev + b.contact + b.eye + c.power + b.la * 0.5;
+}
+
+/** 出塁スコア（eye重視。1-2番アーキタイプの選抜に使用・§S1-3） */
+function obpScore(p) {
+  const b = p.trueAbility.batting;
+  return b.eye * 1.6 + b.contact + b.ev * 0.4;
+}
+
+/** パワースコア（4-5番アーキタイプの選抜に使用・§S1-3） */
+function powerScore(p) {
+  const b = p.trueAbility.batting;
+  const c = p.trueAbility.common;
+  return c.power * 1.2 + b.ev + b.la * 0.6;
+}
+
+/** 先発スコア（スタミナ主・§16。球種数も加点） */
+function starterScore(p) {
+  const pt = p.trueAbility.pitching;
+  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
+  return pt.stamina * 1.6 + pt.control + whiff + pt.pitches.length * 8 + (pt.velocityKmh - 140);
+}
+
+/** リリーフの質（クローザー/セットアッパー序列） */
+function relieverScore(p) {
+  const pt = p.trueAbility.pitching;
+  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
+  return whiff + pt.control + (pt.velocityKmh - 140) * 1.2;
+}
+
+/** ポジション候補スコア（習熟＋守備素材(Range)＋打撃考慮。重みは config.tuning.depth） */
+function posRankScore(p, pos, cfg) {
+  const d = cfg.tuning.depth;
+  const prof = p.trueAbility.fielding.positionProf[pos];
+  // hitScore(平均≈225)を 50 中心のレーティング相当へスケール（/4.5）して混合
+  return prof + d.posToolW * (rangeRating(p, cfg) - 50) + d.posBatW * (hitScore(p) / 4.5 - 50);
+}
+
+/**
+ * ロスターから編成表を作る（v2）。
+ * @param {Array} roster
+ * @param {Object} cfg createConfig() の設定（rotationSize / tuning.depth を参照）
+ * @param {{dh?:boolean}} opts dh=false でDH無し打順（9番=投手プレースホルダ）。既定 true。
+ *   ※S1では season 側は常に dh:true（DH規則=ホーム球団リーグの適用は S2 initSide v2）。
+ * @returns {{lineup:Array<{playerId:?string,pos:string}>, defense:Object, bench:string[],
+ *   positionRank:Object, rotation:string[], bullpen:string[], bullpenRoles:Object, byId:Map}}
+ */
+function buildDepthChart(roster, cfg, opts = {}) {
+  const dh = opts.dh ?? true;
+  const rotationSize = cfg.league.rotationSize;
+  const pitchers = roster.filter((p) => p.role === 'pitcher');
+  const fielders = roster.filter((p) => p.role === 'fielder');
+  const byId = new Map(roster.map((p) => [p.id, p]));
+
+  // positionRank: ポジションごとの候補ランキング（S3 usage.mjs の見直し対象の初期値）
+  const positionRank = {};
+  for (const pos of FIELD_POSITIONS) {
+    positionRank[pos] = fielders
+      .slice()
+      .sort((a, b) => posRankScore(b, pos, cfg) - posRankScore(a, pos, cfg))
+      .map((p) => p.id);
+  }
+
+  // 守備配置: 難ポジ優先（C→SS→CF→…）で positionRank 上位の未使用選手を割当
+  const used = new Set();
+  const defense = {};
+  for (const pos of POSITION_DIFFICULTY) {
+    const pid = positionRank[pos].find((id) => !used.has(id));
+    used.add(pid);
+    defense[pos] = pid;
+  }
+
+  // スタメン外の野手（hitScore降順）。DH有なら先頭がDH、残りがベンチ。
+  const reserves = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
+  const dhId = dh ? (reserves.length ? reserves[0].id : defense['1B']) : null;
+  const bench = reserves.filter((f) => f.id !== dhId).map((f) => f.id);
+
+  // --- 打順アーキタイプ（§S1-3） -------------------------------------------
+  const pool = FIELD_POSITIONS.map((pos) => ({ playerId: defense[pos], pos }));
+  if (dh && dhId) pool.push({ playerId: dhId, pos: 'DH' });
+  const P = (e) => byId.get(e.playerId);
+  const take = (scoreFn) => {
+    let bi = -1;
+    let bv = -Infinity;
+    for (let i = 0; i < pool.length; i++) {
+      const v = scoreFn(P(pool[i]));
+      if (v > bv) {
+        bv = v;
+        bi = i;
+      }
+    }
+    return pool.splice(bi, 1)[0];
+  };
+
+  const slots = new Array(9).fill(null);
+  // 9番: DH無なら投手（当日の先発。S2 initSide v2 が playerId を充填）、DH有なら最弱野手
+  slots[8] = dh ? take((p) => -hitScore(p)) : { playerId: null, pos: 'P' };
+  slots[2] = take(hitScore); // 3番=最強総合
+  slots[3] = take(powerScore); // 4番=最強パワー
+  slots[4] = take(powerScore); // 5番=次点パワー
+  slots[0] = take((p) => obpScore(p) + cfg.tuning.depth.leadoffSpeedW * (p.trueAbility.common.speed - 50)); // 1番=OBP×俊足
+  slots[1] = take((p) => obpScore(p) + p.trueAbility.batting.contact); // 2番=コンタクト/出塁
+  // 6-8番: 残りを hitScore 降順
+  const rest = pool.slice().sort((a, b) => hitScore(P(b)) - hitScore(P(a)));
+  slots[5] = rest[0];
+  slots[6] = rest[1];
+  slots[7] = rest[2];
+
+  // --- ローテ＆ブルペン ------------------------------------------------------
+  const sortedP = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
+  const rotation = sortedP.slice(0, rotationSize).map((p) => p.id);
+  const bullpen = sortedP
+    .slice(rotationSize)
+    .sort((a, b) => relieverScore(b) - relieverScore(a))
+    .map((p) => p.id);
+  // ブルペン役割（§S1-3）: relieverScore順に closer/setup8/setup7、long は最下位、残り middle
+  const bullpenRoles = {
+    closer: bullpen[0] ?? null,
+    setup8: bullpen[1] ?? null,
+    setup7: bullpen[2] ?? null,
+    middle: bullpen.slice(3, Math.max(3, bullpen.length - 1)),
+    long: bullpen.length >= 4 ? bullpen[bullpen.length - 1] : null,
+  };
+
+  return { lineup: slots, defense, bench, positionRank, rotation, bullpen, bullpenRoles, byId };
 }
 
 
@@ -2163,8 +2401,9 @@ function assignDecisions(home, away, statFor, runLog) {
 // 日程生成・シーズン実行・順位表（1-4a/f）
 //
 // 12球団総当たり: 各ペア13試合（うちホーム7/6）→ 各チーム143試合・リーグ858試合。
+// ※S1は総当たり近似。リーグ内125＋交流戦18＋「節」カレンダーは S3 日程v2 で導入。
 // 各試合は階層シードで独立・順序非依存に実行（並列化・再現の前提, §17/§19）。
-// 先発は各チームの登板数 % 5 でローテを回す。継投・守備イニングは game.mjs が計上。
+// 先発は各チームの登板数 % rotationSize（中6日=6人）でローテを回す。
 // ============================================================================
 
 
@@ -2214,10 +2453,11 @@ function simulateSeason(league, cfg, opts = {}) {
   const park = opts.park ?? NEUTRAL_PARK;
 
   // 編成表
+  // TODO(S2): DH無し試合（L1主催）は initSide v2 で投手打席へ差し替える。S1では全試合DH打順で従来動作を維持。
   const depthByTeam = new Map();
   for (const t of league.teams) {
     const roster = league.players.filter((p) => p.teamId === t.id);
-    depthByTeam.set(t.id, buildDepthChart(roster));
+    depthByTeam.set(t.id, buildDepthChart(roster, cfg, { dh: true }));
   }
 
   // 集計器
@@ -2254,13 +2494,14 @@ function simulateSeason(league, cfg, opts = {}) {
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg.league.gamesPerSeason);
   const gameCount = new Map(league.teams.map((t) => [t.id, 0]));
 
+  const rotationSize = cfg.league.rotationSize;
   schedule.forEach((g, gi) => {
     const rng = makeRng(hashSeed(seed, 'game', gi));
     const hGC = gameCount.get(g.home);
     const aGC = gameCount.get(g.away);
     const res = simulateGame(
-      { teamId: g.home, depth: depthByTeam.get(g.home), starterIdx: hGC % 5 },
-      { teamId: g.away, depth: depthByTeam.get(g.away), starterIdx: aGC % 5 },
+      { teamId: g.home, depth: depthByTeam.get(g.home), starterIdx: hGC % rotationSize },
+      { teamId: g.away, depth: depthByTeam.get(g.away), starterIdx: aGC % rotationSize },
       cfg,
       rng,
       statFor,
@@ -2703,7 +2944,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.2.4-audit-a';
+const ENGINE_VERSION = '0.3.0-phaseA-s1';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 

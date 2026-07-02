@@ -12,13 +12,15 @@ import {
 
 const cfg = createConfig();
 
-// 全能力50・球速146・whiff50の平均的な選手（log5がリーグ基準に戻るはず）
-function avgBatter() {
-  return createPlayer({ role: 'fielder', trueAbility: createTrueAbility() });
+// 全能力50・球速146・whiff50の平均的な選手（log5がリーグ基準に戻るはず）。
+// 打者は左打ち（対右投手＝逆利き）でプラトーン中立にする（S1で同利きペナルティが入ったため）。
+function avgBatter(bats = 'L') {
+  return createPlayer({ role: 'fielder', bats, trueAbility: createTrueAbility() });
 }
-function avgPitcher() {
+function avgPitcher(throws = 'R') {
   return createPlayer({
     role: 'pitcher',
+    throws,
     trueAbility: createTrueAbility({
       pitching: { velocityKmh: 146, pitches: [createPitch('fastball', { whiff: 50 })] },
     }),
@@ -85,6 +87,29 @@ test('選球眼の高い打者はBB率を上げ、制球の良い投手は下げ
   const base = paProbabilities(avgBatter(), avgPitcher(), cfg).pBB;
   assert.ok(paProbabilities(patient, avgPitcher(), cfg).pBB > base, '選球眼→BB増');
   assert.ok(paProbabilities(avgBatter(), control, cfg).pBB < base, '制球→BB減');
+});
+
+test('プラトーンの向き: 同利きは逆利きより K↑ BB↓（S1・M7解消）', () => {
+  const pR = avgPitcher('R');
+  const same = paProbabilities(avgBatter('R'), pR, cfg); // R vs R = 同利き
+  const opp = paProbabilities(avgBatter('L'), pR, cfg); // L vs R = 逆利き
+  assert.ok(same.pK > opp.pK, `同利きでK増 (${same.pK.toFixed(3)} > ${opp.pK.toFixed(3)})`);
+  assert.ok(same.pBB < opp.pBB, `同利きでBB減 (${same.pBB.toFixed(3)} < ${opp.pBB.toFixed(3)})`);
+  // 左投手に対しては向きが反転（L vs L が同利き）
+  const pL = avgPitcher('L');
+  assert.ok(paProbabilities(avgBatter('L'), pL, cfg).pK > paProbabilities(avgBatter('R'), pL, cfg).pK);
+});
+
+test('スイッチヒッター(S)は常に有利側（どちらの投手に対しても逆利き扱い）', () => {
+  const sw = avgBatter('S');
+  for (const th of ['R', 'L']) {
+    const p = avgPitcher(th);
+    const kSwitch = paProbabilities(sw, p, cfg).pK;
+    const kOpp = paProbabilities(avgBatter(th === 'R' ? 'L' : 'R'), p, cfg).pK; // 明示的な逆利き打者
+    const kSame = paProbabilities(avgBatter(th), p, cfg).pK; // 同利き打者
+    assert.ok(Math.abs(kSwitch - kOpp) < 1e-12, `S は対${th}投手で逆利きと同確率`);
+    assert.ok(kSwitch < kSame, `S は対${th}投手で同利きより有利`);
+  }
 });
 
 test('対戦巡目(TTO)が進むと打者有利（K率が下がる）', () => {

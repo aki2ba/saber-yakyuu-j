@@ -127,6 +127,20 @@ export function createPlayer(o = {}) {
   };
 }
 
+/**
+ * 実効打席サイド（左右プラトーン・S1/M7解消）。
+ * スイッチ(S)は常に投手の利き腕と逆＝有利側に立つ（NPB/MLBの実運用どおり）。
+ */
+export function effectiveBats(batter, pitcher) {
+  if (batter.bats === 'S') return pitcher.throws === 'L' ? 'R' : 'L';
+  return batter.bats;
+}
+
+/** 同利きマッチアップか（打者に不利な側。config.tuning.platoon の補正対象判定） */
+export function isSameHand(batter, pitcher) {
+  return effectiveBats(batter, pitcher) === pitcher.throws;
+}
+
 /** 浅い階層のディープマージ（配列は置換） */
 function deepMerge(base, over) {
   if (over == null) return base;

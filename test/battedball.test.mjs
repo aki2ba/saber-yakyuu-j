@@ -121,6 +121,50 @@ test('パワー打者は平均打者より打球速度が速い（多数平均�
   assert.ok(meanEV(slugger) > meanEV(avgBatter()) + 8, 'slugger EV > avg');
 });
 
+test('プラトーン: 同利きは逆利きより平均EVが低く、スイッチは常に有利側（S1・M7解消）', () => {
+  const pitR = createPlayer({
+    role: 'pitcher',
+    throws: 'R',
+    trueAbility: createTrueAbility({ pitching: { velocityKmh: 146, pitches: [createPitch('fastball')] } }),
+  });
+  const mkBat = (bats) => createPlayer({ role: 'fielder', bats, trueAbility: createTrueAbility() });
+  const meanEV = (bat) => {
+    const rng = makeRng(11); // 同一シードでノイズ列を揃え、中心シフトだけを比較
+    let s = 0;
+    const n = 4000;
+    for (let i = 0; i < n; i++) s += generateBattedBall(bat, pitR, cfg, rng).evKmh;
+    return s / n;
+  };
+  const same = meanEV(mkBat('R')); // R vs R = 同利き
+  const opp = meanEV(mkBat('L')); // L vs R = 逆利き
+  assert.ok(
+    Math.abs(opp - same - Math.abs(cfg.tuning.platoon.evKmhSame)) < 0.3,
+    `同利きでEVが約${-cfg.tuning.platoon.evKmhSame}km/h低い (same=${same.toFixed(2)}, opp=${opp.toFixed(2)})`,
+  );
+  // スイッチは対右で左打者と同じEV分布（同一シード列で完全一致）
+  assert.ok(Math.abs(meanEV(mkBat('S')) - opp) < 1e-9, 'Sは対右投手で左打者と同分布=有利側');
+});
+
+test('スイッチヒッターの引っ張り方向は実効打席サイドに従う（対右→右打席側+）', () => {
+  const puller = (bats) =>
+    createPlayer({ role: 'fielder', bats, trueAbility: createTrueAbility({ batting: { pull: 75 } }) });
+  const mkPit = (throws) =>
+    createPlayer({
+      role: 'pitcher',
+      throws,
+      trueAbility: createTrueAbility({ pitching: { velocityKmh: 146, pitches: [createPitch('fastball')] } }),
+    });
+  const meanSpray = (bat, pit) => {
+    const rng = makeRng(7);
+    let s = 0;
+    const n = 4000;
+    for (let i = 0; i < n; i++) s += generateBattedBall(bat, pit, cfg, rng).sprayDeg;
+    return s / n;
+  };
+  assert.ok(meanSpray(puller('S'), mkPit('R')) > 3, '対右は左打席＝spray正(右方向)へ引っ張る');
+  assert.ok(meanSpray(puller('S'), mkPit('L')) < -3, '対左は右打席＝spray負(左方向)へ引っ張る');
+});
+
 test('平均マッチアップのインプレーBABIP/HRが現実的な域（較正前サニティ）', () => {
   const rng = makeRng(2026);
   const bat = avgBatter();

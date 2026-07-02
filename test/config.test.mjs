@@ -19,24 +19,49 @@ test('createConfig は独立したディープコピーを返す（較正ラン�
 });
 
 test('createConfig は overrides を深くマージする', () => {
-  const cfg = createConfig({ tuning: { hrScale: 1.2 }, league: { gamesPerSeason: 143 } });
+  const cfg = createConfig({ tuning: { hrScale: 1.2 }, league: { gamesPerSeason: 99 } });
   assert.equal(cfg.tuning.hrScale, 1.2);
   assert.equal(cfg.tuning.babipBase, 0.3, '未指定はデフォルト維持');
-  assert.equal(cfg.league.gamesPerSeason, 143, 'override反映');
-  assert.equal(cfg.league.numTeams, 6, '未指定はデフォルト維持');
+  assert.equal(cfg.league.gamesPerSeason, 99, 'override反映');
+  assert.equal(cfg.league.numTeams, 12, '未指定はデフォルト維持');
 });
 
-test('リーグ設定は 6球団140試合・全球団DH有', () => {
+test('リーグ設定は 12球団143試合・2リーグ制（L1=DH無/L2=DH有）・ローテ6（フェーズA S1）', () => {
   const cfg = createConfig();
-  assert.equal(cfg.league.numTeams, 6);
-  assert.equal(cfg.league.gamesPerSeason, 140);
-  assert.equal(cfg.league.dh, 'all');
+  assert.equal(cfg.league.numTeams, 12);
+  assert.equal(cfg.league.gamesPerSeason, 143);
+  assert.equal(cfg.league.rotationSize, 6);
+  assert.equal(cfg.league.dh, undefined, "旧 dh:'all' は廃止（試合のDH有無=ホーム球団のリーグ規則）");
+  assert.equal(cfg.league.leagues.length, 2);
+  assert.equal(cfg.league.leagues[0].dh, false, 'L1（セ系）はDH無し');
+  assert.equal(cfg.league.leagues[1].dh, true, 'L2（パ系）はDH有り');
+  for (const lg of cfg.league.leagues) {
+    assert.ok(!/セントラル|パシフィック/.test(lg.name), 'リーグ名は完全架空の造語');
+  }
 });
 
-test('較正目標は古典寄り（打率.255-.262・ERA3.5-3.9・HR110-130）', () => {
+test('新tuningノブ（platoon/bunt/ibb/sub/rest/fatigue/usage/depth）が揃っている（S1）', () => {
+  const t = createConfig().tuning;
+  assert.ok(t.platoon.kLogitSame > 0, '同利きでK増');
+  assert.ok(t.platoon.bbLogitSame < 0, '同利きでBB減');
+  assert.ok(t.platoon.evKmhSame < 0, '同利きでEV減');
+  assert.ok(Math.abs(t.bunt.successProb + t.bunt.failProb + t.bunt.hitProb - 1) < 1e-9, '犠打の結果テーブルは合計1');
+  for (const k of ['ibb', 'sub', 'rest', 'fatigue', 'usage', 'depth']) {
+    assert.ok(t[k] && typeof t[k] === 'object', `tuning.${k} が存在`);
+  }
+  assert.equal(t.usage.reviewInterval, 25, '観測ベース見直しは25試合ごと（S3が消費）');
+});
+
+test('較正目標は古典寄り（打率.255-.262・ERA3.5-3.9・HR110-130）＋フェーズA新目標', () => {
   assert.deepEqual(CALIBRATION_TARGETS.batting.avg, [0.255, 0.262]);
   assert.deepEqual(CALIBRATION_TARGETS.pitching.era, [3.5, 3.9]);
   assert.deepEqual(CALIBRATION_TARGETS.batting.hrPerTeam, [110, 130]);
+  // フェーズA: セ・パ得点差 / 犠打セ>パ / WAR下限 / 正捕手出場（S4 calibrate が消費）
+  assert.deepEqual(CALIBRATION_TARGETS.batting.runDiffDhMinusNoDh, [0.1, 0.45]);
+  assert.ok(CALIBRATION_TARGETS.tactics.shPerTeamNoDh[0] > CALIBRATION_TARGETS.tactics.shPerTeamDh[0], '犠打はセ系>パ系');
+  assert.equal(CALIBRATION_TARGETS.war.floorMin200PA, -2.5);
+  assert.deepEqual(CALIBRATION_TARGETS.war.totalLeague, [370, 430], '12球団×143試合');
+  assert.deepEqual(CALIBRATION_TARGETS.usage.catcherStarterGames, [100, 135]);
 });
 
 test('試合数依存の媒介変数は143試合基準（M3の再スケール）', () => {

@@ -7,43 +7,75 @@
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-export const CONFIG_VERSION = '0.0.3-config';
+export const CONFIG_VERSION = '0.0.4-phaseA-s1';
 
-/** リーグ設定（6球団×140試合＝単一リーグ / Q6: 全球団DH有）。
- *  最終形は12球団/2リーグ/交流戦（ロードマップ記録）。numTeams/gamesPerSeasonはここで可変。 */
+/** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
+ *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
+ *  日程はS3で「リーグ内125＋交流戦18」へ（S1は総当たり近似: 11相手×13=143）。 */
 export const LEAGUE_DEFAULT = {
-  numTeams: 6,
-  gamesPerSeason: 140, // 6球団: 5対戦相手×28試合=140（完全均等・ホーム14/14）
-  dh: 'all', // Q6=A 全球団DH有（投手は打席に立たない）
+  numTeams: 12,
+  gamesPerSeason: 143, // NPB準拠。最終形はリーグ内5相手×25＋交流戦6相手×3（S3日程v2）
+  // 2リーグ制（名称は完全架空の造語）。dh=false のリーグは投手が打席に立つ（セ系）。
+  leagues: [
+    { id: 'L1', name: '陽炎リーグ', dh: false }, // セ・リーグ系（DH無し）
+    { id: 'L2', name: '蒼天リーグ', dh: true }, // パ・リーグ系（DH有り）
+  ],
+  rotationSize: 6, // 先発ローテ人数（中6日・NPB標準）
   rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
 };
 
 /**
- * 較正目標帯（古典寄り・確定 / Q5・Q7）。各値は [min,max]。
- * 1-11/2-11 の機械判定に使う。分布形状の基準(M4)はフェーズ1較正時に追加する。
+ * 較正目標帯（フェーズA・12球団143試合2リーグ制 / phaseA_spec.md の表を全実装）。
+ * 各値は [min,max]（片側条件はスカラー）。tools/calibrate.mjs の機械判定に使う（S4で結線）。
  */
 export const CALIBRATION_TARGETS = {
   batting: {
-    avg: [0.255, 0.262],
+    avg: [0.255, 0.262], // リーグ合算
     obp: [0.32, 0.328],
     slg: [0.39, 0.41],
-    ops: [0.72, 0.735],
+    ops: [0.715, 0.735], // 下限を.715へ僅かに緩和（フェーズA）
     kPct: [0.18, 0.2],
     bbPct: [0.078, 0.083],
-    hrPerTeam: [110, 130], // per team / 140G ⚠️過剰HR＝最大の地雷＝第一の門番指標
+    hrPerTeam: [110, 130], // per team / 143G ⚠️過剰HR＝最大の地雷＝第一の門番指標
     runsPerTeamPerGame: [3.9, 4.3],
     wobaLeague: [0.325, 0.335],
+    // セ・パ得点差: DH有リーグ(L2) − DH無リーグ(L1) の得点/球団/試合の差（DH差の発現）
+    runDiffDhMinusNoDh: [0.1, 0.45],
   },
   pitching: {
-    era: [3.5, 3.9],
+    era: [3.5, 3.9], // リーグ合算
     fip: [3.6, 4.0],
   },
+  // タイトル級（リーグリーダーの分布の裾）
+  leaders: {
+    avg: [0.32, 0.355], // 打率王（帯を.355へ拡大）
+    hr: [40, 55], // HR王
+    rbi: [95, 140], // 打点王（ベンチ導入で低下想定）
+    sb: [30, 65], // 盗塁王
+    ipStarter: [150, 195], // 先発IPリーダー（中6日でもエースは深く）
+    reliefG: [45, 65], // 登板数王（救援・連投制限下）
+    sv: [30, 45], // SV王
+    hld: [30, 45], // HLD王
+  },
+  // 采配の発現（犠打・敬遠・完投）
+  tactics: {
+    shPerTeamNoDh: [55, 110], // 犠打/球団平均（DH無リーグ=投手バント込みでセ>パ）
+    shPerTeamDh: [30, 75], // 犠打/球団平均（DH有リーグ）
+    ibbPerTeam: [10, 40], // 敬遠/球団平均
+    cgLeague: [5, 30], // 完投（リーグ計）
+  },
   war: {
-    totalLeague: [175, 205], // 6球団×140試合（≈teams×games×0.224）。12球団/2リーグ化で要再設定
+    totalLeague: [370, 430], // 12球団×143試合
     hitterShare: [0.53, 0.57], // 野手:投手 ≈ 55:45
-    leaderHitter: [7, 9],
-    leaderPitcher: [6, 8],
+    leaderHitter: [7, 9.5], // 野手WAR王
+    leaderPitcher: [5.5, 8], // 投手WAR王
+    floorMin200PA: -2.5, // 200PA以上の野手の最小WAR > この値（「WAR-6」の根絶＝起用AIの機能証明）
     uzrTop: [20, 30],
+  },
+  // 起用・休養の発現
+  usage: {
+    qualifiedPerTeam: [5, 9], // 規定打席到達者/球団
+    catcherStarterGames: [100, 135], // 正捕手の出場試合（143未満＝休養AIの発現）
   },
 };
 
@@ -74,6 +106,80 @@ export const TUNING_DEFAULT = {
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
+  },
+
+  // 左右プラトーン（S1・M7解消）: 同利き手（実効打席サイド==投手の利き腕）へのペナルティ。
+  // スイッチ(S)は常に投手と逆打席＝有利側に立つ（同利きにならない）。
+  // 効果量の初期値は同利きで wOBA −.020〜.030 相当（S5較正で調整）。
+  platoon: {
+    kLogitSame: 0.1, // 同利きで K の logit 増（三振しやすい）
+    bbLogitSame: -0.08, // 同利きで BB の logit 減（四球を選びにくい）
+    evKmhSame: -1.2, // 同利きで打球EVの中心を下げる (km/h)
+  },
+
+  // 犠打（S2 maybeBunt が消費。§S2-4）: 試行判断・結果テーブル。2ストライク概念はフェーズB。
+  bunt: {
+    successProb: 0.78, // 成功（走者進塁・打者アウト・sh++・ABなし）
+    failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
+    hitProb: 0.1, // 内野安打化
+    maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
+    attemptBase: 0.25, // 非強打者×バント局面の基本試行率
+    tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
+    pitcherAttempt: 0.9, // 投手打席はほぼ必ずバント
+    weakBatterWoba: 0.31, // 「非強打者」の目安（観測wOBAがこれ未満）
+  },
+
+  // 敬遠（S2 maybeIBB が消費。§S2-5）: 一塁空き×2死or一死×終盤接戦×強打者（or次打者が投手）。
+  ibb: {
+    base: 0.35, // 条件成立時の基本敬遠率
+    tendW: 0.5, // 監督ibbTend(50中心)の感度
+    minInning: 7, // 終盤のみ
+    maxScoreDiff: 2, // 接戦のみ
+    strongBatterWoba: 0.36, // 「強打者」の目安（観測wOBA上位）
+  },
+
+  // 交代（S2 代打/代走/守備固め。§S2-3）
+  sub: {
+    phInning: 7, // 野手への代打は7回以降
+    phPitcherInning: 6, // 投手への代打は6回以降
+    phMaxBehind: 3, // ビハインドこの点差以内（or接戦）の得点機で発動
+    phGainMin: 5, // 代打起用に要する実効打力差（プラトーン込みhitScore相当）
+    prInning: 8, // 代走は8回以降
+    prMaxScoreDiff: 2, // 2点差以内
+    prSpeedGainMin: 10, // ベンチ最速との走力差がこれ以上
+    defInning: 8, // 守備固めは8回以降
+    defLeadMin: 1, // リード1〜3で発動
+    defLeadMax: 3,
+  },
+
+  // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
+  rest: {
+    catcherRestProb: 0.18, // 捕手の休養基本率/試合
+    fielderRestProb: 0.02, // 野手の休養基本率/試合
+    streakW: 0.004, // 連続出場1試合ごとの休養率加算
+  },
+
+  // 投手疲労・可用性（S3。連投制限・中6日の基盤）
+  fatigue: {
+    maxConsecDays: 2, // 2連投まで（3連投禁止）
+    prevDayPitchLimit: 30, // 前日30球以上→当日不可
+    starterRestDays: 5, // 先発は中5日以上
+  },
+
+  // 観測成績ベース起用（S3 usage.mjs）。三層構造: 真値は直接見ない（観測statline＋スカウトノイズ）。
+  usage: {
+    reviewInterval: 25, // 見直し間隔（試合）
+    trustPA: 150, // 観測wOBAの信頼度加重の半飽和PA（少PAは回帰）
+    scoutSd: 6, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）
+    swapMargin: 0.01, // レギュラー入替に要する実効wOBA差
+    platoonMargin: 0.005, // プラトーン入替に要する実効wOBA差
+  },
+
+  // 編成・打順（S1 buildDepthChart v2。§S1-3）
+  depth: {
+    posToolW: 0.4, // positionRank: 守備素材(Range,50中心)の重み（習熟=1基準）
+    posBatW: 0.2, // positionRank: 打撃(hitScoreを50中心スケール化)の重み
+    leadoffSpeedW: 1.0, // 1番選定: speed(50中心)の加点重み
   },
 
   // 走塁（2-4 wSB, §6）: 盗塁の試行・成否を 走者Steal/Speed × 投手Hold × 捕手Arm から生成。

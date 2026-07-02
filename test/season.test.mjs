@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
-import { buildDepthChart } from '../src/sim/team.mjs';
+import { buildDepthChart, hitScore, obpScore, powerScore } from '../src/sim/team.mjs';
 import { advanceRunners } from '../src/sim/game.mjs';
 import { simulateSeason, buildSchedule, winPct } from '../src/sim/season.mjs';
 import { makeRng } from '../src/rng.mjs';
@@ -11,17 +11,70 @@ import { FIELD_POSITIONS } from '../src/model/positions.mjs';
 
 const cfg = createConfig();
 
-test('buildDepthChart: 打順9・守備8ポジ充足・ローテ5・ブルペン', () => {
+test('buildDepthChart v2: 打順9・守備8ポジ充足・ローテ6・ブルペン役割・ベンチ・positionRank（S1）', () => {
   const lg = generateLeague(1, cfg);
   const roster = lg.players.filter((p) => p.teamId === 'T1');
-  const d = buildDepthChart(roster);
+  const d = buildDepthChart(roster, cfg);
   assert.equal(d.lineup.length, 9);
   for (const pos of FIELD_POSITIONS) assert.ok(d.defense[pos], `守備 ${pos}`);
-  assert.equal(d.rotation.length, 5);
+  assert.equal(d.rotation.length, cfg.league.rotationSize, 'ローテは6人（中6日）');
   assert.ok(d.bullpen.length >= 5);
-  // 投手は打順に入らない（全球団DH有）
+  // 投手は打順に入らない（DH有の既定編成）
   const lineupIds = new Set(d.lineup.map((s) => s.playerId));
   for (const pid of d.rotation) assert.ok(!lineupIds.has(pid), '投手が打順に不在');
+  // ベンチ: スタメン外の野手全員（20 − 守備8 − DH1 = 11人）・hitScore降順
+  assert.equal(d.bench.length, 20 - 8 - 1);
+  for (const pid of d.bench) assert.ok(!lineupIds.has(pid), 'ベンチはスタメン外');
+  for (let i = 1; i < d.bench.length; i++) {
+    assert.ok(hitScore(d.byId.get(d.bench[i - 1])) >= hitScore(d.byId.get(d.bench[i])), 'ベンチはhitScore降順');
+  }
+  // positionRank: 各ポジションに全野手のランキング
+  for (const pos of FIELD_POSITIONS) {
+    assert.equal(d.positionRank[pos].length, 20, `${pos} の候補ランキング`);
+    assert.ok(d.positionRank[pos].includes(d.defense[pos]), `${pos} のスタメンは候補内`);
+  }
+  // ブルペン役割: closer/setup8/setup7/middle[]/long（13投手−ローテ6=7人を全割当）
+  const r = d.bullpenRoles;
+  assert.ok(r.closer && r.setup8 && r.setup7 && r.long, '主要役割が埋まる');
+  assert.equal(r.closer, d.bullpen[0], 'closerはrelieverScore最上位');
+  assert.equal(r.long, d.bullpen[d.bullpen.length - 1], 'longは最下位');
+  assert.equal(3 + r.middle.length + 1, d.bullpen.length, '役割の合計=ブルペン人数');
+});
+
+test('打順アーキタイプ: 1番=OBP×俊足 / 3番=最強総合 / 4番=最強パワー / 9番=最弱（DH有）（S1）', () => {
+  const lg = generateLeague(1, cfg);
+  for (const t of lg.teams.slice(0, 3)) {
+    const roster = lg.players.filter((p) => p.teamId === t.id);
+    const d = buildDepthChart(roster, cfg);
+    const L = d.lineup.map((s) => d.byId.get(s.playerId));
+    // 9番はスタメン9人の中で hitScore 最弱
+    for (let i = 0; i < 8; i++) assert.ok(hitScore(L[8]) <= hitScore(L[i]), `9番が最弱 (${t.id})`);
+    // 3番は最強総合（9番決定後の残りで最大）
+    for (const i of [0, 1, 3, 4, 5, 6, 7]) assert.ok(hitScore(L[2]) >= hitScore(L[i]), `3番が最強総合 (${t.id})`);
+    // 4番は3番を除き powerScore 最大、5番は次点
+    for (const i of [0, 1, 4, 5, 6, 7, 8]) assert.ok(powerScore(L[3]) >= powerScore(L[i]), `4番が最強パワー (${t.id})`);
+    for (const i of [0, 1, 5, 6, 7, 8]) assert.ok(powerScore(L[4]) >= powerScore(L[i]), `5番が次点パワー (${t.id})`);
+    // 1番はOBP×俊足の合成が残り（2,6,7,8番）以上
+    const lead = (p) => obpScore(p) + cfg.tuning.depth.leadoffSpeedW * (p.trueAbility.common.speed - 50);
+    for (const i of [1, 5, 6, 7]) assert.ok(lead(L[0]) >= lead(L[i]), `1番がOBP×俊足 (${t.id})`);
+    // 6-8番は hitScore 降順
+    assert.ok(hitScore(L[5]) >= hitScore(L[6]) && hitScore(L[6]) >= hitScore(L[7]), `6-8番は降順 (${t.id})`);
+  }
+});
+
+test('buildDepthChart v2: DH無し編成は9番=投手プレースホルダ（S2が当日先発を充填）（S1）', () => {
+  const lg = generateLeague(1, cfg);
+  const roster = lg.players.filter((p) => p.teamId === 'T1');
+  const d = buildDepthChart(roster, cfg, { dh: false });
+  assert.equal(d.lineup.length, 9);
+  assert.equal(d.lineup[8].pos, 'P', '9番は投手スロット');
+  assert.equal(d.lineup[8].playerId, null, '当日の先発はS2 initSide v2が充填');
+  assert.ok(!d.lineup.some((s) => s.pos === 'DH'), 'DHスロットなし');
+  // 野手8人は守備位置と整合
+  const posSet = new Set(d.lineup.slice(0, 8).map((s) => s.pos));
+  assert.equal(posSet.size, 8);
+  // ベンチはDH非選抜のぶん1人多い（20 − 8 = 12人）
+  assert.equal(d.bench.length, 12);
 });
 
 test('advanceRunners: 本塁打は全走者＋打者が生還', () => {
@@ -59,11 +112,12 @@ test('advanceRunners: 2アウトの空中アウトは犠飛不成立', () => {
   assert.deepEqual(bases, [null, null, 'r3']);
 });
 
-test('buildSchedule: 総当たりで各チーム規定試合・ホーム偏りなし', () => {
+test('buildSchedule: 総当たりで各チーム規定試合・ホームほぼ均衡（12球団×143）', () => {
+  // TODO(S3): 日程v2（リーグ内125＋交流戦18・節カレンダー）でこのテストを置き換える
   const lg = generateLeague(1, cfg);
   const G = cfg.league.gamesPerSeason;
   const games = buildSchedule(lg.teams, makeRng(1), G);
-  assert.equal(games.length, (cfg.league.numTeams * G) / 2); // 6×140/2=420
+  assert.equal(games.length, (cfg.league.numTeams * G) / 2); // 12×143/2=858
   const count = new Map(lg.teams.map((t) => [t.id, 0]));
   const home = new Map(lg.teams.map((t) => [t.id, 0]));
   for (const g of games) {
@@ -73,7 +127,9 @@ test('buildSchedule: 総当たりで各チーム規定試合・ホーム偏り�
   }
   for (const t of lg.teams) {
     assert.equal(count.get(t.id), G, `${t.id} の試合数`);
-    assert.equal(home.get(t.id), G / 2, `${t.id} のホーム数（均衡）`); // 28×偶数=14/14
+    // 各ペア13試合（7/6）なのでホームは71か72（143の半分±0.5）
+    const h = home.get(t.id);
+    assert.ok(Math.abs(h - G / 2) <= 0.5, `${t.id} のホーム数がほぼ均衡 (got ${h})`);
   }
 });
 
@@ -114,7 +170,7 @@ test('simulateSeason: 決定論（同一seedで同一順位・同一成績）', 
 test('投手の登板/先発が引分含め正しく計上され幽霊登板がない（A-1/A-2/A-5修正）', () => {
   const lg = generateLeague(2026, cfg);
   const res = simulateSeason(lg, cfg, { seed: 2026 });
-  const numGames = (cfg.league.numTeams * cfg.league.gamesPerSeason) / 2; // 6×140/2=420
+  const numGames = (cfg.league.numTeams * cfg.league.gamesPerSeason) / 2; // 12×143/2=858
   const totalGS = res.playerSeasons.reduce((a, s) => a + s.pitching.gs, 0);
   assert.equal(totalGS, 2 * numGames, `総先発=2×試合数 (got ${totalGS})`);
   const totalSV = res.playerSeasons.reduce((a, s) => a + s.pitching.sv, 0);

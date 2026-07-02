@@ -28,6 +28,7 @@ export function createBattingLine() {
     so: 0,
     sf: 0, // 犠飛
     sh: 0, // 犠打
+    ph: 0, // 代打打席数（S1で器を確定・計上はS2の代打導入で）
     gdp: 0, // 併殺打（wGDPの素, §6）
     sb: 0, // 盗塁（wSBの素, §6）
     cs: 0, // 盗塁死

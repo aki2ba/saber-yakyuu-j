@@ -149,6 +149,7 @@ export function runPlateAppearance(env) {
   let wpRuns = 0;
   let passed02 = false;
   let passed30 = false;
+  let firstPitchStrike = false; // 初球がストライク(見逃し/空振り/ファウル/インプレー)なら true
 
   const R = PA_RESULT;
   R.outcome = null;
@@ -212,11 +213,14 @@ export function runPlateAppearance(env) {
         K.whiffAptW * (apt - 50) +
         (same ? K.platoonWhiffSame : 0) -
         tto * K.ttoWhiff;
+      // 2ストライクの「当てにいく」短縮スイング＝空振り減・コンタクト増（ファウルで粘り→投球数増・§B1-3）。
+      if (strikes === 2) pWhiff -= K.whiffTwoStrikeW;
       pWhiff = clamp(pWhiff, 0.01, 0.95);
       if (rng.next() < pWhiff) {
         bLine.whiffs++; pLine.whiffs++;
         if (band === 0) { bLine.zWhiffs++; pLine.zWhiffs++; }
         else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
+        if (nPitches === 1) firstPitchStrike = true;
         strikes++;
         if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
       } else {
@@ -225,6 +229,7 @@ export function runPlateAppearance(env) {
         pFoul = clamp(pFoul, 0.05, 0.95);
         if (rng.next() < pFoul) {
           bLine.fouls++; pLine.fouls++;
+          if (nPitches === 1) firstPitchStrike = true;
           if (strikes < 2) strikes++;
         } else {
           // インプレー → 既存の打球パイプライン（不変）
@@ -233,6 +238,7 @@ export function runPlateAppearance(env) {
           });
           R.outcome = 'inPlay';
           R.decisiveClass = cls;
+          if (nPitches === 1) firstPitchStrike = true;
           break;
         }
       }
@@ -240,6 +246,7 @@ export function runPlateAppearance(env) {
       // (e) 見逃し: ゾーン内=ストライク / ボーダー=フレーミング判定 / 外=ボール
       if (band === 0) {
         bLine.calledStrikes++; pLine.calledStrikes++;
+        if (nPitches === 1) firstPitchStrike = true;
         strikes++;
         if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
       } else if (band === 1) {
@@ -252,6 +259,7 @@ export function runPlateAppearance(env) {
         }
         if (gotStrike) {
           bLine.calledStrikes++; pLine.calledStrikes++;
+          if (nPitches === 1) firstPitchStrike = true;
           strikes++;
           if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
         } else {
@@ -278,6 +286,7 @@ export function runPlateAppearance(env) {
     }
   }
 
+  if (firstPitchStrike) { bLine.firstPitchStrikes++; pLine.firstPitchStrikes++; }
   R.pitches = nPitches;
   R.wpRuns = wpRuns;
   R.passed02 = passed02;

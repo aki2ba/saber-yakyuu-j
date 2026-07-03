@@ -7,7 +7,7 @@
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-export const CONFIG_VERSION = '0.0.8-phaseA-fix';
+export const CONFIG_VERSION = '0.9.0-phaseB1';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
@@ -98,12 +98,24 @@ export const CALIBRATION_TARGETS = {
   phaseB: {
     xwobaVsWoba: 0.003, // |リーグ xwOBA − wOBA| ≤ これ（打球モデル=シムの恒等）
     lobPct: [0.70, 0.75], // リーグ残塁率
-    qsRate: [0.45, 0.60], // 先発QS率（NPB水準・現行simは上振れ＝要 sim較正で収束）
+    qsRate: [0.45, 0.60], // 先発QS率（NPB水準・B1一球化＋継投再較正で帯内に収束）
     armLeader: [5, 12], // 外野ARM上位（対リーグ平均run）
     re24SumAbs: 1e-6, // |ΣRE24| ≤ これ（打者+走者+投手 = 0 恒等）
     wpaZeroSum: 1e-9, // WPAゼロサム最大誤差 ≤ これ（1試合 勝者±0.5）
     liAvg: [0.999, 1.001], // 打席加重平均LI = 1.0（正規化・aLI/pLI）
     sdLeader: [20, 50], // シャットダウン王（好救援の高レバレッジ成功）
+    // --- B1-3 規律系（一球シムの副産物・リーグ集計の率）------------------------------
+    pitchesPerPA: [3.7, 4.0], // 投球数/打席
+    zonePct: [0.42, 0.48], // Zone%（ゾーン内率）
+    oSwingPct: [0.26, 0.34], // O-Swing%（ボール球スイング率）
+    zSwingPct: [0.60, 0.70], // Z-Swing%（ゾーン内スイング率）
+    contactPct: [0.75, 0.81], // Contact%（スイングの接触率）
+    swStrPct: [0.085, 0.12], // SwStr%（空振り/全投球）
+    cswPct: [0.26, 0.31], // CSW%（見逃し+空振り / 全投球）
+    fStrikePct: [0.58, 0.64], // F-Strike%（初球ストライク率）
+    starterPitchesPerGame: [90, 110], // 先発投球数/試合（中6日と整合）
+    wpPbPerTeam: [35, 70], // WP+PB/球団
+    framingLeader: [6, 15], // フレーミングrun上位（捕手・対リーグ平均run）
   },
 };
 
@@ -195,33 +207,34 @@ export const TUNING_DEFAULT = {
   // ==========================================================================
   pitch: {
     // --- 投球ロケーション（ゾーン内/ボーダー/明確ボールの3帯） ---
-    zoneBase: 0.42, // 基準ゾーン内率（control50・even count）※Zone%の主ノブ
+    zoneBase: 0.432, // 基準ゾーン内率（control50・even count）※Zone%の主ノブ（B1較正: 0.42→0.432）
     zoneControlW: 0.005, // 制球(50中心)→ゾーン率（制球でストライク先行）
     zoneAheadW: -0.10, // 追い込み(0-2,1-2)でゾーン率減（ボールで釣る）
     zoneBehindW: 0.15, // ビハインド(3-0,3-1,2-0)でゾーン率増（置きにいく）
     zoneEvenBehindW: 0.04, // balls>strikes の軽いビハインドでゾーン率増
     borderShare: 0.34, // 非ゾーンのうちボーダー帯（フレーミングが効く縁）の割合。残りは明確ボール
     // --- 打者スイング判断 ---
-    zSwingBase: 0.66, // ゾーン内スイング率（Z-Swing%の主ノブ）
+    zSwingBase: 0.62, // ゾーン内スイング率（Z-Swing%の主ノブ・B1較正: 0.66→0.62で早見せ→投球数/CSW↑）
     bSwingBase: 0.46, // ボーダー帯スイング率
     oSwingBase: 0.235, // ボール球スイング率（chase・O-Swing%の主ノブ）
     swingEyeW: 0.006, // eye(50中心)→ボーダー/ボール球スイング率減（見極め）
     swingZoneEyeW: 0.0015, // eye→ゾーンスイング率減（わずか。巧打者は good pitch を待てる）
-    twoStrikeSwingW: 0.11, // 2ストライクの保護スイング増（全帯）
+    twoStrikeSwingW: 0.20, // 2ストライクの保護スイング増（全帯・B1較正: 0.11→0.20。当てにいく→ファウル粘り）
     threeOhTakeW: 0.42, // 3-0での自重（スイング率減）
     // --- スイング時の空振り ---
-    whiffZoneBase: 0.095, // ゾーン内スイングの空振り基準
-    whiffBorderBase: 0.16, // ボーダー帯スイングの空振り基準
-    whiffOBase: 0.26, // ボール球スイング（chase）の空振り基準
+    whiffZoneBase: 0.175, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。Contact/SwStr/CSWを帯へ）
+    whiffBorderBase: 0.27, // ボーダー帯スイングの空振り基準（B1較正: 0.16→0.27）
+    whiffOBase: 0.38, // ボール球スイング（chase）の空振り基準（B1較正: 0.26→0.38）
     whiffPitchW: 0.006, // 球種whiff(50中心)→空振り増
     whiffContactW: 0.006, // 打者contact(50中心)→空振り減
     whiffAptW: 0.004, // 対該当クラス適性(50中心)→空振り減
+    whiffTwoStrikeW: 0.18, // 2ストライクの空振り率減（当てにいく短縮スイング。ppa↑・K抑制・B1較正: 0→0.18）
     // --- 接触時: ファウル vs インプレー ---
     foulBase: 0.47, // 接触のうちファウルになる基準
-    foulTwoStrikeW: 0.08, // 2ストライクでファウル率増（粘り＝カット）
+    foulTwoStrikeW: 0.18, // 2ストライクでファウル率増（粘り＝カット・B1較正: 0.08→0.18で投球数/PA↑）
     // --- 見逃し時: ボーダー帯の捕手フレーミング判定 ---
     borderCsBase: 0.24, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時）
-    frameSlopePerPt: 0.0045, // framing(50中心)→ボーダーCS率±（一球単位の創発）
+    frameSlopePerPt: 0.0040, // framing(50中心)→ボーダーCS率±（一球単位の創発・B1較正: 0.0045→0.0040でフレーミング上位を帯内へ）
     runPerCall: 0.125, // 1コール(vs中立)→run（framingRuns。per-inning近似の置換・§7.3）
     // --- HBP（内角外れの低確率イベント。現行率~0.9%/PAを維持） ---
     hbpPerClearBall: 0.007, // 明確ボール1球あたりのHBP率

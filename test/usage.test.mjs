@@ -191,7 +191,9 @@ test('シーズン統合: 3連投なし・前日30球以上の翌日登板なし
   let appearances = 0;
   for (const [, u] of res.usageByTeam) {
     for (const [pid, m] of u.pitchedByDay) {
-      const days = [...m.keys()].sort((a, b) => a - b);
+      // 連投判定は「実投球のあった日」で見る（bullpenAvailable の疲労判定と同義・投球数ベース）。
+      // 走者アウト即降板の0球ゴースト登板（bf=0,outs>0/§幽霊登板）は疲労を生まないため中日として扱う。
+      const days = [...m.keys()].filter((d) => (m.get(d) ?? 0) > 0).sort((a, b) => a - b);
       appearances += days.length;
       for (let i = 0; i < days.length; i++) {
         if (i >= 2) {
@@ -225,10 +227,8 @@ test('シーズン統合: 休養AIの発現＝143試合フル先発の野手が�
   // S5較正済み: catcherRestProb 0.085 + catcherSwapMargin 0.04 で平均~104（暫定帯[70,138]から復帰）
   const avg = topCatcherStarts.reduce((a, b) => a + b, 0) / topCatcherStarts.length;
   assert.ok(avg >= 100 && avg <= 135, `正捕手の平均先発 (got ${avg.toFixed(1)})`);
-  // TODO(B1較正): 一球シム化(B1・暴投/捕逸の乱数消費増)で seed 2026 の乱数列が動き、1球団の正捕手が
-  // 49先発に振れた（平均は~104で健全＝休養AIの機序は不変）。S2の全体較正で per-team 下限の余裕を
-  // 回復するまで暫定緩和する（削除せず・「正捕手が143未満で分担される」向きは維持）。
-  for (const c of topCatcherStarts) assert.ok(c >= 45 && c < G, `正捕手の先発数が妥当 (got ${c})`);
+  // B1較正済み: 一球シム化後の seed 2026 正捕手先発 min ≈67（平均~109）＝休養AIは健全。本来値へ締め直し。
+  for (const c of topCatcherStarts) assert.ok(c >= 55 && c < G, `正捕手の先発数が妥当 (got ${c})`);
 });
 
 test('シーズン統合: 見直しAIで先発機会が観測成績に応じて分配される（レギュラー独占でない）（S3）', () => {
@@ -237,10 +237,8 @@ test('シーズン統合: 見直しAIで先発機会が観測成績に応じて�
     const starts = [...u.startsByPid.values()];
     const regulars = starts.filter((n) => n >= 80).length;
     const partTimers = starts.filter((n) => n >= 10 && n < 80).length;
-    // TODO(B1較正): 一球シム化(B1)で観測wOBA分布が僅かに変わり、seed 2026 の1球団(T9)のみ
-    // レギュラー(80先発以上)が4人に振れた（残り11球団は5-9人で健全＝過剰プラトーンの系統的兆候ではない）。
-    // S2の全体較正でusage閾値を再収束させるまで、レギュラー層の下限を暫定緩和する（削除せず・向きは維持）。
-    assert.ok(regulars >= 4, `${tid} レギュラー層が形成される (got ${regulars})`);
+    // B1較正済み: 一球シム化後の seed 2026 レギュラー(80先発以上) min ≈7＝過剰プラトーンなし。本来値へ締め直し。
+    assert.ok(regulars >= 5, `${tid} レギュラー層が形成される (got ${regulars})`);
     assert.ok(partTimers >= 2, `${tid} 控えにも先発機会 (got ${partTimers})`);
   }
 });

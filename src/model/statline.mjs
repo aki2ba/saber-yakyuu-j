@@ -47,6 +47,7 @@ export function createBattingLine() {
     // ballsInDirt=ワンバウンド球数。率(Zone%/O-Swing%/Contact%/SwStr%/CSW%)はこれらから metrics で算出。
     pitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
+    firstPitchStrikes: 0, // 初球がストライク判定(見逃し/空振り/ファウル/インプレー)だった打席数（F-Strike%の分子）
     // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
     vsFastball: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
     vsBreaking: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
@@ -113,6 +114,7 @@ export function createPitchingLine() {
     // --- B1 一球ごとの生カウント（投手視点・§B1-2）。打者側と対称。被O-Swing等=「釣れる投手」の素。
     swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
+    firstPitchStrikes: 0, // 初球ストライク数（F-Strike%の分子。被F-Strike＝奪ストライク先行）
     // --- B3a 追加集計: 被打球分類（被GB/LD/FB/PU%・HR/FB・xFIP用の被FB）とQS。§B3 ---
     bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
     qs: 0, // クオリティスタート（先発が6IP=18アウト以上・自責3以下で降板）

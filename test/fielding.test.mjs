@@ -34,10 +34,8 @@ test('OAAが守備Rangeと正の相関を持つ（能力→結果の結線・M1�
   let cov = 0, vo = 0, vr = 0;
   for (const p of reg) { cov += (p.oaa - mo) * (p.range - mr); vo += (p.oaa - mo) ** 2; vr += (p.range - mr) ** 2; }
   const r = cov / Math.sqrt(vo * vr);
-  // TODO(B1較正): 一球シム化(B1)で seed 2026 の1年OAA実現値がたまたま低相関に振れた（このseedのみ）。
-  // 全seed平均の相関は B1前(≈0.30)と同等〜僅かに高い(≈0.32)＝守備シグナルは不変（複数seedで確認済み）。
-  // S2の全体較正で seed 2026 の余裕を回復するまで、正相関の下限を暫定緩和する（削除せず・向きは維持）。
-  assert.ok(r > 0.1, `OAA↔Range 相関 > 0.1 (got ${r.toFixed(2)}) ＝守備能力が結果に効いている`);
+  // B1較正済み: 一球シム化後の seed 2026 実現相関 ≈0.36（B1前0.30と同等以上）。下限を本来値へ締め直し。
+  assert.ok(r > 0.2, `OAA↔Range 相関 > 0.2 (got ${r.toFixed(2)}) ＝守備能力が結果に効いている`);
   // ただし完全相関ではない（1年守備指標のノイズが正しく残る）
   assert.ok(r < 0.85, `1年OAAはノイズを含む (r=${r.toFixed(2)})`);
 });

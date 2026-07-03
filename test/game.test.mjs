@@ -57,7 +57,9 @@ test('引分試合の innings は maxInnings(12) を超えない（off-by-one �
   // 12回制で引分に至った試合が innings=13 を返さないこと（決着試合は最大12）。
   let ties = 0;
   let decided = 0;
-  for (let seed = 0; seed < 60; seed++) {
+  // B1一球化で得点環境が上がり引分が希少化したため走査窓を拡大（引分は seed 165 で初出・§B1較正）。
+  // off-by-one 不変量(innings<=12)は全ゲームで検証、tie 分岐の確認用に十分な引分数を確保する。
+  for (let seed = 0; seed < 300; seed++) {
     const { res } = playGame(seed, seed % 2 === 0);
     assert.ok(res.innings <= 12, `innings が 12 を超えた (seed=${seed}, innings=${res.innings})`);
     if (res.tie) {

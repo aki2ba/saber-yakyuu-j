@@ -125,10 +125,35 @@ function runOnce(seed) {
   }
   let totQS = 0;
   let totGS = 0;
+  // --- B1-3 規律系: 先発投球数/試合・WP+PB/球団・フレーミング上位（一球の副産物）---
+  let starterPitches = 0;
+  let starterStarts = 0;
+  let wpPbTotal = 0;
+  let framingLeader = -Infinity;
   for (const s of res.playerSeasons) {
-    totQS += s.pitching.qs;
-    totGS += s.pitching.gs;
+    const p = s.pitching;
+    totQS += p.qs;
+    totGS += p.gs;
+    if (p.gs > 0 && p.gs * 2 >= p.g) { starterPitches += p.pitches; starterStarts += p.gs; }
+    wpPbTotal += s.fielding.wp + s.fielding.pb;
+    if (mainPosition(s.fielding) === 'C' && totalFieldInnings(s.fielding) >= 400) {
+      framingLeader = Math.max(framingLeader, s.fielding.framingRuns);
+    }
   }
+  // 規律系の率（リーグ集計の生カウントから。打者側=投手側の恒等なので lgBat を使用）---
+  const disc = {
+    pitchesPerPA: lgBat.pa ? lgBat.pitches / lgBat.pa : 0,
+    zonePct: lgBat.pitches ? lgBat.zonePitches / lgBat.pitches : 0,
+    oSwingPct: lgBat.oZonePitches ? lgBat.oSwings / lgBat.oZonePitches : 0,
+    zSwingPct: lgBat.zonePitches ? lgBat.zSwings / lgBat.zonePitches : 0,
+    contactPct: lgBat.swings ? (lgBat.swings - lgBat.whiffs) / lgBat.swings : 0,
+    swStrPct: lgBat.pitches ? lgBat.whiffs / lgBat.pitches : 0,
+    cswPct: lgBat.pitches ? (lgBat.calledStrikes + lgBat.whiffs) / lgBat.pitches : 0,
+    fStrikePct: lgBat.pa ? lgBat.firstPitchStrikes / lgBat.pa : 0,
+    starterPitchesPerGame: starterStarts ? starterPitches / starterStarts : 0,
+    wpPbPerTeam: wpPbTotal / numTeams,
+    framingLeader,
+  };
 
   return {
     summary,
@@ -161,6 +186,7 @@ function runOnce(seed) {
     lobPct: lgPm.lobPct,
     armLeader,
     qsRate: totGS ? totQS / totGS : 0,
+    disc,
   };
 }
 
@@ -323,6 +349,19 @@ const avgC = (fn) => ctxRuns.reduce((a, r) => a + fn(r), 0) / ctxRuns.length;
 
 console.log('');
 console.log('=== フェーズB 追加系指標の健全性チェック（新規・既存30とは独立） ===');
+console.log('--- 規律系（一球シムの副産物・12シード平均・§B1-3） ---');
+console.log(brow('投球数/PA', avgR((r) => r.disc.pitchesPerPA), B.pitchesPerPA, 3));
+console.log(brow('Zone%', avgR((r) => r.disc.zonePct), B.zonePct, 3));
+console.log(brow('O-Swing%', avgR((r) => r.disc.oSwingPct), B.oSwingPct, 3));
+console.log(brow('Z-Swing%', avgR((r) => r.disc.zSwingPct), B.zSwingPct, 3));
+console.log(brow('Contact%', avgR((r) => r.disc.contactPct), B.contactPct, 3));
+console.log(brow('SwStr%', avgR((r) => r.disc.swStrPct), B.swStrPct, 3));
+console.log(brow('CSW%', avgR((r) => r.disc.cswPct), B.cswPct, 3));
+console.log(brow('F-Strike%', avgR((r) => r.disc.fStrikePct), B.fStrikePct, 3));
+console.log(brow('先発投球数/試合', avgR((r) => r.disc.starterPitchesPerGame), B.starterPitchesPerGame, 1));
+console.log(brow('WP+PB/球団', avgR((r) => r.disc.wpPbPerTeam), B.wpPbPerTeam, 1));
+console.log(brow('フレーミング上位', avgR((r) => r.disc.framingLeader), B.framingLeader, 2));
+console.log('');
 console.log('--- 期待値/率系（非context・12シード平均） ---');
 console.log(`      league wOBA ${avgR((r) => r.woba).toFixed(4)} / xwOBA ${avgR((r) => r.xwoba).toFixed(4)}（モデル=シムの恒等）`);
 console.log(brow('|xwOBA−wOBA|', avgR((r) => r.xwobaDiff), [0, B.xwobaVsWoba], 5));
@@ -338,8 +377,7 @@ console.log(brow('平均pLI(正規化)', avgC((r) => r.pLI), B.liAvg, 4));
 console.log(brow('SD王', avgC((r) => r.sdLead), B.sdLeader, 1));
 console.log(`      リーグ総SD ${avgC((r) => r.totSD).toFixed(0)} / 総MD ${avgC((r) => r.totMD).toFixed(0)}（SD>MD で健全）`);
 console.log('');
-console.log('注: QS率がNPB帯(45-60%)上振れなのは現行simの先発が効率的なため。QS率の収束は打席解決/継投の');
-console.log('    sim較正（B1一球化・B3全体較正）の課題で、本ステージ（追加集計のみ・sim不変）の対象外。');
+console.log('注: QS率は B1一球化（投球経済の是正）＋継投再較正で NPB帯(45-60%) に収束済み（旧: 上振れ0.63）。');
 console.log('');
 console.log(`=== フェーズB追加チェック PASS ${bPass} / FAIL ${bFail} ===`);
 console.log(`=== 総合: 既存30 [PASS ${nPass}/FAIL ${nFail}]  ＋  フェーズB追加 [PASS ${bPass}/FAIL ${bFail}] ===`);

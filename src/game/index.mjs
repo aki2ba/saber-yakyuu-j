@@ -18,6 +18,7 @@ import { createConfig } from '../config.mjs';
 import { generateLeague } from '../generate.mjs';
 import { ENGINE_VERSION } from '../engine.mjs';
 import { startSeasonRuntime, advanceRuntimeDay, pendingDay } from './season_runtime.mjs';
+import { applyAging } from './aging.mjs';
 
 /** セーブスキーマ版（構造変更時にインクリメント。load の互換判定に使う）。 */
 export const SCHEMA_VERSION = 1;
@@ -25,6 +26,11 @@ export const SCHEMA_VERSION = 1;
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
   return state.yearIndex === 0 ? state.masterSeed : hashSeed(state.masterSeed, 'season', state.yearIndex);
+}
+
+/** 年 y→y+1 のオフシーズン加齢シード（決定論・load の replay と live で同一）。 */
+function offseasonSeed(masterSeed, yearIndex) {
+  return hashSeed(masterSeed, 'offseason', yearIndex);
 }
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
@@ -179,6 +185,32 @@ export function advanceTo(state, until, opts = {}) {
   throw new Error(`advanceTo: 未知の until '${until}'`);
 }
 
+/**
+ * オフシーズン遷移（C2a）: 完了したシーズンから翌年開幕へ。全選手に加齢/成長を適用し
+ * （真値を動かす・§10）、age++・yearIndex++・year++ したうえで翌シーズンを開幕状態でセットする。
+ *
+ * 決定論: 加齢は offseasonSeed(masterSeed, yearIndex) 由来（Date.now/Math.random 非使用）。
+ *   load 側も同一シードで過去年の加齢を replay するため、多年セーブの復元も bit 一致する。
+ * エンジン不変: 本関数は 1年目終了後に初めて呼ばれる。1年目レギュラーシーズン（既存50較正）は
+ *   完全に不変（加齢は 2年目以降の真値にのみ効く）。
+ * @param {Object} state GameState（シーズンが finished であること）
+ * @returns {Object} state（翌年開幕状態）
+ */
+export function advanceYear(state) {
+  if (!state.rt || !state.rt.finished) {
+    throw new Error('advanceYear: シーズン未終了（seasonEnd まで進めてから呼ぶこと）');
+  }
+  // オフシーズン加齢（真値を動かす・§10.1-10.3）。league.players を in-place で更新する。
+  applyAging(state.league.players, state.cfg, {
+    seed: offseasonSeed(state.masterSeed, state.yearIndex),
+    yearIndex: state.yearIndex,
+  });
+  state.yearIndex += 1;
+  state.year += 1;
+  startYear(state); // 新シーズンを開幕状態でセット（加齢後の真値・yearIndex 依存シード）
+  return state;
+}
+
 // --- セーブ/ロード ----------------------------------------------------------
 
 /**
@@ -272,6 +304,12 @@ export function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     rt: null,
   };
+  // 過去年（0..yearIndex-1）のオフシーズン加齢を決定論 replay で再適用し、真値を保存時点へ復元する。
+  // trueAbility は §17（集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
+  // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
+  for (let y = 0; y < state.yearIndex; y++) {
+    applyAging(state.league.players, cfg, { seed: offseasonSeed(state.masterSeed, y), yearIndex: y });
+  }
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;

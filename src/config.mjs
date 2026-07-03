@@ -473,6 +473,76 @@ export const TUNING_DEFAULT = {
     singleScore2: 0.6, // 単打で二塁走者が生還する確率（残りは三塁止まり）※S5較正（得点環境・rpw）
     doubleScore1: 0.50, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
   },
+
+  // ==========================================================================
+  // 加齢・成長カーブ（C2a・§10.1-10.3 / §12.4）: オフシーズンに trueAbility を動かすノブ。
+  // src/game/aging.mjs の applyAging が消費する（1年目レギュラーシーズンには一切効かない
+  // ＝加齢は2年目以降のみ。既存50較正指標は完全不変）。
+  //
+  // モデル（能力ごとに「成長→維持→衰え」の3相）:
+  //   growEnd = peakAge + peakShift  … ここまで毎年 +grow（若手は成長係数 gm で幅を持つ）
+  //   onset   = peakAge + declineOffset … ここから毎年 −decline×declineRate×(1+accel×経過年)
+  //   peakShift/declineOffset を能力タイプで振り、§10.1 の「早落ち/遅くまで残る/むしろ伸びる/
+  //   加齢に強い」を構造から出す。declineRate は個体差（§10.2・generate で球速/走力相関で既引き）。
+  // ==========================================================================
+  aging: {
+    youngAge: 25, // これ未満を「若手」とする（成長を高分散・bust厚めで出す＝§10.3）
+    driftSdYoung: 1.6, // 若手の年次ノイズSD（能力1軸あたり・rating）
+    driftSdOld: 0.9, // ベテランの年次ノイズSD
+    growthVarYoung: 0.35, // 若手の成長係数 gm の分散（点でなく幅で・TINSTAAPP）
+    bustProb: 0.15, // 若手が「伸び悩む」確率（下方の裾を厚く＝bust多め）
+    bustMag: 0.9, // bust 時に成長係数 gm から引く量（負に振れれば真値が退行）
+    growthMultMin: -0.6, // gm の下限（bust で退行しうる）
+    growthMultMax: 2.4, // gm の上限（覚醒的な急成長の上振れ）
+    declineAccel: 0.12, // 衰えの加速（onset 超過1年ごとに衰え幅を増やす＝終盤の急落）
+
+    // 球速（km/h 実数・レーティングと別枠）: 加齢で落ちる。高球速×高declineRate ほど早く落ちる。
+    velo: {
+      grow: 0.3, // 若手のうちは僅かに伸びる
+      peakShift: -1, // 球速のピークは早い
+      declineOffset: 2, // ピーク+2 から本格的に落ちる
+      decline: 0.6, // 1年あたりの低下（×declineRate×加速）
+      driftSdYoung: 0.6,
+      driftSdOld: 0.4,
+      min: 130,
+      max: 165,
+    },
+
+    // 能力タイプ別プロファイル（§10.1）。grow=成長幅 / peakShift=成長終端の後ろズレ /
+    //   declineOffset=衰え開始の後ろズレ / decline=衰え幅。未登録キーは default。
+    profiles: {
+      // 早落ち（走力・守備初動・盗塁技術は足に連動）
+      speed: { grow: 0.5, peakShift: -3, declineOffset: -1, decline: 1.2 },
+      reaction: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 1.0 },
+      steal: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 0.9 },
+      // パワー（20代天井後 遅くまで残る）
+      power: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
+      ev: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
+      // 選球眼（むしろ伸びる＝加齢で微増）
+      eye: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      // コンタクト・三振耐性（終盤に悪化）
+      contact: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
+      vsFastball: { grow: 0.6, peakShift: 0, declineOffset: 3, decline: 0.9 },
+      vsBreaking: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
+      // 技術・IQ（加齢に強い/伸びる）: LA最適化・制球・ポジIQ・走塁IQ・フレーミング
+      la: { grow: 0.8, peakShift: 7, declineOffset: 13, decline: 0.25 }, // 和田型（晩成）の主軸
+      pull: { grow: 0.3, peakShift: 6, declineOffset: 12, decline: 0.15 },
+      control: { grow: 0.7, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 石川雅規型（鉄人）
+      positioningIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      baserunIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      framing: { grow: 0.6, peakShift: 6, declineOffset: 12, decline: 0.25 },
+      blocking: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.35 },
+      gbRate: { grow: 0.2, peakShift: 5, declineOffset: 10, decline: 0.2 },
+      hold: { grow: 0.4, peakShift: 4, declineOffset: 9, decline: 0.3 },
+      positionProf: { grow: 0.6, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
+      pitchStuff: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.3 }, // 球種の質（出し入れは技巧で残る）
+      // 中間（肩・手・スタミナ）
+      arm: { grow: 0.4, peakShift: 0, declineOffset: 3, decline: 0.6 },
+      hands: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.45 },
+      stamina: { grow: 0.3, peakShift: 1, declineOffset: 4, decline: 0.6 },
+      default: { grow: 0.4, peakShift: 1, declineOffset: 4, decline: 0.6 },
+    },
+  },
 };
 
 /**

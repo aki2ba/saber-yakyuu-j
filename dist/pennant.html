@@ -1270,6 +1270,76 @@ const TUNING_DEFAULT = {
     singleScore2: 0.6, // 単打で二塁走者が生還する確率（残りは三塁止まり）※S5較正（得点環境・rpw）
     doubleScore1: 0.50, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
   },
+
+  // ==========================================================================
+  // 加齢・成長カーブ（C2a・§10.1-10.3 / §12.4）: オフシーズンに trueAbility を動かすノブ。
+  // src/game/aging.mjs の applyAging が消費する（1年目レギュラーシーズンには一切効かない
+  // ＝加齢は2年目以降のみ。既存50較正指標は完全不変）。
+  //
+  // モデル（能力ごとに「成長→維持→衰え」の3相）:
+  //   growEnd = peakAge + peakShift  … ここまで毎年 +grow（若手は成長係数 gm で幅を持つ）
+  //   onset   = peakAge + declineOffset … ここから毎年 −decline×declineRate×(1+accel×経過年)
+  //   peakShift/declineOffset を能力タイプで振り、§10.1 の「早落ち/遅くまで残る/むしろ伸びる/
+  //   加齢に強い」を構造から出す。declineRate は個体差（§10.2・generate で球速/走力相関で既引き）。
+  // ==========================================================================
+  aging: {
+    youngAge: 25, // これ未満を「若手」とする（成長を高分散・bust厚めで出す＝§10.3）
+    driftSdYoung: 1.6, // 若手の年次ノイズSD（能力1軸あたり・rating）
+    driftSdOld: 0.9, // ベテランの年次ノイズSD
+    growthVarYoung: 0.35, // 若手の成長係数 gm の分散（点でなく幅で・TINSTAAPP）
+    bustProb: 0.15, // 若手が「伸び悩む」確率（下方の裾を厚く＝bust多め）
+    bustMag: 0.9, // bust 時に成長係数 gm から引く量（負に振れれば真値が退行）
+    growthMultMin: -0.6, // gm の下限（bust で退行しうる）
+    growthMultMax: 2.4, // gm の上限（覚醒的な急成長の上振れ）
+    declineAccel: 0.12, // 衰えの加速（onset 超過1年ごとに衰え幅を増やす＝終盤の急落）
+
+    // 球速（km/h 実数・レーティングと別枠）: 加齢で落ちる。高球速×高declineRate ほど早く落ちる。
+    velo: {
+      grow: 0.3, // 若手のうちは僅かに伸びる
+      peakShift: -1, // 球速のピークは早い
+      declineOffset: 2, // ピーク+2 から本格的に落ちる
+      decline: 0.6, // 1年あたりの低下（×declineRate×加速）
+      driftSdYoung: 0.6,
+      driftSdOld: 0.4,
+      min: 130,
+      max: 165,
+    },
+
+    // 能力タイプ別プロファイル（§10.1）。grow=成長幅 / peakShift=成長終端の後ろズレ /
+    //   declineOffset=衰え開始の後ろズレ / decline=衰え幅。未登録キーは default。
+    profiles: {
+      // 早落ち（走力・守備初動・盗塁技術は足に連動）
+      speed: { grow: 0.5, peakShift: -3, declineOffset: -1, decline: 1.2 },
+      reaction: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 1.0 },
+      steal: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 0.9 },
+      // パワー（20代天井後 遅くまで残る）
+      power: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
+      ev: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
+      // 選球眼（むしろ伸びる＝加齢で微増）
+      eye: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      // コンタクト・三振耐性（終盤に悪化）
+      contact: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
+      vsFastball: { grow: 0.6, peakShift: 0, declineOffset: 3, decline: 0.9 },
+      vsBreaking: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
+      // 技術・IQ（加齢に強い/伸びる）: LA最適化・制球・ポジIQ・走塁IQ・フレーミング
+      la: { grow: 0.8, peakShift: 7, declineOffset: 13, decline: 0.25 }, // 和田型（晩成）の主軸
+      pull: { grow: 0.3, peakShift: 6, declineOffset: 12, decline: 0.15 },
+      control: { grow: 0.7, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 石川雅規型（鉄人）
+      positioningIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      baserunIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      framing: { grow: 0.6, peakShift: 6, declineOffset: 12, decline: 0.25 },
+      blocking: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.35 },
+      gbRate: { grow: 0.2, peakShift: 5, declineOffset: 10, decline: 0.2 },
+      hold: { grow: 0.4, peakShift: 4, declineOffset: 9, decline: 0.3 },
+      positionProf: { grow: 0.6, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
+      pitchStuff: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.3 }, // 球種の質（出し入れは技巧で残る）
+      // 中間（肩・手・スタミナ）
+      arm: { grow: 0.4, peakShift: 0, declineOffset: 3, decline: 0.6 },
+      hands: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.45 },
+      stamina: { grow: 0.3, peakShift: 1, declineOffset: 4, decline: 0.6 },
+      default: { grow: 0.4, peakShift: 1, declineOffset: 4, decline: 0.6 },
+    },
+  },
 };
 
 /**
@@ -6236,6 +6306,157 @@ function finalizeRuntime(rt) {
 }
 
 
+// ===== src/game/aging.mjs =====
+// ============================================================================
+// フェーズC2a: 加齢・成長カーブ（§10.1-10.3 / §12.4）
+//
+//   applyAging(players, cfg, { seed, yearIndex })
+//     … オフシーズン遷移で全選手の trueAbility を1年ぶん動かし、age++ する純関数。
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - エンジンを壊さない: 加齢は「オフシーズンに真値を変える」もの。シーズン内シムは不変。
+//     applyAging は 2年目以降の開幕前にだけ呼ばれ、1年目のレギュラーシーズン（＝既存50較正）に
+//     一切触れない。
+//   - 決定論維持: 乱数は makeRng(hashSeed(seed, ...)) のみ。Date.now/Math.random 禁止。
+//     各選手の乱数は id 基準で派生＝適用順に依らず同一結果（順序非依存）。
+//   - 三層構造: ここが動かすのは layer1（trueAbility・隠し値）。観測/スカウト表現は UI 側の責務。
+//
+// モデル（能力ごとに「成長→維持→衰え」の3相・cfg.tuning.aging）:
+//   growEnd = peakAge + peakShift       … ここまで毎年 +grow（若手は成長係数 gm で幅を持つ）
+//   onset   = peakAge + declineOffset   … ここから毎年 −decline×declineRate×(1+accel×経過年)
+//   peakShift/declineOffset を能力タイプで振ることで §10.1 の
+//     早落ち（走力/守備初動）・遅くまで残る（パワー）・むしろ伸びる（選球眼）・
+//     加齢に強い（制球/技巧/ポジIQ/走塁IQ）を「専用ロジックほぼ無し」で構造から出す。
+//   declineRate は個体差（§10.2・generate で球速/走力と相関して既に引かれている）＝
+//     速球派だけ早く落ち、技巧派・晩成が"稀に"残る（生存バイアスで鉄人が自動レア化・§10.6）。
+// ============================================================================
+
+
+
+/**
+ * 全選手にオフシーズンの加齢を適用する（in-place・決定論・順序非依存）。
+ * @param {Array} players generateLeague().players（trueAbility/age を持つ選手配列）
+ * @param {Object} cfg createConfig()（cfg.tuning.aging を参照）
+ * @param {{seed:number, yearIndex:number}} o seed=オフシーズン用階層シード / yearIndex=遷移元の年
+ * @returns {Array} players（同一参照。呼び出し側の league.players を直接更新する）
+ */
+function applyAging(players, cfg, { seed }) {
+  const aging = cfg.tuning.aging;
+  for (const p of players) {
+    // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
+    const prng = makeRng(hashSeed(seed, 'aging', p.id));
+    agePlayer(p, prng, aging);
+  }
+  return players;
+}
+
+/** 1選手を1年ぶん加齢させる（trueAbility を動かし age++）。 */
+function agePlayer(p, prng, aging) {
+  const t = p.trueAbility;
+  const peak = t.career.peakAge;
+  const dr = t.career.declineRate;
+  const age = p.age;
+  const young = age < aging.youngAge;
+
+  // §10.3 成長は「点でなく幅で」: 若手は選手ごとの成長係数 gm を引く（高分散・bust厚め）。
+  //   gm<0 まで振れれば真値が退行（TINSTAAPP＝有望株が凡庸に終わる）。ベテランは gm=1（幅なし）。
+  let gm = 1;
+  if (young) {
+    gm = 1 + prng.normal(0, aging.growthVarYoung);
+    if (prng.chance(aging.bustProb)) gm -= aging.bustMag; // 伸び悩み（下方の裾を厚く）
+    gm = clamp(gm, aging.growthMultMin, aging.growthMultMax);
+  }
+
+  const ctx = { age, peak, dr, gm, young, prng, aging };
+
+  // 共通素材（§2.2）
+  ageRating(t.common, 'speed', 'speed', ctx);
+  ageRating(t.common, 'arm', 'arm', ctx);
+  ageRating(t.common, 'hands', 'hands', ctx);
+  ageRating(t.common, 'reaction', 'reaction', ctx);
+  ageRating(t.common, 'power', 'power', ctx);
+
+  // 打撃（§2.3）
+  ageRating(t.batting, 'ev', 'ev', ctx);
+  ageRating(t.batting, 'la', 'la', ctx);
+  ageRating(t.batting, 'pull', 'pull', ctx);
+  ageRating(t.batting, 'contact', 'contact', ctx);
+  ageRating(t.batting, 'eye', 'eye', ctx);
+  ageRating(t.batting, 'vsFastball', 'vsFastball', ctx);
+  ageRating(t.batting, 'vsBreaking', 'vsBreaking', ctx);
+
+  // 投手（§2.4）: 球速は別枠モデル、それ以外はレーティング機構、球種は技巧扱い。
+  ageVelocity(t.pitching, ctx);
+  ageRating(t.pitching, 'control', 'control', ctx);
+  ageRating(t.pitching, 'stamina', 'stamina', ctx);
+  ageRating(t.pitching, 'gbRate', 'gbRate', ctx);
+  ageRating(t.pitching, 'hold', 'hold', ctx);
+  for (const pitch of t.pitching.pitches) agePitch(pitch, ctx);
+
+  // 野手守備（§2.5）: ポジション習熟は経験で伸び緩やかに落ちる（山本泰寛型）。
+  ageRating(t.fielding, 'positioningIQ', 'positioningIQ', ctx);
+  ageRating(t.fielding, 'framing', 'framing', ctx);
+  ageRating(t.fielding, 'blocking', 'blocking', ctx);
+  for (const pos of Object.keys(t.fielding.positionProf)) {
+    ageRating(t.fielding.positionProf, pos, 'positionProf', ctx);
+  }
+
+  // 走塁（§2.6）
+  ageRating(t.baserunning, 'steal', 'steal', ctx);
+  ageRating(t.baserunning, 'baserunIQ', 'baserunIQ', ctx);
+
+  p.age = age + 1;
+}
+
+/**
+ * 「成長→維持→衰え」の年次期待デルタ（能力プロファイル × 個体 peakAge/declineRate）。
+ * 若手の成長は成長係数 gm で幅を持たせる（§10.3）。
+ */
+function curveDelta(prof, ctx) {
+  let d = 0;
+  const growEnd = ctx.peak + prof.peakShift;
+  const onset = ctx.peak + prof.declineOffset;
+  if (ctx.age < growEnd) d += prof.grow * (ctx.young ? ctx.gm : 1);
+  if (ctx.age >= onset) {
+    const past = ctx.age - onset; // 経過年（大きいほど急落＝§10.1「1オフで急落もありうる」）
+    d -= prof.decline * ctx.dr * (1 + ctx.aging.declineAccel * past);
+  }
+  return d;
+}
+
+/** 年次ノイズ（若手ほど大きい＝高分散）。 */
+function drift(ctx) {
+  const sd = ctx.young ? ctx.aging.driftSdYoung : ctx.aging.driftSdOld;
+  return ctx.prng.normal(0, sd);
+}
+
+/** 1レーティング(20-80)を加齢で更新（in-place）。profKey 未登録なら default プロファイル。 */
+function ageRating(obj, key, profKey, ctx) {
+  const prof = ctx.aging.profiles[profKey] ?? ctx.aging.profiles.default;
+  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx) + drift(ctx));
+}
+
+/** 球速（km/h 実数）を加齢で更新（in-place）。高球速×高declineRate ほど早く落ちる（§10.2）。 */
+function ageVelocity(pitching, ctx) {
+  const v = ctx.aging.velo;
+  let d = 0;
+  const growEnd = ctx.peak + v.peakShift;
+  const onset = ctx.peak + v.declineOffset;
+  if (ctx.age < growEnd) d += v.grow * (ctx.young ? ctx.gm : 1);
+  if (ctx.age >= onset) d -= v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
+  d += ctx.prng.normal(0, ctx.young ? v.driftSdYoung : v.driftSdOld);
+  pitching.velocityKmh = clamp(pitching.velocityKmh + d, v.min, v.max);
+}
+
+/** 1球種の質（球速でなく技巧側＝出し入れ）を加齢で更新（in-place・pitchStuff プロファイル）。 */
+function agePitch(pitch, ctx) {
+  const prof = ctx.aging.profiles.pitchStuff;
+  for (const k of ['current', 'whiff', 'hrSuppress', 'contactQuality']) {
+    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx) + drift(ctx));
+  }
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -6258,12 +6479,18 @@ function finalizeRuntime(rt) {
 
 
 
+
 /** セーブスキーマ版（構造変更時にインクリメント。load の互換判定に使う）。 */
 const SCHEMA_VERSION = 1;
 
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
   return state.yearIndex === 0 ? state.masterSeed : hashSeed(state.masterSeed, 'season', state.yearIndex);
+}
+
+/** 年 y→y+1 のオフシーズン加齢シード（決定論・load の replay と live で同一）。 */
+function offseasonSeed(masterSeed, yearIndex) {
+  return hashSeed(masterSeed, 'offseason', yearIndex);
 }
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
@@ -6418,6 +6645,32 @@ function advanceTo(state, until, opts = {}) {
   throw new Error(`advanceTo: 未知の until '${until}'`);
 }
 
+/**
+ * オフシーズン遷移（C2a）: 完了したシーズンから翌年開幕へ。全選手に加齢/成長を適用し
+ * （真値を動かす・§10）、age++・yearIndex++・year++ したうえで翌シーズンを開幕状態でセットする。
+ *
+ * 決定論: 加齢は offseasonSeed(masterSeed, yearIndex) 由来（Date.now/Math.random 非使用）。
+ *   load 側も同一シードで過去年の加齢を replay するため、多年セーブの復元も bit 一致する。
+ * エンジン不変: 本関数は 1年目終了後に初めて呼ばれる。1年目レギュラーシーズン（既存50較正）は
+ *   完全に不変（加齢は 2年目以降の真値にのみ効く）。
+ * @param {Object} state GameState（シーズンが finished であること）
+ * @returns {Object} state（翌年開幕状態）
+ */
+function advanceYear(state) {
+  if (!state.rt || !state.rt.finished) {
+    throw new Error('advanceYear: シーズン未終了（seasonEnd まで進めてから呼ぶこと）');
+  }
+  // オフシーズン加齢（真値を動かす・§10.1-10.3）。league.players を in-place で更新する。
+  applyAging(state.league.players, state.cfg, {
+    seed: offseasonSeed(state.masterSeed, state.yearIndex),
+    yearIndex: state.yearIndex,
+  });
+  state.yearIndex += 1;
+  state.year += 1;
+  startYear(state); // 新シーズンを開幕状態でセット（加齢後の真値・yearIndex 依存シード）
+  return state;
+}
+
 // --- セーブ/ロード ----------------------------------------------------------
 
 /**
@@ -6511,6 +6764,12 @@ function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     rt: null,
   };
+  // 過去年（0..yearIndex-1）のオフシーズン加齢を決定論 replay で再適用し、真値を保存時点へ復元する。
+  // trueAbility は §17（集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
+  // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
+  for (let y = 0; y < state.yearIndex; y++) {
+    applyAging(state.league.players, cfg, { seed: offseasonSeed(state.masterSeed, y), yearIndex: y });
+  }
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;

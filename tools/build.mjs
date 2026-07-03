@@ -183,6 +183,33 @@ const html = `<!DOCTYPE html>
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
   .pbfill { height:100%; background:var(--clay); transition:width .1s; }
   .championbanner { background:var(--panel); border:1px solid var(--gold); border-radius:8px; padding:12px; font-size:18px; font-weight:800; color:var(--gold); text-align:center; margin:12px 0; }
+  /* C4 演出: ニュース/表彰/記録/二つ名 */
+  .newsfeed { display:flex; flex-direction:column; gap:4px; margin:4px 0 8px; }
+  .newsrow { border-left:3px solid var(--line); background:var(--panel); border-radius:4px; padding:5px 10px; font-size:13px; }
+  .newsrow.good { border-left-color:var(--gold); }
+  .newsrow.bad { border-left-color:#c96a5a; }
+  .newsrow.info { border-left-color:#5aa9e6; }
+  .awardpanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:var(--panel); }
+  .awardlgname { color:var(--gold); font-weight:700; border-bottom:1px solid var(--line); padding-bottom:4px; margin-bottom:6px; }
+  .awardtop { display:flex; flex-wrap:wrap; gap:10px; }
+  .awardbig { flex:1; min-width:160px; background:#0c3122; border-radius:6px; padding:8px; }
+  .awardbigk { display:block; font-size:11px; color:var(--muted); }
+  .awardbigv { display:block; font-weight:700; color:var(--gold); }
+  .awardlist { display:flex; flex-direction:column; gap:3px; }
+  .awardrow { display:flex; gap:8px; align-items:center; background:#0c3122; border-radius:4px; padding:4px 8px; font-size:13px; }
+  .awardyear { color:var(--muted); min-width:44px; }
+  .awardbadge { color:var(--ink); }
+  .nickname { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .nickmark { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  .nicktext { font-size:18px; font-weight:800; color:var(--gold); }
+  svg.growth { width:280px; max-width:100%; background:#0c3122; border-radius:8px; margin-top:6px; }
+  .reccols { display:flex; flex-wrap:wrap; gap:10px; }
+  .reccol { flex:1; min-width:150px; }
+  .rechead { color:var(--muted); font-size:12px; border-bottom:1px solid var(--line); margin-bottom:3px; }
+  .recrow { display:flex; gap:6px; font-size:13px; padding:2px 0; }
+  .recrank { color:var(--muted); min-width:18px; }
+  .recname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .recval { color:var(--gold); }
 </style>
 </head>
 <body>

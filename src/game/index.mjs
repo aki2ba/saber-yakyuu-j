@@ -24,6 +24,16 @@ import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
 import { runMarket, teamEvalProfile } from './market.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './transactions.mjs';
+// C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
+//   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
+//   ここで import することでバンドル（build.mjs のグラフ）にも同梱され、UI から
+//   グローバル参照できる（下段の re-export は開発時 Node 解決／UI import 用）。
+import {
+  computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
+  leagueRecords, teamRecords, championCounts, milestones,
+  careerBatting, careerPitching, DEF_AWARD_NAME, TITLE_LABELS,
+} from './awards.mjs';
+import { detectGameNotables, notableHeadline, streakOf, weeklyDigest } from './news.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
@@ -316,6 +326,10 @@ export function advanceYear(state) {
   if (!state.rt || !state.rt.finished) {
     throw new Error('advanceYear: シーズン未終了（seasonEnd まで進めてから呼ぶこと）');
   }
+  // 表彰（C4）: 世代交代でロスターが動く前に「当年に出場した選手」の byId を控え、
+  //   完了シーズンの観測成績/WAR から表彰を選定する（決定論・純関数）。
+  const awardsById = new Map(state.league.players.map((p) => [p.id, p]));
+  const completedYear = state.year;
   const off = offseasonTransition(state.league, state.cfg, {
     masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
@@ -324,6 +338,16 @@ export function advanceYear(state) {
     careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
     marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
   });
+  // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
+  off.awards = computeSeasonAwards({
+    playerSeasons: state.careerStats.filter((s) => s.season === completedYear),
+    standings: standingsForYear(state, completedYear),
+    playersById: awardsById,
+    cfg: state.cfg,
+    allCareerStats: state.careerStats,
+    year: completedYear,
+  });
+  off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
   state.yearIndex += 1;
@@ -463,3 +487,12 @@ export function load(blob, options = {}) {
   }
   return state;
 }
+
+// --- C4 演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う。バンドルでは
+//     各元関数が strip 後にグローバル化するため、この export 行は build.mjs で剥がれても機能する）。
+export {
+  computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
+  leagueRecords, teamRecords, championCounts, milestones,
+  careerBatting, careerPitching, DEF_AWARD_NAME, TITLE_LABELS,
+  detectGameNotables, notableHeadline, streakOf, weeklyDigest,
+};

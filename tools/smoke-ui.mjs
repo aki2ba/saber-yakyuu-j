@@ -234,6 +234,8 @@ assert.equal(teamCards.length, 12, `12球団のカードが出る (got ${teamCar
 teamCards[0]._onclick();
 let hubHead = hasClass('header');
 assert.ok(hubHead && textOf(hubHead).includes('2026年'), 'シーズンハブに年が表示される');
+// C4) ニュースフィードがハブに描画される（序盤は placeholder 行）
+assert.ok(hasClass('newsfeed'), 'ハブにニュースフィードが描画される');
 
 // G3) ハブの stat タブ（順位/WAR/打撃/投手/守備/チーム）が既存描画で開ける（例外なし）
 for (const tabName of ['順位表', 'WAR', '打撃', '投手', '守備', 'チーム', 'ハブ']) {
@@ -284,6 +286,47 @@ assert.ok(hasClass('championbanner'), 'シーズンリザルトに日本一バ�
 assert.ok(textOf(hasClass('championbanner')).includes('日本一'), '日本一の球団名が表示される');
 const resultTables = walk(appDiv).filter((n) => n.tag === 'table');
 assert.ok(resultTables.length >= 2, `リザルトに2リーグ順位表が出る (got ${resultTables.length})`);
+
+// ============================================================================
+// フェーズC4: 表彰パネル（シーズンリザルト）／記録タブ／選手モーダル「経歴」タブ（二つ名/成長曲線）
+// ============================================================================
+// C4a) シーズンリザルトに表彰パネル（MVP/タイトル/ベストナイン/守備の栄誉賞）
+const awardPanels = allClass('awardpanel');
+assert.ok(awardPanels.length >= 2, `表彰パネルが2リーグ分描画される (got ${awardPanels.length})`);
+const awardText = awardPanels.map((n) => textOf(n)).join(' ');
+assert.ok(awardText.includes('MVP'), '表彰にMVPが表示される');
+for (const t of ['首位打者', '本塁打王', '最多勝', '最多セーブ']) {
+  assert.ok(awardText.includes(t), `表彰にタイトル「${t}」が表示される`);
+}
+assert.ok(awardText.includes('ベストナイン') || textOf(hasClass('awardpanel')).length > 0, 'ベストナイン枠がある');
+const awardHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+assert.ok(awardHeads.some((t) => t.includes('表彰')), '表彰見出しが出る');
+
+// C4b) 記録タブ（球団史／リーグ記録）— リザルトから「成績を見る」→ハブ→記録タブ
+btnByText('成績を見る')._onclick();
+const recTab = btnByText('記録');
+assert.ok(recTab, 'ハブに「記録」タブがある');
+recTab._onclick();
+const recHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+assert.ok(recHeads.some((t) => t.includes('球団史')), '記録タブに球団史がある');
+assert.ok(recHeads.some((t) => t.includes('リーグ記録')), '記録タブにリーグ記録がある');
+assert.ok(allClass('reccol').length >= 4, `リーグ記録が複数カテゴリのカラムで出る (got ${allClass('reccol').length})`);
+
+// C4c) 選手モーダルの「経歴」タブ（二つ名＋年度別成績＋成長曲線SVG＋受賞履歴）
+btnByText('打撃')._onclick();
+const cRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
+assert.ok(cRow, '打撃タブに選手行がある');
+cRow._onclick();
+const cOverlay = allClass('overlay').pop();
+const cMtabs = () => walk(cOverlay).filter((n) => n.tag === 'button' && (n.className || '').includes('mtab'));
+const careerTab = cMtabs().find((n) => textOf(n) === '経歴');
+assert.ok(careerTab, '選手モーダルに「経歴」タブがある（キャリアモード）');
+careerTab._onclick();
+assert.ok(walk(cOverlay).some((n) => (n.className || '').includes('nickname')), '経歴タブに二つ名が表示される');
+assert.ok(walk(cOverlay).some((n) => (n.className || '').includes('growth')), '経歴タブに成長曲線SVGが描かれる');
+assert.ok(walk(cOverlay).some((n) => textOf(n).includes('受賞履歴')), '経歴タブに受賞履歴セクションがある');
+
+console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
 console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');

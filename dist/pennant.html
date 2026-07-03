@@ -104,6 +104,33 @@
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
   .pbfill { height:100%; background:var(--clay); transition:width .1s; }
   .championbanner { background:var(--panel); border:1px solid var(--gold); border-radius:8px; padding:12px; font-size:18px; font-weight:800; color:var(--gold); text-align:center; margin:12px 0; }
+  /* C4 演出: ニュース/表彰/記録/二つ名 */
+  .newsfeed { display:flex; flex-direction:column; gap:4px; margin:4px 0 8px; }
+  .newsrow { border-left:3px solid var(--line); background:var(--panel); border-radius:4px; padding:5px 10px; font-size:13px; }
+  .newsrow.good { border-left-color:var(--gold); }
+  .newsrow.bad { border-left-color:#c96a5a; }
+  .newsrow.info { border-left-color:#5aa9e6; }
+  .awardpanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:var(--panel); }
+  .awardlgname { color:var(--gold); font-weight:700; border-bottom:1px solid var(--line); padding-bottom:4px; margin-bottom:6px; }
+  .awardtop { display:flex; flex-wrap:wrap; gap:10px; }
+  .awardbig { flex:1; min-width:160px; background:#0c3122; border-radius:6px; padding:8px; }
+  .awardbigk { display:block; font-size:11px; color:var(--muted); }
+  .awardbigv { display:block; font-weight:700; color:var(--gold); }
+  .awardlist { display:flex; flex-direction:column; gap:3px; }
+  .awardrow { display:flex; gap:8px; align-items:center; background:#0c3122; border-radius:4px; padding:4px 8px; font-size:13px; }
+  .awardyear { color:var(--muted); min-width:44px; }
+  .awardbadge { color:var(--ink); }
+  .nickname { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .nickmark { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  .nicktext { font-size:18px; font-weight:800; color:var(--gold); }
+  svg.growth { width:280px; max-width:100%; background:#0c3122; border-radius:8px; margin-top:6px; }
+  .reccols { display:flex; flex-wrap:wrap; gap:10px; }
+  .reccol { flex:1; min-width:150px; }
+  .rechead { color:var(--muted); font-size:12px; border-bottom:1px solid var(--line); margin-bottom:3px; }
+  .recrow { display:flex; gap:6px; font-size:13px; padding:2px 0; }
+  .recrank { color:var(--muted); min-width:18px; }
+  .recname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .recval { color:var(--gold); }
 </style>
 </head>
 <body>
@@ -1421,6 +1448,130 @@ const TUNING_DEFAULT = {
     eliteRetain: 0.018, // abilityRef 超過 1pt ごとの引退確率減（鉄人ほど残る＝生存バイアス→40代レア化）
     base: 0.030, // 基本引退確率（判定対象年齢での下駄）
     cap: 0.92, // 引退確率の上限
+  },
+
+  // ==========================================================================
+  // 編成市場（C3a・§13/§15/§12.1）: 球団AI評価の球団差＋ドラフト＋育成/支配下二層。
+  //   1年目レギュラーシーズンには一切効かない（市場はオフシーズン遷移＝2年目以降のみ）。
+  //   src/game/market.mjs が消費。三層構造の原則: 球団AIは trueAbility を直接見ず、
+  //   「観測ツール＋スカウトノイズ」を球団固有の重みで評価する（＝わざと不完全に間違う）。
+  //   歪んだ球団評価と真価値の差分が「宝の泉」＝市場の非効率（守備/位置の過小評価を仕込む）。
+  // ==========================================================================
+  market: {
+    // 世代生成（§15 ドラフト）: 新人の年齢層。高卒18/大卒22/社会人25相当の混合分布。
+    cohort: {
+      hsAge: 18, // 高卒相当
+      colAge: 22, // 大卒相当
+      corpAge: 25, // 社会人相当
+      hsShare: 0.5, // 高卒の割合
+      colShare: 0.35, // 大卒の割合（残り＝社会人）
+    },
+    surplusPerType: 3, // ドラフトプールの余剰（各(role,pos)型で 空き数＋これ）。選択肢＝評価差の発現＝宝の源
+
+    // 球団AI評価関数の球団差（§13/§15）: 各球団が生成時に固定で引く「評価の癖」。
+    //   wDef<1 の球団が多数＝守備/位置価値の系統的な過小評価（市場の非効率）。
+    //   稀に wDef>1 の「守備を正しく重める球団」が混じり、他球団の捨てた宝を拾う（守備版マネーボール）。
+    profile: {
+      wBatMean: 1.0, wBatSd: 0.12, wBatMin: 0.5, wBatMax: 1.6, // 打撃/投球コアの重み（球団差小）
+      wEyeMean: 1.0, wEyeSd: 0.45, wEyeMin: 0.2, wEyeMax: 2.2, // 出塁(選球眼)重視度（球団差大）
+      wDefMean: 0.62, wDefSd: 0.42, wDefMin: 0.05, wDefMax: 1.8, // 守備/位置価値の重み（多くが<1＝過小評価）
+      ageBiasMean: 0.5, ageBiasSd: 0.35, ageBiasMin: 0, ageBiasMax: 1.6, // 年齢バイアス（若手志向のペナルティ/歳）
+      noiseSdMean: 6, noiseSdSd: 2, noiseSdMin: 2, // スカウト観測ノイズSD（rating単位・球団ごとの評価の荒さ）
+    },
+    // 評価成分のスケール（守備/出塁/位置価値の rating 換算）。
+    eval: {
+      eyeScale: 1.0, // 出塁(eye)成分のスケール
+      posScale: 1.4, // 位置価値(posAdj)→rating換算スケール（守備マインド球団だけが重める）
+      armW: 0.5, // 守備成分への肩(arm)寄与
+      laW: 0.5, // 打撃成分へのLA寄与
+    },
+
+    // 育成/支配下 二層（§12.1）: 育成枠＝観測ノイズ大＆下振れで安く獲れる箱。
+    //   昇格判定＝育成の観測成績が閾値超で支配下登録（＝這い上がり）。「稀に」起きるよう閾値を高く。
+    farm: {
+      perTeamSignsPerYear: 2, // 毎オフに各球団が獲る育成選手数（ドラフト漏れ＝過小評価された surplus から）
+      perTeamMax: 8, // 育成枠の上限（超過は観測下位を解雇）
+      maxAge: 26, // これを超えた育成選手は解雇（大成せず箱を空ける）
+      promoteThreshold: 57, // 育成の「観測成績」がこれ超で支配下登録（稀）
+      promoteObsNoiseSd: 6, // 昇格判定の観測ノイズSD（球場が薄い＝観測が荒い）
+      promoteObsBias: -2, // 観測は下振れ方向にバイアス（育成は観測が歪む・§12.2）
+    },
+
+    // ------------------------------------------------------------------------
+    // C3b 選手市場: FA・トレード・戦力外/拾い上げ（§15 / §12.2）。
+    //   src/game/transactions.mjs が消費。すべてオフシーズン遷移（2年目以降）でのみ発火し、
+    //   1年目レギュラーシーズン（既存50較正）には一切効かない。移動はすべて同(role,primaryPos)の
+    //   1:1 スワップ／循環＝球団あたりの役割・守備位置構成を厳密に不変に保つ（人口/構成恒常）。
+    //   三層構造: 入札・受諾・拾い上げの査定は evaluateProspect（観測ツール＋スカウトノイズ×球団の癖）。
+    //   放出（戦力外）判定だけは "実際の観測成績"（当該シーズンの生 statline）で下す＝出場機会に
+    //   依存して歪む（少PA→ショボく見える＝上林型、不振→板山型）。査定を違える他球団が拾って生き返る。
+    // ------------------------------------------------------------------------
+    fa: {
+      minAge: 30, // 国内FA権発生の下限年齢（年数条件の簡略代理・§15）
+      maxAge: 36, // これ超は市場価値が薄く宣言しない（引退圏）
+      declareRate: 0.06, // 資格者が宣言する確率（決定論rng・毎オフ少数）
+      bidMargin: 8, // 移籍成立に必要な「最高入札−現球団評価」の下駄（評価差が要る＝分かれる）
+      protectCount: 28, // 人的補償のプロテクト人数（非プロテクト＝残り5から補償を出す）
+      longContractAge: 34, // これ以降の長期契約はリスク（契約年数フレーバー・§15）
+      maxYears: 4, // 契約年数の上限（フレーバー表示用）
+    },
+    trade: {
+      margin: 6, // 双方winに必要な各球団の純利得の下駄（churn抑制）
+      maxPerYear: 6, // AI-AI 成立トレードの年間上限
+      protectCount: 28, // 放出プールのプロテクト（非プロテクト同型のみ交換可）
+    },
+    release: {
+      replacementWoba: 0.29, // 代替水準（観測貢献量 =（観測wOBA−これ）×PA）＝拾い上げ後の "観測改善" の物差し
+      replacementFip: 4.6, // 投手の代替FIP（観測貢献量 =（これ−観測FIP）×IP/9）
+      // 戦力外スコア = 観測貢献量 − 出場機会ペナルティ（少PA/少IP＝未確立でショボく見える＝上林型／
+      //   高PAの不振＝板山型 も負に沈む）。放出はこのスコアが threshold 未満の非若手から worst 順に。
+      fullPA: 300, // これ未満のPAは「出場機会が薄い」＝ペナルティ対象（規定打席の目安）
+      ptPenaltyBat: 0.03, // 不足PA 1 あたりの戦力外スコア減（少出場ほど切られやすい＝渋滞の犠牲）
+      fullIP: 35, // これ未満のIPはペナルティ対象（先発/中継ぎ両にかかる緩い目安）
+      ptPenaltyPit: 0.18, // 不足IP 1 あたりの戦力外スコア減
+      threshold: -3.0, // 戦力外スコアがこれ未満で戦力外候補
+      minAge: 26, // これ未満は戦力外にしない（若手は観測が薄くても切らず育てる）
+      maxCutsPerTeam: 2, // 各球団が毎オフ出す戦力外候補の上限（worst score から）
+    },
+  },
+
+  // ==========================================================================
+  // 演出・記録（C4・§16/§17）: 表彰・ニュース・記録・二つ名の判定定数。
+  //   src/game/awards.mjs / src/game/news.mjs が消費。すべて "観測成績/WAR" ベースで
+  //   選定・命名する（trueAbility を直接見ない＝三層構造）。集計値のみを参照し、
+  //   1年目レギュラーシーズン（既存50較正）には一切干渉しない（表示・集計のみ）。
+  // ==========================================================================
+  awards: {
+    // 二つ名（§16 Lv4回避=画像なし）: 通算 "観測" 集計のパターンで自動付与（priority順に判定）。
+    //   trueAbility 非参照＝出場して積み上げた観測（H/HR/SB/BB%・IP/BB9/K9/S）だけで決める。
+    nickname: {
+      ipGate: 400, // 投手二つ名を付ける最低通算IP（未満は「未知数」）
+      paGate: 1500, // 野手二つ名を付ける最低通算PA
+      precisionBbPer9: 2.2, // 精密機械（制球特化＝通算BB/9がこれ以下）
+      strikeoutKPer9: 9.0, // ドクターK（奪三振＝通算K/9がこれ以上）
+      closerSv: 150, // 守護神（通算セーブ）
+      workhorseIp: 1800, // 鉄腕（通算IP）
+      sluggerHr: 200, // 大砲（通算本塁打）
+      bigSluggerHr: 350, // 巨砲（通算本塁打・大砲より上位）
+      speedSb: 200, // 韋駄天（通算盗塁）
+      hitMachineH: 1500, // 安打製造機（通算安打）
+      hitMachineAvg: 0.3, // 安打製造機の通算打率ゲート
+      onbaseBbPct: 0.135, // 出塁の職人（通算BB%）
+      isoSlugger: 0.2, // スラッガー（通算ISO）＋中量HR
+      isoSluggerHr: 120,
+    },
+    // 通算マイルストーン（架空リーグ記録文脈・通算 careerStats から crossing 検出）。
+    milestones: {
+      hits: [1000, 1500, 2000],
+      homeRuns: [200, 300, 400],
+      wins: [100, 150, 200],
+      saves: [100, 150, 250],
+      strikeouts: [1000, 1500, 2000],
+    },
+    topN: 10, // リーグ記録トップN（シーズン/通算）
+    gloveMinInnings: 400, // 守備の栄誉賞の最低守備イニング（過小サンプル除外）
+    rotyMinPa: 100, // 新人王の最低打席（scrub 除外）
+    rotyMinIp: 20, // 新人王の最低投球回
   },
 };
 
@@ -6837,78 +6988,73 @@ function pushEvent(t, year, dir, kind) {
 
 // ===== src/game/roster.mjs =====
 // ============================================================================
-// フェーズC2b: 引退・世代交代（§10.6）
+// フェーズC2b: 引退・世代交代（§10.6） ／ C3a: 補充をドラフト＋育成昇格へ置換（§13/§15/§12.1）
 //
-//   runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex, debutYear })
-//     … 能力・年齢・故障から各選手の引退を確率判定し、引退枠へ「同チーム・同role・同primaryPos」
-//        の新人（ドラフト相当）を1:1で補充する。→ リーグ人口とロスター構成を恒常に保つ。
-//        league.players / league.teams[].playerIds を in-place で張り替える。
+//   runRetirement(league, cfg, { seed, yearIndex, debutYear })
+//     … 能力・年齢・故障から各選手の引退を確率判定し（生存バイアス）、生存者を league.players へ
+//        張り替え、引退で空いた枠(teamId,role,primaryPos)の一覧 vacancies を返す。
+//        補充（ドラフト/育成昇格＝runMarket）と C3b の市場（FA/トレード/戦力外）は呼び出し側
+//        （index.mjs の offseasonTransition）がこの後に順序立てて実行する。
+//   rebuildTeamRosters(league)
+//     … league.players から各 team.playerIds を張り直す（移動/補充の後に呼ぶ・構成の同期）。
 //
 // 設計原則（phaseC_spec・厳守）:
 //   - 生存バイアス（§10.6）はそのままで正しい: 弱い個体が引退で消え、40代まで残るのは
 //     「衰えなかった個体（低declineRate＝鉄人）」だけ → 鉄人が自動でレア化する。
-//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。新人IDは
-//     `${teamId}Y${yearIndex}N${k}`（チーム内の引退者をid昇順で採番）で live/replay 一致。
+//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。ウェーバー順は前年順位
+//     （standings＝teamHistory 経由で load-replay も同一）。
 //   - 引退判定は「能力＋年齢＋故障歴」の純関数（観測成績/出場機会に依存しない）。
 //     ＝ load の replay（過去年のオフを再走）で season 再シムなしに同一ロスターを再構築できる。
-//     真の出場機会依存の戦力外/拾い上げ（§12.2）は C3 で導入する（本stageは能力を代理に使う）。
 // ============================================================================
 
 
 
-
 /**
- * オフシーズンの引退判定＋新人補充を適用する（in-place）。
- * @param {{players:Array, teams:Array}} league
- * @param {Object} cfg createConfig()（cfg.tuning.retire / cfg.game.rookieAge* を参照）
- * @param {{seed:number, draftSeed:number, yearIndex:number, debutYear:number}} o
- * @returns {{retirees:Array, rookies:Array}} 引退者サマリと補充新人
+ * 各 team.playerIds を league.players（現在の teamId）から張り直す（移動/補充後の同期）。
+ * 育成（minor）は支配下ロスターに含めない。
  */
-function runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex, debutYear }) {
-  const survivors = [];
-  const retirees = [];
-  const goneByTeam = new Map(); // teamId → 引退選手[]（新人補充の枠）
-
-  for (const p of league.players) {
-    const prng = makeRng(hashSeed(seed, 'retire', p.id));
-    if (decideRetire(p, cfg, prng)) {
-      p.rosterStatus = 'retired';
-      retirees.push(summarizeRetiree(p, debutYear - 1));
-      if (!goneByTeam.has(p.teamId)) goneByTeam.set(p.teamId, []);
-      goneByTeam.get(p.teamId).push(p);
-    } else {
-      survivors.push(p);
-    }
-  }
-
-  // 新人補充（同チーム・同role・同primaryPos で1:1＝人口/構成恒常）。id は引退者をid昇順に採番。
-  const rookies = [];
-  for (const [teamId, gone] of goneByTeam) {
-    gone.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    gone.forEach((old, k) => {
-      const rid = `${teamId}Y${yearIndex}N${k}`;
-      const rook = generateRookie(draftSeed, rid, {
-        role: old.role,
-        primaryPos: old.primaryPos,
-        ageMin: cfg.game.rookieAgeMin,
-        ageMax: cfg.game.rookieAgeMax,
-        debutYear,
-      });
-      rook.teamId = teamId;
-      rookies.push(rook);
-    });
-  }
-
-  // league を張り替える（生存者＋新人）。順序は生存者（既存順）→新人（チーム走査順）で決定論。
-  league.players = survivors.concat(rookies);
+function rebuildTeamRosters(league) {
   const idsByTeam = new Map();
   for (const p of league.players) {
     if (!idsByTeam.has(p.teamId)) idsByTeam.set(p.teamId, []);
     idsByTeam.get(p.teamId).push(p.id);
   }
   for (const t of league.teams) t.playerIds = idsByTeam.get(t.id) ?? [];
+}
 
-  return { retirees, rookies };
+/**
+ * オフシーズンの引退判定（in-place）。生存者を league.players へ張り替え、引退で空いた枠一覧を返す。
+ * 補充（ドラフト/育成昇格）は呼び出し側が runMarket で行う（C3b で FA/トレードを引退と補充の間に
+ * 挟むため、引退と補充を分離した）。
+ *
+ * @param {{players:Array, teams:Array}} league
+ * @param {Object} cfg createConfig()（cfg.tuning.retire を参照）
+ * @param {{seed:number, debutYear:number}} o
+ * @returns {{retirees:Array, vacancies:Array}} 引退者サマリと空き枠(teamId,role,primaryPos)一覧
+ */
+function runRetirement(league, cfg, { seed, debutYear }) {
+  const survivors = [];
+  const retirees = [];
+  const gone = []; // 引退選手（枠 = teamId/role/primaryPos の供給源）
+
+  for (const p of league.players) {
+    const prng = makeRng(hashSeed(seed, 'retire', p.id));
+    if (decideRetire(p, cfg, prng)) {
+      p.rosterStatus = 'retired';
+      retirees.push(summarizeRetiree(p, debutYear - 1));
+      gone.push(p);
+    } else {
+      survivors.push(p);
+    }
+  }
+
+  // 引退枠を id 昇順で確定（決定論・順序非依存）。同型(role:pos)は等価なので枠内順序は結果に無影響。
+  gone.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const vacancies = gone.map((p) => ({ teamId: p.teamId, role: p.role, primaryPos: p.primaryPos }));
+
+  league.players = survivors;
+  rebuildTeamRosters(league);
+  return { retirees, vacancies };
 }
 
 /**
@@ -6969,6 +7115,1293 @@ function summarizeRetiree(p, retiredAfterYear) {
 }
 
 
+// ===== src/game/market.mjs =====
+// ============================================================================
+// フェーズC3a: 編成市場（球団AI評価の球団差・ドラフト・育成/支配下二層）
+//   §13/§15（球団AIをわざと現実的に間違わせる＝市場の非効率を仕込む）／§12.1（這い上がりの箱）。
+//
+//   teamEvalProfile(masterSeed, teamId, cfg)  … 球団ごとに固定の「評価の癖」を分布から引く
+//   evaluateProspect(profile, prospect, cfg, ctx) … 観測ツール(真値+スカウトノイズ)×球団重みでの評価
+//   trueValue(prospect, cfg)                  … 真価値の代理（テスト/宝の泉の可視化用・AIは見ない）
+//   runMarket(league, cfg, {...})             … 引退枠を「育成昇格→ドラフト→育成獲得」で埋める
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - エンジンを壊さない: 本モジュールはオフシーズン遷移（2年目以降）でのみ呼ばれる。1年目
+//     レギュラーシーズン（既存50較正）には一切効かない（generateLeague/シムは不変）。
+//   - 三層構造: 球団AIは trueAbility を直接見ない。評価は「観測ツール(真値+球団固有ノイズ)」を
+//     球団固有の重み（守備/位置の過小評価度・出塁重視度・年齢バイアス）で合成する＝わざと不完全。
+//     歪んだ球団評価と真価値(trueValue)の差分こそ「宝の泉」。守備を正しく重める球団(wDef>1)を
+//     混ぜると、他球団の捨てた守備型の宝を系統的に拾う（守備版マネーボール）。
+//   - 決定論: 乱数は階層シード rng のみ（Date.now/Math.random 非使用）。ウェーバー順は前年順位
+//     （teamHistory・save に含まれ replay 再構築される）、くじは lottery シードで解決＝再現可能。
+//   - ロスター構成の恒常: 引退枠(teamId,role,primaryPos)を同型で1:1に埋める（人口/構成不変）。
+// ============================================================================
+
+
+
+
+
+
+/** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
+function byId(a, b) {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** 球種の質（current/whiff の平均）。球種なしは 50。 */
+function pitchStuff(t) {
+  const ps = t.pitching.pitches;
+  if (!ps.length) return 50;
+  let s = 0;
+  for (const pi of ps) s += (pi.current + pi.whiff) / 2;
+  return s / ps.length;
+}
+
+/**
+ * 総合力の粗い代理（~20-80・真値ベース）。育成の昇格判定と farm 剪定に使う内部指標。
+ * roster.mjs の overallAbility と同型（役割別に主要真値を平均）。真値なので AI の「評価」ではない。
+ */
+function overallRating(p) {
+  const t = p.trueAbility;
+  if (p.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    return (veloR + t.pitching.control + t.pitching.stamina + pitchStuff(t)) / 4;
+  }
+  const b = t.batting;
+  let bestProf = 20;
+  for (const k of Object.keys(t.fielding.positionProf)) bestProf = Math.max(bestProf, t.fielding.positionProf[k]);
+  return (b.ev + b.contact + b.la + b.eye + t.common.speed + t.fielding.positioningIQ + bestProf) / 7;
+}
+
+/**
+ * 球団ごとの評価プロファイル（§13/§15）。masterSeed×teamId から固定で引く（キャリア中不変＝球団の癖）。
+ *   wBat  打撃/投球コアの重み（球団差小）
+ *   wEye  出塁(選球眼)重視度（球団差大）
+ *   wDef  守備/位置価値の重み（多くが<1＝系統的な過小評価。稀に>1＝守備を正しく重める球団）
+ *   ageBias 年齢バイアス（若手志向のペナルティ/歳）
+ *   noiseSd スカウト観測ノイズSD（球団ごとの評価の荒さ）
+ * @returns {{teamId:string, wBat:number, wEye:number, wDef:number, ageBias:number, noiseSd:number}}
+ */
+function teamEvalProfile(masterSeed, teamId, cfg) {
+  const pc = cfg.tuning.market.profile;
+  const r = makeRng(hashSeed(masterSeed, 'evalprofile', teamId));
+  return {
+    teamId,
+    wBat: clamp(r.normal(pc.wBatMean, pc.wBatSd), pc.wBatMin, pc.wBatMax),
+    wEye: clamp(r.normal(pc.wEyeMean, pc.wEyeSd), pc.wEyeMin, pc.wEyeMax),
+    wDef: clamp(r.normal(pc.wDefMean, pc.wDefSd), pc.wDefMin, pc.wDefMax),
+    ageBias: clamp(r.normal(pc.ageBiasMean, pc.ageBiasSd), pc.ageBiasMin, pc.ageBiasMax),
+    noiseSd: Math.max(pc.noiseSdMin, r.normal(pc.noiseSdMean, pc.noiseSdSd)),
+  };
+}
+
+/** 観測ツール = 真値 + 球団固有スカウトノイズ（ctx 無し or noiseSd=0 なら真値そのまま＝テスト用）。 */
+function obsTool(trueVal, profile, ctx, tool, pid) {
+  if (!ctx || !profile.noiseSd) return trueVal;
+  const r = makeRng(hashSeed(ctx.masterSeed, 'scout', ctx.yearIndex, ctx.teamId, pid, tool));
+  return trueVal + r.normal(0, profile.noiseSd);
+}
+
+/**
+ * 球団 profile による prospect の評価スカラー（§13）。観測ツール（真値+球団固有ノイズ）を
+ * 球団固有の重みで合成する（trueAbility を直接は見ない＝三層構造）。守備/位置価値は wDef で重み、
+ * 多くの球団は wDef<1 ＝守備/位置を過小評価する（宝を捨てる）。
+ * @param {Object} profile teamEvalProfile() の返値（テストは noiseSd:0 の即席 profile を渡せる）
+ * @param {Object} p prospect（Player）
+ * @param {Object} cfg
+ * @param {{masterSeed:number, yearIndex:number, teamId:string}|null} ctx ノイズ座標（null=無ノイズ）
+ */
+function evaluateProspect(profile, p, cfg, ctx = null) {
+  const m = cfg.tuning.market.eval;
+  const t = p.trueAbility;
+  const id = p.id;
+  const ageK = profile.ageBias * Math.max(0, p.age - 18);
+  if (p.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    const velo = obsTool(veloR, profile, ctx, 'velo', id);
+    const ctrl = obsTool(t.pitching.control, profile, ctx, 'control', id);
+    const stam = obsTool(t.pitching.stamina, profile, ctx, 'stamina', id);
+    const stuff = obsTool(pitchStuff(t), profile, ctx, 'stuff', id);
+    return profile.wBat * (velo + ctrl + stam + stuff) - ageK;
+  }
+  const b = t.batting;
+  const c = t.common;
+  const f = t.fielding;
+  const ev = obsTool(b.ev, profile, ctx, 'ev', id);
+  const contact = obsTool(b.contact, profile, ctx, 'contact', id);
+  const eye = obsTool(b.eye, profile, ctx, 'eye', id);
+  const la = obsTool(b.la, profile, ctx, 'la', id);
+  const power = obsTool(c.power, profile, ctx, 'power', id);
+  const prof = obsTool(f.positionProf[p.primaryPos] ?? 20, profile, ctx, 'prof', id);
+  const iq = obsTool(f.positioningIQ, profile, ctx, 'iq', id);
+  const reaction = obsTool(c.reaction, profile, ctx, 'reaction', id);
+  const arm = obsTool(c.arm, profile, ctx, 'arm', id);
+  const batComp = ev + contact + power + m.laW * la;
+  const defComp = prof + iq + reaction + m.armW * arm;
+  const posVal = (POSITION_ADJUST_PER_1350[p.primaryPos] ?? 0) * m.posScale;
+  return profile.wBat * batComp + profile.wEye * m.eyeScale * eye + profile.wDef * (defComp + posVal) - ageK;
+}
+
+/**
+ * 真価値の代理（テスト/可視化用・AIは見ない）。守備・位置価値を「正しく」重めた全知評価
+ * （wBat=wEye=wDef=1・ノイズ0・年齢バイアス0）。歪んだ球団評価との差分が「宝の泉」（§13）。
+ */
+function trueValue(p, cfg) {
+  return evaluateProspect({ wBat: 1, wEye: 1, wDef: 1, ageBias: 0, noiseSd: 0 }, p, cfg, null);
+}
+
+/** 前年順位からのウェーバー逆順（勝率の低い順＝弱いチームが先）。standings 無しは teams 順。 */
+function waiverOrder(standings, league) {
+  if (!standings || !standings.length) return league.teams.map((t) => t.id);
+  const winPct = (s) => {
+    const dec = (s.w ?? 0) + (s.l ?? 0);
+    return dec ? s.w / dec : 0.5;
+  };
+  return standings
+    .slice()
+    .sort((a, b) => winPct(a) - winPct(b) || (a.teamId < b.teamId ? -1 : 1))
+    .map((s) => s.teamId);
+}
+
+/** 世代（高卒18/大卒22/社会人25）から新人の年齢を1つ引く（§15 世代生成）。 */
+function pickCohortAge(rng, cohort) {
+  const u = rng.next();
+  if (u < cohort.hsShare) return cohort.hsAge;
+  if (u < cohort.hsShare + cohort.colShare) return cohort.colAge;
+  return cohort.corpAge;
+}
+
+/**
+ * ドラフトプールを生成する。各(role,primaryPos)型で「空き数＋surplus」人の prospect を
+ * スカウト観測（世代年齢・真値）付きで作る。surplus が選択肢を生み、球団評価差＝宝の源になる。
+ * @returns {Map<string, Array>} typeKey('role:pos') → prospect[]
+ */
+function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear }) {
+  const mk = cfg.tuning.market;
+  const byType = new Map();
+  for (const v of vacancies) {
+    const tk = `${v.role}:${v.primaryPos}`;
+    if (!byType.has(tk)) byType.set(tk, { role: v.role, primaryPos: v.primaryPos, count: 0 });
+    byType.get(tk).count++;
+  }
+  const pool = new Map();
+  let gi = 0;
+  for (const [tk, info] of byType) {
+    const n = info.count + mk.surplusPerType;
+    const arr = [];
+    for (let i = 0; i < n; i++) {
+      const id = `D${yearIndex}n${gi++}`;
+      const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
+      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear });
+      arr.push(p);
+    }
+    pool.set(tk, arr);
+  }
+  return pool;
+}
+
+/**
+ * ドラフト（ウェーバー逆順×1位競合くじ・NPB風）。空き枠(vacancies)を pool から埋める。
+ *   Round1: 各球団が自評価の最高 prospect を1位指名 → 競合はくじで解決（負けは再指名）。
+ *   Round2+: ウェーバー順（弱い順）に残り枠を自評価の最高で1人ずつ埋める。
+ * 各球団は自分の空き枠と同型(role:pos)の prospect しか獲れない（構成恒常）。
+ * @returns {{rookies:Array, undrafted:Array, draftLog:Object}}
+ */
+function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex }) {
+  const teamVac = new Map(); // teamId → [{role,primaryPos}]（残り空き枠のキュー）
+  for (const t of order) teamVac.set(t, []);
+  for (const v of vacancies) {
+    if (!teamVac.has(v.teamId)) teamVac.set(v.teamId, []);
+    teamVac.get(v.teamId).push({ role: v.role, primaryPos: v.primaryPos });
+  }
+  const available = new Map(); // typeKey → prospect[]（獲得で減る）
+  for (const [k, arr] of pool) available.set(k, arr.slice());
+  const rookies = [];
+  const draftLog = { order: order.slice(), picks: [], lotteries: [] };
+
+  // 球団の「残り空き枠の型のうち、自評価が最高の available prospect」を返す。
+  const bestFor = (teamId) => {
+    const vac = teamVac.get(teamId);
+    if (!vac || !vac.length) return null;
+    const types = new Set(vac.map((v) => `${v.role}:${v.primaryPos}`));
+    const profile = profiles.get(teamId);
+    let best = null;
+    let bestVal = -Infinity;
+    let bestType = null;
+    for (const tk of types) {
+      const arr = available.get(tk) || [];
+      for (const pr of arr) {
+        const val = evaluateProspect(profile, pr, cfg, { masterSeed, yearIndex, teamId });
+        if (val > bestVal || (val === bestVal && (best === null || pr.id < best.id))) {
+          bestVal = val;
+          best = pr;
+          bestType = tk;
+        }
+      }
+    }
+    return best ? { prospect: best, typeKey: bestType } : null;
+  };
+
+  const assign = (teamId, prospect, typeKey, meta) => {
+    const vac = teamVac.get(teamId);
+    const vi = vac.findIndex((v) => `${v.role}:${v.primaryPos}` === typeKey);
+    vac.splice(vi, 1);
+    const arr = available.get(typeKey);
+    arr.splice(arr.findIndex((p) => p.id === prospect.id), 1);
+    prospect.teamId = teamId;
+    prospect.rosterStatus = 'active';
+    rookies.push(prospect);
+    draftLog.picks.push({ teamId, prospectId: prospect.id, ...meta });
+  };
+
+  // --- Round1: 1位指名＋競合くじ ---
+  const pendingR1 = new Set(order.filter((t) => (teamVac.get(t) || []).length));
+  while (pendingR1.size) {
+    const noms = new Map(); // prospectId → {prospect, byTeam:Map<teamId,typeKey>}
+    for (const teamId of order) {
+      if (!pendingR1.has(teamId)) continue;
+      const b = bestFor(teamId);
+      if (!b) { pendingR1.delete(teamId); continue; }
+      if (!noms.has(b.prospect.id)) noms.set(b.prospect.id, { prospect: b.prospect, byTeam: new Map() });
+      noms.get(b.prospect.id).byTeam.set(teamId, b.typeKey);
+    }
+    if (!noms.size) break;
+    for (const [pid, nom] of noms) {
+      const teams = [...nom.byTeam.keys()];
+      let winner;
+      let contested = false;
+      if (teams.length === 1) {
+        winner = teams[0];
+      } else {
+        contested = true;
+        const r = makeRng(hashSeed(masterSeed, 'lottery', yearIndex, pid));
+        winner = teams[r.int(teams.length)];
+        draftLog.lotteries.push({ prospectId: pid, contenders: teams.slice(), winner });
+      }
+      assign(winner, nom.prospect, nom.byTeam.get(winner), { round: 1, via: contested ? 'lottery' : 'nominate', contested });
+      pendingR1.delete(winner);
+    }
+  }
+
+  // --- Round2+: ウェーバー順（弱い順）に残り枠を埋める ---
+  for (let round = 2; round <= 200; round++) {
+    let progress = false;
+    for (const teamId of order) {
+      if (!(teamVac.get(teamId) || []).length) continue;
+      const b = bestFor(teamId);
+      if (!b) continue;
+      assign(teamId, b.prospect, b.typeKey, { round, via: 'waiver', contested: false });
+      progress = true;
+    }
+    if (!progress) break;
+  }
+
+  const undrafted = [];
+  for (const arr of available.values()) undrafted.push(...arr);
+  return { rookies, undrafted, draftLog };
+}
+
+/**
+ * ドラフト漏れ（undrafted＝球団評価に過小評価された surplus）を育成枠へ配る。
+ * ウェーバー順ラウンドロビンで各球団 perTeamSignsPerYear 人まで。rosterStatus='minor' で farm へ。
+ */
+function signDevelopment(league, cfg, undrafted, order) {
+  const mk = cfg.tuning.market.farm;
+  const pool = undrafted.slice().sort(byId);
+  const signed = new Map(order.map((t) => [t, 0]));
+  let pi = 0;
+  let any = true;
+  while (pi < pool.length && any) {
+    any = false;
+    for (const teamId of order) {
+      if (pi >= pool.length) break;
+      if ((signed.get(teamId) ?? 0) >= mk.perTeamSignsPerYear) continue;
+      const d = pool[pi++];
+      d.teamId = teamId;
+      d.rosterStatus = 'minor';
+      league.farm.push(d);
+      signed.set(teamId, (signed.get(teamId) ?? 0) + 1);
+      any = true;
+    }
+  }
+}
+
+/** 育成枠の剪定: 年齢超過は解雇、球団あたり perTeamMax 超は観測下位から解雇（箱を有限に保つ）。 */
+function pruneFarm(league, cfg) {
+  const mk = cfg.tuning.market.farm;
+  const byTeam = new Map();
+  for (const d of league.farm) {
+    if (d.age > mk.maxAge) continue;
+    if (!byTeam.has(d.teamId)) byTeam.set(d.teamId, []);
+    byTeam.get(d.teamId).push(d);
+  }
+  const kept = [];
+  for (const arr of byTeam.values()) {
+    arr.sort((a, b) => overallRating(b) - overallRating(a) || byId(a, b));
+    for (const d of arr.slice(0, mk.perTeamMax)) kept.push(d);
+  }
+  kept.sort(byId);
+  league.farm = kept;
+}
+
+/**
+ * 編成市場の中核（C3a）。引退枠 vacancies を「育成昇格 → ドラフト → 育成獲得」で埋める。
+ *   1. 育成枠を加齢（発達）させる
+ *   2. 昇格判定: 育成の観測成績が閾値超 かつ 自球団に同型の空き枠あり → 支配下登録（稀・§12.1）
+ *   3. ドラフト: 残り空き枠をウェーバー逆順×くじで埋める（§15）
+ *   4. 育成獲得: ドラフト漏れ（過小評価 surplus）を育成枠へ（安く獲れる箱・§12.1）
+ *   5. 剪定: 育成枠を有限に保つ
+ * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
+ * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
+ */
+function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear }) {
+  const mk = cfg.tuning.market;
+  if (!league.farm) league.farm = [];
+  const profiles = new Map();
+  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+
+  // 1. 育成枠の発達（加齢）。独立シード座標＝支配下選手の加齢ストリームを一切乱さない。
+  applyAging(league.farm, cfg, { seed: hashSeed(masterSeed, 'farmaging', yearIndex) });
+
+  // 2. 昇格判定（§12.1・這い上がり）。観測成績（真値+下振れバイアス+ノイズ）が閾値超 かつ
+  //    自球団に同型の空き枠がある育成選手を支配下登録する（枠が空くという「機会」に依存＝稀）。
+  const remainingVac = vacancies.slice();
+  const promoted = [];
+  const promotions = [];
+  const stillFarm = [];
+  for (const d of league.farm.slice().sort(byId)) {
+    const tk = `${d.role}:${d.primaryPos}`;
+    const r = makeRng(hashSeed(masterSeed, 'promote', yearIndex, d.id));
+    const observed = overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd);
+    const vi = remainingVac.findIndex((v) => v.teamId === d.teamId && `${v.role}:${v.primaryPos}` === tk);
+    if (observed >= mk.farm.promoteThreshold && vi >= 0) {
+      remainingVac.splice(vi, 1);
+      d.rosterStatus = 'active';
+      promoted.push(d);
+      promotions.push({ playerId: d.id, teamId: d.teamId, role: d.role, primaryPos: d.primaryPos, age: d.age, observed: Math.round(observed) });
+    } else {
+      stillFarm.push(d);
+    }
+  }
+  league.farm = stillFarm;
+
+  // 3. ドラフト（残り枠）。
+  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear });
+  const order = waiverOrder(standings, league);
+  const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex });
+
+  // 4. 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。5. 剪定。
+  signDevelopment(league, cfg, undrafted, order);
+  pruneFarm(league, cfg);
+
+  return { promoted, rookies, draftLog, promotions };
+}
+
+
+// ===== src/game/transactions.mjs =====
+// ============================================================================
+// フェーズC3b: 選手市場のトランザクション — FA・トレード・戦力外/拾い上げ（§15 / §12.2）。
+//
+//   runFA(league, cfg, ctx)            … 国内FA（宣言→球団AI入札→移籍＋人的補償）
+//   runTrades(league, cfg, ctx)        … トレード（AI同士＝評価差で双方win成立／プレイヤー起案）
+//   runReleaseAndPickup(league,cfg,ctx)… 戦力外→拾い上げ（少なく歪んだ観測で切られ、査定の違う球団が拾う）
+//   runContractRenewal(league,cfg,ctx) … 契約更改（年俸=観測連動・34歳以降の長期はリスク＝フレーバー）
+//   observedValueOf(p, obs, cfg)       … 当該シーズンの "実観測" 貢献量（放出判定の入力・出場機会依存）
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - エンジンを壊さない: すべてオフシーズン遷移（2年目以降）でのみ呼ばれる。1年目レギュラー
+//     シーズン（既存50較正）には一切効かない（generateLeague/シム/1年目季は不変）。
+//   - 決定論: 乱数は階層シード rng のみ（Date.now/Math.random 非使用）。処理順は id/teamId 昇順・
+//     ウェーバー順で固定。プレイヤー操作（入札/トレード起案）は marketInterventions ログとして
+//     save に含まれ、load の replay で同一結果に再現される。
+//   - 三層構造: 入札・受諾・拾い上げの査定は evaluateProspect（観測ツール＋スカウトノイズ×球団の癖）。
+//     放出（戦力外）判定だけは "実際の観測成績"（当該シーズンの生 statline）で下す＝出場機会に
+//     依存して歪む（少PA→ショボく見える＝上林型／不振→板山型）。査定を違える他球団が拾って生き返る。
+//   - 構成恒常: 全移動は同(role,primaryPos)の 1:1 スワップ／循環。球団あたりの役割・守備位置
+//     構成が厳密に不変＝人口/構成恒常（引退→ドラフトの補充系と直交）。
+// ============================================================================
+
+
+
+
+/** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
+function byId(a, b) {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** teamId 昇順のチームid列（決定論の走査順）。 */
+function teamIds(league) {
+  return league.teams.map((t) => t.id).sort();
+}
+
+/** 支配下（active）選手を球団ごとに束ねる（育成 minor は市場対象外）。 */
+function activeByTeam(league) {
+  const m = new Map();
+  for (const t of league.teams) m.set(t.id, []);
+  for (const p of league.players) {
+    if (p.rosterStatus !== 'active') continue;
+    if (!m.has(p.teamId)) m.set(p.teamId, []);
+    m.get(p.teamId).push(p);
+  }
+  for (const arr of m.values()) arr.sort(byId);
+  return m;
+}
+
+/** ロスターの (role,primaryPos) 型キー。 */
+function typeKey(p) {
+  return `${p.role}:${p.primaryPos}`;
+}
+
+/** 球団 profile による査定（ctx=スカウトノイズ座標）。evaluateProspect の薄いラッパ。 */
+function assess(profiles, teamId, p, cfg, masterSeed, yearIndex) {
+  return evaluateProspect(profiles.get(teamId), p, cfg, { masterSeed, yearIndex, teamId });
+}
+
+/**
+ * 球団のプロテクトリスト（自評価の上位 count 人の id 集合）。非プロテクト＝残り。
+ * 人的補償・トレード放出・戦力外の「出せる／狙える」母集団を非プロテクトに絞る（§12.2）。
+ */
+function protectSet(teamId, roster, profiles, cfg, count, masterSeed, yearIndex) {
+  const ranked = roster
+    .slice()
+    .sort(
+      (a, b) =>
+        assess(profiles, teamId, b, cfg, masterSeed, yearIndex) -
+          assess(profiles, teamId, a, cfg, masterSeed, yearIndex) || byId(a, b),
+    );
+  return new Set(ranked.slice(0, count).map((p) => p.id));
+}
+
+/**
+ * 当該シーズンの "実観測" 貢献量（trueAbility を一切見ない・出場機会に依存して歪む）。
+ *   野手 =（観測wOBA − 代替wOBA）× PA
+ *   投手 =（代替FIP − 観測FIP）× IP/9（run単位）
+ * 拾い上げ後の "観測改善"（PAが増えて貢献が表に出る＝余所では生きる）の物差しにも使う（§12.2）。
+ * @param {Object} p 選手（{id, role}）
+ * @param {Map<string,Object>} obs playerId → 当該シーズンの careerStats 行（{batting,pitching,...}）
+ * @returns {number|null} 観測が無い（新人・当年未出場）なら null
+ */
+function observedValueOf(p, obs, cfg) {
+  const line = obs.get(p.id);
+  if (!line) return null;
+  const rel = cfg.tuning.market.release;
+  if (p.role === 'pitcher') {
+    const pt = line.pitching || {};
+    const ip = (pt.outs || 0) / 3;
+    if (ip <= 0) return null;
+    const fip = (13 * (pt.hr || 0) + 3 * ((pt.bb || 0) - (pt.ibb || 0) + (pt.hbp || 0)) - 2 * (pt.so || 0)) / ip;
+    return ((rel.replacementFip - fip) * ip) / 9;
+  }
+  const b = line.batting || {};
+  const pa = b.pa || 0;
+  if (pa <= 0) return null;
+  return (observedWoba(b, cfg) - rel.replacementWoba) * pa;
+}
+
+/**
+ * 戦力外スコア（低いほど切られやすい・§12.2）＝ 観測貢献量 − 出場機会ペナルティ。
+ * 少PA/少IP（未確立・渋滞の犠牲＝上林型）は不足ぶんのペナルティで負に沈む。高PAの不振（板山型）も
+ * 貢献量自体が負。放出判定は "実観測" だけで下す（trueAbility 非参照）＝出場機会に依存して歪む。
+ * ＝別球団（査定が違う＝スカウトが素材を見る）が拾えば生き返る余地が生まれる。
+ * @returns {number|null} 観測が無ければ null（＝対象外・新人保護）
+ */
+function releaseScore(p, obs, cfg) {
+  const base = observedValueOf(p, obs, cfg);
+  if (base == null) return null;
+  const rel = cfg.tuning.market.release;
+  const line = obs.get(p.id);
+  if (p.role === 'pitcher') {
+    const ip = (line.pitching?.outs || 0) / 3;
+    return base - rel.ptPenaltyPit * Math.max(0, rel.fullIP - ip);
+  }
+  const pa = line.batting?.pa || 0;
+  return base - rel.ptPenaltyBat * Math.max(0, rel.fullPA - pa);
+}
+
+// ============================================================================
+// FA（§15）
+// ============================================================================
+/**
+ * 国内FA。資格者（一定年齢帯・簡略）の一部が宣言→他球団が評価関数で入札→最高入札が現球団評価を
+ * bidMargin 超で上回れば移籍。人的補償として移籍先の "非プロテクト同型" から1人を流出元へ戻す
+ * （＝同(role,primaryPos)1:1スワップ＝構成恒常）。プレイヤーは marketInterventions で入札に介入できる。
+ *
+ * FA入札が "評価関数差で分かれる": 守備を重める球団は守備型FAに高く入札し、出塁重視の球団は
+ * 選球眼型に高く入札する（evaluateProspect の球団の癖）。→ 宝を正しく評価する球団が競り勝つ。
+ * @returns {Array} 成立した移籍の記録
+ */
+function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions }) {
+  const fa = cfg.tuning.market.fa;
+  const order = teamIds(league);
+  const rosters = activeByTeam(league);
+  const protects = new Map();
+  for (const tid of order) {
+    protects.set(tid, protectSet(tid, rosters.get(tid), profiles, cfg, fa.protectCount, masterSeed, yearIndex));
+  }
+  const signings = [];
+
+  // 資格判定＋宣言（決定論・年齢帯＝年数条件の簡略代理）。
+  const declared = [];
+  for (const p of league.players.slice().sort(byId)) {
+    if (p.rosterStatus !== 'active') continue;
+    if (p.age < fa.minAge || p.age > fa.maxAge) continue;
+    if (makeRng(hashSeed(masterSeed, 'fa-declare', yearIndex, p.id)).chance(fa.declareRate)) declared.push(p);
+  }
+
+  const faIv = interventions.filter((iv) => iv.phase === 'fa');
+  for (const p of declared) {
+    const home = p.teamId;
+    // 各球団の入札（現球団を除く）。最高入札を決める（同値は teamId 昇順）。
+    let best = null;
+    let bestVal = -Infinity;
+    for (const tid of order) {
+      if (tid === home) continue;
+      const bid = assess(profiles, tid, p, cfg, masterSeed, yearIndex);
+      if (bid > bestVal || (bid === bestVal && (best === null || tid < best))) {
+        bestVal = bid;
+        best = tid;
+      }
+    }
+    if (!best) continue;
+    const homeVal = assess(profiles, home, p, cfg, masterSeed, yearIndex);
+
+    // プレイヤー介入: 自チームがこのFAへ入札（＝AIを上回る意思）→ 勝者を強制上書き（再現可能）。
+    const pv = faIv.find((iv) => iv.playerId === p.id);
+    let winner = null;
+    let via = 'ai';
+    if (pv && pv.teamId && pv.teamId !== home && rosters.has(pv.teamId)) {
+      winner = pv.teamId;
+      via = 'player';
+    } else if (bestVal > homeVal + fa.bidMargin) {
+      winner = best;
+    }
+    if (!winner) continue;
+
+    // 人的補償: 移籍先 winner の "非プロテクト同型" から、流出元 home が自評価で最良の1人を獲る。
+    //   winner は自評価で最も惜しくない同型（＝最低評価の非プロテクト）を差し出す。無ければ不成立
+    //   （＝構成恒常のガード。同(role,primaryPos)1:1が保てない移籍はしない）。
+    const tk = typeKey(p);
+    const pool = rosters
+      .get(winner)
+      .filter((q) => q.id !== p.id && typeKey(q) === tk && !protects.get(winner).has(q.id));
+    if (!pool.length) continue;
+    // winner が差し出す＝winner 自評価の最低（最も惜しくない）。
+    pool.sort((a, b) => assess(profiles, winner, a, cfg, masterSeed, yearIndex) - assess(profiles, winner, b, cfg, masterSeed, yearIndex) || byId(a, b));
+    const comp = pool[0];
+
+    // 契約年数（34歳以降の長期はリスク・§15）＝フレーバー記録。
+    const years = Math.max(1, Math.min(fa.maxYears, p.age >= fa.longContractAge ? fa.maxYears - Math.floor((p.age - fa.longContractAge) / 2) : fa.maxYears - 1));
+    // 移籍実行（同型1:1スワップ）。
+    p.teamId = winner;
+    comp.teamId = home;
+    // ロスター束を更新（後続FA処理が最新の在籍で判断できるように）。
+    rosters.set(winner, rosters.get(winner).filter((q) => q.id !== comp.id).concat(p).sort(byId));
+    rosters.set(home, rosters.get(home).filter((q) => q.id !== p.id).concat(comp).sort(byId));
+    signings.push({ playerId: p.id, from: home, to: winner, comp: comp.id, via, years, age: p.age, role: p.role, primaryPos: p.primaryPos });
+  }
+  return signings;
+}
+
+// ============================================================================
+// トレード（§15）
+// ============================================================================
+/**
+ * トレード。AI同士は "各自の評価関数の差" から双方が得だと見なせば成立（双方win）。同(role,primaryPos)の
+ * 1:1スワップ（構成恒常）。プレイヤー起案は marketInterventions で受け、AIは自評価で受諾判定する。
+ *
+ * 双方win の直観: A の余剰選手 Xa（A評価で最低）と B の余剰選手 Xb を、A が「Xb>Xa（A評価）」かつ
+ * B が「Xa>Xb（B評価）」と見なせば、評価関数の違いから両者とも純利得＝成立。宝の再分配が起きる。
+ * @returns {Array} 成立したトレードの記録
+ */
+function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions }) {
+  const tc = cfg.tuning.market.trade;
+  const order = teamIds(league);
+  const rosters = activeByTeam(league);
+  const protects = new Map();
+  for (const tid of order) {
+    protects.set(tid, protectSet(tid, rosters.get(tid), profiles, cfg, tc.protectCount, masterSeed, yearIndex));
+  }
+  const moved = new Set(); // この年に既に動いた選手（二重移動を防ぐ）
+  const trades = [];
+  const byPid = new Map(league.players.map((p) => [p.id, p]));
+
+  const swap = (a, b, via) => {
+    const ta = a.teamId;
+    const tb = b.teamId;
+    a.teamId = tb;
+    b.teamId = ta;
+    rosters.set(tb, rosters.get(tb).filter((q) => q.id !== b.id).concat(a).sort(byId));
+    rosters.set(ta, rosters.get(ta).filter((q) => q.id !== a.id).concat(b).sort(byId));
+    moved.add(a.id);
+    moved.add(b.id);
+    trades.push({ aPlayer: a.id, aTeam: ta, bPlayer: b.id, bTeam: tb, via, role: a.role, primaryPos: a.primaryPos });
+  };
+
+  // プレイヤー起案トレードを先に適用（AIは自評価で受諾判定・再現可能）。
+  for (const iv of interventions.filter((i) => i.phase === 'trade')) {
+    const a = byPid.get(iv.aPlayer);
+    const b = byPid.get(iv.bPlayer);
+    if (!a || !b || moved.has(a.id) || moved.has(b.id)) continue;
+    if (a.teamId !== iv.aTeam || b.teamId !== iv.bTeam) continue;
+    if (typeKey(a) !== typeKey(b)) continue; // 同型のみ（構成恒常）
+    // AI 相手（bTeam）の受諾判定: 受け取る a を、放出する b より margin 超で高評価なら受諾。
+    const aiTeam = iv.bTeam;
+    const gain = assess(profiles, aiTeam, a, cfg, masterSeed, yearIndex) - assess(profiles, aiTeam, b, cfg, masterSeed, yearIndex);
+    if (gain > tc.margin) swap(a, b, 'player');
+    else trades.push({ aPlayer: a.id, aTeam: iv.aTeam, bPlayer: b.id, bTeam: iv.bTeam, via: 'player', rejected: true });
+  }
+
+  // AI同士: 型ごとに、各球団の "最も惜しくない非プロテクト同型選手" を候補に、双方winの対を探す。
+  const types = new Set();
+  for (const p of league.players) if (p.rosterStatus === 'active') types.add(typeKey(p));
+  outer: for (const tk of [...types].sort()) {
+    // 各球団の候補＝その型の非プロテクトのうち自評価が最低（放出したい1人）。
+    const cand = new Map();
+    for (const tid of order) {
+      const arr = rosters
+        .get(tid)
+        .filter((q) => typeKey(q) === tk && !protects.get(tid).has(q.id) && !moved.has(q.id));
+      if (!arr.length) continue;
+      arr.sort((a, b) => assess(profiles, tid, a, cfg, masterSeed, yearIndex) - assess(profiles, tid, b, cfg, masterSeed, yearIndex) || byId(a, b));
+      cand.set(tid, arr[0]);
+    }
+    const teams = [...cand.keys()].sort();
+    for (let i = 0; i < teams.length; i++) {
+      for (let j = i + 1; j < teams.length; j++) {
+        const A = teams[i];
+        const B = teams[j];
+        const Xa = cand.get(A);
+        const Xb = cand.get(B);
+        if (!Xa || !Xb || moved.has(Xa.id) || moved.has(Xb.id)) continue;
+        const aGain = assess(profiles, A, Xb, cfg, masterSeed, yearIndex) - assess(profiles, A, Xa, cfg, masterSeed, yearIndex);
+        const bGain = assess(profiles, B, Xa, cfg, masterSeed, yearIndex) - assess(profiles, B, Xb, cfg, masterSeed, yearIndex);
+        if (aGain > tc.margin && bGain > tc.margin) {
+          swap(Xa, Xb, 'ai');
+          if (trades.filter((t) => !t.rejected).length >= tc.maxPerYear) break outer;
+          continue outer; // この型は1件成立で次の型へ（churn抑制）
+        }
+      }
+    }
+  }
+  return trades;
+}
+
+// ============================================================================
+// 戦力外 → 拾い上げ（§12.2）
+// ============================================================================
+/**
+ * 戦力外→拾い上げ。各球団は "実際の観測成績"（当該シーズンの生 statline）が低い非プロテクト選手を
+ * 戦力外候補に出す（少PA/不振でショボく見える＝上林/板山型）。候補を型ごとに集め、査定の違う球団間で
+ * 再分配する（同型循環＝構成恒常）。切った球団は同型を1人受け取る（自分の候補が戻ることも、他球団の
+ * 宝を拾うこともある）。拾い上げた選手は翌季に出場機会を得て観測が改善しうる（「余所では生きる」）。
+ *
+ * 三層の要: 放出判定＝実観測（歪む）／拾い上げ査定＝evaluateProspect（スカウトが素材を見る）。
+ * 全球団同目だと復活は起きない → 球団ごとに評価関数が違うからこそ宝がこぼれ、別球団で生き返る。
+ * @param {Map<string,Object>} obs playerId → 当該シーズンの観測 statline 行
+ * @returns {Array} 拾い上げ（放出→別球団が獲得）の記録
+ */
+function runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearIndex, standings, obs }) {
+  const rel = cfg.tuning.market.release;
+  const order = teamIds(league);
+  const rosters = activeByTeam(league);
+
+  // 各球団の戦力外候補を型別に集める。放出判定は "実観測" の戦力外スコアだけ（trueAbility 非参照）＝
+  //   出場機会に依存して歪む。査定（evaluateProspect）で守らない＝自球団の歪んだ査定で切った宝が
+  //   別球団で拾われる余地を残す（全球団同目だと復活しない・§12.2）。若手（minAge未満）は保護。
+  const cutByType = new Map(); // typeKey → [{teamId, player, cutVal}]
+  for (const tid of order) {
+    const cands = [];
+    for (const p of rosters.get(tid)) {
+      if (p.age < rel.minAge) continue;
+      const v = releaseScore(p, obs, cfg);
+      if (v == null || v >= rel.threshold) continue;
+      cands.push({ player: p, val: v, obsVal: observedValueOf(p, obs, cfg) });
+    }
+    cands.sort((a, b) => a.val - b.val || byId(a.player, b.player)); // スコアが低い順
+    for (const c of cands.slice(0, rel.maxCutsPerTeam)) {
+      const tk = typeKey(c.player);
+      if (!cutByType.has(tk)) cutByType.set(tk, []);
+      cutByType.get(tk).push({ teamId: tid, player: c.player, cutVal: c.obsVal });
+    }
+  }
+
+  const wOrder = waiverOrder(standings, league); // 弱い球団が先に拾える（ウェーバー順）
+  const rank = new Map(wOrder.map((t, i) => [t, i]));
+  const pickups = [];
+  for (const [, entries] of [...cutByType].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    if (entries.length < 2) continue; // 同型が2件以上ないと再分配（＝拾い上げ）が起きない
+    const cutMeta = new Map(entries.map((e) => [e.player.id, e]));
+    const remaining = entries.map((e) => e.player);
+    // 拾い上げ: 提出球団は "出した人数ぶん" の獲得枠を持つ（枠=提出票）。枠をウェーバー順（同順は teamId）
+    //   に処理し、各枠が残プールから自評価で最良を1人ずつ引き当てる＝提出=獲得の全単射（構成恒常）。
+    const tickets = entries
+      .map((e) => e.teamId)
+      .sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0) || (a < b ? -1 : a > b ? 1 : 0));
+    for (const tid of tickets) {
+      if (!remaining.length) break;
+      let bi = 0;
+      let bv = -Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        const val = assess(profiles, tid, remaining[i], cfg, masterSeed, yearIndex);
+        if (val > bv || (val === bv && remaining[i].id < remaining[bi].id)) {
+          bv = val;
+          bi = i;
+        }
+      }
+      const claimed = remaining.splice(bi, 1)[0];
+      if (claimed.teamId !== tid) {
+        const meta = cutMeta.get(claimed.id);
+        claimed.teamId = tid;
+        pickups.push({ playerId: claimed.id, from: meta.teamId, to: tid, cutVal: Math.round(meta.cutVal * 10) / 10, age: claimed.age, role: claimed.role, primaryPos: claimed.primaryPos });
+      }
+    }
+  }
+  return pickups;
+}
+
+// ============================================================================
+// 契約更改（§15・フレーバー）
+// ============================================================================
+/**
+ * 契約更改。年俸を観測（当年 statline 貢献量、無ければ 0）に緩く連動させ、契約年数を年齢で決める
+ * （34歳以降は長期＝リスク）。エンジンには一切効かない純フレーバー（記録/ニュース素材・C4用）。
+ * @returns {{count:number, totalSalary:number}} 更改サマリ
+ */
+function runContractRenewal(league, cfg, { obs }) {
+  const fa = cfg.tuning.market.fa;
+  let total = 0;
+  let count = 0;
+  for (const p of league.players) {
+    if (p.rosterStatus !== 'active') continue;
+    const v = observedValueOf(p, obs, cfg);
+    const salary = Math.max(50, Math.round((300 + 40 * (v ?? 0)) )); // 万円相当の粗い代理（下限50）
+    const years = p.age >= fa.longContractAge ? Math.max(1, fa.maxYears - 1) : Math.min(fa.maxYears, 2 + Math.floor(salary / 2000));
+    p.contract = { salary, years };
+    total += salary;
+    count++;
+  }
+  return { count, totalSalary: total };
+}
+
+
+// ===== src/game/awards.mjs =====
+// ============================================================================
+// フェーズC4: 表彰・記録・二つ名（§16/§17・phaseC_spec C4）
+//
+//   computeSeasonAwards({playerSeasons, standings, playersById, cfg, allCareerStats, year})
+//     … 完了シーズンの "観測成績/WAR" から各リーグの表彰を選定する（MVP/新人王/ベストナイン/
+//        守備の栄誉賞/タイトル9種）。選定は観測集計と WAR のみ（trueAbility 非参照＝三層構造）。
+//   playerAwardHistory(playerId, {careerStats, teamHistory, playersById, cfg, firstSeason})
+//     … 全年の表彰を再計算し、その選手の受賞履歴を集める（受賞は careerStats から決定論再現）。
+//   leagueRecords({careerStats, playersById, cfg})   … シーズン/通算のトップN リーグ記録。
+//   teamRecords(teamHistory, cfg)                     … 球団史（年度別順位・日本一）。
+//   milestones({careerStats, playersById, cfg, year}) … 当年に通算で跨いだマイルストーン通知。
+//   nicknameFor(player, careerStats, cfg)             … 通算観測パターンから二つ名を自動付与。
+//
+// 決定論: すべて (careerStats, teamHistory) の純関数。同値タイは playerId 昇順で割る。
+// エンジン不変: 集計/表示のみ。1年目レギュラーシーズン（既存50較正）には一切干渉しない。
+// ============================================================================
+
+
+
+
+
+
+
+/** 守備の栄誉賞の架空名（§16: 実在の「ゴールデングラブ」を避ける）。 */
+const DEF_AWARD_NAME = 'ベストディフェンダー賞';
+
+/** ベストナインのポジション並び（P＝先発格・DH は DH リーグのみ計上）。 */
+const BEST_NINE_POS = ['P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH'];
+
+/** タイトル定義（key→表示名・観測ベース）。守備の栄誉賞/MVP/新人王/ベストナインは別枠。 */
+const TITLE_LABELS = {
+  battingAvg: '首位打者', homeRun: '本塁打王', rbi: '打点王', steal: '盗塁王',
+  era: '最優秀防御率', wins: '最多勝', strikeoutsP: '最多奪三振', hold: '最優秀中継ぎ', save: '最多セーブ',
+};
+
+/** リーグ定数（wOBA/FIP/RPW…）を当年の観測から導出。標準の deriveLeagueConstants を使う。 */
+function seasonLeagueConstants(playerSeasons, standings) {
+  return deriveLeagueConstants({ playerSeasons, standings });
+}
+
+/** teamId→league の対応（順位表 standings 行から）。 */
+function teamLeagueMap(standings) {
+  const m = new Map();
+  for (const r of standings || []) m.set(r.teamId, r.league ?? 'ALL');
+  return m;
+}
+
+/**
+ * 1選手・1シーズンの観測指標＋WAR（表彰選定の素）。role で打者/投手に分岐する。
+ * すべて既存の指標器（metrics/war/fielding）の再利用＝観測とWARのみ（真値非参照）。
+ */
+function evalSeason(s, player, cfg, lc) {
+  if (player.role === 'pitcher') {
+    const p = playerPitching(s, lc, cfg);
+    const w = pitcherWAR(s, cfg, lc);
+    return {
+      role: 'pitcher', war: w.war, ip: p.ip, era: p.era, fip: p.fip,
+      w: p.w, l: p.l, so: p.so, sv: p.sv, hld: p.hld, g: p.g, gs: p.gs,
+    };
+  }
+  const b = playerBatting(s, lc);
+  const w = hitterWAR(s, cfg, lc);
+  const uzr = uzrRuns(s, cfg, lc);
+  const oaa = centeredOAAOuts(s, lc);
+  const innings = totalFieldInnings(s.fielding);
+  return {
+    role: 'fielder', war: w.war, pa: b.pa, avg: b.avg, hr: b.hr, rbi: b.rbi, sb: b.sb,
+    h: b.h, obp: b.obp, ops: b.ops, wrcPlus: b.wrcPlus, uzr, oaa,
+    defScore: uzr + 0.8 * oaa, innings,
+  };
+}
+
+/** 各 playerSeason を {id, teamId, player, ev} 化（未知IDは除外）。 */
+function buildEvals(playerSeasons, playersById, cfg, lc) {
+  const out = [];
+  for (const s of playerSeasons) {
+    const p = playersById.get(s.playerId);
+    if (!p) continue;
+    out.push({ id: s.playerId, teamId: s.teamId, player: p, ev: evalSeason(s, p, cfg, lc) });
+  }
+  return out;
+}
+
+/** 最大値リーダー（同値は playerId 昇順）。valFn が null を返す要素は無視。 */
+function leaderMax(list, valFn, filterFn) {
+  let best = null;
+  for (const e of list) {
+    if (filterFn && !filterFn(e)) continue;
+    const v = valFn(e);
+    if (v == null || Number.isNaN(v)) continue;
+    if (!best || v > best.v || (v === best.v && e.id < best.id)) best = { id: e.id, v, e };
+  }
+  return best;
+}
+
+/** 最小値リーダー（防御率など・同値は playerId 昇順）。 */
+function leaderMin(list, valFn, filterFn) {
+  let best = null;
+  for (const e of list) {
+    if (filterFn && !filterFn(e)) continue;
+    const v = valFn(e);
+    if (v == null || Number.isNaN(v)) continue;
+    if (!best || v < best.v || (v === best.v && e.id < best.id)) best = { id: e.id, v, e };
+  }
+  return best;
+}
+
+const asTitle = (r) => (r ? { playerId: r.id, value: r.v } : null);
+
+/**
+ * 完了シーズンの表彰を各リーグごとに選定する（観測成績/WAR ベース・§55）。
+ * @returns {{year:number, leagues:Array}} leagues[]= {leagueId, mvp, roty, titles, bestNine, gloves}
+ */
+function computeSeasonAwards({ playerSeasons, standings, playersById, cfg, allCareerStats = null, year = null }) {
+  const lc = seasonLeagueConstants(playerSeasons, standings);
+  const evals = buildEvals(playerSeasons, playersById, cfg, lc);
+  const lgOf = teamLeagueMap(standings);
+  const qPA = qualifiedPA(cfg.league.gamesPerSeason);
+  const qIP = qualifiedIP(cfg.league.gamesPerSeason);
+  const A = cfg.tuning.awards;
+
+  // 新人（当年デビュー）判定: 当年より前の season を持たない playerId。allCareerStats 未指定なら空。
+  const priorIds = new Set();
+  if (allCareerStats && year != null) {
+    for (const s of allCareerStats) if (s.season < year) priorIds.add(s.playerId);
+  }
+  const isRookie = (id) => !priorIds.has(id);
+
+  // リーグ集合（順位表の league から）。
+  const leagueIds = [...new Set([...lgOf.values()])].sort();
+  const leagues = leagueIds.map((lid) => {
+    const inLg = evals.filter((e) => lgOf.get(e.teamId) === lid);
+    const bat = inLg.filter((e) => e.ev.role === 'fielder');
+    const pit = inLg.filter((e) => e.ev.role === 'pitcher');
+
+    const titles = {
+      battingAvg: asTitle(leaderMax(bat, (e) => e.ev.avg, (e) => e.ev.pa >= qPA)),
+      homeRun: asTitle(leaderMax(bat, (e) => e.ev.hr, (e) => e.ev.hr > 0)),
+      rbi: asTitle(leaderMax(bat, (e) => e.ev.rbi, (e) => e.ev.rbi > 0)),
+      steal: asTitle(leaderMax(bat, (e) => e.ev.sb, (e) => e.ev.sb > 0)),
+      era: asTitle(leaderMin(pit, (e) => e.ev.era, (e) => e.ev.ip >= qIP)),
+      wins: asTitle(leaderMax(pit, (e) => e.ev.w, (e) => e.ev.w > 0)),
+      strikeoutsP: asTitle(leaderMax(pit, (e) => e.ev.so, (e) => e.ev.so > 0)),
+      hold: asTitle(leaderMax(pit, (e) => e.ev.hld, (e) => e.ev.hld > 0)),
+      save: asTitle(leaderMax(pit, (e) => e.ev.sv, (e) => e.ev.sv > 0)),
+    };
+
+    // MVP: リーグ内 WAR 最高（打者/投手横断）。新人王: 新人のうち WAR 最高（最低出場ゲートあり）。
+    //   開幕年（priorIds 空＝全員デビュー）は新人王の意味が立たないため付与しない。
+    const mvp = asMvp(leaderMax(inLg, (e) => e.ev.war));
+    const rotyGate = (e) => isRookie(e.id) && (e.ev.role === 'pitcher' ? e.ev.ip >= A.rotyMinIp : e.ev.pa >= A.rotyMinPa);
+    const roty = priorIds.size ? asMvp(leaderMax(inLg, (e) => e.ev.war, rotyGate)) : null;
+
+    // ベストナイン: 各ポジション（primaryPos）で WAR 最高。P は先発格（gs 最多寄り）を優先。
+    const bestNine = [];
+    for (const pos of BEST_NINE_POS) {
+      let r;
+      if (pos === 'P') {
+        r = leaderMax(pit, (e) => e.ev.war, (e) => e.ev.gs >= 10) || leaderMax(pit, (e) => e.ev.war);
+      } else {
+        const atPos = inLg.filter((e) => e.player.primaryPos === pos);
+        if (pos === 'DH' && !atPos.length) continue; // DH不在リーグは DH 枠なし
+        r = leaderMax(atPos, (e) => e.ev.war);
+      }
+      if (r) bestNine.push({ pos, playerId: r.id, war: r.v });
+    }
+
+    // 守備の栄誉賞（UZR+OAA）: 8守備位置で defScore 最高（最低守備イニングゲート）。
+    const gloves = [];
+    for (const pos of FIELD_POSITIONS) {
+      const atPos = bat.filter((e) => e.player.primaryPos === pos && e.ev.innings >= A.gloveMinInnings);
+      const r = leaderMax(atPos, (e) => e.ev.defScore);
+      if (r) gloves.push({ pos, playerId: r.id, defScore: r.v, uzr: r.e.ev.uzr, oaa: r.e.ev.oaa });
+    }
+
+    return { leagueId: lid, mvp, roty, titles, bestNine, gloves };
+  });
+
+  return { year, leagues };
+}
+
+const asMvp = (r) => (r ? { playerId: r.id, war: r.v } : null);
+
+/**
+ * 選手の受賞履歴（全年の表彰を再計算して収集）。determinism: careerStats/teamHistory から純関数で復元。
+ * @returns {Array} [{year, kind, label, pos?}]（kind='mvp'|'roty'|'title'|'bestNine'|'glove'）
+ */
+function playerAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg }) {
+  const byYear = new Map();
+  for (const s of careerStats) {
+    if (!byYear.has(s.season)) byYear.set(s.season, []);
+    byYear.get(s.season).push(s);
+  }
+  const out = [];
+  for (const hist of teamHistory) {
+    const year = hist.year;
+    const ps = byYear.get(year);
+    if (!ps) continue;
+    const aw = computeSeasonAwards({ playerSeasons: ps, standings: hist.standings, playersById, cfg, allCareerStats: careerStats, year });
+    for (const lg of aw.leagues) {
+      if (lg.mvp && lg.mvp.playerId === playerId) out.push({ year, kind: 'mvp', label: 'MVP' });
+      if (lg.roty && lg.roty.playerId === playerId) out.push({ year, kind: 'roty', label: '新人王' });
+      for (const k of Object.keys(lg.titles)) {
+        const t = lg.titles[k];
+        if (t && t.playerId === playerId) out.push({ year, kind: 'title', label: TITLE_LABELS[k], titleKey: k, value: t.value });
+      }
+      for (const b of lg.bestNine) if (b.playerId === playerId) out.push({ year, kind: 'bestNine', label: 'ベストナイン', pos: b.pos });
+      for (const g of lg.gloves) if (g.playerId === playerId) out.push({ year, kind: 'glove', label: DEF_AWARD_NAME, pos: g.pos });
+    }
+  }
+  out.sort((a, b) => a.year - b.year);
+  return out;
+}
+
+// --- 通算集計（二つ名・記録・マイルストーンの素。観測のみ・§17） ------------------
+/** 打撃の通算生カウント合算（careerStats の batting を全年で足す）。 */
+function careerBatting(careerStats, playerId) {
+  const acc = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0, sb: 0, cs: 0, rbi: 0, ibb: 0 };
+  let seasons = 0;
+  for (const s of careerStats) {
+    if (s.playerId !== playerId || !s.batting) continue;
+    seasons++;
+    for (const k of Object.keys(acc)) acc[k] += s.batting[k] || 0;
+  }
+  const avg = acc.ab ? acc.h / acc.ab : 0;
+  const tb = acc.b1 + 2 * acc.b2 + 3 * acc.b3 + 4 * acc.hr;
+  const slg = acc.ab ? tb / acc.ab : 0;
+  const bbPct = acc.pa ? acc.bb / acc.pa : 0;
+  return { ...acc, seasons, avg, slg, iso: slg - avg, bbPct };
+}
+
+/** 投手の通算生カウント合算。 */
+function careerPitching(careerStats, playerId) {
+  const acc = { outs: 0, bf: 0, h: 0, hr: 0, bb: 0, ibb: 0, hbp: 0, so: 0, er: 0, r: 0, w: 0, l: 0, sv: 0, hld: 0, g: 0, gs: 0 };
+  let seasons = 0;
+  for (const s of careerStats) {
+    if (s.playerId !== playerId || !s.pitching) continue;
+    seasons++;
+    for (const k of Object.keys(acc)) acc[k] += s.pitching[k] || 0;
+  }
+  const ip = acc.outs / 3;
+  return { ...acc, seasons, ip, era: ip ? (acc.er * 9) / ip : 0, bbPer9: ip ? (acc.bb * 9) / ip : 0, kPer9: ip ? (acc.so * 9) / ip : 0 };
+}
+
+/**
+ * 二つ名（§16 Lv4回避）: 通算 "観測" 集計のパターンで自動付与する（priority 順・最初の一致）。
+ * trueAbility を一切見ない＝出場して積み上げた観測（H/HR/SB/BB%・IP/BB9/K9/S）のみで決める。
+ * サンプルが薄い（IP/PA ゲート未満）選手は「未知数」を返す（キャラ立ては通算実績で）。
+ */
+function nicknameFor(player, careerStats, cfg) {
+  const N = cfg.tuning.awards.nickname;
+  if (player.role === 'pitcher') {
+    const c = careerPitching(careerStats, player.id);
+    if (c.ip < N.ipGate) return '未知数';
+    if (c.sv >= N.closerSv) return '守護神';
+    if (c.bbPer9 <= N.precisionBbPer9) return '精密機械';
+    if (c.kPer9 >= N.strikeoutKPer9) return 'ドクターK';
+    if (c.ip >= N.workhorseIp) return '鉄腕';
+    return c.bbPer9 <= 3.0 ? '技巧派' : '本格派';
+  }
+  const c = careerBatting(careerStats, player.id);
+  if (c.pa < N.paGate) return '未知数';
+  if (c.sb >= N.speedSb) return '韋駄天';
+  if (c.hr >= N.bigSluggerHr) return '巨砲';
+  if (c.hr >= N.sluggerHr) return '大砲';
+  if (c.h >= N.hitMachineH && c.avg >= N.hitMachineAvg) return '安打製造機';
+  if (c.iso >= N.isoSlugger && c.hr >= N.isoSluggerHr) return 'スラッガー';
+  if (c.bbPct >= N.onbaseBbPct) return '出塁の職人';
+  return 'いぶし銀';
+}
+
+// --- 記録（球団史・リーグ記録・マイルストーン） --------------------------------
+/** 球団史: 各年の順位（自リーグ内）と日本一。teamHistory から。 */
+function teamRecords(teamHistory, teamId) {
+  const rows = [];
+  for (const h of teamHistory) {
+    const row = h.standings.find((r) => r.teamId === teamId);
+    if (!row) continue;
+    const lgRows = h.standings.filter((r) => (r.league ?? 'ALL') === (row.league ?? 'ALL'));
+    lgRows.sort((a, b) => (b.w - b.l) - (a.w - a.l) || (b.rs - b.ra) - (a.rs - a.ra));
+    const rank = lgRows.findIndex((r) => r.teamId === teamId) + 1;
+    rows.push({ year: h.year, rank, w: row.w, l: row.l, t: row.t, champion: h.champion === teamId });
+  }
+  return rows;
+}
+
+/** 全球団の日本一回数（球団史サマリ）。 */
+function championCounts(teamHistory) {
+  const m = new Map();
+  for (const h of teamHistory) if (h.champion) m.set(h.champion, (m.get(h.champion) || 0) + 1);
+  return m;
+}
+
+/** トップN リーグ記録（シーズン単発＋通算）。観測集計から。 */
+function leagueRecords({ careerStats, playersById, cfg }) {
+  const topN = cfg.tuning.awards.topN;
+  const nameOf = (id) => (playersById.get(id) ? playersById.get(id).name : id);
+  // シーズン単発トップN（各年の生カウント）。
+  const seasonTop = (get, role) => {
+    const rows = [];
+    for (const s of careerStats) {
+      const p = playersById.get(s.playerId);
+      if (!p || p.role !== role) continue;
+      const v = get(s);
+      if (v == null || v <= 0) continue;
+      rows.push({ playerId: s.playerId, name: nameOf(s.playerId), year: s.season, value: v });
+    }
+    rows.sort((a, b) => b.value - a.value || (a.playerId < b.playerId ? -1 : 1));
+    return rows.slice(0, topN);
+  };
+  // 通算トップN（選手横断で合算）。
+  const careerTop = (accKind, get) => {
+    const byId = new Map();
+    const ids = new Set(careerStats.map((s) => s.playerId));
+    for (const id of ids) {
+      const p = playersById.get(id);
+      if (!p) continue;
+      const agg = accKind === 'bat' ? careerBatting(careerStats, id) : careerPitching(careerStats, id);
+      const v = get(agg);
+      if (v == null || v <= 0) continue;
+      byId.set(id, { playerId: id, name: nameOf(id), value: v });
+    }
+    return [...byId.values()].sort((a, b) => b.value - a.value || (a.playerId < b.playerId ? -1 : 1)).slice(0, topN);
+  };
+  return {
+    seasonHR: seasonTop((s) => s.batting && s.batting.hr, 'fielder'),
+    seasonH: seasonTop((s) => s.batting && s.batting.h, 'fielder'),
+    seasonSB: seasonTop((s) => s.batting && s.batting.sb, 'fielder'),
+    seasonW: seasonTop((s) => s.pitching && s.pitching.w, 'pitcher'),
+    seasonSO: seasonTop((s) => s.pitching && s.pitching.so, 'pitcher'),
+    seasonSV: seasonTop((s) => s.pitching && s.pitching.sv, 'pitcher'),
+    careerHR: careerTop('bat', (a) => a.hr),
+    careerH: careerTop('bat', (a) => a.h),
+    careerSB: careerTop('bat', (a) => a.sb),
+    careerW: careerTop('pit', (a) => a.w),
+    careerSO: careerTop('pit', (a) => a.so),
+    careerSV: careerTop('pit', (a) => a.sv),
+  };
+}
+
+/** マイルストーン定義（通算 accessor・カテゴリ名・単位）。 */
+const MILESTONE_DEFS = [
+  { key: 'hits', role: 'fielder', label: '通算安打', unit: '本安打', get: (a) => a.h },
+  { key: 'homeRuns', role: 'fielder', label: '通算本塁打', unit: '本塁打', get: (a) => a.hr },
+  { key: 'wins', role: 'pitcher', label: '通算勝利', unit: '勝', get: (a) => a.w },
+  { key: 'saves', role: 'pitcher', label: '通算セーブ', unit: 'S', get: (a) => a.sv },
+  { key: 'strikeouts', role: 'pitcher', label: '通算奪三振', unit: '奪三振', get: (a) => a.so },
+];
+
+/**
+ * 当年 year に通算で跨いだマイルストーンを検出（通算[〜year] >= T かつ 通算[〜year-1] < T）。
+ * @returns {Array} [{playerId, name, category, threshold, total, unit}]
+ */
+function milestones({ careerStats, playersById, cfg, year }) {
+  const thr = cfg.tuning.awards.milestones;
+  const through = (id, y) => careerStats.filter((s) => s.playerId === id && s.season <= y);
+  const out = [];
+  const ids = new Set(careerStats.filter((s) => s.season === year).map((s) => s.playerId));
+  for (const id of [...ids].sort()) {
+    const p = playersById.get(id);
+    if (!p) continue;
+    for (const def of MILESTONE_DEFS) {
+      if (p.role !== def.role) continue;
+      const cur = def.role === 'fielder' ? careerBatting(through(id, year), id) : careerPitching(through(id, year), id);
+      const prev = def.role === 'fielder' ? careerBatting(through(id, year - 1), id) : careerPitching(through(id, year - 1), id);
+      const now = def.get(cur);
+      const before = def.get(prev);
+      for (const T of thr[def.key]) {
+        if (now >= T && before < T) {
+          out.push({ playerId: id, name: p.name, category: def.label, threshold: T, total: now, unit: def.unit });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+
+// ===== src/game/news.mjs =====
+// ============================================================================
+// フェーズC4: ニュースフィード（週次ダイジェスト＋珍記録検出・phaseC_spec C4）
+//
+//   detectGameNotables(events)  … 1試合の観戦イベント列（onEvent の pa/start/end）から
+//        ノーヒットノーラン・完全試合・サイクル安打・猛打賞を検出する（純関数）。
+//   streakOf(gameLog, teamId)   … 直近の連勝/連敗を数える。
+//   weeklyDigest({...})         … 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
+//
+// 決定論: すべて入力（イベント列/試合ログ/順位表）の純関数。乱数非使用（onEvent は乱数非消費＝
+//   検出の有無は試合結果に一切影響しない＝既存50較正が不変）。生イベントは当該シーズンのみ（§17）。
+// ============================================================================
+
+const HIT_RESULTS = new Set(['1B', '2B', '3B', 'HR']);
+/** 出塁（安打＋四死球＋失策）。完全試合の判定に使う（走者を一人も出さない）。 */
+const REACH_RESULTS = new Set(['1B', '2B', '3B', 'HR', 'BB', 'HBP', 'E']);
+
+/**
+ * 1試合の観戦イベント列から珍記録を検出する。events は onEvent の構造化イベント
+ * （type: 'start'|'pa'|'end'|'steal'|'sub'）。'pa' の result/outcome/pitTeam/batTeam/batterId を使う。
+ * @param {Array} events
+ * @returns {Array} [{kind, ...}] kind='noHitter'|'perfectGame'|'cycle'|'multiHit'
+ */
+function detectGameNotables(events) {
+  let start = null;
+  let end = null;
+  const byPitTeam = new Map(); // pitTeam → {hits, reaches, batTeam}
+  const byBatter = new Map(); // batterId → {teamId, hits, types:Set}
+  for (const e of events) {
+    if (e.type === 'start') start = e;
+    else if (e.type === 'end') end = e;
+    else if (e.type === 'pa') {
+      let pt = byPitTeam.get(e.pitTeam);
+      if (!pt) { pt = { hits: 0, reaches: 0, batTeam: e.batTeam }; byPitTeam.set(e.pitTeam, pt); }
+      if (HIT_RESULTS.has(e.result)) pt.hits++;
+      if (REACH_RESULTS.has(e.result)) pt.reaches++;
+      let bt = byBatter.get(e.batterId);
+      if (!bt) { bt = { teamId: e.batTeam, hits: 0, types: new Set() }; byBatter.set(e.batterId, bt); }
+      if (HIT_RESULTS.has(e.result)) { bt.hits++; bt.types.add(e.result); }
+    }
+  }
+  const out = [];
+  // ノーヒッター/完全試合は試合完了（end）が前提。
+  if (end) {
+    for (const [pitTeam, pt] of byPitTeam) {
+      if (pt.hits === 0) {
+        if (pt.reaches === 0) out.push({ kind: 'perfectGame', teamId: pitTeam, opponent: pt.batTeam });
+        else out.push({ kind: 'noHitter', teamId: pitTeam, opponent: pt.batTeam });
+      }
+    }
+  }
+  // サイクル安打（単/二/三/本の4種を1試合で）／猛打賞（3安打以上）。
+  for (const [batterId, bt] of byBatter) {
+    if (bt.types.size === 4) out.push({ kind: 'cycle', batterId, teamId: bt.teamId });
+    if (bt.hits >= 3) out.push({ kind: 'multiHit', batterId, teamId: bt.teamId, hits: bt.hits });
+  }
+  return { start, end, notables: out };
+}
+
+/** 珍記録を日本語見出しへ（pnameOf: id→選手名, tnameOf: id→球団名）。 */
+function notableHeadline(n, pnameOf, tnameOf) {
+  if (n.kind === 'perfectGame') return `完全試合達成！ ${tnameOf(n.teamId)} の投手陣が ${tnameOf(n.opponent)} を完璧に封じる`;
+  if (n.kind === 'noHitter') return `ノーヒットノーラン！ ${tnameOf(n.teamId)} が ${tnameOf(n.opponent)} 相手に無安打`;
+  if (n.kind === 'cycle') return `サイクル安打！ ${pnameOf(n.batterId)} が単打・二塁打・三塁打・本塁打をすべて記録`;
+  if (n.kind === 'multiHit') return `${pnameOf(n.batterId)} が猛打賞（${n.hits}安打）の固め打ち`;
+  return '';
+}
+
+/**
+ * 直近の連勝/連敗を数える（自チーム視点・最新試合から遡る）。
+ * @param {Array} gameLog [{home,away,homeScore,awayScore,tie}]
+ * @returns {{type:'W'|'L'|'T'|null, len:number}}
+ */
+function streakOf(gameLog, teamId) {
+  let type = null;
+  let len = 0;
+  for (let i = gameLog.length - 1; i >= 0; i--) {
+    const g = gameLog[i];
+    if (g.home !== teamId && g.away !== teamId) continue;
+    const isHome = g.home === teamId;
+    const my = isHome ? g.homeScore : g.awayScore;
+    const opp = isHome ? g.awayScore : g.homeScore;
+    const r = g.tie ? 'T' : my > opp ? 'W' : 'L';
+    if (type === null) { type = r; len = 1; }
+    else if (r === type) len++;
+    else break;
+  }
+  return { type, len };
+}
+
+/** 自リーグ内の順位とゲーム差（首位攻防の判定素）。 */
+function rankAndGb(standings, teamId) {
+  const row = standings.find((r) => r.teamId === teamId);
+  if (!row) return null;
+  const lg = standings.filter((r) => (r.league ?? 'ALL') === (row.league ?? 'ALL'));
+  lg.sort((a, b) => (b.w - b.l) - (a.w - a.l) || (b.rs - b.ra) - (a.rs - a.ra));
+  const rank = lg.findIndex((r) => r.teamId === teamId) + 1;
+  const top = lg[0];
+  const gb = ((top.w - row.w) + (row.l - top.l)) / 2; // 標準的なゲーム差
+  return { rank, gb, total: lg.length };
+}
+
+/**
+ * 週次ダイジェスト見出し（自チーム・実データ差し込み）。テンプレ文＋直近成績。
+ * @param {{gameLog:Array, standings:Array, teamId:string, nameOf:Function, recentN?:number}} o
+ * @returns {Array} [{text, cls}]（cls='good'|'bad'|'info'）
+ */
+function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
+  const out = [];
+  const myName = nameOf(teamId);
+  // 連勝/連敗
+  const st = streakOf(gameLog, teamId);
+  if (st.type === 'W' && st.len >= 3) out.push({ text: `${myName}、${st.len}連勝で波に乗る！`, cls: 'good' });
+  else if (st.type === 'L' && st.len >= 3) out.push({ text: `${myName}、${st.len}連敗…反攻なるか`, cls: 'bad' });
+  // 首位攻防
+  const rg = rankAndGb(standings, teamId);
+  if (rg) {
+    if (rg.rank === 1) out.push({ text: `${myName}が首位快走（${rg.total}球団中1位）`, cls: 'good' });
+    else if (rg.gb <= 3) out.push({ text: `首位攻防、${myName}は${rg.rank}位・${rg.gb.toFixed(1)}ゲーム差の激戦`, cls: 'info' });
+  }
+  // 直近の完封勝ち／大勝
+  const myGames = gameLog.filter((g) => g.home === teamId || g.away === teamId).slice(-recentN);
+  for (const g of myGames) {
+    const isHome = g.home === teamId;
+    const my = isHome ? g.homeScore : g.awayScore;
+    const opp = isHome ? g.awayScore : g.homeScore;
+    const oppId = isHome ? g.away : g.home;
+    if (opp === 0 && my > 0) { out.push({ text: `${myName}が${nameOf(oppId)}を完封（${my}-0）`, cls: 'good' }); break; }
+  }
+  for (const g of myGames) {
+    const isHome = g.home === teamId;
+    const my = isHome ? g.homeScore : g.awayScore;
+    const opp = isHome ? g.awayScore : g.homeScore;
+    const oppId = isHome ? g.away : g.home;
+    if (my - opp >= 7) { out.push({ text: `${myName}が${nameOf(oppId)}に${my}-${opp}の大勝`, cls: 'good' }); break; }
+  }
+  return out;
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -6995,6 +8428,12 @@ function summarizeRetiree(p, retiredAfterYear) {
 
 
 
+
+// C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
+//   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
+//   ここで 
+
+
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
  *  真値/ロスターは §17 に従い save に含めず masterSeed から replay 再構築するため、v1 の
@@ -7012,28 +8451,60 @@ function offseasonSeed(masterSeed, yearIndex) {
 }
 
 /**
- * オフシーズン遷移の中核（C2b）: 完了年 yearIndex の全選手に対し、故障→ブレイク→加齢→
- * 引退/新人補充を決定論的な順序で適用し、league.players/teams を翌年開幕の状態へ張り替える。
- * 純関数的（副作用は league と cfg 由来のみ）で、live の advanceYear と load の replay の
- * 両方から「同一 (masterSeed, yearIndex, year)」で呼ばれ bit 一致する（多年セーブの決定論）。
+ * オフシーズン遷移の中核（C2b＋C3a＋C3b）: 完了年 yearIndex の全選手に対し、決定論的な順序で
+ * 状態遷移を適用し、league.players/farm/teams を翌年開幕の状態へ張り替える。live の advanceYear と
+ * load の replay の両方から「同一 (masterSeed, yearIndex, year, careerStats, marketInterventions)」で
+ * 呼ばれ bit 一致する（多年セーブの決定論）。
  *
- * 順序の意味:
- *   1. 故障（injury）を先に判定 → 2. ブレイク（§10.4「故障明けの別人化」は当年の大怪我を参照）
- *   → 3. 加齢（applyAging が age++ もする）→ 4. 引退/補充（加齢後の年齢・能力で判定）。
- * 各フェーズは独立の階層シード座標（'injury'/'breakout'/'offseason'/'retire'/'draft'）を使う。
- * @returns {{injuries:Array, breakouts:Array, retirees:Array, rookies:Array}} オフシーズン要約
+ * 順序（phaseC_spec C3b）: 故障→ブレイク→加齢→**引退→FA→トレード→ドラフト/育成→戦力外/拾い上げ
+ * →契約更改**。各フェーズは独立の階層シード座標（'injury'/'breakout'/'offseason'/'retire'/'draft'/
+ * 'fa'/'trade'/'release' 等）を使う。FA/トレードは引退後の生存者を同型1:1でスワップ（構成恒常）し、
+ * 補充ドラフトの空き枠（＝引退枠）には影響しない。戦力外/拾い上げはドラフト後の全支配下から同型循環で
+ * 再分配する。三層構造: 入札/受諾/拾い上げの査定は evaluateProspect（観測＋スカウト＋球団の癖）、
+ * 放出判定だけ "実観測"（当年 statline＝出場機会依存）で下す（§12.2）。
+ *
+ * @param {Array} careerStats 全完了シーズンの選手集計（当年 statline を season==year で絞って観測に使う）
+ * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
+ * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year }) {
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], marketInterventions = [] }) {
   const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
-  const { retirees, rookies } = runRetirementAndDraft(league, cfg, {
-    seed: hashSeed(masterSeed, 'retire', yearIndex),
-    draftSeed: hashSeed(masterSeed, 'draft', yearIndex),
-    yearIndex,
-    debutYear: year + 1,
-  });
-  return { injuries, breakouts, retirees, rookies };
+
+  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
+  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
+  const obs = new Map();
+  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+  // 当年ぶんのプレイヤー市場操作のみ適用（他年の介入は除外・再現可能）。
+  const ivs = marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === yearIndex);
+  // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
+  const profiles = new Map();
+  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+
+  // 引退（生存者を league.players へ・空き枠 vacancies を得る）。
+  const { retirees, vacancies } = runRetirement(league, cfg, { seed: hashSeed(masterSeed, 'retire', yearIndex), debutYear: year + 1 });
+  // FA → トレード（引退後の生存者を同型1:1スワップ・構成恒常・ドラフト枠に非干渉）。
+  const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
+  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
+  rebuildTeamRosters(league);
+  // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1 });
+  league.players = league.players.concat(promoted, rookies);
+  rebuildTeamRosters(league);
+  // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
+  const pickups = runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearIndex, standings, obs });
+  rebuildTeamRosters(league);
+  // 契約更改（フレーバー・エンジン非干渉）。
+  const contracts = runContractRenewal(league, cfg, { obs });
+
+  return { injuries, breakouts, retirees, rookies, promotions, draftLog, fa, trades, pickups, contracts };
+}
+
+/** 完了年 y（=firstSeason+y）の最終順位を teamHistory から取り出す（ウェーバー順の素）。 */
+function standingsForYear(state, year) {
+  const hist = state.teamHistory.find((h) => h.year === year);
+  return hist ? hist.standings : null;
 }
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
@@ -7072,6 +8543,7 @@ function captureBaseManager(state) {
 function newGame(masterSeed, playerTeamId, options = {}) {
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(masterSeed, cfg);
+  league.farm = []; // 育成枠（C3a・支配下396とは別枠）。1年目は空＝既存50較正に無影響
   if (!league.teams.some((t) => t.id === playerTeamId)) {
     throw new Error(`playerTeamId ${playerTeamId} がリーグに存在しない`);
   }
@@ -7090,6 +8562,7 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
+    marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
     pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
     rt: null, // 現行シーズンの日次ランタイム
   };
@@ -7126,6 +8599,42 @@ function setManagerProfile(state, manager) {
 function clearManagerProfile(state) {
   setManagerProfile(state, state.baseManager);
   state.settings.autoManage = true;
+}
+
+// --- 市場介入（C3b・オフシーズンで適用・save/replay で再現） -------------------
+// FA入札・トレード起案は「当年 yearIndex」のログとして marketInterventions に積む。次の
+// advanceYear（＝当年オフシーズン）で offseasonTransition が当年ぶんを適用する。人間の意思は
+// このログだけに載り、live も load-replay も同一結果を再現する（決定論・§介入ログ）。
+
+/**
+ * FA入札介入。自チームが FA宣言選手 playerId の獲得に動く意思をログする（当年オフで AI 入札を
+ * 上回る勝者として扱われる・人的補償は同型で自動）。相手が実際に宣言し補償が成立する時のみ発火。
+ * @returns {Object} 追加した介入
+ */
+function bidFA(state, playerId) {
+  const iv = { yearIndex: state.yearIndex, phase: 'fa', playerId, teamId: state.playerTeamId };
+  state.marketInterventions = state.marketInterventions.filter(
+    (m) => !(m.phase === 'fa' && m.yearIndex === state.yearIndex && m.playerId === playerId),
+  );
+  state.marketInterventions.push(iv);
+  return iv;
+}
+
+/**
+ * トレード起案介入。自チームの選手 aPlayer と、相手チームの選手 bPlayer（同 role/primaryPos）の
+ * 交換を起案する。当年オフで相手 AI が自評価で受諾判定する（受諾＝成立・拒否＝ログのみ）。
+ * @returns {Object} 追加した介入
+ */
+function proposeTrade(state, aPlayer, bPlayer) {
+  const a = state.league.players.find((p) => p.id === aPlayer);
+  const b = state.league.players.find((p) => p.id === bPlayer);
+  if (!a || !b) throw new Error('proposeTrade: 選手が見つからない');
+  const iv = { yearIndex: state.yearIndex, phase: 'trade', aTeam: a.teamId, aPlayer, bTeam: b.teamId, bPlayer };
+  state.marketInterventions = state.marketInterventions.filter(
+    (m) => !(m.phase === 'trade' && m.yearIndex === state.yearIndex && m.aPlayer === aPlayer && m.bPlayer === bPlayer),
+  );
+  state.marketInterventions.push(iv);
+  return iv;
 }
 
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
@@ -7216,11 +8725,28 @@ function advanceYear(state) {
   if (!state.rt || !state.rt.finished) {
     throw new Error('advanceYear: シーズン未終了（seasonEnd まで進めてから呼ぶこと）');
   }
+  // 表彰（C4）: 世代交代でロスターが動く前に「当年に出場した選手」の byId を控え、
+  //   完了シーズンの観測成績/WAR から表彰を選定する（決定論・純関数）。
+  const awardsById = new Map(state.league.players.map((p) => [p.id, p]));
+  const completedYear = state.year;
   const off = offseasonTransition(state.league, state.cfg, {
     masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
     year: state.year,
+    standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
+    careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
+    marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
   });
+  // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
+  off.awards = computeSeasonAwards({
+    playerSeasons: state.careerStats.filter((s) => s.season === completedYear),
+    standings: standingsForYear(state, completedYear),
+    playersById: awardsById,
+    cfg: state.cfg,
+    allCareerStats: state.careerStats,
+    year: completedYear,
+  });
+  off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
   state.yearIndex += 1;
@@ -7273,6 +8799,7 @@ function save(state) {
     careerStats: state.careerStats, // 完了シーズン集計（永続）
     teamHistory: state.teamHistory,
     interventions: state.interventions,
+    marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -7306,6 +8833,7 @@ function load(blob, options = {}) {
   }
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(data.masterSeed >>> 0, cfg);
+  league.farm = []; // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -7321,6 +8849,7 @@ function load(blob, options = {}) {
     teamHistory: data.teamHistory ?? [],
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
+    marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
     rt: null,
   };
@@ -7334,6 +8863,11 @@ function load(blob, options = {}) {
       masterSeed: state.masterSeed,
       yearIndex: y,
       year: state.firstSeason + y,
+      // ウェーバー順の素 = 完了年の順位。teamHistory は blob から復元済み＝live と同一値（決定論）。
+      standings: standingsForYear(state, state.firstSeason + y),
+      // 放出/契約更改の "実観測" は careerStats（blob 復元済み）を season==year で絞る＝live と同一部分集合。
+      careerStats: state.careerStats,
+      marketInterventions: state.marketInterventions,
     });
     state.retiredPlayers.push(...off.retirees);
     lastOff = off;
@@ -7352,6 +8886,9 @@ function load(blob, options = {}) {
   }
   return state;
 }
+
+// --- C4 演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う。バンドルでは
+//     各元関数が strip 後にグローバル化するため、この export 行は build.mjs で剥がれても機能する）。
 
 </script>
 <script>
@@ -7702,6 +9239,8 @@ function openModal(playerId) {
   const modalTabs = isPitcher
     ? [['basic', '基本'], ['pitch', '投球'], ['context', '文脈']]
     : [['basic', '基本'], ['batted', '打球'], ['splits', 'スプリット'], ['context', '文脈'], ['field', '守備成分']];
+  // キャリアモード（game.gs）では「経歴」タブ（二つ名/年度別成績/受賞履歴/成長曲線）を足す。
+  if (game.gs) modalTabs.push(['career', '経歴']);
   let cur = 'basic';
   const rest = el('div');
   box.append(rest);
@@ -7717,6 +9256,7 @@ function openModal(playerId) {
     else if (cur === 'context') renderModalContext(body, s, isPitcher);
     else if (cur === 'field') renderModalField(body, s);
     else if (cur === 'pitch') renderModalPitch(body, s);
+    else if (cur === 'career') renderModalCareer(body, p, isPitcher);
   };
   render();
   overlay.append(box);
@@ -7835,6 +9375,80 @@ function renderModalPitch(box, s) {
   box.append(kv([
     ['GB%', pct(m.gbPct)], ['LD%', pct(m.ldPct)], ['FB%', pct(m.fbPct)], ['PU%', pct(m.puPct)], ['HR/FB', pct(m.hrFbPct)],
   ]));
+}
+
+// 経歴タブ（C4・キャリアモード専用）: 二つ名＋年度別成績表＋受賞履歴＋成長曲線SVG。
+//   すべて "観測成績/受賞（=観測ベース選定）" から組む（trueAbility 非露出＝三層構造）。
+function renderModalCareer(box, p, isPitcher) {
+  const gs = game.gs;
+  const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
+  const nick = nicknameFor(p, gs.careerStats, gs.cfg);
+  box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // 年度別成績表（当年は rt からも見えるが、careerStats は完了年ぶん＝確定値）。
+  //   WAR は「その年のリーグ全体」から導いた定数で評価する（単一選手からの導出は歪むため）。
+  const lcCache = new Map();
+  const lcForYear = (year) => {
+    if (lcCache.has(year)) return lcCache.get(year);
+    const ps = gs.careerStats.filter((s) => s.season === year);
+    const hist = gs.teamHistory.find((h) => h.year === year);
+    const standings = hist ? hist.standings : [{ teamId: p.teamId, rs: 1, g: 1 }];
+    const lc = deriveLeagueConstants({ playerSeasons: ps, standings });
+    lcCache.set(year, lc);
+    return lc;
+  };
+  const yearRows = cs.map((s) => yearStatRow(s, p, isPitcher, lcForYear(s.season)));
+  if (yearRows.length) {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '年度別成績'));
+    const head = isPitcher
+      ? ['年', '球団', '登板', '勝', '敗', 'S', '防御率', 'WAR']
+      : ['年', '球団', '打席', '打率', '本', '点', '盗', 'WAR'];
+    box.append(table(head, yearRows.map((r) => el('tr', {}, r.cells.map((c, i) => td(c, i === 1 ? 'left' : ''))))));
+    box.append(growthCurveSVG(yearRows));
+  } else {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '完了シーズンの成績はまだありません（今季進行中）。'));
+  }
+  // 受賞履歴（全年の表彰を再計算して収集）。
+  const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: state.byId, cfg: gs.cfg });
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '受賞履歴'));
+  if (hist.length) {
+    box.append(el('div', { class: 'awardlist' }, hist.map((a) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardyear' }, `${a.year}`),
+      el('span', { class: 'awardbadge' }, a.label + (a.pos ? `（${posJP(a.pos)}）` : '')),
+    ]))));
+  } else {
+    box.append(el('div', { class: 'muted' }, 'まだ受賞はありません。'));
+  }
+}
+
+/** 年度別成績1行（表示セル＋WAR数値）を作る。lc は各年のリーグ全体の観測から導出済みを渡す。 */
+function yearStatRow(s, p, isPitcher, lc) {
+  const ev = evalSeason(s, p, game.gs.cfg, lc);
+  const team = state.teamName.get(s.teamId) || s.teamId;
+  const cells = isPitcher
+    ? [String(s.season), team, ev.g, ev.w, ev.l, ev.sv, f2(ev.era), ev.war.toFixed(1)]
+    : [String(s.season), team, ev.pa, fmt3(ev.avg), ev.hr, ev.rbi, ev.sb, ev.war.toFixed(1)];
+  return { cells, war: ev.war, season: s.season };
+}
+
+/** 成長曲線（年度別WARの折れ線・SVG）。0基準線＋WAR点を結ぶ。 */
+function growthCurveSVG(yearRows) {
+  const W = 280, H = 90, pad = 18;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'growth' });
+  const wars = yearRows.map((r) => r.war);
+  const maxW = Math.max(3, ...wars);
+  const minW = Math.min(0, ...wars);
+  const span = maxW - minW || 1;
+  const x = (i) => pad + (yearRows.length <= 1 ? (W - 2 * pad) / 2 : (i / (yearRows.length - 1)) * (W - 2 * pad));
+  const y = (v) => H - pad - ((v - minW) / span) * (H - 2 * pad);
+  const zeroY = y(0);
+  svg.append(svgEl('line', { x1: pad, y1: zeroY, x2: W - pad, y2: zeroY, stroke: '#2f6b4a', 'stroke-dasharray': '3 3' }));
+  if (yearRows.length > 1) {
+    const pts = yearRows.map((r, i) => `${x(i).toFixed(1)},${y(r.war).toFixed(1)}`).join(' ');
+    svg.append(svgEl('polyline', { points: pts, fill: 'none', stroke: '#e8b84b', 'stroke-width': '2' }));
+  }
+  yearRows.forEach((r, i) => svg.append(svgEl('circle', { cx: x(i), cy: y(r.war), r: 3, fill: r.war >= 0 ? '#7bc47f' : '#c96a5a' })));
+  svg.append(svgText({ x: pad, y: 12, fill: '#9fb8ac', 'font-size': '10' }, '成長曲線（年度別WAR）'));
+  return svg;
 }
 
 function kv(pairs) {
@@ -8206,7 +9820,7 @@ function startNewGame(seed, teamId) {
 // --- シーズンハブ -----------------------------------------------------------
 const HUB_TABS = [
   ['hub', 'ハブ'], ['standings', '順位表'], ['war', 'WAR'],
-  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', 'チーム'],
+  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', 'チーム'], ['records', '記録'],
 ];
 
 function renderHub(tab = 'hub') {
@@ -8227,6 +9841,7 @@ function renderHub(tab = 'hub') {
   const content = el('div', { id: 'content' });
   root.append(header, bar, content);
   if (tab === 'hub') renderHubHome(content);
+  else if (tab === 'records') renderRecords(content);
   else {
     refreshRes();
     if (tab === 'standings') renderStandings(content);
@@ -8274,6 +9889,9 @@ function renderHubHome(c) {
       el('div', { class: 'nextmatch' }, nextCard.text),
     ]));
   }
+
+  // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
+  renderNewsFeed(c);
 
   // 故障者リスト（C2.4/§10.5）: 自チームの現在離脱中の選手（残り離脱日数付き）を表示する。
   //   離脱＝直前オフに確定した故障(gamesLost)。開幕から day 進むごとに復帰が近づく。1年目は無し。
@@ -8328,6 +9946,106 @@ function renderHubHome(c) {
   c.append(renderManagerPanel());
   // セーブ/ロード
   c.append(renderSavePanel());
+}
+
+// --- ニュースフィード（C4） --------------------------------------------------
+function renderNewsFeed(c) {
+  const gs = game.gs;
+  const rt = gs.rt;
+  const heads = weeklyDigest({
+    gameLog: rt.playerGameLog,
+    standings: currentStandings(rt),
+    teamId: gs.playerTeamId,
+    nameOf: (id) => tname(id),
+  });
+  // 今季のチーム注目選手（自チーム最高WAR・観測ベース）。序盤で試合が薄いと出ない。
+  const star = teamSeasonStar(rt, gs.playerTeamId);
+  if (star) heads.unshift({ text: `${tname(gs.playerTeamId)}の今季の顔は ${pname(star.id)}（WAR ${star.war.toFixed(1)}・「${star.nick}」）`, cls: 'info' });
+  c.append(el('h3', { class: 'leaguename' }, '📰 ニュース'));
+  if (!heads.length) {
+    c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
+    return;
+  }
+  c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+}
+
+/** 自チームの今季最高WAR選手（観測ベース）と二つ名。データが薄い序盤は null。 */
+function teamSeasonStar(rt, teamId) {
+  refreshRes();
+  const gs = game.gs;
+  let best = null;
+  for (const s of rt.stats.stats.values()) {
+    if (s.teamId !== teamId) continue;
+    const p = state.byId.get(s.playerId);
+    if (!p) continue;
+    const ev = evalSeason(s, p, gs.cfg, state.lc);
+    const played = p.role === 'pitcher' ? ev.ip >= 20 : ev.pa >= 80;
+    if (!played) continue;
+    if (!best || ev.war > best.war) best = { id: s.playerId, war: ev.war };
+  }
+  if (!best) return null;
+  return { ...best, nick: nicknameFor(state.byId.get(best.id), gs.careerStats, gs.cfg) };
+}
+
+// --- 記録タブ（C4・球団史／リーグ記録／マイルストーン） -----------------------------
+function renderRecords(c) {
+  const gs = game.gs;
+  const byId = new Map(gs.league.players.map((p) => [p.id, p]));
+  // 球団史（自チームの年度別順位・日本一）
+  c.append(el('h3', { class: 'leaguename' }, `球団史 — ${tname(gs.playerTeamId)}`));
+  const th = teamRecords(gs.teamHistory, gs.playerTeamId);
+  if (th.length) {
+    c.append(table(['年', '順位', '勝', '敗', '分', '日本一'], th.map((r) => el('tr', { class: r.champion ? 'myteam' : '' }, [
+      td(r.year), td(r.rank + '位'), td(r.w), td(r.l), td(r.t), td(r.champion ? '🏆' : ''),
+    ]))));
+    const champs = championCounts(gs.teamHistory);
+    const mine = champs.get(gs.playerTeamId) || 0;
+    c.append(el('div', { class: 'muted', style: 'margin-top:4px' }, `通算日本一: ${mine}回`));
+  } else {
+    c.append(el('div', { class: 'muted' }, 'まだ完了したシーズンがありません（今季終了後に記録が刻まれます）。'));
+  }
+  // マイルストーン（当年に通算で跨いだ達成）: 直近完了年ぶんを表示。
+  const lastYear = gs.teamHistory.length ? gs.teamHistory[gs.teamHistory.length - 1].year : null;
+  if (lastYear != null) {
+    const miles = milestones({ careerStats: gs.careerStats, playersById: byId, cfg: gs.cfg, year: lastYear });
+    if (miles.length) {
+      c.append(el('h3', { class: 'leaguename' }, `${lastYear}年 達成マイルストーン`));
+      c.append(el('div', { class: 'awardlist' }, miles.map((m) => el('div', { class: 'awardrow' }, [
+        el('span', { class: 'awardbadge' }, `${m.name}　${m.category} ${m.threshold}${m.unit}到達（通算${m.total}）`),
+      ]))));
+    }
+  }
+  // リーグ記録（シーズン/通算トップN）
+  if (gs.careerStats.length) {
+    const rec = leagueRecords({ careerStats: gs.careerStats, playersById: byId, cfg: gs.cfg });
+    c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（シーズン）'));
+    c.append(recordColumns([
+      ['本塁打', rec.seasonHR, (r) => `${r.value}（${r.year}）`],
+      ['安打', rec.seasonH, (r) => `${r.value}（${r.year}）`],
+      ['勝利', rec.seasonW, (r) => `${r.value}（${r.year}）`],
+      ['奪三振', rec.seasonSO, (r) => `${r.value}（${r.year}）`],
+    ]));
+    c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（通算）'));
+    c.append(recordColumns([
+      ['通算本塁打', rec.careerHR, (r) => `${r.value}`],
+      ['通算安打', rec.careerH, (r) => `${r.value}`],
+      ['通算勝利', rec.careerW, (r) => `${r.value}`],
+      ['通算セーブ', rec.careerSV, (r) => `${r.value}`],
+    ]));
+  }
+}
+
+/** 記録のトップNを複数カラムで並べる（各カテゴリ縦リスト）。 */
+function recordColumns(cats) {
+  return el('div', { class: 'reccols' }, cats.map(([title, rows, fmt]) => el('div', { class: 'reccol' }, [
+    el('div', { class: 'rechead' }, title),
+    ...rows.slice(0, 10).map((r, i) => el('div', { class: 'recrow' }, [
+      el('span', { class: 'recrank' }, `${i + 1}`),
+      el('span', { class: 'recname' }, r.name),
+      el('span', { class: 'recval' }, fmt(r)),
+    ])),
+    rows.length ? el('span', {}, '') : el('div', { class: 'muted' }, '—'),
+  ])));
 }
 
 /** 自チームの次戦カードを探す（未消化 schedule から最初の自チーム試合）。 */
@@ -8550,6 +10268,12 @@ function renderWatch() {
     ctrl.append(el('button', { onclick: () => { w.idx = w.events.length; renderWatch(); } }, '最後まで'));
   } else {
     ctrl.append(el('div', { class: 'finalscore' }, `試合終了　${tname(view.home)} ${view.scoreH} - ${view.scoreA} ${tname(view.away)}`));
+    // 珍記録検出（C4・§54）: 試合イベント列からノーヒッター/完全試合/サイクル/猛打賞を拾う。
+    const { notables } = detectGameNotables(w.events);
+    for (const n of notables) {
+      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id));
+      if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
+    }
     ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; renderHub(); } }, 'ハブへ戻る'));
   }
   root.append(ctrl);
@@ -8711,8 +10435,49 @@ function renderSeasonResult() {
   }
   const content = el('div', { id: 'content' });
   root.append(content);
+  renderAwardsPanel(content); // 表彰（MVP/新人王/ベストナイン/守備の栄誉賞/タイトル・C4）
   renderStandings(content); // 2リーグ順位表＋ポストシーズンパネル（既存描画を再利用）
-  root.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '表彰（MVP/新人王/ベストナイン/タイトル）と複数年キャリアは後続フェーズ（C2/C4）で追加されます。'));
+}
+
+// --- 表彰パネル（C4・シーズンリザルト） --------------------------------------
+function renderAwardsPanel(c) {
+  const gs = game.gs;
+  const aw = computeSeasonAwards({
+    playerSeasons: state.res.playerSeasons,
+    standings: state.res.standings,
+    playersById: state.byId,
+    cfg: gs.cfg,
+    allCareerStats: gs.careerStats,
+    year: gs.year,
+  });
+  c.append(el('h3', { class: 'leaguename' }, `🏅 ${gs.year}年 表彰`));
+  const nameOf = (id) => (id ? pname(id) : '—');
+  for (const lg of aw.leagues) {
+    const box = el('div', { class: 'awardpanel' });
+    box.append(el('div', { class: 'awardlgname' }, leagueNameOf(gs.cfg, lg.leagueId)));
+    // MVP・新人王
+    const top = [['MVP', lg.mvp ? `${nameOf(lg.mvp.playerId)}（WAR ${lg.mvp.war.toFixed(1)}）` : '—']];
+    if (lg.roty) top.push(['新人王', `${nameOf(lg.roty.playerId)}（WAR ${lg.roty.war.toFixed(1)}）`]);
+    box.append(el('div', { class: 'awardtop' }, top.map(([k, v]) => el('div', { class: 'awardbig' }, [el('span', { class: 'awardbigk' }, k), el('span', { class: 'awardbigv' }, v)]))));
+    // タイトル9種
+    const tvals = (t) => (t ? `${nameOf(t.playerId)}` : '—');
+    const titleGrid = Object.keys(TITLE_LABELS).map((k) => el('div', { class: 'kv' }, [
+      el('div', { class: 'kvk' }, TITLE_LABELS[k]), el('div', { class: 'kvv' }, tvals(lg.titles[k])),
+    ]));
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, 'タイトル'));
+    box.append(el('div', { class: 'kvgrid' }, titleGrid));
+    // ベストナイン
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, 'ベストナイン'));
+    box.append(el('div', { class: 'kvgrid' }, lg.bestNine.map((b) => el('div', { class: 'kv' }, [
+      el('div', { class: 'kvk' }, posJP(b.pos)), el('div', { class: 'kvv' }, nameOf(b.playerId)),
+    ]))));
+    // 守備の栄誉賞（UZR+OAA・架空名）
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, `${DEF_AWARD_NAME}（UZR+OAA）`));
+    box.append(el('div', { class: 'kvgrid' }, lg.gloves.map((g) => el('div', { class: 'kv' }, [
+      el('div', { class: 'kvk' }, posJP(g.pos)), el('div', { class: 'kvv' }, `${nameOf(g.playerId)}（${signed(g.defScore)}）`),
+    ]))));
+    c.append(box);
+  }
 }
 
 initApp();

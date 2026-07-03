@@ -17,6 +17,10 @@ import {
 import {
   newGame, advanceDay, advanceTo, save, load,
   setManagerProfile, clearManagerProfile,
+  // C4 演出: 表彰/記録/二つ名/ニュース（バンドルではグローバル・開発時Node解決用に import）。
+  computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
+  leagueRecords, teamRecords, championCounts, milestones, careerBatting, careerPitching,
+  DEF_AWARD_NAME, TITLE_LABELS, detectGameNotables, notableHeadline, streakOf, weeklyDigest,
 } from './game/index.mjs';
 
 const state = {
@@ -357,6 +361,8 @@ function openModal(playerId) {
   const modalTabs = isPitcher
     ? [['basic', '基本'], ['pitch', '投球'], ['context', '文脈']]
     : [['basic', '基本'], ['batted', '打球'], ['splits', 'スプリット'], ['context', '文脈'], ['field', '守備成分']];
+  // キャリアモード（game.gs）では「経歴」タブ（二つ名/年度別成績/受賞履歴/成長曲線）を足す。
+  if (game.gs) modalTabs.push(['career', '経歴']);
   let cur = 'basic';
   const rest = el('div');
   box.append(rest);
@@ -372,6 +378,7 @@ function openModal(playerId) {
     else if (cur === 'context') renderModalContext(body, s, isPitcher);
     else if (cur === 'field') renderModalField(body, s);
     else if (cur === 'pitch') renderModalPitch(body, s);
+    else if (cur === 'career') renderModalCareer(body, p, isPitcher);
   };
   render();
   overlay.append(box);
@@ -490,6 +497,80 @@ function renderModalPitch(box, s) {
   box.append(kv([
     ['GB%', pct(m.gbPct)], ['LD%', pct(m.ldPct)], ['FB%', pct(m.fbPct)], ['PU%', pct(m.puPct)], ['HR/FB', pct(m.hrFbPct)],
   ]));
+}
+
+// 経歴タブ（C4・キャリアモード専用）: 二つ名＋年度別成績表＋受賞履歴＋成長曲線SVG。
+//   すべて "観測成績/受賞（=観測ベース選定）" から組む（trueAbility 非露出＝三層構造）。
+function renderModalCareer(box, p, isPitcher) {
+  const gs = game.gs;
+  const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
+  const nick = nicknameFor(p, gs.careerStats, gs.cfg);
+  box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // 年度別成績表（当年は rt からも見えるが、careerStats は完了年ぶん＝確定値）。
+  //   WAR は「その年のリーグ全体」から導いた定数で評価する（単一選手からの導出は歪むため）。
+  const lcCache = new Map();
+  const lcForYear = (year) => {
+    if (lcCache.has(year)) return lcCache.get(year);
+    const ps = gs.careerStats.filter((s) => s.season === year);
+    const hist = gs.teamHistory.find((h) => h.year === year);
+    const standings = hist ? hist.standings : [{ teamId: p.teamId, rs: 1, g: 1 }];
+    const lc = deriveLeagueConstants({ playerSeasons: ps, standings });
+    lcCache.set(year, lc);
+    return lc;
+  };
+  const yearRows = cs.map((s) => yearStatRow(s, p, isPitcher, lcForYear(s.season)));
+  if (yearRows.length) {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '年度別成績'));
+    const head = isPitcher
+      ? ['年', '球団', '登板', '勝', '敗', 'S', '防御率', 'WAR']
+      : ['年', '球団', '打席', '打率', '本', '点', '盗', 'WAR'];
+    box.append(table(head, yearRows.map((r) => el('tr', {}, r.cells.map((c, i) => td(c, i === 1 ? 'left' : ''))))));
+    box.append(growthCurveSVG(yearRows));
+  } else {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '完了シーズンの成績はまだありません（今季進行中）。'));
+  }
+  // 受賞履歴（全年の表彰を再計算して収集）。
+  const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: state.byId, cfg: gs.cfg });
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '受賞履歴'));
+  if (hist.length) {
+    box.append(el('div', { class: 'awardlist' }, hist.map((a) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardyear' }, `${a.year}`),
+      el('span', { class: 'awardbadge' }, a.label + (a.pos ? `（${posJP(a.pos)}）` : '')),
+    ]))));
+  } else {
+    box.append(el('div', { class: 'muted' }, 'まだ受賞はありません。'));
+  }
+}
+
+/** 年度別成績1行（表示セル＋WAR数値）を作る。lc は各年のリーグ全体の観測から導出済みを渡す。 */
+function yearStatRow(s, p, isPitcher, lc) {
+  const ev = evalSeason(s, p, game.gs.cfg, lc);
+  const team = state.teamName.get(s.teamId) || s.teamId;
+  const cells = isPitcher
+    ? [String(s.season), team, ev.g, ev.w, ev.l, ev.sv, f2(ev.era), ev.war.toFixed(1)]
+    : [String(s.season), team, ev.pa, fmt3(ev.avg), ev.hr, ev.rbi, ev.sb, ev.war.toFixed(1)];
+  return { cells, war: ev.war, season: s.season };
+}
+
+/** 成長曲線（年度別WARの折れ線・SVG）。0基準線＋WAR点を結ぶ。 */
+function growthCurveSVG(yearRows) {
+  const W = 280, H = 90, pad = 18;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'growth' });
+  const wars = yearRows.map((r) => r.war);
+  const maxW = Math.max(3, ...wars);
+  const minW = Math.min(0, ...wars);
+  const span = maxW - minW || 1;
+  const x = (i) => pad + (yearRows.length <= 1 ? (W - 2 * pad) / 2 : (i / (yearRows.length - 1)) * (W - 2 * pad));
+  const y = (v) => H - pad - ((v - minW) / span) * (H - 2 * pad);
+  const zeroY = y(0);
+  svg.append(svgEl('line', { x1: pad, y1: zeroY, x2: W - pad, y2: zeroY, stroke: '#2f6b4a', 'stroke-dasharray': '3 3' }));
+  if (yearRows.length > 1) {
+    const pts = yearRows.map((r, i) => `${x(i).toFixed(1)},${y(r.war).toFixed(1)}`).join(' ');
+    svg.append(svgEl('polyline', { points: pts, fill: 'none', stroke: '#e8b84b', 'stroke-width': '2' }));
+  }
+  yearRows.forEach((r, i) => svg.append(svgEl('circle', { cx: x(i), cy: y(r.war), r: 3, fill: r.war >= 0 ? '#7bc47f' : '#c96a5a' })));
+  svg.append(svgText({ x: pad, y: 12, fill: '#9fb8ac', 'font-size': '10' }, '成長曲線（年度別WAR）'));
+  return svg;
 }
 
 function kv(pairs) {
@@ -861,7 +942,7 @@ function startNewGame(seed, teamId) {
 // --- シーズンハブ -----------------------------------------------------------
 const HUB_TABS = [
   ['hub', 'ハブ'], ['standings', '順位表'], ['war', 'WAR'],
-  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', 'チーム'],
+  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', 'チーム'], ['records', '記録'],
 ];
 
 function renderHub(tab = 'hub') {
@@ -882,6 +963,7 @@ function renderHub(tab = 'hub') {
   const content = el('div', { id: 'content' });
   root.append(header, bar, content);
   if (tab === 'hub') renderHubHome(content);
+  else if (tab === 'records') renderRecords(content);
   else {
     refreshRes();
     if (tab === 'standings') renderStandings(content);
@@ -929,6 +1011,9 @@ function renderHubHome(c) {
       el('div', { class: 'nextmatch' }, nextCard.text),
     ]));
   }
+
+  // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
+  renderNewsFeed(c);
 
   // 故障者リスト（C2.4/§10.5）: 自チームの現在離脱中の選手（残り離脱日数付き）を表示する。
   //   離脱＝直前オフに確定した故障(gamesLost)。開幕から day 進むごとに復帰が近づく。1年目は無し。
@@ -983,6 +1068,106 @@ function renderHubHome(c) {
   c.append(renderManagerPanel());
   // セーブ/ロード
   c.append(renderSavePanel());
+}
+
+// --- ニュースフィード（C4） --------------------------------------------------
+function renderNewsFeed(c) {
+  const gs = game.gs;
+  const rt = gs.rt;
+  const heads = weeklyDigest({
+    gameLog: rt.playerGameLog,
+    standings: currentStandings(rt),
+    teamId: gs.playerTeamId,
+    nameOf: (id) => tname(id),
+  });
+  // 今季のチーム注目選手（自チーム最高WAR・観測ベース）。序盤で試合が薄いと出ない。
+  const star = teamSeasonStar(rt, gs.playerTeamId);
+  if (star) heads.unshift({ text: `${tname(gs.playerTeamId)}の今季の顔は ${pname(star.id)}（WAR ${star.war.toFixed(1)}・「${star.nick}」）`, cls: 'info' });
+  c.append(el('h3', { class: 'leaguename' }, '📰 ニュース'));
+  if (!heads.length) {
+    c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
+    return;
+  }
+  c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+}
+
+/** 自チームの今季最高WAR選手（観測ベース）と二つ名。データが薄い序盤は null。 */
+function teamSeasonStar(rt, teamId) {
+  refreshRes();
+  const gs = game.gs;
+  let best = null;
+  for (const s of rt.stats.stats.values()) {
+    if (s.teamId !== teamId) continue;
+    const p = state.byId.get(s.playerId);
+    if (!p) continue;
+    const ev = evalSeason(s, p, gs.cfg, state.lc);
+    const played = p.role === 'pitcher' ? ev.ip >= 20 : ev.pa >= 80;
+    if (!played) continue;
+    if (!best || ev.war > best.war) best = { id: s.playerId, war: ev.war };
+  }
+  if (!best) return null;
+  return { ...best, nick: nicknameFor(state.byId.get(best.id), gs.careerStats, gs.cfg) };
+}
+
+// --- 記録タブ（C4・球団史／リーグ記録／マイルストーン） -----------------------------
+function renderRecords(c) {
+  const gs = game.gs;
+  const byId = new Map(gs.league.players.map((p) => [p.id, p]));
+  // 球団史（自チームの年度別順位・日本一）
+  c.append(el('h3', { class: 'leaguename' }, `球団史 — ${tname(gs.playerTeamId)}`));
+  const th = teamRecords(gs.teamHistory, gs.playerTeamId);
+  if (th.length) {
+    c.append(table(['年', '順位', '勝', '敗', '分', '日本一'], th.map((r) => el('tr', { class: r.champion ? 'myteam' : '' }, [
+      td(r.year), td(r.rank + '位'), td(r.w), td(r.l), td(r.t), td(r.champion ? '🏆' : ''),
+    ]))));
+    const champs = championCounts(gs.teamHistory);
+    const mine = champs.get(gs.playerTeamId) || 0;
+    c.append(el('div', { class: 'muted', style: 'margin-top:4px' }, `通算日本一: ${mine}回`));
+  } else {
+    c.append(el('div', { class: 'muted' }, 'まだ完了したシーズンがありません（今季終了後に記録が刻まれます）。'));
+  }
+  // マイルストーン（当年に通算で跨いだ達成）: 直近完了年ぶんを表示。
+  const lastYear = gs.teamHistory.length ? gs.teamHistory[gs.teamHistory.length - 1].year : null;
+  if (lastYear != null) {
+    const miles = milestones({ careerStats: gs.careerStats, playersById: byId, cfg: gs.cfg, year: lastYear });
+    if (miles.length) {
+      c.append(el('h3', { class: 'leaguename' }, `${lastYear}年 達成マイルストーン`));
+      c.append(el('div', { class: 'awardlist' }, miles.map((m) => el('div', { class: 'awardrow' }, [
+        el('span', { class: 'awardbadge' }, `${m.name}　${m.category} ${m.threshold}${m.unit}到達（通算${m.total}）`),
+      ]))));
+    }
+  }
+  // リーグ記録（シーズン/通算トップN）
+  if (gs.careerStats.length) {
+    const rec = leagueRecords({ careerStats: gs.careerStats, playersById: byId, cfg: gs.cfg });
+    c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（シーズン）'));
+    c.append(recordColumns([
+      ['本塁打', rec.seasonHR, (r) => `${r.value}（${r.year}）`],
+      ['安打', rec.seasonH, (r) => `${r.value}（${r.year}）`],
+      ['勝利', rec.seasonW, (r) => `${r.value}（${r.year}）`],
+      ['奪三振', rec.seasonSO, (r) => `${r.value}（${r.year}）`],
+    ]));
+    c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（通算）'));
+    c.append(recordColumns([
+      ['通算本塁打', rec.careerHR, (r) => `${r.value}`],
+      ['通算安打', rec.careerH, (r) => `${r.value}`],
+      ['通算勝利', rec.careerW, (r) => `${r.value}`],
+      ['通算セーブ', rec.careerSV, (r) => `${r.value}`],
+    ]));
+  }
+}
+
+/** 記録のトップNを複数カラムで並べる（各カテゴリ縦リスト）。 */
+function recordColumns(cats) {
+  return el('div', { class: 'reccols' }, cats.map(([title, rows, fmt]) => el('div', { class: 'reccol' }, [
+    el('div', { class: 'rechead' }, title),
+    ...rows.slice(0, 10).map((r, i) => el('div', { class: 'recrow' }, [
+      el('span', { class: 'recrank' }, `${i + 1}`),
+      el('span', { class: 'recname' }, r.name),
+      el('span', { class: 'recval' }, fmt(r)),
+    ])),
+    rows.length ? el('span', {}, '') : el('div', { class: 'muted' }, '—'),
+  ])));
 }
 
 /** 自チームの次戦カードを探す（未消化 schedule から最初の自チーム試合）。 */
@@ -1205,6 +1390,12 @@ function renderWatch() {
     ctrl.append(el('button', { onclick: () => { w.idx = w.events.length; renderWatch(); } }, '最後まで'));
   } else {
     ctrl.append(el('div', { class: 'finalscore' }, `試合終了　${tname(view.home)} ${view.scoreH} - ${view.scoreA} ${tname(view.away)}`));
+    // 珍記録検出（C4・§54）: 試合イベント列からノーヒッター/完全試合/サイクル/猛打賞を拾う。
+    const { notables } = detectGameNotables(w.events);
+    for (const n of notables) {
+      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id));
+      if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
+    }
     ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; renderHub(); } }, 'ハブへ戻る'));
   }
   root.append(ctrl);
@@ -1366,6 +1557,47 @@ function renderSeasonResult() {
   }
   const content = el('div', { id: 'content' });
   root.append(content);
+  renderAwardsPanel(content); // 表彰（MVP/新人王/ベストナイン/守備の栄誉賞/タイトル・C4）
   renderStandings(content); // 2リーグ順位表＋ポストシーズンパネル（既存描画を再利用）
-  root.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '表彰（MVP/新人王/ベストナイン/タイトル）と複数年キャリアは後続フェーズ（C2/C4）で追加されます。'));
+}
+
+// --- 表彰パネル（C4・シーズンリザルト） --------------------------------------
+function renderAwardsPanel(c) {
+  const gs = game.gs;
+  const aw = computeSeasonAwards({
+    playerSeasons: state.res.playerSeasons,
+    standings: state.res.standings,
+    playersById: state.byId,
+    cfg: gs.cfg,
+    allCareerStats: gs.careerStats,
+    year: gs.year,
+  });
+  c.append(el('h3', { class: 'leaguename' }, `🏅 ${gs.year}年 表彰`));
+  const nameOf = (id) => (id ? pname(id) : '—');
+  for (const lg of aw.leagues) {
+    const box = el('div', { class: 'awardpanel' });
+    box.append(el('div', { class: 'awardlgname' }, leagueNameOf(gs.cfg, lg.leagueId)));
+    // MVP・新人王
+    const top = [['MVP', lg.mvp ? `${nameOf(lg.mvp.playerId)}（WAR ${lg.mvp.war.toFixed(1)}）` : '—']];
+    if (lg.roty) top.push(['新人王', `${nameOf(lg.roty.playerId)}（WAR ${lg.roty.war.toFixed(1)}）`]);
+    box.append(el('div', { class: 'awardtop' }, top.map(([k, v]) => el('div', { class: 'awardbig' }, [el('span', { class: 'awardbigk' }, k), el('span', { class: 'awardbigv' }, v)]))));
+    // タイトル9種
+    const tvals = (t) => (t ? `${nameOf(t.playerId)}` : '—');
+    const titleGrid = Object.keys(TITLE_LABELS).map((k) => el('div', { class: 'kv' }, [
+      el('div', { class: 'kvk' }, TITLE_LABELS[k]), el('div', { class: 'kvv' }, tvals(lg.titles[k])),
+    ]));
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, 'タイトル'));
+    box.append(el('div', { class: 'kvgrid' }, titleGrid));
+    // ベストナイン
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, 'ベストナイン'));
+    box.append(el('div', { class: 'kvgrid' }, lg.bestNine.map((b) => el('div', { class: 'kv' }, [
+      el('div', { class: 'kvk' }, posJP(b.pos)), el('div', { class: 'kvv' }, nameOf(b.playerId)),
+    ]))));
+    // 守備の栄誉賞（UZR+OAA・架空名）
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, `${DEF_AWARD_NAME}（UZR+OAA）`));
+    box.append(el('div', { class: 'kvgrid' }, lg.gloves.map((g) => el('div', { class: 'kv' }, [
+      el('div', { class: 'kvk' }, posJP(g.pos)), el('div', { class: 'kvv' }, `${nameOf(g.playerId)}（${signed(g.defScore)}）`),
+    ]))));
+    c.append(box);
+  }
 }

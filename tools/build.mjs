@@ -38,7 +38,7 @@ load(entry);
 // フェーズA新モジュール（manager/usage/postseason）の同梱確認（S4）:
 // engine.mjs の import が誤って剥がされてもビルド自体は黙って通ってしまうため、
 // バンドル対象のモジュールグラフに必ず入っていることをここで機械検証する。
-const REQUIRED_MODULES = ['sim/manager.mjs', 'sim/usage.mjs', 'sim/postseason.mjs'];
+const REQUIRED_MODULES = ['sim/manager.mjs', 'sim/usage.mjs', 'sim/postseason.mjs', 'sim/context.mjs', 'sim/metrics.mjs'];
 for (const req of REQUIRED_MODULES) {
   const found = [...modules.keys()].some((p) => relative(root, p).split(sep).join('/').endsWith(req));
   if (!found) throw new Error(`bundle missing required module: ${req}（src/engine.mjs の import を確認）`);
@@ -121,6 +121,13 @@ const html = `<!DOCTYPE html>
   .barfill { display:block; height:100%; }
   .spraywrap { margin-top:10px; text-align:center; }
   svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
+  svg.evla { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
+  .sprayrow { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; align-items:flex-start; margin-top:8px; }
+  .modaltabs { display:flex; gap:6px; margin:8px 0 12px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:8px; }
+  .mtab { padding:4px 12px; font-size:12px; }
+  .mtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .modalbody { min-height:40px; }
+  h4.teamsub { font-size:12px; color:var(--muted); margin:8px 0 3px; font-weight:600; }
   h3.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); }
   .pspanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:12px; background:var(--panel); }
   .psrow { display:flex; gap:8px; font-size:13px; margin:3px 0; flex-wrap:wrap; }

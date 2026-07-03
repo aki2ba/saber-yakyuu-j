@@ -91,6 +91,20 @@ export const CALIBRATION_TARGETS = {
     qualifiedPerTeam: [5, 9], // 規定打席到達者/球団
     catcherStarterGames: [100, 135], // 正捕手の出場試合（143未満＝休養AIの発現）
   },
+  // フェーズB B3c 追加系指標の健全性チェック帯（新指標の妥当域）。
+  // ※これらは「追加集計」の健全性検証であり、上の既存30目標帯とは独立（既存30は不変を維持）。
+  //   xwOBA≈wOBA・ΣRE24≈0・WPAゼロサム・平均LI=1.0 は構造上の恒等（モデル=シム / martingale）。
+  //   LOB%/QS率/ARM/SD王 はNPB水準の妥当域（QS率は現行simが上振れ＝B1/全体較正で収束）。
+  phaseB: {
+    xwobaVsWoba: 0.003, // |リーグ xwOBA − wOBA| ≤ これ（打球モデル=シムの恒等）
+    lobPct: [0.70, 0.75], // リーグ残塁率
+    qsRate: [0.45, 0.60], // 先発QS率（NPB水準・現行simは上振れ＝要 sim較正で収束）
+    armLeader: [5, 12], // 外野ARM上位（対リーグ平均run）
+    re24SumAbs: 1e-6, // |ΣRE24| ≤ これ（打者+走者+投手 = 0 恒等）
+    wpaZeroSum: 1e-9, // WPAゼロサム最大誤差 ≤ これ（1試合 勝者±0.5）
+    liAvg: [0.999, 1.001], // 打席加重平均LI = 1.0（正規化・aLI/pLI）
+    sdLeader: [20, 50], // シャットダウン王（好救援の高レバレッジ成功）
+  },
 };
 
 /**

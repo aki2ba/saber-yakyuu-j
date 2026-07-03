@@ -70,13 +70,14 @@ simBtn._onclick();
 assert.ok(timers.length > 0, 'シーズン処理が予約される');
 timers.forEach((fn) => fn());
 
-// 3) 全タブを描画（WAR/順位表/打撃/投手/守備）— 例外が出ないこと
+// 3) 全タブを描画（WAR/順位表/打撃/投手/守備/チーム・B3c）— 例外が出ないこと
+// modaltabs は class 'mtab' で 'tab' 始まりでない＝メインタブのみが拾われる。
 const tabs = walk(appDiv).filter((n) => (n.className || '').startsWith('tab') && n._onclick);
-assert.ok(tabs.length >= 5, `5タブ描画 (found ${tabs.length})`);
+assert.ok(tabs.length >= 6, `6タブ描画 (found ${tabs.length})`);
 let modalsOpened = 0;
 for (const tab of tabs) {
   tab._onclick();
-  // データ行をクリックして選手モーダルを開く（スプレー/能力バー/WAR内訳生成を通す）
+  // データ行をクリックして選手モーダルを開く（各タブで例外が出ないこと）
   const row = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
   if (row) { row._onclick(); modalsOpened++; }
 }
@@ -89,10 +90,6 @@ assert.ok(warCard, 'WARランキングのカードが描画される');
 warCard._onclick();
 modalsOpened++;
 assert.ok(modalsOpened >= 4, `選手モーダルが開ける (opened ${modalsOpened})`);
-
-// 4) スプレーチャートSVGが生成されていること（打撃モーダル）
-const svgCount = walk(appDiv).filter((n) => n.tag === 'svg' || n.tag === 'circle' || n.tag === 'path').length;
-assert.ok(svgCount > 0, `スプレーチャートSVG要素が生成される (${svgCount})`);
 
 // --- S4検証: 2リーグ順位表＋交流戦成績＋ポストシーズンパネル -----------------
 // El木からテキストを回収（el() は文字列を children に直接 push する）
@@ -143,4 +140,77 @@ assert.ok(pitThs.some((t) => t.startsWith('役割')), '投手表に役割列');
 const roleCells = nodes.filter((n) => n.tag === 'td').map(textOf);
 assert.ok(roleCells.includes('先発') && roleCells.includes('救援'), '役割セルに先発/救援の両方が現れる');
 
-console.log('UI smoke OK: setup→simulate→5タブ(WAR含む)描画→モーダル%d回→SVG %d要素→2リーグ順位表+交流戦列+PSパネル+SH/IBB/PH+役割列、例外なし', modalsOpened, svgCount);
+// --- B3c検証: 新指標列（ツールチップ付き）・モーダルのタブ化・チーム集計タブ ----------
+// 8) リーダーボードに新指標列＋列ツールチップ（初心者への定義説明・th の title）
+battingTab._onclick();
+const batThNodes = walk(appDiv).filter((n) => n.tag === 'th');
+const batThTexts = batThNodes.map(textOf);
+for (const col of ['xwOBA', 'Barrel%', 'HardHit%', 'WPA', 'Clutch']) {
+  assert.ok(batThTexts.some((t) => t.startsWith(col)), `打撃表に新指標列 ${col} (${batThTexts.join(',')})`);
+}
+assert.ok(batThNodes.some((n) => n.attrs.title && n.attrs.title.length > 0), '列見出しに定義ツールチップ(title)がある');
+pitchingTab._onclick();
+const pitThTexts2 = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+for (const col of ['xFIP', 'SIERA', 'K-BB%', 'LOB%', 'QS', 'WPA']) {
+  assert.ok(pitThTexts2.some((t) => t.startsWith(col)), `投手表に新指標列 ${col} (${pitThTexts2.join(',')})`);
+}
+
+// 9) 選手モーダルのタブ化（打者: 基本/打球/スプリット/文脈/守備成分）＋打球タブのSVG
+battingTab._onclick();
+const batRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
+assert.ok(batRow, '打撃表にクリック可能な選手行がある');
+batRow._onclick();
+const overlay = walk(appDiv).find((n) => (n.className || '').includes('overlay'));
+assert.ok(overlay, '選手モーダルのオーバーレイが開く');
+const mtabsOf = () => walk(overlay).filter((n) => n.tag === 'button' && (n.className || '').includes('mtab'));
+const batMtabs = mtabsOf().map(textOf);
+for (const t of ['基本', '打球', 'スプリット', '文脈', '守備成分']) {
+  assert.ok(batMtabs.includes(t), `打者モーダルに「${t}」タブ (${batMtabs.join('/')})`);
+}
+// 打球タブへ切替→スプレー＋EV/LA散布のSVGが描かれる
+mtabsOf().find((n) => textOf(n) === '打球')._onclick();
+const svgCount = walk(overlay).filter((n) => n.tag === 'svg' || n.tag === 'circle' || n.tag === 'path' || n.tag === 'rect' || n.tag === 'line').length;
+assert.ok(svgCount > 0, `打球タブに打球チャートSVGが生成される (${svgCount})`);
+// スプリット/文脈/守備成分タブへ切替（例外なく描画されること）
+for (const t of ['スプリット', '文脈', '守備成分', '基本']) {
+  const btn = mtabsOf().find((n) => textOf(n) === t);
+  assert.ok(btn, `「${t}」タブが再取得できる`);
+  btn._onclick();
+}
+// スプリットタブに状況別行（対左投/得点圏 等）
+mtabsOf().find((n) => textOf(n) === 'スプリット')._onclick();
+assert.ok(walk(overlay).some((n) => textOf(n).includes('得点圏')), 'スプリットタブに得点圏の行がある');
+// 文脈タブにWPA/Clutch
+mtabsOf().find((n) => textOf(n) === '文脈')._onclick();
+assert.ok(walk(overlay).some((n) => textOf(n) === 'WPA'), '文脈タブにWPA項目がある');
+
+// 10) 投手モーダルのタブ化（基本/投球/文脈）
+pitchingTab._onclick();
+const pitRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
+pitRow._onclick();
+const pOverlay = walk(appDiv).filter((n) => (n.className || '').includes('overlay')).pop();
+const pMtabs = walk(pOverlay).filter((n) => n.tag === 'button' && (n.className || '').includes('mtab')).map(textOf);
+for (const t of ['基本', '投球', '文脈']) {
+  assert.ok(pMtabs.includes(t), `投手モーダルに「${t}」タブ (${pMtabs.join('/')})`);
+}
+walk(pOverlay).filter((n) => n.tag === 'button' && (n.className || '').includes('mtab')).find((n) => textOf(n) === '投球')._onclick();
+assert.ok(walk(pOverlay).some((n) => textOf(n) === 'SIERA'), '投球タブにSIERA項目がある');
+
+// 11) チーム集計タブ（打撃/投手/守備/走塁のリーグ内順位）
+const teamsTab = tabs.find((t) => textOf(t) === 'チーム');
+assert.ok(teamsTab, 'チームタブが存在');
+teamsTab._onclick();
+const teamNodes = walk(appDiv);
+const teamHeads = teamNodes.filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+for (const cat of ['チーム打撃', 'チーム投手', 'チーム守備', 'チーム走塁']) {
+  assert.ok(teamHeads.some((t) => t === cat), `チーム集計に「${cat}」がある (${teamHeads.join('/')})`);
+}
+const teamTables = teamNodes.filter((n) => n.tag === 'table');
+assert.ok(teamTables.length >= 8, `チーム表がカテゴリ×リーグ分ある (found ${teamTables.length})`);
+// 打撃カテゴリの各リーグブロックは6球団
+const battingTeamRows = walk(teamTables[0]).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
+assert.equal(battingTeamRows.length, 6, `チーム打撃(片リーグ)は6球団 (got ${battingTeamRows.length})`);
+const teamThs = teamNodes.filter((n) => n.tag === 'th').map(textOf);
+assert.ok(teamThs.includes('得点') && teamThs.includes('防御') && teamThs.includes('ΣUZR'), 'チーム表に打撃/投手/守備の列');
+
+console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);

@@ -16,6 +16,12 @@ import { simulateSeason } from '../src/sim/season.mjs';
 import { leagueSummary, leagueSummaryByLeague } from '../src/sim/leagueStats.mjs';
 import { deriveLeagueConstants } from '../src/sim/leagueConstants.mjs';
 import { hitterWAR, pitcherWAR } from '../src/sim/war.mjs';
+// --- フェーズB B3c 追加系指標の健全性チェック用（既存30には一切影響しない） ---
+import { createBattingLine, createPitchingLine, addBattingLine, addPitchingLine } from '../src/model/statline.mjs';
+import { playerBatting, playerPitching } from '../src/sim/metrics.mjs';
+import { armRunsAboveAvg, mainPosition, totalFieldInnings } from '../src/sim/fielding.mjs';
+
+const OUTFIELD = new Set(['LF', 'CF', 'RF']);
 
 // ---- 調整対象ノブ（ここを編集して収束させる） ----
 // 較正結果は src/config.mjs のデフォルトに焼込済。空＝デフォルト構成を検証（回帰チェック）。
@@ -101,6 +107,29 @@ function runOnce(seed) {
   }
   const catcherStarterGames = catcherSum / numTeams;
 
+  // --- フェーズB B3c 追加系指標（非context・§B3）: 既存の生カウントから湧く集計のみ。
+  //     lc/summary/WAR には一切触れない＝上の既存30指標の値は完全に不変。 ---
+  const lgBat = createBattingLine();
+  const lgPit = createPitchingLine();
+  for (const s of res.playerSeasons) {
+    addBattingLine(lgBat, s.batting);
+    addPitchingLine(lgPit, s.pitching);
+  }
+  const lgBm = playerBatting({ batting: lgBat }, lc); // リーグ集計の wOBA/xwOBA
+  const lgPm = playerPitching({ pitching: lgPit }, lc, cfg); // リーグ集計の LOB%
+  let armLeader = -Infinity; // 外野ARM上位（規定守備の外野手・対平均run）
+  for (const s of res.playerSeasons) {
+    if (OUTFIELD.has(mainPosition(s.fielding)) && totalFieldInnings(s.fielding) >= 400) {
+      armLeader = Math.max(armLeader, armRunsAboveAvg(s, lc));
+    }
+  }
+  let totQS = 0;
+  let totGS = 0;
+  for (const s of res.playerSeasons) {
+    totQS += s.pitching.qs;
+    totGS += s.pitching.gs;
+  }
+
   return {
     summary,
     runDiffDh,
@@ -125,6 +154,54 @@ function runOnce(seed) {
     warFloor200,
     qualifiedPerTeam,
     catcherStarterGames,
+    // --- フェーズB B3c 追加系（非context） ---
+    woba: lgBm.woba,
+    xwoba: lgBm.xwoba,
+    xwobaDiff: Math.abs(lgBm.xwoba - lgBm.woba),
+    lobPct: lgPm.lobPct,
+    armLeader,
+    qsRate: totGS ? totQS / totGS : 0,
+  };
+}
+
+/**
+ * フェーズB 文脈指標（RE24/WPA/LI/SD/MD・§B2）の健全性を context 有効で確認する。
+ * context=true は2パス（導出→再走）だが、pass2 の試合結果は非context単一パスと完全同一
+ * （＝上の runOnce/既存30指標には一切影響しない・決定論不変）。少数シードで恒等式を検証する。
+ */
+function runContext(seed) {
+  const cfg = createConfig(OVERRIDES);
+  const lg = generateLeague(seed, cfg);
+  const res = simulateSeason(lg, cfg, { season: 2026, seed, postseason: false, context: true });
+  let re = 0;
+  let liB = 0;
+  let paB = 0;
+  let liP = 0;
+  let bf = 0;
+  let totSD = 0;
+  let totMD = 0;
+  let sdLead = 0;
+  let mdLead = 0;
+  for (const ps of res.playerSeasons) {
+    re += ps.batting.re24 + ps.baserunning.re24 + ps.pitching.re24;
+    liB += ps.batting.liSum;
+    paB += ps.batting.pa;
+    liP += ps.pitching.liSum;
+    bf += ps.pitching.bf;
+    totSD += ps.pitching.sd;
+    totMD += ps.pitching.md;
+    sdLead = Math.max(sdLead, ps.pitching.sd);
+    mdLead = Math.max(mdLead, ps.pitching.md);
+  }
+  return {
+    re24Sum: re,
+    wpaMaxErr: res.contextCheck.wpaMaxErr,
+    aLI: paB ? liB / paB : 0,
+    pLI: bf ? liP / bf : 0,
+    totSD,
+    totMD,
+    sdLead,
+    mdLead,
   };
 }
 
@@ -220,3 +297,49 @@ console.log(row('規定到達/球団', avgR((r) => r.qualifiedPerTeam), T.usage.
 console.log(row('正捕手先発試合', avgR((r) => r.catcherStarterGames), T.usage.catcherStarterGames, 1));
 console.log('');
 console.log(`=== PASS ${nPass} / FAIL ${nFail}（FAILはS5較正ループで収束させる） ===`);
+
+// ============================================================================
+// フェーズB B3c 追加系指標の健全性チェック（新規・上の既存30とは独立の帯）。
+// 既存30は runOnce の summary/WAR から算出済みで、ここでの追加集計/context ランは
+// それらに一切影響しない（値は完全不変）。ここは新指標の恒等式/妥当域を別集計で検証する。
+// ============================================================================
+let bPass = 0;
+let bFail = 0;
+const brow = (label, val, range, dec = 3) => {
+  const ok = inRange(val, range) ? 'PASS' : 'FAIL';
+  ok === 'PASS' ? bPass++ : bFail++;
+  return `${ok}  ${label.padEnd(18)} ${val.toFixed(dec).padStart(9)}   [${range[0]}, ${range[1]}]`;
+};
+const babs = (label, val, tol) => {
+  const ok = Math.abs(val) <= tol ? 'PASS' : 'FAIL';
+  ok === 'PASS' ? bPass++ : bFail++;
+  return `${ok}  ${label.padEnd(18)} ${val.toExponential(2).padStart(9)}   [|x| <= ${tol}]`;
+};
+
+const B = T.phaseB;
+const CTX_SEEDS = [1, 2, 3]; // 文脈指標は恒等式検証＝少数シードで十分（context=2パスのため時間節約）
+const ctxRuns = CTX_SEEDS.map(runContext);
+const avgC = (fn) => ctxRuns.reduce((a, r) => a + fn(r), 0) / ctxRuns.length;
+
+console.log('');
+console.log('=== フェーズB 追加系指標の健全性チェック（新規・既存30とは独立） ===');
+console.log('--- 期待値/率系（非context・12シード平均） ---');
+console.log(`      league wOBA ${avgR((r) => r.woba).toFixed(4)} / xwOBA ${avgR((r) => r.xwoba).toFixed(4)}（モデル=シムの恒等）`);
+console.log(brow('|xwOBA−wOBA|', avgR((r) => r.xwobaDiff), [0, B.xwobaVsWoba], 5));
+console.log(brow('LOB%', avgR((r) => r.lobPct), B.lobPct, 3));
+console.log(brow('QS率', avgR((r) => r.qsRate), B.qsRate, 3));
+console.log(brow('ARM上位(外野)', avgR((r) => r.armLeader), B.armLeader, 2));
+console.log('');
+console.log('--- 文脈指標（context・seeds=' + CTX_SEEDS.join(',') + ' 平均） ---');
+console.log(babs('ΣRE24(恒等≈0)', avgC((r) => r.re24Sum), B.re24SumAbs));
+console.log(babs('WPAゼロサム誤差', avgC((r) => r.wpaMaxErr), B.wpaZeroSum));
+console.log(brow('平均aLI(正規化)', avgC((r) => r.aLI), B.liAvg, 4));
+console.log(brow('平均pLI(正規化)', avgC((r) => r.pLI), B.liAvg, 4));
+console.log(brow('SD王', avgC((r) => r.sdLead), B.sdLeader, 1));
+console.log(`      リーグ総SD ${avgC((r) => r.totSD).toFixed(0)} / 総MD ${avgC((r) => r.totMD).toFixed(0)}（SD>MD で健全）`);
+console.log('');
+console.log('注: QS率がNPB帯(45-60%)上振れなのは現行simの先発が効率的なため。QS率の収束は打席解決/継投の');
+console.log('    sim較正（B1一球化・B3全体較正）の課題で、本ステージ（追加集計のみ・sim不変）の対象外。');
+console.log('');
+console.log(`=== フェーズB追加チェック PASS ${bPass} / FAIL ${bFail} ===`);
+console.log(`=== 総合: 既存30 [PASS ${nPass}/FAIL ${nFail}]  ＋  フェーズB追加 [PASS ${bPass}/FAIL ${bFail}] ===`);

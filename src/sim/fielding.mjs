@@ -95,12 +95,19 @@ export function armRunsAboveAvg(ps, lc) {
   return raw - center;
 }
 
-/** DPR（二遊間の併殺転換）run。対リーグ平均転換率(lgDPRate)より多く転換した分がプラス（§B3b）。 */
+/**
+ * DPR（二遊間の併殺転換）run。対リーグ平均転換率(lgDPRate)より多く転換した分がプラス（§B3b）。
+ * 1件の併殺は2B・SSが共同で成立させる1イベントで、game.mjs は機会/成立を両者へフル計上する。
+ * runPerDP はこの「1イベント」あたりの対称run価値なので、二重帰属を避けるため参加者ぶん
+ * (dpShare=0.5) を配分する。フルタイムの二遊間ペアなら両者の dpTurned/dpOpp は等しく、
+ * ΣDPR は単一計上したチームの併殺run価値（対平均）にちょうど一致する。lgDPRate は分母分子とも
+ * 2倍でも比が不変・対平均は0中心ゆえ、この配分でも リーグΣDPR≈0 は保たれる。
+ */
 export function dprRunsAboveAvg(ps, cfg, lc) {
   const f = ps.fielding;
   const opp = f.dpOpp || 0;
   if (!opp || !lc || lc.lgDPRate == null) return 0;
-  return ((f.dpTurned || 0) - lc.lgDPRate * opp) * cfg.tuning.field.runPerDP;
+  return ((f.dpTurned || 0) - lc.lgDPRate * opp) * cfg.tuning.field.runPerDP * cfg.tuning.field.dpShare;
 }
 
 /**

@@ -1072,7 +1072,8 @@ const TUNING_DEFAULT = {
     //     いずれも WAR用の uzrRuns には加えず（＝較正30指標が完全不変）、
     //     uzrComponents（分解表示）でのみ合成する（総UZR不変が理想・§検証）。
     armRunPerOpp: 0.007, // 外野ARM: 追加進塁機会1回あたり (arm-50)×これ をrun換算（対平均・game.mjsで累積。上位+5〜12run）
-    runPerDP: 0.45, // DPR: 併殺1つ（対リーグ平均転換率）あたりのrun価値（二遊間）
+    runPerDP: 0.45, // DPR: 併殺1つ（対リーグ平均転換率）あたりのrun価値。1件の併殺は二遊間で共有する1イベント（打者側 runGDP=-0.42 と同型の対称値）
+    dpShare: 0.5, // DPR: 上記の1イベントrun価値を参加者で分担する比率。game.mjs が1機会/成立を 2B・SS 双方にフル計上するため、二重帰属を避けるべく各参加者に0.5を配分（Σで単一計上のチーム値に一致・§B3b）
   },
   // 走塁 Spd（簡易4成分・Bill James風0-10スケール・§B3b）: SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
   spd: {
@@ -1299,12 +1300,19 @@ function armRunsAboveAvg(ps, lc) {
   return raw - center;
 }
 
-/** DPR（二遊間の併殺転換）run。対リーグ平均転換率(lgDPRate)より多く転換した分がプラス（§B3b）。 */
+/**
+ * DPR（二遊間の併殺転換）run。対リーグ平均転換率(lgDPRate)より多く転換した分がプラス（§B3b）。
+ * 1件の併殺は2B・SSが共同で成立させる1イベントで、game.mjs は機会/成立を両者へフル計上する。
+ * runPerDP はこの「1イベント」あたりの対称run価値なので、二重帰属を避けるため参加者ぶん
+ * (dpShare=0.5) を配分する。フルタイムの二遊間ペアなら両者の dpTurned/dpOpp は等しく、
+ * ΣDPR は単一計上したチームの併殺run価値（対平均）にちょうど一致する。lgDPRate は分母分子とも
+ * 2倍でも比が不変・対平均は0中心ゆえ、この配分でも リーグΣDPR≈0 は保たれる。
+ */
 function dprRunsAboveAvg(ps, cfg, lc) {
   const f = ps.fielding;
   const opp = f.dpOpp || 0;
   if (!opp || !lc || lc.lgDPRate == null) return 0;
-  return ((f.dpTurned || 0) - lc.lgDPRate * opp) * cfg.tuning.field.runPerDP;
+  return ((f.dpTurned || 0) - lc.lgDPRate * opp) * cfg.tuning.field.runPerDP * cfg.tuning.field.dpShare;
 }
 
 /**
@@ -2343,6 +2351,8 @@ function deriveLeagueConstants(res) {
 
   // 二遊間 併殺転換率（DPRの基準・§B3b）: 守備側の機会/成立から。lgDPRate= Σ成立/Σ機会。
   // 各機会は 2B・SS の両者に計上されるため分母/分子とも2倍だが比は不変（DPRの対平均は0中心）。
+  // ※1件の併殺のrun価値は二遊間で共有する1イベントなので、metrics側(dprRunsAboveAvg)で
+  //   dpShare=0.5 を掛けて参加者に配分する（両者へのフル二重帰属を防ぐ・単一計上のチーム値に一致）。
   let totDPturned = 0;
   let totDPopp = 0;
   for (const ps of res.playerSeasons) {

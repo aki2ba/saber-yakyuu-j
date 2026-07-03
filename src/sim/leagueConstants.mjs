@@ -79,6 +79,8 @@ export function deriveLeagueConstants(res) {
 
   // 二遊間 併殺転換率（DPRの基準・§B3b）: 守備側の機会/成立から。lgDPRate= Σ成立/Σ機会。
   // 各機会は 2B・SS の両者に計上されるため分母/分子とも2倍だが比は不変（DPRの対平均は0中心）。
+  // ※1件の併殺のrun価値は二遊間で共有する1イベントなので、metrics側(dprRunsAboveAvg)で
+  //   dpShare=0.5 を掛けて参加者に配分する（両者へのフル二重帰属を防ぐ・単一計上のチーム値に一致）。
   let totDPturned = 0;
   let totDPopp = 0;
   for (const ps of res.playerSeasons) {

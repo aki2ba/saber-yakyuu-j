@@ -233,6 +233,7 @@ export function playScheduledGame(ctx, g, gi) {
 
   const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, park, pass.onBattedBall, {
     gameContext: pass.gameContext,
+    onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新

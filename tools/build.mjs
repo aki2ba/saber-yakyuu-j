@@ -14,6 +14,9 @@ import { dirname, join, resolve, relative, sep } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const entry = join(root, 'src', 'engine.mjs');
+// ゲーム層API（フェーズC1・ヘッドレスなゲームループ）をUIから使えるよう、追加ルートとして
+// 同一バンドルへ同梱する（engine.mjs の後に並ぶ＝ENGINE_VERSION 等が先に定義される）。
+const gameEntry = join(root, 'src', 'game', 'index.mjs');
 
 // 単一行・複数行どちらの import 文にもマッチ（lazy に最初の from '...' まで）。
 const IMPORT_RE = /import\b[\s\S]*?\bfrom\s*['"]([^'"]+)['"]\s*;?/g;
@@ -34,6 +37,7 @@ function load(absPath) {
   modules.set(absPath, { code, deps });
 }
 load(entry);
+load(gameEntry);
 
 // フェーズA新モジュール（manager/usage/postseason）の同梱確認（S4）:
 // engine.mjs の import が誤って剥がされてもビルド自体は黙って通ってしまうため、
@@ -54,6 +58,7 @@ function visit(p) {
   order.push(p);
 }
 visit(entry);
+visit(gameEntry); // engine の後にゲーム層（ENGINE_VERSION 定義後に newGame 等が並ぶ）
 
 /** import 行と export キーワードを剥がす */
 function strip(code) {
@@ -140,6 +145,44 @@ const html = `<!DOCTYPE html>
   .warrank { width:24px; color:var(--muted); text-align:right; font-size:13px; }
   .warval { width:54px; font-size:20px; font-weight:800; color:var(--gold); text-align:right; }
   .warname { flex:1; font-size:14px; } .wn1 { font-weight:700; }
+  /* --- フェーズC1b ゲームシェル --- */
+  .teamgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin-top:10px; }
+  .teamcard { text-align:left; padding:10px 12px; }
+  .teamcard:hover { background:#174a34; }
+  .tcname { font-weight:700; font-size:14px; }
+  .progressbar-wrap { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .nextcard { border:1px solid var(--clay); border-radius:8px; padding:8px 12px; margin:8px 0; background:var(--panel); }
+  .nextmatch { font-size:15px; font-weight:700; }
+  .recentlist { display:flex; flex-direction:column; gap:3px; }
+  .recentrow { display:flex; gap:10px; align-items:center; font-size:13px; }
+  .recentrow .score { margin-left:auto; color:var(--muted); }
+  .wl { display:inline-block; width:18px; text-align:center; font-weight:700; border-radius:4px; }
+  .wlw { color:#7bc47f; } .wll { color:#e06d6d; } .wlt { color:var(--muted); }
+  tr.myteam td { background:#1c4a34; font-weight:700; }
+  .teamstate { margin:8px 0; font-size:14px; letter-spacing:1px; }
+  .mgrpanel, .savepanel { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:12px; }
+  .tendrow { display:flex; align-items:center; gap:6px; margin:4px 0; }
+  .tendlabel { width:96px; color:var(--muted); font-size:13px; }
+  .tendbtn { padding:4px 10px; font-size:12px; }
+  .tendbtn.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .watchmid { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; margin:10px 0; }
+  svg.diamond { width:200px; background:#0c3122; border-radius:8px; }
+  .benchbox { flex:1; min-width:180px; border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .resrow { display:flex; align-items:center; gap:6px; font-size:12px; margin:4px 0; }
+  .reslabel { width:60px; color:var(--muted); } .resval { width:40px; text-align:right; }
+  .restrack { flex:1; height:8px; background:#0c3122; border-radius:4px; overflow:hidden; }
+  .resfill { display:block; height:100%; background:var(--gold); }
+  .pbp { border:1px solid var(--line); border-radius:8px; padding:8px 12px; max-height:320px; overflow-y:auto; font-size:13px; }
+  .pbpline { padding:2px 0; border-bottom:1px solid #163d2c; }
+  .pbpline.ev-hr { color:var(--gold); font-weight:700; }
+  .pbpline.ev-run { color:#7bc47f; }
+  .pbpline.ev-sub { color:#7fb0e0; }
+  .pbpline.ev-start { color:var(--clay); font-weight:600; }
+  .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
+  table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
+  .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
+  .pbfill { height:100%; background:var(--clay); transition:width .1s; }
+  .championbanner { background:var(--panel); border:1px solid var(--gold); border-radius:8px; padding:12px; font-size:18px; font-weight:800; color:var(--gold); text-align:center; margin:12px 0; }
 </style>
 </head>
 <body>

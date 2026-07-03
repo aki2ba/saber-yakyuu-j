@@ -184,14 +184,17 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
 
   const rStat = statFor(bases[0], batting.teamId);
   const catcherId = fielding.defense.C; // rSB（捕手盗塁阻止run・§B3b）の帰属先
+  const stealRunner = bases[0];
   if (rng.next() < succ) {
     bases[1] = bases[0]; // 二塁へ
     bases[0] = null;
     rStat.batting.sb++;
     if (catcherId) statFor(catcherId, fielding.teamId).fielding.sbAllowed++; // 捕手が許したSB（乱数非消費）
+    if (batting.onEvent) batting.onEvent({ type: 'steal', success: true, runnerId: stealRunner, batTeam: batting.teamId });
   } else {
     bases[0] = null; // 盗塁死
     rStat.batting.cs++;
+    if (batting.onEvent) batting.onEvent({ type: 'steal', success: false, runnerId: stealRunner, batTeam: batting.teamId });
     if (catcherId) statFor(catcherId, fielding.teamId).fielding.csMade++; // 捕手が刺したCS（乱数非消費）
     // 盗塁死は投手在籍中の記録アウト＝投手IPに算入（監査A2: ΣpositionOuts==8·Σpitcher.outs を回復）。
     statFor(fielding.curPid, fielding.teamId).pitching.outs++;
@@ -214,6 +217,27 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
   const maxInnings = opts.maxInnings ?? MAX_INNINGS;
+  // 観戦実況フック（フェーズC1・§16）: 存在するときのみ各プレー確定点で「構造化イベント」を発火する。
+  // gc（文脈指標）と同じく乱数は一切消費しない＝onEvent の有無で試合結果は不変（決定論・較正50指標が不変）。
+  // 言語化（EV/LA/落下点の実況文）はUI側の責務で、ここは素データだけを渡す（エンジンとUIの分離）。
+  const onEvent = opts.onEvent ?? null;
+  home.onEvent = onEvent;
+  away.onEvent = onEvent;
+  if (onEvent) {
+    onEvent({
+      type: 'start',
+      home: home.teamId,
+      away: away.teamId,
+      homeStarter: home.starterId,
+      awayStarter: away.starterId,
+      homeLineup: home.slots.map((s) => ({ playerId: s.playerId, pos: s.pos })),
+      awayLineup: away.slots.map((s) => ({ playerId: s.playerId, pos: s.pos })),
+      homeBullpen: home.bullpen.slice(),
+      awayBullpen: away.bullpen.slice(),
+      homeBench: home.bench.slice(),
+      awayBench: away.bench.slice(),
+    });
+  }
   // 文脈指標フック（§B2）: 存在するときのみ各プレー確定点で ΔRE/ΔWPA/LI を積む。
   // 乱数は一切消費しないため、gc の有無で試合結果は不変（決定論・較正30指標が不変）。
   const gc = opts.gameContext ?? null;
@@ -241,6 +265,15 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   flushPitcher(home, away.score);
   flushPitcher(away, home.score);
   assignDecisions(home, away, statFor, runLog);
+  if (onEvent) {
+    onEvent({
+      type: 'end',
+      homeScore: home.score,
+      awayScore: away.score,
+      innings: Math.min(inning, maxInnings),
+      tie: home.score === away.score,
+    });
+  }
   // シャットダウン/メルトダウン（§B2）: 救援の1登板WPAを閾値判定（加算パスのみ）。
   if (gc && gc.mode === 'accumulate') classifyShutdowns(home, away, statFor, cfg);
 
@@ -651,6 +684,32 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       fldScore: fielding.score,
     });
 
+    // 観戦実況（§16・乱数非消費）: 打席確定の素データをUIへ。EV/LA/落下点は battedBall から。
+    if (fielding.onEvent) {
+      fielding.onEvent({
+        type: 'pa',
+        inning,
+        half: battingIsHome ? 'bottom' : 'top',
+        batTeam: batting.teamId,
+        pitTeam: fielding.teamId,
+        batterId,
+        pitcherId: fielding.curPid,
+        outcome, // 'K'|'BB'|'HBP'|'inPlay'
+        result, // 'out'|'1B'|'2B'|'3B'|'HR'|'BB'|'HBP'|'E'
+        isIBB,
+        battedType: bType, // 'GB'|'LD'|'FB'|'PU'|null
+        outsBefore: paOuts,
+        outsAfter: outs,
+        runsOnPlay: runs,
+        basesAfter: baseBits(bases),
+        batScore: batting.score,
+        fldScore: fielding.score,
+        bb: battedBall
+          ? { evKmh: battedBall.evKmh, laDeg: battedBall.laDeg, sprayDeg: battedBall.sprayDeg, distanceM: battedBall.distanceM }
+          : null,
+      });
+    }
+
     // 代走（§S2-3）: PA解決後、塁上の鈍足走者をベンチ最速と交代
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
@@ -795,6 +854,7 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
   }
   statFor(pick, batting.teamId).batting.ph++; // 代打打席数（§S1-5の器を消費）
   batting.subs.push({ type: 'PH', inning, outPid: batterId, inPid: pick });
+  if (batting.onEvent) batting.onEvent({ type: 'sub', kind: 'PH', team: batting.teamId, inning, inPid: pick, outPid: batterId });
 }
 
 /** 代走（§S2-3）。塁上の鈍足走者をベンチ最速と交代し、打順スロット・守備位置を引き継ぐ。 */
@@ -902,6 +962,7 @@ function installPitcher(side, pid, inning, lead) {
   side.usedPitchers.add(pid);
   if (side.pitcherSlot >= 0) side.slots[side.pitcherSlot].playerId = pid;
   side.cur = { pid, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: lead, enterInning: inning, wpa: 0 };
+  if (side.onEvent) side.onEvent({ type: 'sub', kind: 'RP', team: side.teamId, inning, inPid: pid, outPid });
 }
 
 /**

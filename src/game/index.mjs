@@ -34,6 +34,14 @@ function startYear(state) {
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
   });
+  // 当該年の采配介入を rt に載せる（replay で同一 day に再適用＝決定論。他年の介入は除外）。
+  state.rt.interventions = state.interventions.filter((iv) => (iv.yearIndex ?? 0) === state.yearIndex);
+}
+
+/** 自チームの「AI（生成時）監督プロファイル」を控える（介入UIが絶対値パッチを組む基準）。 */
+function captureBaseManager(state) {
+  const team = state.league.teams.find((t) => t.id === state.playerTeamId);
+  state.baseManager = { ...team.manager };
 }
 
 /**
@@ -62,11 +70,42 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     league,
     careerStats: [], // 完了シーズンの選手集計（永続・§17）
     teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
-    interventions: [], // 人間介入ログ（C1a=空。再現用に構造だけ用意）
+    interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     rt: null, // 現行シーズンの日次ランタイム
   };
+  captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
   startYear(state);
   return state;
+}
+
+/**
+ * 采配介入を登録する（フェーズC1b）。自チーム監督プロファイルの人間差し替え。
+ * 現在の day（次に処理する節）から効く絶対値パッチをログに積み、rt へ即時反映する。
+ * @param {Object} state GameState
+ * @param {{buntTend?:number,stealTend?:number,ibbTend?:number,quickHook?:number}} manager 絶対値（20-80）
+ */
+export function setManagerProfile(state, manager) {
+  const day = pendingDay(state.rt); // この day 以降の試合に効く
+  const team = state.rt.teamById.get(state.playerTeamId);
+  // 現在の有効プロファイルに重ねる（同一日に複数フィールドを個別に変えても合成される）。
+  // iv.manager は「絶対値の完全な監督オブジェクト」＝適用順に依らず一意（replay安全）。
+  const abs = { ...(team ? team.manager : state.baseManager), ...manager };
+  // 同 day の既存介入は上書き（ハブで何度いじっても最後の合成値だけが効く＝replayが一意）。
+  const sameDay = (iv) => iv.yearIndex === state.yearIndex && iv.day === day && iv.teamId === state.playerTeamId;
+  state.interventions = state.interventions.filter((iv) => !sameDay(iv));
+  state.rt.interventions = state.rt.interventions.filter((iv) => !sameDay(iv));
+  const iv = { yearIndex: state.yearIndex, day, teamId: state.playerTeamId, manager: abs };
+  state.interventions.push(iv);
+  state.rt.interventions.push(iv);
+  if (team) team.manager = { ...abs }; // live 即時反映（replayでも同 day で再現）
+  state.settings.autoManage = false;
+  return iv;
+}
+
+/** 「おまかせ」に戻す（自チーム監督を生成時プロファイルへ復帰・現在の day から）。 */
+export function clearManagerProfile(state) {
+  setManagerProfile(state, state.baseManager);
+  state.settings.autoManage = true;
 }
 
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
@@ -104,8 +143,8 @@ function recordSeasonHistory(state) {
  * 1日（節）進める。自チーム試合日はその結果を step.playerGames で返す。
  * @returns {{day:number, games:Array, playerGames:Array, seasonEnded:boolean}}
  */
-export function advanceDay(state) {
-  const step = advanceRuntimeDay(state.rt);
+export function advanceDay(state, opts = {}) {
+  const step = advanceRuntimeDay(state.rt, opts);
   if (step.seasonEnded) recordSeasonHistory(state);
   return step;
 }
@@ -116,16 +155,16 @@ export function advanceDay(state) {
  * @param {'nextPlayerGame'|'weekEnd'|'monthEnd'|'seasonEnd'} until
  * @returns {Array} 消化した各日の step
  */
-export function advanceTo(state, until) {
+export function advanceTo(state, until, opts = {}) {
   const rt = state.rt;
   const steps = [];
   if (until === 'seasonEnd') {
-    while (!rt.finished) steps.push(advanceDay(state));
+    while (!rt.finished) steps.push(advanceDay(state, opts));
     return steps;
   }
   if (until === 'nextPlayerGame') {
     while (!rt.finished) {
-      const s = advanceDay(state);
+      const s = advanceDay(state, opts);
       steps.push(s);
       if (s.playerGames.length) break;
     }
@@ -134,7 +173,7 @@ export function advanceTo(state, until) {
   if (until === 'weekEnd' || until === 'monthEnd') {
     const span = until === 'weekEnd' ? state.cfg.game.daysPerWeek : state.cfg.game.daysPerMonth;
     const boundary = (Math.floor(pendingDay(rt) / span) + 1) * span; // 次の週/月境界（含まない）
-    while (!rt.finished && pendingDay(rt) < boundary) steps.push(advanceDay(state));
+    while (!rt.finished && pendingDay(rt) < boundary) steps.push(advanceDay(state, opts));
     return steps;
   }
   throw new Error(`advanceTo: 未知の until '${until}'`);
@@ -233,6 +272,7 @@ export function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     rt: null,
   };
+  captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;
   if (ss) {

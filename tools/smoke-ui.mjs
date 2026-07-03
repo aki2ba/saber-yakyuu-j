@@ -213,4 +213,77 @@ assert.equal(battingTeamRows.length, 6, `チーム打撃(片リーグ)は6球団
 const teamThs = teamNodes.filter((n) => n.tag === 'th').map(textOf);
 assert.ok(teamThs.includes('得点') && teamThs.includes('防御') && teamThs.includes('ΣUZR'), 'チーム表に打撃/投手/守備の列');
 
+// ============================================================================
+// フェーズC1b: ゲームシェルの主要経路（ニューゲーム→ハブ→観戦1試合→セーブ/ロード→進行）
+// ============================================================================
+const btnByText = (t) => walk(appDiv).find((n) => n.tag === 'button' && n._onclick && textOf(n).includes(t));
+const hasClass = (cls) => walk(appDiv).find((n) => (n.className || '').includes(cls));
+const allClass = (cls) => walk(appDiv).filter((n) => (n.className || '').includes(cls));
+
+// G1) タイトルへ入る（既存セットアップ画面のキャリア入口ボタン）
+vm.runInContext('initApp();', sandbox);
+const careerBtn = btnByText('ゲームを始める');
+assert.ok(careerBtn, 'セットアップにキャリア入口ボタンがある');
+careerBtn._onclick();
+assert.ok(btnByText('ニューゲーム'), 'タイトルにニューゲームボタン');
+
+// G2) ニューゲーム: 12球団カード → 自チーム選択 → シーズンハブ
+btnByText('ニューゲーム')._onclick();
+const teamCards = allClass('teamcard');
+assert.equal(teamCards.length, 12, `12球団のカードが出る (got ${teamCards.length})`);
+teamCards[0]._onclick();
+let hubHead = hasClass('header');
+assert.ok(hubHead && textOf(hubHead).includes('2026年'), 'シーズンハブに年が表示される');
+
+// G3) ハブの stat タブ（順位/WAR/打撃/投手/守備/チーム）が既存描画で開ける（例外なし）
+for (const tabName of ['順位表', 'WAR', '打撃', '投手', '守備', 'チーム', 'ハブ']) {
+  const t = btnByText(tabName);
+  assert.ok(t, `ハブに「${tabName}」タブがある`);
+  t._onclick();
+}
+
+// G4) 采配介入（監督プロファイル差し替え）: おまかせトグル＋方針ボタン
+const tendBtns = allClass('tendbtn');
+assert.ok(tendBtns.length >= 8, `采配パネルに方針ボタンがある (got ${tendBtns.length})`);
+tendBtns[0]._onclick(); // 「積極」等を1つ押す→介入登録＋ハブ再描画（例外が出ないこと）
+assert.ok(hasClass('header'), '介入後もハブが再描画される');
+
+// G5) 次の試合へ → 観戦（スコアボード＋ダイヤモンド＋実況＋ベンチ/ブルペン残量）
+btnByText('次の試合へ')._onclick();
+assert.ok(btnByText('観戦') && btnByText('ダイジェスト') && btnByText('スキップ'), '観戦/ダイジェスト/スキップの選択が出る');
+btnByText('観戦')._onclick();
+assert.ok(allClass('pbpline').length >= 1, '実況ログ（打席前ポーズ＝1プレー表示）');
+assert.ok(walk(appDiv).some((n) => (n.className || '').includes('diamond')), 'ダイヤモンド盤面SVGが描かれる');
+assert.ok(walk(appDiv).some((n) => (n.className || '').includes('scoreboard')), 'スコアボードが描かれる');
+assert.ok(hasClass('benchbox'), 'ベンチ/ブルペン残量が描かれる');
+btnByText('最後まで')._onclick();
+assert.ok(hasClass('finalscore'), '最後まで進めると最終スコアが出る');
+const finalTxt = textOf(hasClass('finalscore'));
+assert.ok(finalTxt.includes('試合終了'), `観戦の最終スコア表示 (${finalTxt})`);
+btnByText('ハブへ戻る')._onclick();
+assert.ok(allClass('recentrow').length >= 1, 'ハブの直近結果に観戦した試合が反映される');
+
+// G6) セーブ/ロード（セッションミラー経由・ロード後の描画継続）
+const daySig = () => textOf(hasClass('header'));
+const beforeSave = daySig();
+btnByText('スロット1に保存')._onclick();
+const loadBtn = btnByText('→ロード1');
+assert.ok(loadBtn, 'スロット保存後にロードボタンが出る');
+loadBtn._onclick();
+assert.ok(hasClass('header'), 'ロード後にハブが描画される（決定論継続）');
+assert.equal(daySig(), beforeSave, 'ロードでセーブ時点の日付/成績に戻る');
+
+// G7) 進行（月末まで）→ シーズン終了まで（チャンク進行・プログレス）→ リザルト（日本一）
+btnByText('月末まで')._onclick();
+assert.ok(hasClass('header'), '月末進行後もハブが描画される');
+timers.length = 0; // 旧クイックシミュレートの setTimeout 残渣を破棄（チャンク進行のみを消化する）
+btnByText('シーズン終了まで')._onclick();
+let flush = 0;
+while (timers.length && flush++ < 100000) { const fn = timers.shift(); fn(); } // チャンク進行の setTimeout を全消化
+assert.ok(hasClass('championbanner'), 'シーズンリザルトに日本一バナーが出る');
+assert.ok(textOf(hasClass('championbanner')).includes('日本一'), '日本一の球団名が表示される');
+const resultTables = walk(appDiv).filter((n) => n.tag === 'table');
+assert.ok(resultTables.length >= 2, `リザルトに2リーグ順位表が出る (got ${resultTables.length})`);
+
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
+console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');

@@ -60,6 +60,10 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     cursor: 0, // 次に処理する schedule の index（= gi。day 境界でのみ止まる）
     finalDay,
     playerGameLog: [], // 自チームの試合結果（当該シーズンのみ・§17）
+    // 采配介入（フェーズC1b）: 自チーム監督プロファイルの人間差し替えログ。
+    //   [{ day, teamId, manager:{buntTend,stealTend,ibbTend,quickHook} }]（絶対値）。
+    //   その day 以降の試合に効く。save に含め、load 時に replay で同一 day に再適用＝決定論を保つ。
+    interventions: [],
     finished: false,
     table: null,
     standingsByLeague: null,
@@ -73,13 +77,29 @@ export function pendingDay(rt) {
 }
 
 /**
+ * 采配介入を適用（フェーズC1b）。この day に効く監督プロファイルの差し替えを teamById へ反映する。
+ * live 実行でも load 後の replay でも同一 day で同一に呼ばれる＝決定論を保つ（絶対値パッチ）。
+ */
+function applyInterventionsForDay(rt, d) {
+  for (const iv of rt.interventions) {
+    if (iv.day !== d) continue;
+    const team = rt.teamById.get(iv.teamId);
+    if (team) team.manager = { ...team.manager, ...iv.manager };
+  }
+}
+
+/**
  * 1日（節）ぶんの試合をまとめて消化する。schedule は day 昇順・同一 day が連続するため、
  * cursor は必ず day 境界で止まる（save/load の cursor 再走が day 単位で正確になる）。
- * @returns {{day:number, games:Array, playerGames:Array, seasonEnded:boolean}}
+ * @param {Object} rt SeasonRuntime
+ * @param {{collectPlayerEvents?:boolean}} opts collectPlayerEvents=自チーム試合の観戦実況イベントを返す
+ * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean}}
+ *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
-export function advanceRuntimeDay(rt) {
-  if (rt.finished) return { day: pendingDay(rt), games: [], playerGames: [], seasonEnded: false };
+export function advanceRuntimeDay(rt, opts = {}) {
+  if (rt.finished) return { day: pendingDay(rt), games: [], playerGames: [], playerEvents: null, seasonEnded: false };
   const d = pendingDay(rt);
+  applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
@@ -98,8 +118,14 @@ export function advanceRuntimeDay(rt) {
   };
   const games = [];
   const playerGames = [];
+  let playerEvents = null;
   while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
     const g = rt.schedule[rt.cursor];
+    const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
+    // 観戦実況: 自チーム試合のみイベント収集（onEvent は乱数非消費＝観戦/スキップで結果不変）。
+    let events = null;
+    pass.onEvent = isPlayer && opts.collectPlayerEvents ? (e) => events.push(e) : undefined;
+    if (pass.onEvent) events = [];
     const res = playScheduledGame(ctx, g, rt.cursor);
     const rec = {
       day: d,
@@ -111,9 +137,10 @@ export function advanceRuntimeDay(rt) {
       innings: res.innings,
     };
     games.push(rec);
-    if (g.home === rt.playerTeamId || g.away === rt.playerTeamId) {
-      rt.playerGameLog.push(rec);
+    if (isPlayer) {
+      rt.playerGameLog.push(rec); // 集計値のみ（イベントは積まない・§17）
       playerGames.push(rec);
+      if (events) playerEvents = events;
     }
     rt.cursor++;
   }
@@ -122,7 +149,7 @@ export function advanceRuntimeDay(rt) {
     finalizeRuntime(rt);
     seasonEnded = true;
   }
-  return { day: d, games, playerGames, seasonEnded };
+  return { day: d, games, playerGames, playerEvents, seasonEnded };
 }
 
 /** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */

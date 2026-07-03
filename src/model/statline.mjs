@@ -12,6 +12,14 @@
 import { FIELD_POSITIONS } from './positions.mjs';
 import { addNumeric } from './util.mjs';
 
+/**
+ * 打撃スプリット1器（§B3b）: AVG/OBP/SLG を出せる最小のスラッシュ器。
+ * 対左/対右・得点圏(RISP)・ホーム/ビジターの各分割に用いる（通算集計では合算しない・vsFastball同様）。
+ */
+export function createSplitLine() {
+  return { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0 };
+}
+
 /** 打撃の生カウント（§5）。個人R(得点者)は保留、RBIのみ（§18）。 */
 export function createBattingLine() {
   return {
@@ -51,6 +59,16 @@ export function createBattingLine() {
     // liSum=打席状態レバレッジの合計（aLI = liSum/pa）、wpaLiSum=Σ(打席WPA/打席LI)（文脈中立WPA/LI）。
     // context無効時は 0 のまま（既存較正は不変）。
     re24: 0, wpa: 0, liSum: 0, wpaLiSum: 0,
+    // --- B3b 打撃スプリット（対左/対右・得点圏・ホーム/ビジター・§B3b）。game.mjs で1打席ごとに計上。
+    // 通算/リーグ集計では合算しない（addNumeric がネストを触らない＝最新シーズンの内訳表示用・vsFastball同様）。
+    // 恒等: vsL.pa + vsR.pa = pa（全打席は左右いずれかの投手と対戦）／home.pa + away.pa = pa。
+    splits: {
+      vsL: createSplitLine(), // 対左投手
+      vsR: createSplitLine(), // 対右投手
+      risp: createSplitLine(), // 得点圏（打席開始時に走者二塁 or 三塁）
+      home: createSplitLine(), // ホーム打席
+      away: createSplitLine(), // ビジター打席
+    },
   };
 }
 
@@ -113,6 +131,14 @@ export function createFieldingLine() {
     e: 0, // 失策
     oaaOuts: 0, // OAA（実アウト − 期待アウト、outs単位）§7.2。集計で加算
     framingRuns: 0, // フレーミング(捕手)。集計で加算
+    // --- B3b UZR成分分解の素（ARM/DPR/rSB・§B3b）。game.mjs で乱数非消費のまま累積する。
+    // これらは WAR用 uzrRuns には入れず、uzrComponents（分解表示）でのみ合成する（較正30指標が不変）。
+    armOpp: 0, // 外野: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に相対した回数
+    armRuns: 0, // 外野ARM run（(arm-50)×armRunPerOpp を機会ごとに累積・対平均）
+    dpOpp: 0, // 二遊間: 併殺機会（GB×走者一塁×2死未満で当該ポジ在籍）
+    dpTurned: 0, // うち併殺成立（DPR＝対リーグ平均転換率で metrics 側が run 換算）
+    sbAllowed: 0, // 捕手: 許した盗塁（rSBの素）
+    csMade: 0, // 捕手: 刺した盗塁死（rSBの素）
   };
 }
 

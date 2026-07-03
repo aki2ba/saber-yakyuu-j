@@ -77,6 +77,27 @@ export function deriveLeagueConstants(res) {
   }
   const lgGDPrate = totGDPOpp ? totGDP / totGDPOpp : 0;
 
+  // 二遊間 併殺転換率（DPRの基準・§B3b）: 守備側の機会/成立から。lgDPRate= Σ成立/Σ機会。
+  // 各機会は 2B・SS の両者に計上されるため分母/分子とも2倍だが比は不変（DPRの対平均は0中心）。
+  let totDPturned = 0;
+  let totDPopp = 0;
+  for (const ps of res.playerSeasons) {
+    totDPturned += ps.fielding.dpTurned || 0;
+    totDPopp += ps.fielding.dpOpp || 0;
+  }
+  const lgDPRate = totDPopp ? totDPturned / totDPopp : 0;
+
+  // 外野ARMの中心化基準（§B3b）: 追加進塁機会1回あたりの平均armRun。ARMを「リーグの外野手平均の肩」
+  // に対して0中心化するため（外野手は概して平均以上の肩＝生の(arm-50)は正に偏る）。metrics側で
+  // ARM = armRuns − lgArmRunPerOpp×armOpp とすると リーグΣ ARM≈0 が厳密成立する。
+  let totArmRuns = 0;
+  let totArmOpp = 0;
+  for (const ps of res.playerSeasons) {
+    totArmRuns += ps.fielding.armRuns || 0;
+    totArmOpp += ps.fielding.armOpp || 0;
+  }
+  const lgArmRunPerOpp = totArmOpp ? totArmRuns / totArmOpp : 0;
+
   // 追加進塁リーグ率（UBRの基準・§6）
   let totAdv = 0;
   let totAdvOpp = 0;
@@ -119,6 +140,8 @@ export function deriveLeagueConstants(res) {
 
   return {
     lgGDPrate,
+    lgDPRate,
+    lgArmRunPerOpp,
     lgAdvRate,
     lgSB,
     lgCS,

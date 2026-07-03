@@ -325,6 +325,21 @@ export const TUNING_DEFAULT = {
     runPerOutOutfield: 0.9, // 外野
     runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（監査A3・§7.2）
     framePerInning: 0.0005, // 捕手フレーミング: (framing-50)×これ×守備イニング をrun換算（監査B5・§7.3）
+    // --- B3b UZR成分分解（ARM/DPR/rSB・§B3b）: 追加集計の対平均run換算係数。
+    //     いずれも WAR用の uzrRuns には加えず（＝較正30指標が完全不変）、
+    //     uzrComponents（分解表示）でのみ合成する（総UZR不変が理想・§検証）。
+    armRunPerOpp: 0.007, // 外野ARM: 追加進塁機会1回あたり (arm-50)×これ をrun換算（対平均・game.mjsで累積。上位+5〜12run）
+    runPerDP: 0.45, // DPR: 併殺1つ（対リーグ平均転換率）あたりのrun価値（二遊間）
+  },
+  // 走塁 Spd（簡易4成分・Bill James風0-10スケール・§B3b）: SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
+  spd: {
+    minSbAtt: 5, // 盗塁成功率を採用する最小企図数（未満は中立）
+    neutralSbRate: 0.5, // 企図僅少時の中立成功率
+    sbFreqRef: 0.15, // 盗塁企図頻度（企図/一塁到達）の10点基準
+    b3Ref: 0.02, // 三塁打率（三塁打/インプレー）の10点基準
+    xbtRef: 0.6, // XBT%（追加進塁率）の10点基準
+    posDefault: 4, // 位置速度の既定
+    posSpeed: { CF: 8, SS: 7, '2B': 6, '3B': 4, RF: 5, LF: 4, C: 2, '1B': 2, DH: 3 }, // 守備位置の速度性（0-10）
   },
 
   // 対戦巡目（1-5, §3.3）: 同一投手を1試合に複数回見るほど打者有利。

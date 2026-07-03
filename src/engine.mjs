@@ -15,7 +15,7 @@ import { mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng } f
 import { POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_1350, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass } from './model/positions.mjs';
 import { createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand } from './model/player.mjs';
 import { createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt } from './model/battedball.mjs';
-import { createPlayerSeason, createTeamSeason, addPlayerSeason } from './model/statline.mjs';
+import { createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine } from './model/statline.mjs';
 import {
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
@@ -42,8 +42,8 @@ import {
 import { simulatePostseason } from './sim/postseason.mjs';
 import { leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague } from './sim/leagueStats.mjs';
 import { deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS } from './sim/leagueConstants.mjs';
-import { playerBatting, playerPitching, playerBaserunning } from './sim/metrics.mjs';
-import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg } from './sim/fielding.mjs';
+import { playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding } from './sim/metrics.mjs';
+import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
 export const ENGINE_VERSION = '0.8.0-phaseA-fix';
@@ -55,7 +55,7 @@ export {
   selectPitch,
   createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand,
   createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt,
-  createPlayerSeason, createTeamSeason, addPlayerSeason,
+  createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine,
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
   generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager,
@@ -74,8 +74,9 @@ export {
   simulatePostseason,
   leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague,
   deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS,
-  playerBatting, playerPitching, playerBaserunning,
+  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding,
   rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg,
+  uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns,
   hitterWAR, pitcherWAR, playerWAR, posAdjRuns,
 };
 

@@ -35,6 +35,7 @@ import {
 } from './manager.mjs';
 
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
+const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']); // ARM（外野送球）対象ポジション（§B3b）
 
 /**
  * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
@@ -193,13 +194,16 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
   );
 
   const rStat = statFor(bases[0], batting.teamId);
+  const catcherId = fielding.defense.C; // rSB（捕手盗塁阻止run・§B3b）の帰属先
   if (rng.next() < succ) {
     bases[1] = bases[0]; // 二塁へ
     bases[0] = null;
     rStat.batting.sb++;
+    if (catcherId) statFor(catcherId, fielding.teamId).fielding.sbAllowed++; // 捕手が許したSB（乱数非消費）
   } else {
     bases[0] = null; // 盗塁死
     rStat.batting.cs++;
+    if (catcherId) statFor(catcherId, fielding.teamId).fielding.csMade++; // 捕手が刺したCS（乱数非消費）
     // 盗塁死は投手在籍中の記録アウト＝投手IPに算入（監査A2: ΣpositionOuts==8·Σpitcher.outs を回復）。
     statFor(fielding.curPid, fielding.teamId).pitching.outs++;
     fielding.cur.outs++;
@@ -415,7 +419,10 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         cfg,
       );
       if (pBunt > 0 && rng.next() < pBunt) {
-        outs = resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat);
+        const bunt = resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat);
+        outs = bunt.outs;
+        // スプリット計上（§B3b）: 犠打も1打席＝vsL/vsR・得点圏・ホーム/ビジターへ配る（PA恒等の維持）。
+        recordPaSplits(bStat.batting, pitcher.throws, battingIsHome, (paBase & 6) !== 0, bunt.dab, bunt.dh, bunt.d1, 0, 0, 0, 0, 0, 0, 0);
         creditPlay(gc, {
           kind: 'pa',
           battingIsHome,
@@ -453,6 +460,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     let result;
     let isAirOut = false;
     let bType = null;
+    let hitFielderPos = null; // ARM（外野送球）用: 安打を処理した野手ポジション（§B3b）
     if (outcome === 'K') {
       result = 'out';
       bStat.batting.ab++;
@@ -480,6 +488,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       result = r.result;
       bType = battedType(bb.laDeg);
       isAirOut = result === 'out' && bType !== 'GB';
+      hitFielderPos = r.fielderPos; // 追加進塁機会での外野ARM帰属に使う（§B3b）
       recordBattedBallStat(bStat, pStat, result);
       // 追加系指標の打球集計（§B3a）: 期待out率/塁打分布(r)＋EV/LA/spray を積む。rng消費なし＝決定論不変。
       const pullSign = effectiveBats(batter, pitcher) === 'L' ? 1 : -1;
@@ -524,6 +533,19 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       }
     }
 
+    // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
+    // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
+    // 不変・乱数も一切消費しない（＝決定論・較正30指標が不変）。実際の送球死化はB1（一球データ）で。
+    if (hitFielderPos && OUTFIELD_POS.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
+      const ofPid = fielding.defense[hitFielderPos];
+      const ofPlayer = ofPid ? fielding.byId.get(ofPid) : null;
+      if (ofPlayer) {
+        const fl = statFor(ofPid, fielding.teamId).fielding;
+        fl.armOpp++;
+        fl.armRuns += (ofPlayer.trueAbility.common.arm - 50) * cfg.tuning.field.armRunPerOpp;
+      }
+    }
+
     const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId };
     const runs = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
 
@@ -540,6 +562,11 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       // 併殺（GB・走者一塁・2アウト未満）§6 wGDP。打者の足で回避。
       if (bType === 'GB' && bases[0] && outsBefore < 2) {
         bStat.baserunning.gdpOpp++;
+        // DPR（二遊間の併殺転換・§B3b）: 機会と成立を 2B/SS 双方に計上（対平均runはmetrics側）。乱数非消費。
+        const dp2 = fielding.defense['2B'];
+        const dpS = fielding.defense.SS;
+        if (dp2) statFor(dp2, fielding.teamId).fielding.dpOpp++;
+        if (dpS) statFor(dpS, fielding.teamId).fielding.dpOpp++;
         const gp = clamp(
           cfg.tuning.gdp.base - (batter.trueAbility.common.speed - 50) * cfg.tuning.gdp.speedW,
           0.02,
@@ -551,6 +578,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           outs++;
           fielding.cur.outs++;
           pStat.pitching.outs++;
+          if (dp2) statFor(dp2, fielding.teamId).fielding.dpTurned++;
+          if (dpS) statFor(dpS, fielding.teamId).fielding.dpTurned++;
         }
       }
     }
@@ -562,6 +591,25 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       fielding.cur.runs += runs;
       fielding.cur.er += errorInInning ? 0 : runs; // 登板ぶんの自責（QS判定用・§B3a）
       if (recordRun) recordRun(); // 得点推移を記録（勝敗判定用）
+    }
+
+    // スプリット計上（§B3b・乱数非消費）: 打席の最終結果からデルタを作り、対左右・得点圏・
+    // ホーム/ビジターへ配る。トップレベルの生カウント（ab/h/…）と厳密に対応させる。
+    {
+      const sacFly = result === 'out' && isAirOut && runs > 0;
+      let dab = 0, dh = 0, d1 = 0, d2 = 0, d3 = 0, dhr = 0, dbb = 0, dhbp = 0, dso = 0, dsf = 0;
+      if (result === 'BB') dbb = 1;
+      else if (result === 'HBP') dhbp = 1;
+      else if (result === '1B') { dab = 1; dh = 1; d1 = 1; }
+      else if (result === '2B') { dab = 1; dh = 1; d2 = 1; }
+      else if (result === '3B') { dab = 1; dh = 1; d3 = 1; }
+      else if (result === 'HR') { dab = 1; dh = 1; dhr = 1; }
+      else if (result === 'E') dab = 1; // 失策出塁はAB計上・安打なし（recordBattedBallStatと整合）
+      else { // 'out'（三振・凡打・犠飛）
+        if (sacFly) dsf = 1; else dab = 1;
+        if (outcome === 'K') dso = 1;
+      }
+      recordPaSplits(bStat.batting, pitcher.throws, battingIsHome, (paBase & 6) !== 0, dab, dh, d1, d2, d3, dhr, dbb, dhbp, dso, dsf);
     }
 
     // 文脈指標（§B2）: 打席プレー確定＝状態前→状態後（進塁/併殺/得点込み）で ΔRE/ΔWPA/LI を付与。
@@ -615,6 +663,32 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
 /** 文脈指標フックの呼び出し（§B2）。gc が無ければ何もしない（乱数非消費・結果不変）。 */
 function creditPlay(gc, p) {
   if (gc) gc.onPlay(p);
+}
+
+/** スプリット器1つへ1打席ぶんのデルタを加算（§B3b）。 */
+function bumpSplit(sl, dab, dh, db1, db2, db3, dhr, dbb, dhbp, dso, dsf) {
+  sl.pa++;
+  sl.ab += dab;
+  sl.h += dh;
+  sl.b1 += db1;
+  sl.b2 += db2;
+  sl.b3 += db3;
+  sl.hr += dhr;
+  sl.bb += dbb;
+  sl.hbp += dhbp;
+  sl.so += dso;
+  sl.sf += dsf;
+}
+
+/**
+ * 打席1回ぶんをスプリット器へ計上（§B3b・乱数非消費）。同一デルタを 対左右・得点圏・ホーム/ビジターへ配る。
+ * 全打席（通常打席＋犠打）で呼ぶことで vsL.pa+vsR.pa=pa / home.pa+away.pa=pa の恒等が成立する。
+ */
+function recordPaSplits(bLine, pitcherThrows, isHome, risp, dab, dh, db1, db2, db3, dhr, dbb, dhbp, dso, dsf) {
+  const sp = bLine.splits;
+  bumpSplit(pitcherThrows === 'L' ? sp.vsL : sp.vsR, dab, dh, db1, db2, db3, dhr, dbb, dhbp, dso, dsf);
+  bumpSplit(isHome ? sp.home : sp.away, dab, dh, db1, db2, db3, dhr, dbb, dhbp, dso, dsf);
+  if (risp) bumpSplit(sp.risp, dab, dh, db1, db2, db3, dhr, dbb, dhbp, dso, dsf);
 }
 
 /** シャットダウン/メルトダウン（§B2）。救援の1登板WPAが ±閾値を超えたら sd/md を計上（加算パス）。 */
@@ -718,9 +792,9 @@ function maybeDefensiveSub(side, oppScore, inning, cfg) {
 // --- 犠打の解決（§S2-4） -----------------------------------------------------
 
 /**
- * 犠打を解決して新しい outs を返す。成功=走者進塁・打者アウト・sh++（ABなし・PAあり）、
- * 失敗=先頭走者アウト・打者一塁（AB計上）、内野安打=全員セーフ（AB・H計上）。
- * 走者三塁は試行条件で除外済み＝犠打から得点は発生しない。
+ * 犠打を解決。成功=走者進塁・打者アウト・sh++（ABなし・PAあり）、失敗=先頭走者アウト・打者一塁（AB計上）、
+ * 内野安打=全員セーフ（AB・H計上）。走者三塁は試行条件で除外済み＝犠打から得点は発生しない。
+ * @returns {{outs:number, dab:number, dh:number, d1:number}} 新outs＋スプリット計上用の打席デルタ（§B3b）。
  */
 function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat) {
   const t = cfg.tuning.bunt;
@@ -745,7 +819,7 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
     bStat.batting.sh++; // 犠打はABに計上しない
     fielding.cur.outs++;
     pStat.pitching.outs++;
-    return outs + 1;
+    return { outs: outs + 1, dab: 0, dh: 0, d1: 0 };
   }
   if (u < t.successProb + t.failProb) {
     // 失敗: 先頭走者が封殺（フィールダースチョイス＝AB計上・安打なし）
@@ -759,7 +833,7 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
     bStat.batting.ab++;
     fielding.cur.outs++;
     pStat.pitching.outs++;
-    return outs + 1;
+    return { outs: outs + 1, dab: 1, dh: 0, d1: 0 };
   }
   // 内野安打: 全走者1つ進塁・打者一塁
   if (bases[1] && !bases[2]) {
@@ -772,7 +846,7 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
   bStat.batting.h++;
   bStat.batting.b1++;
   pStat.pitching.h++;
-  return outs;
+  return { outs, dab: 1, dh: 1, d1: 1 };
 }
 
 // --- 継投v2（§S2-7。選択は manager.chooseReliever） ---------------------------

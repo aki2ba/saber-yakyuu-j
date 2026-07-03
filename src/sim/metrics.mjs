@@ -5,8 +5,63 @@
 // ============================================================================
 import { rawRunValuePerPA, LINEAR_WEIGHTS } from './leagueConstants.mjs';
 import { METRICS_CONST } from '../config.mjs';
+import { mainPosition, uzrComponents } from './fielding.mjs';
+import { createSplitLine } from '../model/statline.mjs';
+import { clamp } from '../model/util.mjs';
 
 const div = (a, b) => (b ? a / b : 0);
+
+/**
+ * Spd（簡易4成分・Bill James風0-10スケール・§B3b）。SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
+ * 俊足で高くなる（各成分が走力に単調）。cfg.tuning.spd の基準で0-10へ写像し平均する。
+ */
+function spdScore(ps, cfg) {
+  const b = ps.batting;
+  const br = ps.baserunning || {};
+  const s = cfg.tuning.spd;
+  const att = (b.sb || 0) + (b.cs || 0);
+  const reach = (b.b1 || 0) + (b.bb || 0) + (b.hbp || 0);
+  const sbFreq = div(att, reach); // 盗塁企図頻度
+  const sbRate = att >= s.minSbAtt ? div(b.sb || 0, att) : s.neutralSbRate; // 成功率（企図僅少は中立）
+  const inplay = (b.ab || 0) - (b.so || 0) - (b.hr || 0);
+  const b3Rate = div(b.b3 || 0, inplay); // 三塁打率
+  const xbt = div(br.advTaken || 0, br.advOpp || 0); // XBT%（追加進塁率）
+  const pos = ps.fielding ? mainPosition(ps.fielding) : '';
+  const posSpd = s.posSpeed[pos] ?? s.posDefault; // 守備位置の速度性
+  const cSb = clamp((sbFreq / s.sbFreqRef) * 10, 0, 10) * clamp(sbRate / 0.5, 0, 1.2);
+  const cB3 = clamp((b3Rate / s.b3Ref) * 10, 0, 10);
+  const cXbt = clamp((xbt / s.xbtRef) * 10, 0, 10);
+  return (cSb + cB3 + cXbt + posSpd) / 4;
+}
+
+/** スプリット器→スラッシュライン（AVG/OBP/SLG/OPS・§B3b）。 */
+function slashOf(sl) {
+  const tb = sl.b1 + 2 * sl.b2 + 3 * sl.b3 + 4 * sl.hr;
+  const obp = div(sl.h + sl.bb + sl.hbp, sl.ab + sl.bb + sl.hbp + sl.sf);
+  const slg = div(tb, sl.ab);
+  return { pa: sl.pa, ab: sl.ab, h: sl.h, hr: sl.hr, bb: sl.bb, so: sl.so, avg: div(sl.h, sl.ab), obp, slg, ops: obp + slg };
+}
+
+/** 打撃スプリット表示（対左/対右・得点圏(RISP)・ホーム/ビジター・§B3b）。 */
+export function battingSplits(ps) {
+  const sp = (ps.batting && ps.batting.splits) || {};
+  const g = (k) => slashOf(sp[k] || createSplitLine());
+  return { vsL: g('vsL'), vsR: g('vsR'), risp: g('risp'), home: g('home'), away: g('away') };
+}
+
+/** 守備成分の表示（UZR分解 RngR/ErrR/ARM/DPR/rSB/framing・§B3b）。WAR用uzrRunsとは独立の内訳表示。 */
+export function playerFielding(ps, cfg, lc) {
+  const comp = uzrComponents(ps, cfg, lc);
+  const f = ps.fielding;
+  return {
+    ...comp, // pos/rngR/errR/framing/arm/dpr/rSB/total
+    armOpp: f.armOpp || 0,
+    dpOpp: f.dpOpp || 0,
+    dpTurned: f.dpTurned || 0,
+    sbAllowed: f.sbAllowed || 0,
+    csMade: f.csMade || 0,
+  };
+}
 
 /** 打撃指標（wOBA/wRAA/wRC+ ＋ B3a: xBA/xSLG/xwOBA・Barrel%等・OPS+/wRC/SecA…） */
 export function playerBatting(ps, lc) {
@@ -125,6 +180,11 @@ export function playerBaserunning(ps, cfg, lc) {
     ubr,
     wGDP,
     bsr: wSB + ubr + wGDP,
+    // --- B3b 走塁の追加集計（XBT%・Spd・§B3b） ---
+    xbt: div(br.advTaken || 0, br.advOpp || 0), // 追加進塁率（advTaken/advOpp）
+    spd: cfg ? spdScore(ps, cfg) : 0, // 簡易Spd（0-10・俊足で高い）
+    advOpp: br.advOpp || 0,
+    advTaken: br.advTaken || 0,
     // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2。context有効時のみ非0） ---
     re24: br.re24 || 0, // 盗塁/追加進塁の得点期待値寄与
     wpa: br.wpa || 0, // 盗塁/追加進塁の勝率寄与

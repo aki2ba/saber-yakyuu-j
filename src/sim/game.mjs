@@ -12,10 +12,12 @@
 import { resolvePADiscipline } from './plateAppearance.mjs';
 import { generateBattedBall } from './battedBall.mjs';
 import { resolveBattedBall, battedType } from './battedBallResult.mjs';
+import { accumulateBatted } from './battedBallStats.mjs';
 import { rangeRating } from './fielding.mjs';
 import { selectPitch } from './pitchGrid.mjs';
 import { logit, expit, ratingDelta } from './rates.mjs';
 import { pitchClass } from '../model/positions.mjs';
+import { effectiveBats } from '../model/player.mjs';
 import { clamp } from '../model/util.mjs';
 import {
   neutralManager,
@@ -304,7 +306,7 @@ function initSide(init, cfg) {
     pendingPitcher: false, // 投手への代打→次の守備から新投手（§S2-2）
     pregame: buildPregameEval(d.byId, cfg), // 監督の当日メモ（編成時評価。以降trueAbilityは見ない）
     // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
-    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: 0, enterInning: 1 },
+    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1 },
     log: [],
     subs: [], // 交代ログ {type,inning,outPid,inPid}（再出場不可の検証・S3素材）
     score: 0,
@@ -312,7 +314,7 @@ function initSide(init, cfg) {
 }
 
 function emptyCur() {
-  return { pid: null, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: 0, enterInning: 0 };
+  return { pid: null, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 0 };
 }
 
 /** 半イニングを消化（batting=攻撃側, fielding=守備側） */
@@ -425,6 +427,9 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       bType = battedType(bb.laDeg);
       isAirOut = result === 'out' && bType !== 'GB';
       recordBattedBallStat(bStat, pStat, result);
+      // 追加系指標の打球集計（§B3a）: 期待out率/塁打分布(r)＋EV/LA/spray を積む。rng消費なし＝決定論不変。
+      const pullSign = effectiveBats(batter, pitcher) === 'L' ? 1 : -1;
+      accumulateBatted(bStat.batting, pStat.pitching, bb, r, pullSign, cfg);
       // 失策(ROE)判定: インプレーのアウトを Hands 依存で出塁に変える
       if (result === 'out') {
         const fPid = fielding.defense[r.fielderPos];
@@ -501,6 +506,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       pStat.pitching.r += runs;
       pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
       fielding.cur.runs += runs;
+      fielding.cur.er += errorInInning ? 0 : runs; // 登板ぶんの自責（QS判定用・§B3a）
       if (recordRun) recordRun(); // 得点推移を記録（勝敗判定用）
     }
 
@@ -688,7 +694,7 @@ function installPitcher(side, pid, inning, lead) {
   side.curPid = pid;
   side.usedPitchers.add(pid);
   if (side.pitcherSlot >= 0) side.slots[side.pitcherSlot].playerId = pid;
-  side.cur = { pid, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: lead, enterInning: inning };
+  side.cur = { pid, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: lead, enterInning: inning };
 }
 
 /**
@@ -813,6 +819,12 @@ function assignDecisions(home, away, statFor, runLog) {
       s.pitching.cg++;
       if (side.log[0].runs === 0) s.pitching.sho++;
     }
+  }
+
+  // クオリティスタート（§B3a）: 先発が6IP=18アウト以上を投げ、その登板の自責3以下。勝敗に依らず計上。
+  for (const side of [home, away]) {
+    const st = side.log.find((a) => a.pid === side.starterId);
+    if (st && st.outs >= 18 && (st.er ?? st.runs) <= 3) statFor(side.starterId, side.teamId).pitching.qs++;
   }
 
   if (home.score === away.score) return; // 引分は勝敗・セーブなし

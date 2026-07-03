@@ -545,6 +545,16 @@ function createBattingLine() {
     // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
     vsFastball: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
     vsBreaking: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
+    // --- B3a 追加集計（一球データ不要・打球イベントの副産物。§B3） ------------
+    // 打球期待値アキュムレータ（xBA/xSLG/xwOBA）: resolveBattedBall の期待out率/塁打分布を
+    // rng抽選の"前"に累積（モデル=シムゆえ リーグ xwOBA≈wOBA が恒等成立→較正チェックに使う）。
+    xB1: 0, xB2: 0, xB3: 0, xHR: 0,
+    // 打球分類（GB/LD/FB/PU%・被弾含む全インプレー打球）と方向（Pull/Cent/Oppo%）。
+    // 分母 bbEvents = bbGB+bbLD+bbFB+bbPU = bbPull+bbCent+bbOppo。
+    bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
+    bbPull: 0, bbCent: 0, bbOppo: 0,
+    // 打球質（Barrel/HardHit/SweetSpot・分母=bbEvents）と打球速度（平均=evSum/bbEvents, 最大=evMax）。
+    barrels: 0, hardHits: 0, sweetSpots: 0, evSum: 0, evMax: 0,
   };
 }
 
@@ -571,6 +581,9 @@ function createPitchingLine() {
     cg: 0, // 完投（監査B4で計上）
     sho: 0, // 完封（監査B4で計上）
     pitches: 0, // 投球数
+    // --- B3a 追加集計: 被打球分類（被GB/LD/FB/PU%・HR/FB・xFIP用の被FB）とQS。§B3 ---
+    bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
+    qs: 0, // クオリティスタート（先発が6IP=18アウト以上・自責3以下で降板）
   };
 }
 
@@ -628,9 +641,12 @@ function createTeamSeason(teamId, season) {
 
 // --- 集計ヘルパー（2パス集計・通算集計で使用） -------------------------------
 
-/** バッティングを加算（dst に src を足し込む） */
+/** バッティングを加算（dst に src を足し込む）。evMax のみ最大（通算集計での二重加算を防ぐ・B3a）。 */
 function addBattingLine(dst, src) {
-  return addNumeric(dst, src);
+  const em = Math.max(dst.evMax || 0, src.evMax || 0);
+  addNumeric(dst, src);
+  dst.evMax = em;
+  return dst;
 }
 
 /** ピッチングを加算 */
@@ -761,10 +777,38 @@ const CALIBRATION_TARGETS = {
 };
 
 /**
+ * B3a 追加系指標（一球データを要さない集計指標・§B3）の定義定数。
+ * Barrel/HardHit/SweetSpot のEV/LA帯・方向境界・SIERA(FG公開式)/kwERA の係数を集約する。
+ * ※これらは物理/定義に基づく固定値（較正ノブではない）だが、規約に従い config.tuning に集約し、
+ *   metrics.mjs 側は cfg 未指定時にこの既定値へフォールバックする。
+ */
+const METRICS_CONST = {
+  hardHitKmh: 152, // HardHit% 閾値（EV≥152km/h ≈ 95mph）
+  barrelMinKmh: 157.7, // Barrel下限EV（≈98mph）
+  barrelBaseLo: 26, // 98mph時のBarrel帯 LA下限
+  barrelBaseHi: 30, // 98mph時のBarrel帯 LA上限
+  barrelLoSlope: 1.0, // mph超過1あたりLA下限を下げる度数（116mphで8°）
+  barrelHiSlope: 1.11, // mph超過1あたりLA上限を上げる度数（116mphで50°）
+  barrelMinLA: 8, // Barrel帯の最小LA
+  barrelMaxLA: 50, // Barrel帯の最大LA
+  sweetSpotLoLA: 8, // Sweet-Spot% の下限LA
+  sweetSpotHiLA: 32, // Sweet-Spot% の上限LA
+  centAbsSpray: 15, // |spray|≤これ=中堅方向(Cent)。外は引っ張り/流し
+  // SIERA（FanGraphs公開式・Swartz）: netGB=(GB−FB−PU)/PA, SO/PA, BB/PA。
+  // netGB²項は符号保存（GB>FB+PU で負寄与＝好投、逆で正寄与）＝ cNet2×netGB×|netGB|。
+  siera: { c0: 6.145, cSO: -16.986, cBB: 11.434, cNet: -1.858, cSO2: 7.653, cNet2: -6.664, cSOnet: 10.13, cBBnet: -5.195 },
+  // kwERA = 5.40 − 12×(K% − BB%)
+  kwERA: { c0: 5.4, k: 12 },
+};
+
+/**
  * エンジン調整ノブ（初期値・較正で動かす）。§18主要定数＋新EV/LAエンジン固有ノブ。
  * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
  */
 const TUNING_DEFAULT = {
+  // B3a 追加系指標（率/期待値）の定義定数（§B3・上の METRICS_CONST を集約）。
+  metrics: METRICS_CONST,
+
   hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
@@ -1874,8 +1918,31 @@ function decideBases(bb, type, cfg, rng) {
 }
 
 /**
+ * 塁打分布の"期待値"（rng抽選を伴わない decideBases の確率版・§B3a xBA/xSLG/xwOBA用）。
+ * decideBases と同一の分岐条件を確率として返す（実結果の期待値＝モデルの塁打分布）。
+ * @returns {{p1:number, p2:number, p3:number}} 安打を打った条件下での 1B/2B/3B 確率（Σ=1）
+ */
+function expectedBases(bb, type, cfg) {
+  const g = cfg.tuning.bb;
+  if (type === 'GB') {
+    const p2 = Math.abs(bb.sprayDeg) > 38 ? 0.2 : 0;
+    return { p1: 1 - p2, p2, p3: 0 };
+  }
+  if (bb.distanceM < g.gapDistM) return { p1: 1, p2: 0, p3: 0 };
+  if (bb.distanceM >= g.tripleDistM && Math.abs(bb.sprayDeg) > 18) {
+    const speed = bb.runnerSpeed ?? 50;
+    const pTriple = clamp(g.tripleBase + (speed - 50) * g.tripleSpeedW, 0.02, 0.55);
+    return { p1: 0, p2: 1 - pTriple, p3: pTriple };
+  }
+  return { p1: 0, p2: 1, p3: 0 };
+}
+
+/**
  * 打球を解決。bb.result と bb.fielderPos を確定し、要約を返す。
- * @returns {{result:string, type:string, expOut:number, fielderPos:string, distanceM:number}}
+ * 追加(§B3a): 期待塁打分布 xB1/xB2/xB3/xHR（rng抽選前の防御中立=pHit基準の期待値）を返す。
+ *   実結果とは独立の"期待値"であり、リーグ集計で xwOBA≈wOBA を恒等成立させる（副作用・rng消費なし）。
+ * @returns {{result:string, type:string, expOut:number, fielderPos:string, distanceM:number,
+ *   xB1:number, xB2:number, xB3:number, xHR:number}}
  */
 /**
  * @param {Function} [fielderRangeFor] (pos) => Rangeレーティング(50=平均)。守備者個人の
@@ -1891,7 +1958,7 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
     if (bb.distanceM * cfg.tuning.hrScale >= fence) {
       bb.fielderPos = assignFielder(bb, type);
       bb.result = 'HR';
-      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM };
+      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
     }
   }
 
@@ -1904,17 +1971,23 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
   bb.fielderPos = fielderPos;
   const expOut = 1 - pHit; // リーグ平均基準（OAAのベースライン・ポジション中立）
 
+  // 期待塁打分布（§B3a）: 防御中立の pHit × decideBases 確率版。rng を消費しない（決定論不変）。
+  const eb = expectedBases(bb, type, cfg);
+  const xB1 = pHit * eb.p1;
+  const xB2 = pHit * eb.p2;
+  const xB3 = pHit * eb.p3;
+
   // 守備者個人のRangeで実効被安打率を上下（good fielder→outを増やす）。OAAの個人シグナル源。
   const rangeR = fielderRangeFor ? fielderRangeFor(fielderPos) : 50;
   const effPHit = clamp(pHit - (rangeR - 50) * cfg.tuning.field.rangePerRating, 0.01, 0.99);
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';
-    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM };
+    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
   }
   const base = decideBases(bb, type, cfg, rng);
   bb.result = base;
-  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM };
+  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
 }
 
 
@@ -2090,6 +2163,13 @@ function deriveLeagueConstants(res) {
   const fipConstant = lgERA - fipRawLeague;
   const lgFIP = lgERA; // 定義上一致
 
+  // xFIP用のリーグ HR/FB（§B3a）: リーグ総被HR ÷ リーグ総被フライ。
+  // これで Σ(被FB×lgHRFB)=ΣHR となり、リーグ xFIP=リーグ FIP=リーグ ERA が恒等成立する。
+  let totFB = 0;
+  for (const ps of res.playerSeasons) totFB += ps.pitching.bbFB;
+  const lgHRFB = totFB ? pit.hr / totFB : 0;
+  const lgSLG = bat.slg; // OPS+ の基準（§B3a）
+
   // --- RPW（Runs Per Win, Tango近似 1.5×RG+3。RG=1チーム1試合の得点）---
   const gamesPerTeam = res.standings.reduce((a, t) => a + t.g, 0) / res.standings.length;
   const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
@@ -2158,6 +2238,8 @@ function deriveLeagueConstants(res) {
     lgwOBA,
     lgOBP,
     lgRunsPerPA,
+    lgSLG,
+    lgHRFB,
     lgERA,
     lgFIP,
     fipConstant,
@@ -2467,6 +2549,77 @@ function chooseReliever(side, statFor, inning, lead, cfg) {
 }
 
 
+// ===== src/sim/battedBallStats.mjs =====
+// ============================================================================
+// 追加系指標の打球イベント集計（§B3a / フェーズB B3a）
+//
+// 「打席/打球/プレーのイベントストリームを読むだけで計算できる」追加集計を、
+// シミュレーション本体（打席解決・打球生成・継投）を一切変えずに湧かせる。
+// resolveBattedBall が既に計算した期待out率・期待塁打分布(xB1..xHR)と、打球3要素(EV/LA/spray)を
+// 打者/投手の生カウントへ積むだけ。ここでは乱数を一切消費しない（＝決定論・較正30指標が完全不変）。
+//
+// 生の一球ログは永続化しない（§17）。集計カウンタのみ。
+// ============================================================================
+
+
+/**
+ * Barrel 判定（Statcast定義の近似・§B3a）。EV≥~98mph かつ、EVが上がるほど広がるLA帯に入る打球。
+ * @param {number} evKmh 打球速度(km/h)
+ * @param {number} laDeg 打球角度(度)
+ * @param {Object} m cfg.tuning.metrics（Barrel帯定数）
+ */
+function isBarrel(evKmh, laDeg, m) {
+  if (evKmh < m.barrelMinKmh) return false;
+  const excessMph = (evKmh - m.barrelMinKmh) / 1.60934; // 98mph超過ぶん(mph)
+  const lo = Math.max(m.barrelMinLA, m.barrelBaseLo - excessMph * m.barrelLoSlope);
+  const hi = Math.min(m.barrelMaxLA, m.barrelBaseHi + excessMph * m.barrelHiSlope);
+  return laDeg >= lo && laDeg <= hi;
+}
+
+/** 打球種別を該当ラインの被打球分類カウンタへ加算（GB/LD/FB/PU＋総数bbEvents）。 */
+function bumpType(line, type) {
+  if (type === 'GB') line.bbGB++;
+  else if (type === 'LD') line.bbLD++;
+  else if (type === 'FB') line.bbFB++;
+  else line.bbPU++;
+  line.bbEvents++;
+}
+
+/**
+ * 打球イベント1個ぶんを打者(bat)・投手(pit)の生カウントへ累積する（§B3a）。
+ * @param {Object} bat 打者 battingLine
+ * @param {Object} pit 投手 pitchingLine
+ * @param {Object} bb  打球（evKmh/laDeg/sprayDeg）
+ * @param {Object} r   resolveBattedBall の戻り（期待塁打分布 xB1/xB2/xB3/xHR を含む）
+ * @param {number} pullSign 打者の引っ張り方向符号（effectiveBats==='L' ? +1 : -1）。
+ *   spray がこの符号側なら Pull、逆なら Oppo、|spray|≤centAbsSpray なら Cent。
+ * @param {Object} cfg 設定（cfg.tuning.metrics）
+ */
+function accumulateBatted(bat, pit, bb, r, pullSign, cfg) {
+  const m = cfg.tuning.metrics;
+  const type = battedType(bb.laDeg);
+  // 被打球分類（打者・投手 双方に対称に計上）
+  bumpType(bat, type);
+  bumpType(pit, type);
+  // 打球方向（打者のみ・Pull/Cent/Oppo）
+  const s = bb.sprayDeg;
+  if (Math.abs(s) <= m.centAbsSpray) bat.bbCent++;
+  else if ((s > 0 ? 1 : -1) === pullSign) bat.bbPull++;
+  else bat.bbOppo++;
+  // 打球質・速度（打者のみ）
+  if (bb.evKmh >= m.hardHitKmh) bat.hardHits++;
+  if (bb.laDeg >= m.sweetSpotLoLA && bb.laDeg <= m.sweetSpotHiLA) bat.sweetSpots++;
+  if (isBarrel(bb.evKmh, bb.laDeg, m)) bat.barrels++;
+  bat.evSum += bb.evKmh;
+  if (bb.evKmh > bat.evMax) bat.evMax = bb.evKmh;
+  // 期待塁打分布（打者のみ・xBA/xSLG/xwOBA の素）。rng抽選前の期待値をそのまま累積。
+  bat.xB1 += r.xB1;
+  bat.xB2 += r.xB2;
+  bat.xB3 += r.xB3;
+  bat.xHR += r.xHR;
+}
+
+
 // ===== src/sim/game.mjs =====
 // ============================================================================
 // 試合状態機械（1-4c/e → フェーズA S2 でベンチ・采配・投手打席を導入）
@@ -2479,6 +2632,8 @@ function chooseReliever(side, statFor, inning, lead, cfg) {
 // フェーズCで人間の采配に差し替えるフック＝判断関数の入替だけで済む構造）。
 // 個人R(得点者)は保留、チーム得点(RS/RA)と投手失点のみ計上（§18・自己レビューF6）。
 // ============================================================================
+
+
 
 
 
@@ -2761,7 +2916,7 @@ function initSide(init, cfg) {
     pendingPitcher: false, // 投手への代打→次の守備から新投手（§S2-2）
     pregame: buildPregameEval(d.byId, cfg), // 監督の当日メモ（編成時評価。以降trueAbilityは見ない）
     // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
-    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: 0, enterInning: 1 },
+    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1 },
     log: [],
     subs: [], // 交代ログ {type,inning,outPid,inPid}（再出場不可の検証・S3素材）
     score: 0,
@@ -2769,7 +2924,7 @@ function initSide(init, cfg) {
 }
 
 function emptyCur() {
-  return { pid: null, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: 0, enterInning: 0 };
+  return { pid: null, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 0 };
 }
 
 /** 半イニングを消化（batting=攻撃側, fielding=守備側） */
@@ -2882,6 +3037,9 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       bType = battedType(bb.laDeg);
       isAirOut = result === 'out' && bType !== 'GB';
       recordBattedBallStat(bStat, pStat, result);
+      // 追加系指標の打球集計（§B3a）: 期待out率/塁打分布(r)＋EV/LA/spray を積む。rng消費なし＝決定論不変。
+      const pullSign = effectiveBats(batter, pitcher) === 'L' ? 1 : -1;
+      accumulateBatted(bStat.batting, pStat.pitching, bb, r, pullSign, cfg);
       // 失策(ROE)判定: インプレーのアウトを Hands 依存で出塁に変える
       if (result === 'out') {
         const fPid = fielding.defense[r.fielderPos];
@@ -2958,6 +3116,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       pStat.pitching.r += runs;
       pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
       fielding.cur.runs += runs;
+      fielding.cur.er += errorInInning ? 0 : runs; // 登板ぶんの自責（QS判定用・§B3a）
       if (recordRun) recordRun(); // 得点推移を記録（勝敗判定用）
     }
 
@@ -3145,7 +3304,7 @@ function installPitcher(side, pid, inning, lead) {
   side.curPid = pid;
   side.usedPitchers.add(pid);
   if (side.pitcherSlot >= 0) side.slots[side.pitcherSlot].playerId = pid;
-  side.cur = { pid, outs: 0, pitches: 0, runs: 0, bf: 0, enterDiff: lead, enterInning: inning };
+  side.cur = { pid, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: lead, enterInning: inning };
 }
 
 /**
@@ -3270,6 +3429,12 @@ function assignDecisions(home, away, statFor, runLog) {
       s.pitching.cg++;
       if (side.log[0].runs === 0) s.pitching.sho++;
     }
+  }
+
+  // クオリティスタート（§B3a）: 先発が6IP=18アウト以上を投げ、その登板の自責3以下。勝敗に依らず計上。
+  for (const side of [home, away]) {
+    const st = side.log.find((a) => a.pid === side.starterId);
+    if (st && st.outs >= 18 && (st.er ?? st.runs) <= 3) statFor(side.starterId, side.teamId).pitching.qs++;
   }
 
   if (home.score === away.score) return; // 引分は勝敗・セーブなし
@@ -4191,9 +4356,10 @@ function winPct(t) {
 // ============================================================================
 
 
+
 const div = (a, b) => (b ? a / b : 0);
 
-/** 打撃指標（wOBA/wRAA/wRC+ 含む） */
+/** 打撃指標（wOBA/wRAA/wRC+ ＋ B3a: xBA/xSLG/xwOBA・Barrel%等・OPS+/wRC/SecA…） */
 function playerBatting(ps, lc) {
   const b = ps.batting;
   const tb = b.b1 + 2 * b.b2 + 3 * b.b3 + 4 * b.hr;
@@ -4207,6 +4373,26 @@ function playerBatting(ps, lc) {
   const wraa = (raw - (lc.lgRawPerPA || 0)) * b.pa;
   const wrcPlus =
     lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+
+  // --- B3a: 期待値系（xBA/xSLG/xwOBA）。打球イベントの期待out率/塁打分布(rng抽選前)の累積から。 ---
+  const xh = b.xB1 + b.xB2 + b.xB3 + b.xHR;
+  const xtb = b.xB1 + 2 * b.xB2 + 3 * b.xB3 + 4 * b.xHR;
+  const xba = div(xh, b.ab);
+  const xslg = div(xtb, b.ab);
+  const W = lc.linearWeights || LINEAR_WEIGHTS;
+  const ibb = b.ibb || 0;
+  const xDenom = b.ab + b.bb - ibb + b.sf + b.hbp; // wOBAと同一の分母
+  const xNum = W.bb * (b.bb - ibb) + W.hbp * b.hbp + W.b1 * b.xB1 + W.b2 * b.xB2 + W.b3 * b.xB3 + W.hr * b.xHR;
+  const xRaw = xDenom ? xNum / xDenom : 0;
+  const xwoba = lc.wobaScale ? lc.wobaScale * xRaw : 0;
+
+  // --- B3a: 打球分類・質（分母=bbEvents）。GB/LD/FB/PU%・Pull/Cent/Oppo%・Barrel/HardHit/SweetSpot% ---
+  const bbe = b.bbEvents;
+  // --- B3a: 伝統系の派生（OPS+/wRC/TB/XBH/SecA/BB/K/ISO） ---
+  const opsPlus = lc.lgOBP && lc.lgSLG ? 100 * (obp / lc.lgOBP + slg / lc.lgSLG - 1) : 100;
+  const wrc = wraa + (lc.lgRunsPerPA || 0) * b.pa; // wRC = wRAA + lgR/PA×PA
+  const xbh = b.b2 + b.b3 + b.hr; // 長打(二塁打+三塁打+本塁打)
+  const secA = div(tb - b.h + b.bb + (b.sb - b.cs), b.ab); // Secondary Average
 
   return {
     pa: b.pa,
@@ -4229,6 +4415,28 @@ function playerBatting(ps, lc) {
     wraa,
     wrcPlus,
     tb,
+    // --- B3a 追加 ---
+    xba,
+    xslg,
+    xwoba,
+    opsPlus,
+    wrc,
+    xbh,
+    secA,
+    bbK: div(b.bb, b.so),
+    gbPct: div(b.bbGB, bbe),
+    ldPct: div(b.bbLD, bbe),
+    fbPct: div(b.bbFB, bbe),
+    puPct: div(b.bbPU, bbe),
+    pullPct: div(b.bbPull, bbe),
+    centPct: div(b.bbCent, bbe),
+    oppoPct: div(b.bbOppo, bbe),
+    barrelPct: div(b.barrels, bbe),
+    hardHitPct: div(b.hardHits, bbe),
+    sweetSpotPct: div(b.sweetSpots, bbe),
+    evAvg: div(b.evSum, bbe),
+    evMax: b.evMax,
+    bbEvents: bbe,
   };
 }
 
@@ -4265,11 +4473,56 @@ function playerBaserunning(ps, cfg, lc) {
   };
 }
 
-/** 投手指標（ERA/FIP 含む）。FIPはFG式 (13HR+3(BB−IBB+HBP)−2K)/IP + C（敬遠は投手の技量でないため除外・S3） */
-function playerPitching(ps, lc) {
+/**
+ * 投手指標（ERA/FIP ＋ B3a: xFIP/SIERA/kwERA/ERA-/FIP-/xFIP-/K-BB%/LOB%/被打球分類/HR-FB/QS）。
+ * FIPはFG式 (13HR+3(BB−IBB+HBP)−2K)/IP + C（敬遠は投手の技量でないため除外・S3）。
+ * @param {Object} ps PlayerSeason
+ * @param {Object} lc リーグ定数（lgHRFB/lgERA/lgFIP/fipConstant を含む）
+ * @param {Object} [cfg] 設定（SIERA/kwERA係数=cfg.tuning.metrics。省略時は METRICS_CONST 既定）
+ */
+function playerPitching(ps, lc, cfg = null) {
   const p = ps.pitching;
   const ip = p.outs / 3;
-  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb - (p.ibb || 0) + p.hbp) - 2 * p.so) / ip : 0;
+  const m = (cfg && cfg.tuning && cfg.tuning.metrics) || METRICS_CONST;
+  const uBBhbp = p.bb - (p.ibb || 0) + p.hbp;
+  const fipRaw = ip ? (13 * p.hr + 3 * uBBhbp - 2 * p.so) / ip : 0;
+  const fip = ip ? fipRaw + (lc.fipConstant || 0) : 0;
+  const era = div(p.er * 9, ip);
+  const kPct = div(p.so, p.bf);
+  const bbPct = div(p.bb, p.bf);
+
+  // xFIP（§B3a）: 被HRを 被FB×lgHR/FB に置換（FG式）。fipConstant共通ゆえ リーグxFIP=リーグFIP。
+  const xHRexp = p.bbFB * (lc.lgHRFB || 0);
+  const xfipRaw = ip ? (13 * xHRexp + 3 * uBBhbp - 2 * p.so) / ip : 0;
+  const xfip = ip ? xfipRaw + (lc.fipConstant || 0) : 0;
+
+  // SIERA（FanGraphs公開式・Swartz）。netGB²項は符号保存（GB>FB+PU で好投側=負寄与）。
+  const pa = p.bf;
+  const soR = div(p.so, pa);
+  const bbR = div(p.bb, pa);
+  const netGB = div(p.bbGB - p.bbFB - p.bbPU, pa);
+  const S = m.siera;
+  const siera = pa
+    ? S.c0 +
+      S.cSO * soR +
+      S.cBB * bbR +
+      S.cNet * netGB +
+      S.cSO2 * soR * soR +
+      S.cNet2 * netGB * Math.abs(netGB) +
+      S.cSOnet * soR * netGB +
+      S.cBBnet * bbR * netGB
+    : 0;
+
+  // kwERA = 5.40 − 12×(K% − BB%)
+  const kwera = m.kwERA.c0 - m.kwERA.k * (kPct - bbPct);
+
+  // LOB% = (H+BB+HBP−R)/(H+BB+HBP−1.4HR)（残塁率）
+  const lobDen = p.h + p.bb + p.hbp - 1.4 * p.hr;
+  const lobPct = lobDen ? (p.h + p.bb + p.hbp - p.r) / lobDen : 0;
+
+  // 被打球分類（分母=bbEvents）と HR/FB
+  const bbe = p.bbEvents;
+
   return {
     g: p.g,
     gs: p.gs,
@@ -4283,13 +4536,31 @@ function playerPitching(ps, lc) {
     bb: p.bb,
     h: p.h,
     hr: p.hr,
-    era: div(p.er * 9, ip),
-    fip: ip ? fipRaw + (lc.fipConstant || 0) : 0,
+    era,
+    fip,
     whip: div(p.h + p.bb, ip),
     kPer9: div(p.so * 9, ip),
     bbPer9: div(p.bb * 9, ip),
-    kPct: div(p.so, p.bf),
-    bbPct: div(p.bb, p.bf),
+    hrPer9: div(p.hr * 9, ip),
+    kPct,
+    bbPct,
+    // --- B3a 追加 ---
+    xfip,
+    siera,
+    kwera,
+    kbbPct: kPct - bbPct,
+    lobPct,
+    // リーグ=100基準（低いほど良い。パーク補正はフェーズD）
+    eraMinus: lc.lgERA ? (era / lc.lgERA) * 100 : 100,
+    fipMinus: lc.lgFIP ? (fip / lc.lgFIP) * 100 : 100,
+    xfipMinus: lc.lgFIP ? (xfip / lc.lgFIP) * 100 : 100,
+    gbPct: div(p.bbGB, bbe),
+    ldPct: div(p.bbLD, bbe),
+    fbPct: div(p.bbFB, bbe),
+    puPct: div(p.bbPU, bbe),
+    hrFbPct: div(p.hr, p.bbFB),
+    qs: p.qs,
+    bbEvents: bbe,
   };
 }
 

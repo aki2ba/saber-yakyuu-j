@@ -3,11 +3,12 @@
 // 生カウント(PlayerSeason)＋リーグ定数(1-6) から打撃・投手指標を算出する。
 // 指標は「後付け」でなく、打席・打球のシミュレートの副産物である生カウントから湧く（付録原則1）。
 // ============================================================================
-import { rawRunValuePerPA } from './leagueConstants.mjs';
+import { rawRunValuePerPA, LINEAR_WEIGHTS } from './leagueConstants.mjs';
+import { METRICS_CONST } from '../config.mjs';
 
 const div = (a, b) => (b ? a / b : 0);
 
-/** 打撃指標（wOBA/wRAA/wRC+ 含む） */
+/** 打撃指標（wOBA/wRAA/wRC+ ＋ B3a: xBA/xSLG/xwOBA・Barrel%等・OPS+/wRC/SecA…） */
 export function playerBatting(ps, lc) {
   const b = ps.batting;
   const tb = b.b1 + 2 * b.b2 + 3 * b.b3 + 4 * b.hr;
@@ -21,6 +22,26 @@ export function playerBatting(ps, lc) {
   const wraa = (raw - (lc.lgRawPerPA || 0)) * b.pa;
   const wrcPlus =
     lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+
+  // --- B3a: 期待値系（xBA/xSLG/xwOBA）。打球イベントの期待out率/塁打分布(rng抽選前)の累積から。 ---
+  const xh = b.xB1 + b.xB2 + b.xB3 + b.xHR;
+  const xtb = b.xB1 + 2 * b.xB2 + 3 * b.xB3 + 4 * b.xHR;
+  const xba = div(xh, b.ab);
+  const xslg = div(xtb, b.ab);
+  const W = lc.linearWeights || LINEAR_WEIGHTS;
+  const ibb = b.ibb || 0;
+  const xDenom = b.ab + b.bb - ibb + b.sf + b.hbp; // wOBAと同一の分母
+  const xNum = W.bb * (b.bb - ibb) + W.hbp * b.hbp + W.b1 * b.xB1 + W.b2 * b.xB2 + W.b3 * b.xB3 + W.hr * b.xHR;
+  const xRaw = xDenom ? xNum / xDenom : 0;
+  const xwoba = lc.wobaScale ? lc.wobaScale * xRaw : 0;
+
+  // --- B3a: 打球分類・質（分母=bbEvents）。GB/LD/FB/PU%・Pull/Cent/Oppo%・Barrel/HardHit/SweetSpot% ---
+  const bbe = b.bbEvents;
+  // --- B3a: 伝統系の派生（OPS+/wRC/TB/XBH/SecA/BB/K/ISO） ---
+  const opsPlus = lc.lgOBP && lc.lgSLG ? 100 * (obp / lc.lgOBP + slg / lc.lgSLG - 1) : 100;
+  const wrc = wraa + (lc.lgRunsPerPA || 0) * b.pa; // wRC = wRAA + lgR/PA×PA
+  const xbh = b.b2 + b.b3 + b.hr; // 長打(二塁打+三塁打+本塁打)
+  const secA = div(tb - b.h + b.bb + (b.sb - b.cs), b.ab); // Secondary Average
 
   return {
     pa: b.pa,
@@ -43,6 +64,28 @@ export function playerBatting(ps, lc) {
     wraa,
     wrcPlus,
     tb,
+    // --- B3a 追加 ---
+    xba,
+    xslg,
+    xwoba,
+    opsPlus,
+    wrc,
+    xbh,
+    secA,
+    bbK: div(b.bb, b.so),
+    gbPct: div(b.bbGB, bbe),
+    ldPct: div(b.bbLD, bbe),
+    fbPct: div(b.bbFB, bbe),
+    puPct: div(b.bbPU, bbe),
+    pullPct: div(b.bbPull, bbe),
+    centPct: div(b.bbCent, bbe),
+    oppoPct: div(b.bbOppo, bbe),
+    barrelPct: div(b.barrels, bbe),
+    hardHitPct: div(b.hardHits, bbe),
+    sweetSpotPct: div(b.sweetSpots, bbe),
+    evAvg: div(b.evSum, bbe),
+    evMax: b.evMax,
+    bbEvents: bbe,
   };
 }
 
@@ -79,11 +122,56 @@ export function playerBaserunning(ps, cfg, lc) {
   };
 }
 
-/** 投手指標（ERA/FIP 含む）。FIPはFG式 (13HR+3(BB−IBB+HBP)−2K)/IP + C（敬遠は投手の技量でないため除外・S3） */
-export function playerPitching(ps, lc) {
+/**
+ * 投手指標（ERA/FIP ＋ B3a: xFIP/SIERA/kwERA/ERA-/FIP-/xFIP-/K-BB%/LOB%/被打球分類/HR-FB/QS）。
+ * FIPはFG式 (13HR+3(BB−IBB+HBP)−2K)/IP + C（敬遠は投手の技量でないため除外・S3）。
+ * @param {Object} ps PlayerSeason
+ * @param {Object} lc リーグ定数（lgHRFB/lgERA/lgFIP/fipConstant を含む）
+ * @param {Object} [cfg] 設定（SIERA/kwERA係数=cfg.tuning.metrics。省略時は METRICS_CONST 既定）
+ */
+export function playerPitching(ps, lc, cfg = null) {
   const p = ps.pitching;
   const ip = p.outs / 3;
-  const fipRaw = ip ? (13 * p.hr + 3 * (p.bb - (p.ibb || 0) + p.hbp) - 2 * p.so) / ip : 0;
+  const m = (cfg && cfg.tuning && cfg.tuning.metrics) || METRICS_CONST;
+  const uBBhbp = p.bb - (p.ibb || 0) + p.hbp;
+  const fipRaw = ip ? (13 * p.hr + 3 * uBBhbp - 2 * p.so) / ip : 0;
+  const fip = ip ? fipRaw + (lc.fipConstant || 0) : 0;
+  const era = div(p.er * 9, ip);
+  const kPct = div(p.so, p.bf);
+  const bbPct = div(p.bb, p.bf);
+
+  // xFIP（§B3a）: 被HRを 被FB×lgHR/FB に置換（FG式）。fipConstant共通ゆえ リーグxFIP=リーグFIP。
+  const xHRexp = p.bbFB * (lc.lgHRFB || 0);
+  const xfipRaw = ip ? (13 * xHRexp + 3 * uBBhbp - 2 * p.so) / ip : 0;
+  const xfip = ip ? xfipRaw + (lc.fipConstant || 0) : 0;
+
+  // SIERA（FanGraphs公開式・Swartz）。netGB²項は符号保存（GB>FB+PU で好投側=負寄与）。
+  const pa = p.bf;
+  const soR = div(p.so, pa);
+  const bbR = div(p.bb, pa);
+  const netGB = div(p.bbGB - p.bbFB - p.bbPU, pa);
+  const S = m.siera;
+  const siera = pa
+    ? S.c0 +
+      S.cSO * soR +
+      S.cBB * bbR +
+      S.cNet * netGB +
+      S.cSO2 * soR * soR +
+      S.cNet2 * netGB * Math.abs(netGB) +
+      S.cSOnet * soR * netGB +
+      S.cBBnet * bbR * netGB
+    : 0;
+
+  // kwERA = 5.40 − 12×(K% − BB%)
+  const kwera = m.kwERA.c0 - m.kwERA.k * (kPct - bbPct);
+
+  // LOB% = (H+BB+HBP−R)/(H+BB+HBP−1.4HR)（残塁率）
+  const lobDen = p.h + p.bb + p.hbp - 1.4 * p.hr;
+  const lobPct = lobDen ? (p.h + p.bb + p.hbp - p.r) / lobDen : 0;
+
+  // 被打球分類（分母=bbEvents）と HR/FB
+  const bbe = p.bbEvents;
+
   return {
     g: p.g,
     gs: p.gs,
@@ -97,12 +185,30 @@ export function playerPitching(ps, lc) {
     bb: p.bb,
     h: p.h,
     hr: p.hr,
-    era: div(p.er * 9, ip),
-    fip: ip ? fipRaw + (lc.fipConstant || 0) : 0,
+    era,
+    fip,
     whip: div(p.h + p.bb, ip),
     kPer9: div(p.so * 9, ip),
     bbPer9: div(p.bb * 9, ip),
-    kPct: div(p.so, p.bf),
-    bbPct: div(p.bb, p.bf),
+    hrPer9: div(p.hr * 9, ip),
+    kPct,
+    bbPct,
+    // --- B3a 追加 ---
+    xfip,
+    siera,
+    kwera,
+    kbbPct: kPct - bbPct,
+    lobPct,
+    // リーグ=100基準（低いほど良い。パーク補正はフェーズD）
+    eraMinus: lc.lgERA ? (era / lc.lgERA) * 100 : 100,
+    fipMinus: lc.lgFIP ? (fip / lc.lgFIP) * 100 : 100,
+    xfipMinus: lc.lgFIP ? (xfip / lc.lgFIP) * 100 : 100,
+    gbPct: div(p.bbGB, bbe),
+    ldPct: div(p.bbLD, bbe),
+    fbPct: div(p.bbFB, bbe),
+    puPct: div(p.bbPU, bbe),
+    hrFbPct: div(p.hr, p.bbFB),
+    qs: p.qs,
+    bbEvents: bbe,
   };
 }

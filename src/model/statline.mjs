@@ -36,6 +36,16 @@ export function createBattingLine() {
     // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
     vsFastball: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
     vsBreaking: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
+    // --- B3a 追加集計（一球データ不要・打球イベントの副産物。§B3） ------------
+    // 打球期待値アキュムレータ（xBA/xSLG/xwOBA）: resolveBattedBall の期待out率/塁打分布を
+    // rng抽選の"前"に累積（モデル=シムゆえ リーグ xwOBA≈wOBA が恒等成立→較正チェックに使う）。
+    xB1: 0, xB2: 0, xB3: 0, xHR: 0,
+    // 打球分類（GB/LD/FB/PU%・被弾含む全インプレー打球）と方向（Pull/Cent/Oppo%）。
+    // 分母 bbEvents = bbGB+bbLD+bbFB+bbPU = bbPull+bbCent+bbOppo。
+    bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
+    bbPull: 0, bbCent: 0, bbOppo: 0,
+    // 打球質（Barrel/HardHit/SweetSpot・分母=bbEvents）と打球速度（平均=evSum/bbEvents, 最大=evMax）。
+    barrels: 0, hardHits: 0, sweetSpots: 0, evSum: 0, evMax: 0,
   };
 }
 
@@ -62,6 +72,9 @@ export function createPitchingLine() {
     cg: 0, // 完投（監査B4で計上）
     sho: 0, // 完封（監査B4で計上）
     pitches: 0, // 投球数
+    // --- B3a 追加集計: 被打球分類（被GB/LD/FB/PU%・HR/FB・xFIP用の被FB）とQS。§B3 ---
+    bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
+    qs: 0, // クオリティスタート（先発が6IP=18アウト以上・自責3以下で降板）
   };
 }
 
@@ -119,9 +132,12 @@ export function createTeamSeason(teamId, season) {
 
 // --- 集計ヘルパー（2パス集計・通算集計で使用） -------------------------------
 
-/** バッティングを加算（dst に src を足し込む） */
+/** バッティングを加算（dst に src を足し込む）。evMax のみ最大（通算集計での二重加算を防ぐ・B3a）。 */
 export function addBattingLine(dst, src) {
-  return addNumeric(dst, src);
+  const em = Math.max(dst.evMax || 0, src.evMax || 0);
+  addNumeric(dst, src);
+  dst.evMax = em;
+  return dst;
 }
 
 /** ピッチングを加算 */

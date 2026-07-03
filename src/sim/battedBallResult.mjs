@@ -86,8 +86,31 @@ export function decideBases(bb, type, cfg, rng) {
 }
 
 /**
+ * 塁打分布の"期待値"（rng抽選を伴わない decideBases の確率版・§B3a xBA/xSLG/xwOBA用）。
+ * decideBases と同一の分岐条件を確率として返す（実結果の期待値＝モデルの塁打分布）。
+ * @returns {{p1:number, p2:number, p3:number}} 安打を打った条件下での 1B/2B/3B 確率（Σ=1）
+ */
+export function expectedBases(bb, type, cfg) {
+  const g = cfg.tuning.bb;
+  if (type === 'GB') {
+    const p2 = Math.abs(bb.sprayDeg) > 38 ? 0.2 : 0;
+    return { p1: 1 - p2, p2, p3: 0 };
+  }
+  if (bb.distanceM < g.gapDistM) return { p1: 1, p2: 0, p3: 0 };
+  if (bb.distanceM >= g.tripleDistM && Math.abs(bb.sprayDeg) > 18) {
+    const speed = bb.runnerSpeed ?? 50;
+    const pTriple = clamp(g.tripleBase + (speed - 50) * g.tripleSpeedW, 0.02, 0.55);
+    return { p1: 0, p2: 1 - pTriple, p3: pTriple };
+  }
+  return { p1: 0, p2: 1, p3: 0 };
+}
+
+/**
  * 打球を解決。bb.result と bb.fielderPos を確定し、要約を返す。
- * @returns {{result:string, type:string, expOut:number, fielderPos:string, distanceM:number}}
+ * 追加(§B3a): 期待塁打分布 xB1/xB2/xB3/xHR（rng抽選前の防御中立=pHit基準の期待値）を返す。
+ *   実結果とは独立の"期待値"であり、リーグ集計で xwOBA≈wOBA を恒等成立させる（副作用・rng消費なし）。
+ * @returns {{result:string, type:string, expOut:number, fielderPos:string, distanceM:number,
+ *   xB1:number, xB2:number, xB3:number, xHR:number}}
  */
 /**
  * @param {Function} [fielderRangeFor] (pos) => Rangeレーティング(50=平均)。守備者個人の
@@ -103,7 +126,7 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
     if (bb.distanceM * cfg.tuning.hrScale >= fence) {
       bb.fielderPos = assignFielder(bb, type);
       bb.result = 'HR';
-      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM };
+      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
     }
   }
 
@@ -116,15 +139,21 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
   bb.fielderPos = fielderPos;
   const expOut = 1 - pHit; // リーグ平均基準（OAAのベースライン・ポジション中立）
 
+  // 期待塁打分布（§B3a）: 防御中立の pHit × decideBases 確率版。rng を消費しない（決定論不変）。
+  const eb = expectedBases(bb, type, cfg);
+  const xB1 = pHit * eb.p1;
+  const xB2 = pHit * eb.p2;
+  const xB3 = pHit * eb.p3;
+
   // 守備者個人のRangeで実効被安打率を上下（good fielder→outを増やす）。OAAの個人シグナル源。
   const rangeR = fielderRangeFor ? fielderRangeFor(fielderPos) : 50;
   const effPHit = clamp(pHit - (rangeR - 50) * cfg.tuning.field.rangePerRating, 0.01, 0.99);
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';
-    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM };
+    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
   }
   const base = decideBases(bb, type, cfg, rng);
   bb.result = base;
-  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM };
+  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
 }

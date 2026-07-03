@@ -56,6 +56,13 @@ export function deriveLeagueConstants(res) {
   const fipConstant = lgERA - fipRawLeague;
   const lgFIP = lgERA; // 定義上一致
 
+  // xFIP用のリーグ HR/FB（§B3a）: リーグ総被HR ÷ リーグ総被フライ。
+  // これで Σ(被FB×lgHRFB)=ΣHR となり、リーグ xFIP=リーグ FIP=リーグ ERA が恒等成立する。
+  let totFB = 0;
+  for (const ps of res.playerSeasons) totFB += ps.pitching.bbFB;
+  const lgHRFB = totFB ? pit.hr / totFB : 0;
+  const lgSLG = bat.slg; // OPS+ の基準（§B3a）
+
   // --- RPW（Runs Per Win, Tango近似 1.5×RG+3。RG=1チーム1試合の得点）---
   const gamesPerTeam = res.standings.reduce((a, t) => a + t.g, 0) / res.standings.length;
   const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
@@ -124,6 +131,8 @@ export function deriveLeagueConstants(res) {
     lgwOBA,
     lgOBP,
     lgRunsPerPA,
+    lgSLG,
+    lgHRFB,
     lgERA,
     lgFIP,
     fipConstant,

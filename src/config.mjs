@@ -94,10 +94,38 @@ export const CALIBRATION_TARGETS = {
 };
 
 /**
+ * B3a 追加系指標（一球データを要さない集計指標・§B3）の定義定数。
+ * Barrel/HardHit/SweetSpot のEV/LA帯・方向境界・SIERA(FG公開式)/kwERA の係数を集約する。
+ * ※これらは物理/定義に基づく固定値（較正ノブではない）だが、規約に従い config.tuning に集約し、
+ *   metrics.mjs 側は cfg 未指定時にこの既定値へフォールバックする。
+ */
+export const METRICS_CONST = {
+  hardHitKmh: 152, // HardHit% 閾値（EV≥152km/h ≈ 95mph）
+  barrelMinKmh: 157.7, // Barrel下限EV（≈98mph）
+  barrelBaseLo: 26, // 98mph時のBarrel帯 LA下限
+  barrelBaseHi: 30, // 98mph時のBarrel帯 LA上限
+  barrelLoSlope: 1.0, // mph超過1あたりLA下限を下げる度数（116mphで8°）
+  barrelHiSlope: 1.11, // mph超過1あたりLA上限を上げる度数（116mphで50°）
+  barrelMinLA: 8, // Barrel帯の最小LA
+  barrelMaxLA: 50, // Barrel帯の最大LA
+  sweetSpotLoLA: 8, // Sweet-Spot% の下限LA
+  sweetSpotHiLA: 32, // Sweet-Spot% の上限LA
+  centAbsSpray: 15, // |spray|≤これ=中堅方向(Cent)。外は引っ張り/流し
+  // SIERA（FanGraphs公開式・Swartz）: netGB=(GB−FB−PU)/PA, SO/PA, BB/PA。
+  // netGB²項は符号保存（GB>FB+PU で負寄与＝好投、逆で正寄与）＝ cNet2×netGB×|netGB|。
+  siera: { c0: 6.145, cSO: -16.986, cBB: 11.434, cNet: -1.858, cSO2: 7.653, cNet2: -6.664, cSOnet: 10.13, cBBnet: -5.195 },
+  // kwERA = 5.40 − 12×(K% − BB%)
+  kwERA: { c0: 5.4, k: 12 },
+};
+
+/**
  * エンジン調整ノブ（初期値・較正で動かす）。§18主要定数＋新EV/LAエンジン固有ノブ。
  * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
  */
 export const TUNING_DEFAULT = {
+  // B3a 追加系指標（率/期待値）の定義定数（§B3・上の METRICS_CONST を集約）。
+  metrics: METRICS_CONST,
+
   hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）

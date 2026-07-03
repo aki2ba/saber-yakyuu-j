@@ -95,6 +95,7 @@ export function generatePitcher(rng, id) {
     id,
     name: generateName(rng),
     role: 'pitcher',
+    primaryPos: 'P',
     bats: rng.chance(0.3) ? 'L' : 'R',
     throws: rng.chance(0.28) ? 'L' : 'R',
     age: 18 + rng.int(20),
@@ -159,12 +160,34 @@ export function generateFielder(rng, id, primaryPos) {
     id,
     name: generateName(rng),
     role: 'fielder',
+    primaryPos,
     bats: rng.chance(0.35) ? 'L' : rng.chance(0.08) ? 'S' : 'R',
     throws: rng.chance(0.15) ? 'L' : 'R',
     age: 18 + rng.int(20),
     trueAbility: t,
     scoutSeed: hashSeed(id, 'scout'),
   });
+}
+
+/**
+ * 新人（ドラフト相当）を1人生成する（C2b 世代交代・§10.6）。
+ * 既存の generatePitcher/generateFielder を id 基準の独立シードで駆動し、年齢だけを
+ * 高卒/大卒相当（rookieAgeMin..Max）へ上書きする（生成の乱数列は消費済みで決定論・順序非依存）。
+ * @param {number} seed ドラフト用の階層シード（hashSeed(masterSeed,'draft',yearIndex)）
+ * @param {string} id 新人の一意ID（例 'T4Y3N0'）。live/replay で同一なら bit 一致
+ * @param {{role:'pitcher'|'fielder', primaryPos:string, ageMin:number, ageMax:number, debutYear:number}} o
+ * @returns {Object} Player（teamId は呼び出し側で設定）
+ */
+export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear }) {
+  const rng = makeRng(hashSeed(seed, id));
+  const p = role === 'pitcher' ? generatePitcher(rng, id) : generateFielder(rng, id, primaryPos);
+  // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
+  // 独立シードで引き直して上書きする（メイン列の順序は乱さない＝決定論）。
+  const aRng = makeRng(hashSeed(seed, id, 'age'));
+  p.age = ageMin + aRng.int(Math.max(1, ageMax - ageMin + 1));
+  p.birthSeason = debutYear != null ? debutYear - p.age : null;
+  p.primaryPos = role === 'pitcher' ? 'P' : primaryPos;
+  return p;
 }
 
 // 1チームの守備位置配分（合計20野手＋13投手＝33人）

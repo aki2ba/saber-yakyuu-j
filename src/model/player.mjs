@@ -110,6 +110,9 @@ export function createPlayer(o = {}) {
     id: o.id ?? null,
     name: o.name ?? '',
     role: o.role ?? 'fielder',
+    // 主守備位置（投手は 'P'）。ロスター構成の恒常化（C2b 世代交代の1:1補充）に使う
+    // 不変の座標。加齢で positionProf が揺れても「本来の枠」を固定する（生成時に確定）。
+    primaryPos: o.primaryPos ?? (o.role === 'pitcher' ? 'P' : null),
     bats: o.bats ?? 'R', // 'R'|'L'|'S'
     throws: o.throws ?? 'R', // 'R'|'L'
     age: o.age ?? 24,

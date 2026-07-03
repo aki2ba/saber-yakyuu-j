@@ -386,6 +386,9 @@ function createPlayer(o = {}) {
     id: o.id ?? null,
     name: o.name ?? '',
     role: o.role ?? 'fielder',
+    // 主守備位置（投手は 'P'）。ロスター構成の恒常化（C2b 世代交代の1:1補充）に使う
+    // 不変の座標。加齢で positionProf が揺れても「本来の枠」を固定する（生成時に確定）。
+    primaryPos: o.primaryPos ?? (o.role === 'pitcher' ? 'P' : null),
     bats: o.bats ?? 'R', // 'R'|'L'|'S'
     throws: o.throws ?? 'R', // 'R'|'L'
     age: o.age ?? 24,
@@ -1340,6 +1343,80 @@ const TUNING_DEFAULT = {
       default: { grow: 0.4, peakShift: 1, declineOffset: 4, decline: 0.6 },
     },
   },
+
+  // ==========================================================================
+  // 故障ハザード（C2b・§10.5）: オフシーズンに「その年に故障したか」を確率事象で決める
+  //   （予測でなくハザード）。年齢・ポジション（捕手は壊れる）・投手の投球負荷（球速）・
+  //   故障歴（最大リスク／再発）で確率を上下。src/game/injury.mjs の applyInjuries が消費。
+  //   後遺（復帰後の一時的能力減）と非対称性（投手の大怪我＝将来リスク＋球速低下の始まり）を持つ。
+  //   1年目レギュラーシーズンには一切効かない（故障判定は2年目以降のオフシーズンのみ）。
+  // ==========================================================================
+  injury: {
+    base: 0.030, // 基本ハザード（1オフシーズンあたり）
+    ageRamp: 30, // この年齢を超えると加齢で故障率が上がり始める
+    agePerYear: 0.006, // ageRamp 超過1歳ごとのハザード加算
+    pitcher: 0.030, // 投手の上乗せ（肩肘の消耗）
+    veloRef: 148, // 球速がこの値を超える投手ほど投球負荷が高い
+    veloPerKmh: 0.004, // veloRef 超過 1km/h ごとのハザード加算
+    catcher: 0.050, // 捕手の上乗せ（膝腰・ファウルチップ＝壊れる）
+    recurMinor: 0.020, // 軽症の故障歴1件ごとの再発リスク加算
+    recurMajor: 0.050, // 重症の故障歴1件ごとの再発リスク加算（最大リスク）
+    pitcherMajorLegacy: 0.050, // 投手が過去に大怪我＝以後の恒常的な将来リスク（非対称）
+    cap: 0.55, // ハザードの上限
+    majorGivenInjury: 0.22, // 故障したうち重症になる基本割合
+    majorHistBonus: 0.10, // 故障歴があると重症化しやすい
+    majorPitcherLegacy: 0.15, // 投手が過去に大怪我していると更に重症化しやすい
+    minorGamesLo: 12, // 軽症の離脱試合数（下限）
+    minorGamesHi: 45,
+    majorGamesLo: 60, // 重症の離脱試合数（下限）
+    majorGamesHi: 150,
+    aftMinor: 1.5, // 軽症の後遺（身体系レーティングの一時減）
+    aftMajor: 4.0, // 重症の後遺
+    aftVeloMajor: 2.5, // 投手の重症時の球速低下(km/h)
+  },
+
+  // ==========================================================================
+  // ブレイクイベント（C2b・§10.4/§11.1）: 低確率で能力が階段状にジャンプする離散イベント。
+  //   上方=球種習得（列が生える千賀型）/覚醒（真値ジャンプ）/EVジャンプ（板山・用具型）、
+  //   下方=制球崩壊（イップス）/燃え尽き/故障明けの別人化。
+  //   §11.1: 上方だけだとリーグがインフレするので下方>上方を既定とする（バランス上ほぼ必須）。
+  //   src/game/breakout.mjs の applyBreakouts が消費。1年目には効かない（2年目以降のオフのみ）。
+  // ==========================================================================
+  breakout: {
+    upBase: 0.010, // 上方ブレイクの基本確率/オフシーズン
+    downBase: 0.014, // 下方ブレイクの基本確率（上方より厚く＝インフレ抑止）
+    youngAge: 24, // これ以下は覚醒（上方）が出やすい
+    youngUpMult: 1.6, // 若手の上方確率倍率
+    burnoutAge: 32, // これを超えると燃え尽き（下方）が出やすくなる
+    burnoutPerYear: 0.002, // burnoutAge 超過1歳ごとの下方確率加算
+    postInjuryDown: 0.15, // 直近オフに大怪我があると下方（別人化）が跳ね上がる
+    newPitchShare: 0.5, // 投手の上方のうち「球種習得（列が生える）」になる割合。残りは覚醒
+    yipsShare: 0.5, // 投手の下方のうち「制球崩壊（イップス）」になる割合。残りは燃え尽き
+    jump: 8, // 覚醒/燃え尽きの階段幅（レーティング）
+    veloJump: 2.5, // 覚醒時の球速ジャンプ(km/h)
+    controlCollapse: 14, // イップス時の制球低下幅
+    postInjuryMag: 6, // 故障明け別人化の追加低下幅
+  },
+
+  // ==========================================================================
+  // 引退・世代交代（C2b・§10.6）: 能力・年齢・故障から引退を確率判定し、同チーム・同枠へ
+  //   新人（ドラフト相当）を1:1で補充してリーグ人口/ロスター構成を恒常に保つ。
+  //   生存バイアス（弱い個体が消え、加齢カーブが平らに見える＝鉄人が自動レア化）はそのまま正しい。
+  //   src/game/roster.mjs の runRetirementAndDraft が消費。能力=引退判定の「出場機会」の代理
+  //   （弱い＝出番が減る＝切られる）。真の出場機会依存の戦力外は C3（§12.2）で導入。
+  // ==========================================================================
+  retire: {
+    minAge: 32, // これ未満は引退しない（若手・全盛期は残す）
+    hardAge: 42, // これ以上は必ず引退（超高齢の打ち切り）
+    rampAge: 32, // この年齢超過で引退確率が加齢加算され始める
+    agePerYear: 0.060, // rampAge 超過1歳ごとの引退確率加算（late-30s の淘汰を効かせる）
+    abilityRef: 47, // 「並」の総合力（この未満は引退圧が増す＝出場機会の代理）
+    abilityPerPt: 0.022, // abilityRef 未満 1pt ごとの引退確率加算
+    injuryPerHist: 0.030, // 故障歴1件ごとの引退確率加算
+    eliteRetain: 0.018, // abilityRef 超過 1pt ごとの引退確率減（鉄人ほど残る＝生存バイアス→40代レア化）
+    base: 0.030, // 基本引退確率（判定対象年齢での下駄）
+    cap: 0.92, // 引退確率の上限
+  },
 };
 
 /**
@@ -1348,10 +1425,12 @@ const TUNING_DEFAULT = {
  *   NPB 1シーズン ≈ 143試合 ≈ 150節前後 ≈ 6か月 なので daysPerMonth:26 で概ね月次に対応する。
  */
 const GAME_DEFAULT = {
-  schemaVersion: 1, // セーブJSONのスキーマ版（load時の互換判定）
+  schemaVersion: 2, // セーブJSONのスキーマ版（load時の互換判定。C2bでオフシーズン意味論拡張→v2）
   firstSeason: 2026, // キャリア1年目の年
   daysPerWeek: 7, // advanceTo('weekEnd') の週境界
   daysPerMonth: 26, // advanceTo('monthEnd') の月境界（143試合≈6か月）
+  rookieAgeMin: 18, // 新人（ドラフト補充）の最小年齢（高卒相当）
+  rookieAgeMax: 22, // 新人の最大年齢（大卒/社会人相当）
 };
 
 /**
@@ -1818,6 +1897,7 @@ function generatePitcher(rng, id) {
     id,
     name: generateName(rng),
     role: 'pitcher',
+    primaryPos: 'P',
     bats: rng.chance(0.3) ? 'L' : 'R',
     throws: rng.chance(0.28) ? 'L' : 'R',
     age: 18 + rng.int(20),
@@ -1882,12 +1962,34 @@ function generateFielder(rng, id, primaryPos) {
     id,
     name: generateName(rng),
     role: 'fielder',
+    primaryPos,
     bats: rng.chance(0.35) ? 'L' : rng.chance(0.08) ? 'S' : 'R',
     throws: rng.chance(0.15) ? 'L' : 'R',
     age: 18 + rng.int(20),
     trueAbility: t,
     scoutSeed: hashSeed(id, 'scout'),
   });
+}
+
+/**
+ * 新人（ドラフト相当）を1人生成する（C2b 世代交代・§10.6）。
+ * 既存の generatePitcher/generateFielder を id 基準の独立シードで駆動し、年齢だけを
+ * 高卒/大卒相当（rookieAgeMin..Max）へ上書きする（生成の乱数列は消費済みで決定論・順序非依存）。
+ * @param {number} seed ドラフト用の階層シード（hashSeed(masterSeed,'draft',yearIndex)）
+ * @param {string} id 新人の一意ID（例 'T4Y3N0'）。live/replay で同一なら bit 一致
+ * @param {{role:'pitcher'|'fielder', primaryPos:string, ageMin:number, ageMax:number, debutYear:number}} o
+ * @returns {Object} Player（teamId は呼び出し側で設定）
+ */
+function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear }) {
+  const rng = makeRng(hashSeed(seed, id));
+  const p = role === 'pitcher' ? generatePitcher(rng, id) : generateFielder(rng, id, primaryPos);
+  // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
+  // 独立シードで引き直して上書きする（メイン列の順序は乱さない＝決定論）。
+  const aRng = makeRng(hashSeed(seed, id, 'age'));
+  p.age = ageMin + aRng.int(Math.max(1, ageMax - ageMin + 1));
+  p.birthSeason = debutYear != null ? debutYear - p.age : null;
+  p.primaryPos = role === 'pitcher' ? 'P' : primaryPos;
+  return p;
 }
 
 // 1チームの守備位置配分（合計20野手＋13投手＝33人）
@@ -6457,6 +6559,370 @@ function agePitch(pitch, ctx) {
 }
 
 
+// ===== src/game/injury.mjs =====
+// ============================================================================
+// フェーズC2b: 故障ハザード（§10.5）
+//
+//   applyInjuries(players, cfg, { seed, year })
+//     … オフシーズン遷移で全選手に「その年に故障したか」を確率事象として判定する純関数。
+//        故障したら career.injuryHistory に1件積み、後遺（復帰後の一時的能力減）を真値へ適用する。
+//   injuryHazard(player, cfg) … 1選手の故障確率（テスト/UIから再発リスクの可視化に使える）。
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - 予測でなくハザード（§10.5）: 誰が壊れるかは確率事象。合わせるのは集団の分布（§1）。
+//   - 決定論・順序非依存: 各選手の乱数は makeRng(hashSeed(seed,'injury',id)) で id 基準に派生。
+//     Date.now/Math.random 非使用。配列順・呼び出し順に依らず bit 一致（aging.mjs と同型）。
+//   - エンジンを壊さない: 故障判定は2年目以降のオフシーズンにのみ呼ばれる。1年目レギュラー
+//     シーズン（＝既存50較正）には一切効かない（trueAbility を動かすのはオフのみ）。
+//   - 非対称性（§10.5）: 打者は大怪我から戻れるが、投手の一度の大怪我は将来の故障と能力低下
+//     （球速）の始まり。再発（最大リスク）・後遺を持たせる。
+// ============================================================================
+
+
+
+/**
+ * 全選手にオフシーズンの故障判定を適用する（in-place・決定論・順序非依存）。
+ * @param {Array} players league.players
+ * @param {Object} cfg createConfig()（cfg.tuning.injury を参照）
+ * @param {{seed:number, year:number}} o seed=故障用階層シード / year=当該シーズンの年（履歴に記録）
+ * @returns {Array<{id,year,severity,gamesLost}>} 発生した故障イベント（当該オフ）
+ */
+function applyInjuries(players, cfg, { seed, year }) {
+  const events = [];
+  for (const p of players) {
+    const prng = makeRng(hashSeed(seed, 'injury', p.id));
+    const ev = rollInjury(p, cfg, prng, year);
+    if (ev) events.push(ev);
+  }
+  return events;
+}
+
+/**
+ * 1選手の故障ハザード（0..cap）。年齢・ポジション・投手投球負荷・故障歴（再発）で上下する。
+ * 故障歴が増える／重症化するほど再発リスクが上がる（§10.5「最大リスク・再発」）。
+ * @returns {number} このオフに故障する確率
+ */
+function injuryHazard(p, cfg) {
+  const inj = cfg.tuning.injury;
+  const t = p.trueAbility;
+  const hist = t.career.injuryHistory ?? [];
+  let h = inj.base;
+  h += Math.max(0, p.age - inj.ageRamp) * inj.agePerYear;
+  if (p.role === 'pitcher') {
+    h += inj.pitcher;
+    h += Math.max(0, t.pitching.velocityKmh - inj.veloRef) * inj.veloPerKmh; // 球速＝投球負荷の代理
+  }
+  if (p.primaryPos === 'C') h += inj.catcher; // 捕手は壊れる
+  // 故障歴（再発・最大リスク）: 件数×重症度で将来リスクが上がる。
+  let priorMajor = false;
+  for (const e of hist) {
+    h += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
+    if (e.severity === 'major') priorMajor = true;
+  }
+  // 投手の大怪我経験は以後の恒常的な将来リスク（非対称・§10.5）。
+  if (p.role === 'pitcher' && priorMajor) h += inj.pitcherMajorLegacy;
+  return clamp(h, 0, inj.cap);
+}
+
+/** 1選手の故障判定。故障したら履歴に積み後遺を適用して event を返す（非故障は null）。 */
+function rollInjury(p, cfg, prng, year) {
+  const inj = cfg.tuning.injury;
+  if (!prng.chance(injuryHazard(p, cfg))) return null;
+  const t = p.trueAbility;
+  const hist = t.career.injuryHistory ?? (t.career.injuryHistory = []);
+  const priorMajor = hist.some((e) => e.severity === 'major');
+  // 故障歴があると重症化しやすく、投手の大怪我経験は更に重くなりやすい（再発の悪循環）。
+  let majorP = inj.majorGivenInjury;
+  if (hist.length) majorP += inj.majorHistBonus;
+  if (p.role === 'pitcher' && priorMajor) majorP += inj.majorPitcherLegacy;
+  const major = prng.chance(clamp(majorP, 0, 0.95));
+  const severity = major ? 'major' : 'minor';
+  const gamesLost = major
+    ? inj.majorGamesLo + prng.int(inj.majorGamesHi - inj.majorGamesLo + 1)
+    : inj.minorGamesLo + prng.int(inj.minorGamesHi - inj.minorGamesLo + 1);
+  const ev = { id: p.id, year, severity, gamesLost };
+  hist.push({ year, severity, gamesLost });
+  applyAftereffect(p, severity, inj);
+  return ev;
+}
+
+/**
+ * 後遺（§10.5）: 復帰後の一時的な能力減を真値へ即時反映する。身体系（走力・初動・パワー）を
+ * 中心に落とし、技巧系は残す（＝技巧派の生存に効く）。投手の重症は球速低下の始まり（非対称）。
+ * ここで落ちた分は以後の加齢カーブ（成長ドリフト）で部分的に回復しうる（点でなく幅で・§10.3）。
+ */
+function applyAftereffect(p, severity, inj) {
+  const mag = severity === 'major' ? inj.aftMajor : inj.aftMinor;
+  const t = p.trueAbility;
+  t.common.speed = clampRating(t.common.speed - mag);
+  t.common.reaction = clampRating(t.common.reaction - mag);
+  t.common.power = clampRating(t.common.power - mag * 0.6);
+  t.batting.ev = clampRating(t.batting.ev - mag * 0.6);
+  if (p.role === 'pitcher' && severity === 'major') {
+    t.pitching.velocityKmh = clamp(t.pitching.velocityKmh - inj.aftVeloMajor, 130, 165);
+    t.pitching.control = clampRating(t.pitching.control - mag * 0.5);
+  }
+}
+
+
+// ===== src/game/breakout.mjs =====
+// ============================================================================
+// フェーズC2b: ブレイクイベント（§10.4 / §11.1）
+//
+//   applyBreakouts(players, cfg, { seed, year })
+//     … オフシーズンに低確率で能力が「階段状に」跳ねる離散イベントを判定する純関数。
+//        上方=球種習得（列が生える千賀型）/覚醒（真値ジャンプ）/EVジャンプ（板山・用具型）、
+//        下方=制球崩壊（イップス）/燃え尽き/故障明けの別人化。career.breakEvents に履歴を積む。
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - 同一機構で複数の実在現象を表現（§10.4）: 発火対象パラメータを変えるだけで
+//     千賀型（球種列が生える）も板山型（打撃真値ジャンプ）も用具型（EV）も出す。
+//   - §11.1: 上方だけだとリーグがインフレするので下方≧上方を既定（バランス上ほぼ必須）。
+//   - 決定論・順序非依存: 各選手の乱数は makeRng(hashSeed(seed,'breakout',id))（id基準派生）。
+//     Date.now/Math.random 非使用。1年目には効かない（2年目以降のオフのみ）。
+//   - 故障との合流（§10.4「故障明けの別人化」）: 直近オフに大怪我があると下方確率が跳ねる。
+//     ＝injury.mjs を先に適用してから本モジュールを呼ぶ（index.mjs のオフシーズン順序）。
+// ============================================================================
+
+
+
+
+
+/**
+ * 全選手にオフシーズンのブレイクイベントを適用する（in-place・決定論・順序非依存）。
+ * @param {Array} players league.players
+ * @param {Object} cfg createConfig()（cfg.tuning.breakout を参照）
+ * @param {{seed:number, year:number}} o seed=ブレイク用階層シード / year=当該年（履歴・故障合流判定に使用）
+ * @returns {Array<{id,year,dir,kind}>} 発生したブレイクイベント（dir='up'|'down'）
+ */
+function applyBreakouts(players, cfg, { seed, year }) {
+  const events = [];
+  for (const p of players) {
+    const prng = makeRng(hashSeed(seed, 'breakout', p.id));
+    const ev = rollBreakout(p, cfg, prng, year);
+    if (ev) events.push(ev);
+  }
+  return events;
+}
+
+/** 1選手のブレイク判定（上方/下方/無し）。下方の裾を厚くしてインフレを抑える（§11.1）。 */
+function rollBreakout(p, cfg, prng, year) {
+  const bo = cfg.tuning.breakout;
+  const hist = p.trueAbility.career.injuryHistory ?? [];
+  const recentMajor = hist.some((e) => e.year === year && e.severity === 'major');
+  const young = p.age <= bo.youngAge;
+  const upP = bo.upBase * (young ? bo.youngUpMult : 1);
+  const downP =
+    bo.downBase + (recentMajor ? bo.postInjuryDown : 0) + Math.max(0, p.age - bo.burnoutAge) * bo.burnoutPerYear;
+  const r = prng.next(); // 1回の一様乱数で上/下/無しに振る（下方を厚く配置）
+  if (r < upP) return applyUpBreak(p, bo, prng, year);
+  if (r < upP + downP) return applyDownBreak(p, bo, prng, year, recentMajor);
+  return null;
+}
+
+/** 上方ブレイク: 投手=球種習得 or 覚醒、野手=覚醒/EVジャンプ。 */
+function applyUpBreak(p, bo, prng, year) {
+  const t = p.trueAbility;
+  let kind;
+  if (p.role === 'pitcher') {
+    const held = new Set(t.pitching.pitches.map((x) => x.type));
+    const avail = PITCH_TYPES.filter((x) => !held.has(x));
+    if (avail.length && prng.chance(bo.newPitchShare)) {
+      // 球種の「列が一本生える」（千賀のフォーク）: 決め球として whiff を高めに（§4）。
+      const type = avail[prng.int(avail.length)];
+      t.pitching.pitches.push(
+        createPitch(type, {
+          current: clampRating(55 + prng.normal(0, 5)),
+          whiff: clampRating(58 + prng.normal(0, 6)),
+          hrSuppress: clampRating(54 + prng.normal(0, 5)),
+          contactQuality: clampRating(54 + prng.normal(0, 5)),
+        }),
+      );
+      kind = 'newPitch';
+    } else {
+      // 覚醒: 球速＋全球種の質が階段状に上がる。
+      t.pitching.velocityKmh = clamp(t.pitching.velocityKmh + bo.veloJump, 130, 165);
+      for (const pi of t.pitching.pitches) {
+        pi.whiff = clampRating(pi.whiff + bo.jump);
+        pi.current = clampRating(pi.current + bo.jump);
+      }
+      kind = 'awaken';
+    }
+  } else {
+    // 覚醒/EVジャンプ（板山・用具型）: EV・パワー中心にコンタクト/LAも階段状に上がる。
+    t.batting.ev = clampRating(t.batting.ev + bo.jump);
+    t.common.power = clampRating(t.common.power + bo.jump * 0.6);
+    t.batting.contact = clampRating(t.batting.contact + bo.jump * 0.6);
+    t.batting.la = clampRating(t.batting.la + bo.jump * 0.4);
+    kind = 'awaken';
+  }
+  pushEvent(t, year, 'up', kind);
+  return { id: p.id, year, dir: 'up', kind };
+}
+
+/** 下方ブレイク: 投手=制球崩壊（イップス）or 燃え尽き、野手=燃え尽き/別人化。 */
+function applyDownBreak(p, bo, prng, year, recentMajor) {
+  const t = p.trueAbility;
+  let kind;
+  if (p.role === 'pitcher' && prng.chance(bo.yipsShare)) {
+    // 制球崩壊（イップス）: 制球が階段状に崩れる。
+    t.pitching.control = clampRating(t.pitching.control - bo.controlCollapse);
+    kind = 'yips';
+  } else {
+    // 燃え尽き / 故障明けの別人化: 広く低下（別人化は追加で大きく）。
+    const mag = recentMajor ? bo.jump + bo.postInjuryMag : bo.jump;
+    t.batting.ev = clampRating(t.batting.ev - mag * 0.6);
+    t.batting.contact = clampRating(t.batting.contact - mag * 0.6);
+    t.common.power = clampRating(t.common.power - mag * 0.5);
+    if (p.role === 'pitcher') {
+      for (const pi of t.pitching.pitches) pi.whiff = clampRating(pi.whiff - mag * 0.6);
+      t.pitching.velocityKmh = clamp(t.pitching.velocityKmh - bo.veloJump * 0.7, 130, 165);
+    }
+    kind = recentMajor ? 'postInjury' : 'burnout';
+  }
+  pushEvent(t, year, 'down', kind);
+  return { id: p.id, year, dir: 'down', kind };
+}
+
+function pushEvent(t, year, dir, kind) {
+  (t.career.breakEvents ?? (t.career.breakEvents = [])).push({ year, dir, kind });
+}
+
+
+// ===== src/game/roster.mjs =====
+// ============================================================================
+// フェーズC2b: 引退・世代交代（§10.6）
+//
+//   runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex, debutYear })
+//     … 能力・年齢・故障から各選手の引退を確率判定し、引退枠へ「同チーム・同role・同primaryPos」
+//        の新人（ドラフト相当）を1:1で補充する。→ リーグ人口とロスター構成を恒常に保つ。
+//        league.players / league.teams[].playerIds を in-place で張り替える。
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - 生存バイアス（§10.6）はそのままで正しい: 弱い個体が引退で消え、40代まで残るのは
+//     「衰えなかった個体（低declineRate＝鉄人）」だけ → 鉄人が自動でレア化する。
+//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。新人IDは
+//     `${teamId}Y${yearIndex}N${k}`（チーム内の引退者をid昇順で採番）で live/replay 一致。
+//   - 引退判定は「能力＋年齢＋故障歴」の純関数（観測成績/出場機会に依存しない）。
+//     ＝ load の replay（過去年のオフを再走）で season 再シムなしに同一ロスターを再構築できる。
+//     真の出場機会依存の戦力外/拾い上げ（§12.2）は C3 で導入する（本stageは能力を代理に使う）。
+// ============================================================================
+
+
+
+
+/**
+ * オフシーズンの引退判定＋新人補充を適用する（in-place）。
+ * @param {{players:Array, teams:Array}} league
+ * @param {Object} cfg createConfig()（cfg.tuning.retire / cfg.game.rookieAge* を参照）
+ * @param {{seed:number, draftSeed:number, yearIndex:number, debutYear:number}} o
+ * @returns {{retirees:Array, rookies:Array}} 引退者サマリと補充新人
+ */
+function runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex, debutYear }) {
+  const survivors = [];
+  const retirees = [];
+  const goneByTeam = new Map(); // teamId → 引退選手[]（新人補充の枠）
+
+  for (const p of league.players) {
+    const prng = makeRng(hashSeed(seed, 'retire', p.id));
+    if (decideRetire(p, cfg, prng)) {
+      p.rosterStatus = 'retired';
+      retirees.push(summarizeRetiree(p, debutYear - 1));
+      if (!goneByTeam.has(p.teamId)) goneByTeam.set(p.teamId, []);
+      goneByTeam.get(p.teamId).push(p);
+    } else {
+      survivors.push(p);
+    }
+  }
+
+  // 新人補充（同チーム・同role・同primaryPos で1:1＝人口/構成恒常）。id は引退者をid昇順に採番。
+  const rookies = [];
+  for (const [teamId, gone] of goneByTeam) {
+    gone.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    gone.forEach((old, k) => {
+      const rid = `${teamId}Y${yearIndex}N${k}`;
+      const rook = generateRookie(draftSeed, rid, {
+        role: old.role,
+        primaryPos: old.primaryPos,
+        ageMin: cfg.game.rookieAgeMin,
+        ageMax: cfg.game.rookieAgeMax,
+        debutYear,
+      });
+      rook.teamId = teamId;
+      rookies.push(rook);
+    });
+  }
+
+  // league を張り替える（生存者＋新人）。順序は生存者（既存順）→新人（チーム走査順）で決定論。
+  league.players = survivors.concat(rookies);
+  const idsByTeam = new Map();
+  for (const p of league.players) {
+    if (!idsByTeam.has(p.teamId)) idsByTeam.set(p.teamId, []);
+    idsByTeam.get(p.teamId).push(p.id);
+  }
+  for (const t of league.teams) t.playerIds = idsByTeam.get(t.id) ?? [];
+
+  return { retirees, rookies };
+}
+
+/**
+ * 引退判定（確率）。老いるほど・弱いほど・故障歴が多いほど引退圧が上がり、能力が高い（鉄人）ほど
+ * 残る（生存バイアス）。minAge 未満は残し、hardAge 以上は必ず引退。
+ */
+function decideRetire(p, cfg, prng) {
+  const rt = cfg.tuning.retire;
+  const age = p.age;
+  if (age < rt.minAge) return false;
+  if (age >= rt.hardAge) return true;
+  const ability = overallAbility(p); // ~20-80（弱い＝出場機会減の代理）
+  let pr =
+    rt.base +
+    Math.max(0, age - rt.rampAge) * rt.agePerYear +
+    Math.max(0, rt.abilityRef - ability) * rt.abilityPerPt +
+    (p.trueAbility.career.injuryHistory?.length ?? 0) * rt.injuryPerHist;
+  pr -= Math.max(0, ability - rt.abilityRef) * rt.eliteRetain; // 鉄人ほど残る
+  return prng.chance(clamp(pr, 0, rt.cap));
+}
+
+/**
+ * 総合力の粗い代理（~20-80）。role 別に主要な真値を平均する（引退圧の「出場機会」代理）。
+ * 投手は球速を rating 換算（50 + (velo-145)×2）して制球/スタミナ/球種質と平均。
+ */
+function overallAbility(p) {
+  const t = p.trueAbility;
+  if (p.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    const pitches = t.pitching.pitches;
+    let stuff = 50;
+    if (pitches.length) {
+      let s = 0;
+      for (const pi of pitches) s += (pi.current + pi.whiff) / 2;
+      stuff = s / pitches.length;
+    }
+    return (veloR + t.pitching.control + t.pitching.stamina + stuff) / 4;
+  }
+  const b = t.batting;
+  let bestProf = 20;
+  for (const k of Object.keys(t.fielding.positionProf)) bestProf = Math.max(bestProf, t.fielding.positionProf[k]);
+  return (b.ev + b.contact + b.la + b.eye + t.common.speed + t.fielding.positioningIQ + bestProf) / 7;
+}
+
+/** 引退者サマリ（記録/通算リーダーボード用・§17集計値。生イベントは持たない）。 */
+function summarizeRetiree(p, retiredAfterYear) {
+  return {
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    primaryPos: p.primaryPos,
+    finalAge: p.age,
+    birthSeason: p.birthSeason ?? null,
+    retiredAfterYear,
+    injuries: (p.trueAbility.career.injuryHistory ?? []).length,
+    breakEvents: (p.trueAbility.career.breakEvents ?? []).length,
+  };
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -6480,8 +6946,14 @@ function agePitch(pitch, ctx) {
 
 
 
-/** セーブスキーマ版（構造変更時にインクリメント。load の互換判定に使う）。 */
-const SCHEMA_VERSION = 1;
+
+
+
+/** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
+ *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
+ *  真値/ロスターは §17 に従い save に含めず masterSeed から replay 再構築するため、v1 の
+ *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。 */
+const SCHEMA_VERSION = 2;
 
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
@@ -6491,6 +6963,31 @@ function seasonSeed(state) {
 /** 年 y→y+1 のオフシーズン加齢シード（決定論・load の replay と live で同一）。 */
 function offseasonSeed(masterSeed, yearIndex) {
   return hashSeed(masterSeed, 'offseason', yearIndex);
+}
+
+/**
+ * オフシーズン遷移の中核（C2b）: 完了年 yearIndex の全選手に対し、故障→ブレイク→加齢→
+ * 引退/新人補充を決定論的な順序で適用し、league.players/teams を翌年開幕の状態へ張り替える。
+ * 純関数的（副作用は league と cfg 由来のみ）で、live の advanceYear と load の replay の
+ * 両方から「同一 (masterSeed, yearIndex, year)」で呼ばれ bit 一致する（多年セーブの決定論）。
+ *
+ * 順序の意味:
+ *   1. 故障（injury）を先に判定 → 2. ブレイク（§10.4「故障明けの別人化」は当年の大怪我を参照）
+ *   → 3. 加齢（applyAging が age++ もする）→ 4. 引退/補充（加齢後の年齢・能力で判定）。
+ * 各フェーズは独立の階層シード座標（'injury'/'breakout'/'offseason'/'retire'/'draft'）を使う。
+ * @returns {{injuries:Array, breakouts:Array, retirees:Array, rookies:Array}} オフシーズン要約
+ */
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year }) {
+  const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
+  const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
+  applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
+  const { retirees, rookies } = runRetirementAndDraft(league, cfg, {
+    seed: hashSeed(masterSeed, 'retire', yearIndex),
+    draftSeed: hashSeed(masterSeed, 'draft', yearIndex),
+    yearIndex,
+    debutYear: year + 1,
+  });
+  return { injuries, breakouts, retirees, rookies };
 }
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
@@ -6536,6 +7033,7 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     league,
     careerStats: [], // 完了シーズンの選手集計（永続・§17）
     teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
+    retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     rt: null, // 現行シーズンの日次ランタイム
   };
@@ -6646,29 +7144,32 @@ function advanceTo(state, until, opts = {}) {
 }
 
 /**
- * オフシーズン遷移（C2a）: 完了したシーズンから翌年開幕へ。全選手に加齢/成長を適用し
- * （真値を動かす・§10）、age++・yearIndex++・year++ したうえで翌シーズンを開幕状態でセットする。
+ * オフシーズン遷移（C2b・完全版）: 完了したシーズンから翌年開幕へ。全選手へ
+ * 故障→ブレイク→加齢→引退/新人補充を適用し（真値を動かす・ロスターを世代交代・§10）、
+ * yearIndex++・year++ したうえで翌シーズンを開幕状態でセットする。
  *
- * 決定論: 加齢は offseasonSeed(masterSeed, yearIndex) 由来（Date.now/Math.random 非使用）。
- *   load 側も同一シードで過去年の加齢を replay するため、多年セーブの復元も bit 一致する。
+ * 決定論: すべて (masterSeed, yearIndex, year) 由来の階層シード（Date.now/Math.random 非使用）。
+ *   load 側も同一 (masterSeed, yearIndex) で過去年のオフを replay するため、多年セーブの復元も
+ *   bit 一致する（引退で消えた選手・補充新人まで完全再現）。
  * エンジン不変: 本関数は 1年目終了後に初めて呼ばれる。1年目レギュラーシーズン（既存50較正）は
- *   完全に不変（加齢は 2年目以降の真値にのみ効く）。
+ *   完全に不変（故障/ブレイク/加齢/引退は 2年目以降の真値・ロスターにのみ効く）。
  * @param {Object} state GameState（シーズンが finished であること）
- * @returns {Object} state（翌年開幕状態）
+ * @returns {{injuries:Array, breakouts:Array, retirees:Array, rookies:Array}} オフシーズン要約
  */
 function advanceYear(state) {
   if (!state.rt || !state.rt.finished) {
     throw new Error('advanceYear: シーズン未終了（seasonEnd まで進めてから呼ぶこと）');
   }
-  // オフシーズン加齢（真値を動かす・§10.1-10.3）。league.players を in-place で更新する。
-  applyAging(state.league.players, state.cfg, {
-    seed: offseasonSeed(state.masterSeed, state.yearIndex),
+  const off = offseasonTransition(state.league, state.cfg, {
+    masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
+    year: state.year,
   });
+  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.yearIndex += 1;
   state.year += 1;
-  startYear(state); // 新シーズンを開幕状態でセット（加齢後の真値・yearIndex 依存シード）
-  return state;
+  startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
+  return off;
 }
 
 // --- セーブ/ロード ----------------------------------------------------------
@@ -6761,14 +7262,21 @@ function load(blob, options = {}) {
     league,
     careerStats: data.careerStats ?? [],
     teamHistory: data.teamHistory ?? [],
+    retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
     rt: null,
   };
-  // 過去年（0..yearIndex-1）のオフシーズン加齢を決定論 replay で再適用し、真値を保存時点へ復元する。
-  // trueAbility は §17（集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
+  // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
+  // 再適用し、真値もロスター（引退・補充）も保存時点へ復元する。trueAbility とロスター構成は §17
+  // （集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
   // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
   for (let y = 0; y < state.yearIndex; y++) {
-    applyAging(state.league.players, cfg, { seed: offseasonSeed(state.masterSeed, y), yearIndex: y });
+    const off = offseasonTransition(state.league, cfg, {
+      masterSeed: state.masterSeed,
+      yearIndex: y,
+      year: state.firstSeason + y,
+    });
+    state.retiredPlayers.push(...off.retirees);
   }
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕

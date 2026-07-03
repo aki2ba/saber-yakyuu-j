@@ -125,24 +125,37 @@ test('C2a: 決定論（同一シード・順序非依存で bit 一致）', () =
 
 // --- ゲーム層への統合（advanceYear / 多年セーブ） ----------------------------
 
-test('C2a: advanceYear は全選手 age++ し真値を動かす（決定論）', () => {
+test('C2a: advanceYear は継続選手を age++ し真値を動かす（世代交代込み・決定論）', () => {
   const st1 = newGame(SEED, 'T1', { cfg });
+  const nBefore = st1.league.players.length;
   const agesBefore = new Map(st1.league.players.map((p) => [p.id, p.age]));
-  const eyeBefore = st1.league.players.map((p) => p.trueAbility.batting.eye);
+  const eyeBefore = new Map(st1.league.players.map((p) => [p.id, p.trueAbility.batting.eye]));
   advanceTo(st1, 'seasonEnd');
   advanceYear(st1);
   assert.equal(st1.yearIndex, 1);
   assert.equal(st1.year, cfg.game.firstSeason + 1);
-  for (const p of st1.league.players) assert.equal(p.age, agesBefore.get(p.id) + 1, '全員 age++');
-  const eyeAfter = st1.league.players.map((p) => p.trueAbility.batting.eye);
-  assert.ok(eyeAfter.some((v, i) => v !== eyeBefore[i]), '真値が変化する');
+  // 継続選手（生存者）は age++、新人（補充）は rookie 年齢帯。人口は恒常（C2b 1:1補充）。
+  let survived = 0;
+  let changed = 0;
+  for (const p of st1.league.players) {
+    if (agesBefore.has(p.id)) {
+      assert.equal(p.age, agesBefore.get(p.id) + 1, '継続選手は age++');
+      if (p.trueAbility.batting.eye !== eyeBefore.get(p.id)) changed++;
+      survived++;
+    } else {
+      assert.ok(p.age >= cfg.game.rookieAgeMin && p.age <= cfg.game.rookieAgeMax, '新人は若い');
+    }
+  }
+  assert.equal(st1.league.players.length, nBefore, 'リーグ人口は恒常（引退＝補充）');
+  assert.ok(survived > nBefore * 0.8, '大半は継続（1オフの引退は一部）');
+  assert.ok(changed > 0, '継続選手の真値が変化する');
 
-  // 別インスタンスで同手順 → league 真値が一致（決定論）
+  // 別インスタンスで同手順 → league 真値/ロスターが一致（決定論）
   const st2 = newGame(SEED, 'T1', { cfg });
   advanceTo(st2, 'seasonEnd');
   advanceYear(st2);
   const sig = (st) => st.league.players.map((p) => `${p.id}:${p.age}:${p.trueAbility.batting.eye}:${p.trueAbility.pitching.velocityKmh}`).join('|');
-  assert.equal(sig(st1), sig(st2), 'オフシーズン加齢が決定論的');
+  assert.equal(sig(st1), sig(st2), 'オフシーズン遷移が決定論的');
 
   // シーズン未終了で呼ぶと弾く
   const st3 = newGame(SEED, 'T1', { cfg });

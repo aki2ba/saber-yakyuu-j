@@ -125,6 +125,183 @@ function serializeDays(flat, teams, maxConsec) {
   return out;
 }
 
+// ============================================================================
+// 日次ループの共有部品（フェーズC1・ゲーム層から day 単位で駆動するために切り出し）。
+//   simulateSeason（一括）と src/game/ の日次ランナーが「同一の per-game 処理」を共有する。
+//   → ゲーム層で day を刻んでも、一括APIと bit 単位で同一結果になる（既存50較正が不変）。
+// ============================================================================
+
+/**
+ * 編成表一式を作る（DH有/無の depth chart・リーグDH規則・teamById・後方互換 depthByTeam）。
+ * @param {{teams:Array,players:Array}} league
+ * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map}}
+ */
+export function buildTeamCharts(league, cfg) {
+  const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
+  const teamById = new Map(league.teams.map((t) => [t.id, t]));
+  const chartsByTeam = new Map();
+  for (const t of league.teams) {
+    const roster = league.players.filter((p) => p.teamId === t.id);
+    chartsByTeam.set(t.id, {
+      dh: buildDepthChart(roster, cfg, { dh: true }),
+      noDh: buildDepthChart(roster, cfg, { dh: false }),
+    });
+  }
+  // 後方互換の depthByTeam: 各チームの所属リーグ規則での編成（リーグ未設定はDH有）
+  const depthByTeam = new Map(
+    league.teams.map((t) => {
+      const c = chartsByTeam.get(t.id);
+      return [t.id, (leagueDh.get(t.league) ?? true) ? c.dh : c.noDh];
+    }),
+  );
+  return { leagueDh, teamById, chartsByTeam, depthByTeam };
+}
+
+/**
+ * 観測成績の集計器を1つ作る（三層構造 layer2・未出場は空ライン＝priorへ回帰）。
+ * 各パスは独立の集計器で走る（pass1導出用の集計は破棄する）。
+ * @returns {{stats:Map, statFor:Function, getBat:Function}}
+ */
+export function makeSeasonStats(season) {
+  const stats = new Map();
+  const emptyBat = createBattingLine();
+  const statFor = (pid, teamId) => {
+    let s = stats.get(pid);
+    if (!s) {
+      s = createPlayerSeason(pid, season);
+      s.teamId = teamId;
+      stats.set(pid, s);
+    }
+    return s;
+  };
+  const getBat = (pid) => {
+    const s = stats.get(pid);
+    return s ? s.batting : emptyBat;
+  };
+  return { stats, statFor, getBat };
+}
+
+/**
+ * 1試合（schedule[gi]）を実行し、起用状態・順位/得点集計・文脈フックを更新する。
+ * simulateSeason の runPass のループ本体をそのまま切り出したもの（挙動は完全同一）。
+ * @param {{seed:number, park:Object, cfg:Object, leagueDh:Map, teamById:Map,
+ *   chartsByTeam:Map, usageByTeam:Map, pass:Object}} ctx
+ * @param {{home:string, away:string, day:number}} g
+ * @param {number} gi schedule内index（＝階層シード座標。日次実行でも一括と同一にする鍵）
+ * @returns {Object} simulateGame の結果
+ */
+export function playScheduledGame(ctx, g, gi) {
+  const { seed, park, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass } = ctx;
+  const rng = makeRng(hashSeed(seed, 'game', gi));
+  // 試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2。両チームとも同じ規則で編成）
+  const gameDh = leagueDh.get(teamById.get(g.home).league) ?? true;
+  const hC = chartsByTeam.get(g.home);
+  const aC = chartsByTeam.get(g.away);
+  const hU = usageByTeam.get(g.home);
+  const aU = usageByTeam.get(g.away);
+
+  // 先発投手（中5日以上）を先に決める＝互いのスタメン（プラトーン）判断の入力になる
+  const hSp = selectStarter(hU, g.day, cfg);
+  const aSp = selectStarter(aU, g.day, cfg);
+
+  // 当日スタメン・ベンチ・救援可用リスト（usage.mjs）。乱数は試合ごとに独立の階層シード。
+  const mkInit = (teamId, chart, u, starterPid, oppStarter, sideIdx) => {
+    const sel = selectLineup(
+      u,
+      {
+        day: g.day,
+        dh: gameDh,
+        oppPitcher: oppStarter,
+        rng: makeRng(hashSeed(seed, 'lineup', gi, sideIdx)),
+        getBat: pass.getBat,
+      },
+      cfg,
+    );
+    return {
+      teamId,
+      depth: chart,
+      starterPid,
+      lineup: sel.lineup,
+      bench: sel.bench,
+      availableRelievers: bullpenAvailable(u, g.day, cfg),
+      manager: teamById.get(teamId).manager,
+      dh: gameDh,
+    };
+  };
+  const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
+  const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
+
+  const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, park, pass.onBattedBall, {
+    gameContext: pass.gameContext,
+  });
+
+  // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
+  recordGameUsage(hU, { day: g.day, starterPid: hSp, lineup: hInit.lineup, pitcherLog: res.pitchers.home }, pass.getBat, cfg);
+  recordGameUsage(aU, { day: g.day, starterPid: aSp, lineup: aInit.lineup, pitcherLog: res.pitchers.away }, pass.getBat, cfg);
+
+  // WPA ゼロサム検査（§B2）: ホーム側WPA累計が 勝者±0.5/引分0 に一致するか（決着の整合）。
+  if (pass.gameContext && pass.gameContext.mode === 'accumulate' && pass.contextCheck) {
+    const expected = res.tie ? 0 : res.homeScore > res.awayScore ? 0.5 : -0.5;
+    const err = Math.abs(pass.gameContext.gameHomeWpa - expected);
+    if (err > pass.contextCheck.wpaMaxErr) pass.contextCheck.wpaMaxErr = err;
+  }
+
+  if (pass.standings) {
+    const H = pass.standings.get(g.home);
+    const A = pass.standings.get(g.away);
+    H.g++;
+    A.g++;
+    H.rs += res.homeScore;
+    H.ra += res.awayScore;
+    A.rs += res.awayScore;
+    A.ra += res.homeScore;
+    if (res.tie) {
+      H.t++;
+      A.t++;
+    } else if (res.homeScore > res.awayScore) {
+      H.w++;
+      A.l++;
+    } else {
+      A.w++;
+      H.l++;
+    }
+    // 交流戦成績（S4 UI）: 別リーグ同士の対戦を各チームの il へ計上
+    if (teamById.get(g.home).league !== teamById.get(g.away).league) {
+      if (res.tie) {
+        H.il.t++;
+        A.il.t++;
+      } else if (res.homeScore > res.awayScore) {
+        H.il.w++;
+        A.il.l++;
+      } else {
+        A.il.w++;
+        H.il.l++;
+      }
+    }
+  }
+  if (pass.runSplit) {
+    const split = gameDh ? pass.runSplit.dh : pass.runSplit.noDh;
+    split.games++;
+    split.runs += res.homeScore + res.awayScore;
+  }
+  return res;
+}
+
+/**
+ * 順位表を確定（勝率降順→得失点差）。リーグ別順位表も返す。
+ * @param {Map} standings teamId → 順位行
+ * @returns {{table:Array, standingsByLeague:Object}}
+ */
+export function finalizeStandings(standings) {
+  const table = [...standings.values()].sort((a, b) => winPct(b) - winPct(a) || b.rs - b.ra - (a.rs - a.ra));
+  const standingsByLeague = {};
+  for (const row of table) {
+    const lid = row.league ?? 'ALL';
+    (standingsByLeague[lid] = standingsByLeague[lid] || []).push(row);
+  }
+  return { table, standingsByLeague };
+}
+
 /**
  * 1シーズンを実行。
  * @param {{teams:Array,players:Array,masterSeed:number}} league
@@ -143,44 +320,11 @@ export function simulateSeason(league, cfg, opts = {}) {
   const park = opts.park ?? NEUTRAL_PARK;
 
   // 編成表（試合のDH有無=ホーム球団の所属リーグ規則。各チームDH用/DH無し用の両方を用意）
-  const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
-  const teamById = new Map(league.teams.map((t) => [t.id, t]));
-  const chartsByTeam = new Map();
-  for (const t of league.teams) {
-    const roster = league.players.filter((p) => p.teamId === t.id);
-    chartsByTeam.set(t.id, {
-      dh: buildDepthChart(roster, cfg, { dh: true }),
-      noDh: buildDepthChart(roster, cfg, { dh: false }),
-    });
-  }
-  // 後方互換の depthByTeam: 各チームの所属リーグ規則での編成（リーグ未設定はDH有）
-  const depthByTeam = new Map(
-    league.teams.map((t) => {
-      const c = chartsByTeam.get(t.id);
-      return [t.id, (leagueDh.get(t.league) ?? true) ? c.dh : c.noDh];
-    }),
-  );
+  const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
 
   // 観測成績の読み取り専用ビューを持つ集計器を作る（S3 usage: 未出場は空ライン＝priorへ回帰）。
   // 各パスは独立の集計器で走る（三層構造・pass1導出用の集計は破棄する）。
-  const makeStats = () => {
-    const stats = new Map();
-    const emptyBat = createBattingLine();
-    const statFor = (pid, teamId) => {
-      let s = stats.get(pid);
-      if (!s) {
-        s = createPlayerSeason(pid, season);
-        s.teamId = teamId;
-        stats.set(pid, s);
-      }
-      return s;
-    };
-    const getBat = (pid) => {
-      const s = stats.get(pid);
-      return s ? s.batting : emptyBat;
-    };
-    return { stats, statFor, getBat };
-  };
+  const makeStats = () => makeSeasonStats(season);
 
   const standings = new Map();
   for (const t of league.teams) {
@@ -218,100 +362,8 @@ export function simulateSeason(league, cfg, opts = {}) {
    */
   const runPass = (pass) => {
     const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
-    schedule.forEach((g, gi) => {
-      const rng = makeRng(hashSeed(seed, 'game', gi));
-      // 試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2。両チームとも同じ規則で編成）
-      const gameDh = leagueDh.get(teamById.get(g.home).league) ?? true;
-      const hC = chartsByTeam.get(g.home);
-      const aC = chartsByTeam.get(g.away);
-      const hU = usageByTeam.get(g.home);
-      const aU = usageByTeam.get(g.away);
-
-      // 先発投手（中5日以上）を先に決める＝互いのスタメン（プラトーン）判断の入力になる
-      const hSp = selectStarter(hU, g.day, cfg);
-      const aSp = selectStarter(aU, g.day, cfg);
-
-      // 当日スタメン・ベンチ・救援可用リスト（usage.mjs）。乱数は試合ごとに独立の階層シード。
-      const mkInit = (teamId, chart, u, starterPid, oppStarter, sideIdx) => {
-        const sel = selectLineup(
-          u,
-          {
-            day: g.day,
-            dh: gameDh,
-            oppPitcher: oppStarter,
-            rng: makeRng(hashSeed(seed, 'lineup', gi, sideIdx)),
-            getBat: pass.getBat,
-          },
-          cfg,
-        );
-        return {
-          teamId,
-          depth: chart,
-          starterPid,
-          lineup: sel.lineup,
-          bench: sel.bench,
-          availableRelievers: bullpenAvailable(u, g.day, cfg),
-          manager: teamById.get(teamId).manager,
-          dh: gameDh,
-        };
-      };
-      const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
-      const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
-
-      const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, park, pass.onBattedBall, {
-        gameContext: pass.gameContext,
-      });
-
-      // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
-      recordGameUsage(hU, { day: g.day, starterPid: hSp, lineup: hInit.lineup, pitcherLog: res.pitchers.home }, pass.getBat, cfg);
-      recordGameUsage(aU, { day: g.day, starterPid: aSp, lineup: aInit.lineup, pitcherLog: res.pitchers.away }, pass.getBat, cfg);
-
-      // WPA ゼロサム検査（§B2）: ホーム側WPA累計が 勝者±0.5/引分0 に一致するか（決着の整合）。
-      if (pass.gameContext && pass.gameContext.mode === 'accumulate' && pass.contextCheck) {
-        const expected = res.tie ? 0 : res.homeScore > res.awayScore ? 0.5 : -0.5;
-        const err = Math.abs(pass.gameContext.gameHomeWpa - expected);
-        if (err > pass.contextCheck.wpaMaxErr) pass.contextCheck.wpaMaxErr = err;
-      }
-
-      if (pass.standings) {
-        const H = pass.standings.get(g.home);
-        const A = pass.standings.get(g.away);
-        H.g++;
-        A.g++;
-        H.rs += res.homeScore;
-        H.ra += res.awayScore;
-        A.rs += res.awayScore;
-        A.ra += res.homeScore;
-        if (res.tie) {
-          H.t++;
-          A.t++;
-        } else if (res.homeScore > res.awayScore) {
-          H.w++;
-          A.l++;
-        } else {
-          A.w++;
-          H.l++;
-        }
-        // 交流戦成績（S4 UI）: 別リーグ同士の対戦を各チームの il へ計上
-        if (teamById.get(g.home).league !== teamById.get(g.away).league) {
-          if (res.tie) {
-            H.il.t++;
-            A.il.t++;
-          } else if (res.homeScore > res.awayScore) {
-            H.il.w++;
-            A.il.l++;
-          } else {
-            A.il.w++;
-            H.il.l++;
-          }
-        }
-      }
-      if (pass.runSplit) {
-        const split = gameDh ? pass.runSplit.dh : pass.runSplit.noDh;
-        split.games++;
-        split.runs += res.homeScore + res.awayScore;
-      }
-    });
+    const ctx = { seed, park, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
+    schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
     return usageByTeam;
   };
 
@@ -339,13 +391,7 @@ export function simulateSeason(league, cfg, opts = {}) {
   });
   const stats = main.stats;
 
-  const table = [...standings.values()].sort((a, b) => winPct(b) - winPct(a) || b.rs - b.ra - (a.rs - a.ra));
-  // リーグ別順位表（table はソート済み→フィルタで順序が保たれる）
-  const standingsByLeague = {};
-  for (const row of table) {
-    const lid = row.league ?? 'ALL';
-    (standingsByLeague[lid] = standingsByLeague[lid] || []).push(row);
-  }
+  const { table, standingsByLeague } = finalizeStandings(standings);
 
   // ポストシーズン（§S3-3）: 2リーグ制のときのみ。統計はレギュラーシーズンと分離集計。
   let postseason = null;

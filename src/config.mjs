@@ -476,6 +476,18 @@ export const TUNING_DEFAULT = {
 };
 
 /**
+ * ゲーム層（フェーズC）の定数。日次カレンダー境界・セーブスキーマ版・開幕年。
+ *   day = 日程の「節」index（1日1試合）。週/月境界は node --test で決定論的に刻むための単純割り。
+ *   NPB 1シーズン ≈ 143試合 ≈ 150節前後 ≈ 6か月 なので daysPerMonth:26 で概ね月次に対応する。
+ */
+export const GAME_DEFAULT = {
+  schemaVersion: 1, // セーブJSONのスキーマ版（load時の互換判定）
+  firstSeason: 2026, // キャリア1年目の年
+  daysPerWeek: 7, // advanceTo('weekEnd') の週境界
+  daysPerMonth: 26, // advanceTo('monthEnd') の月境界（143試合≈6か月）
+};
+
+/**
  * シムのラン環境から 1-6（リーグ定数導出パス）で埋める定数の器。
  * §18の 13.3/1.216 等は「初期値」であって、ここに導出値を上書きしてから指標を確定する（2パス）。
  */
@@ -498,6 +510,7 @@ export function createConfig(overrides = {}) {
     league: clone(LEAGUE_DEFAULT),
     targets: clone(CALIBRATION_TARGETS),
     tuning: clone(TUNING_DEFAULT),
+    game: clone(GAME_DEFAULT),
     leagueConstants: createLeagueConstants(),
   };
   return deepAssign(cfg, overrides);

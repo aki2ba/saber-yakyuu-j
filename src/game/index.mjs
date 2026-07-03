@@ -70,7 +70,16 @@ function startYear(state) {
     season: state.year,
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
+    // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
+    //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
+    //   再構築されるため決定論（IL は真値でなく offseasonTransition の再計算で復元＝save に含めない）。
+    injuries: state.pendingInjuries ?? [],
   });
+  // 前年の采配介入は team.manager を in-place で書き換える（setManagerProfile/applyInterventionsForDay）。
+  // rt を作り直しても team.manager は張り替わらないため、明示的に「素の監督」へ戻さないと前年の
+  // プロファイルが翌年へリークし live/replay が分岐する（save→load が verifyStandings で例外）。
+  const myTeam = state.rt.teamById.get(state.playerTeamId);
+  if (myTeam) myTeam.manager = { ...state.baseManager };
   // 当該年の采配介入を rt に載せる（replay で同一 day に再適用＝決定論。他年の介入は除外）。
   state.rt.interventions = state.interventions.filter((iv) => (iv.yearIndex ?? 0) === state.yearIndex);
 }
@@ -109,6 +118,7 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
+    pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -240,6 +250,7 @@ export function advanceYear(state) {
     year: state.year,
   });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
+  state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
   state.yearIndex += 1;
   state.year += 1;
   startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
@@ -338,12 +349,14 @@ export function load(blob, options = {}) {
     teamHistory: data.teamHistory ?? [],
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
+    pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
     rt: null,
   };
   // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
   // 再適用し、真値もロスター（引退・補充）も保存時点へ復元する。trueAbility とロスター構成は §17
   // （集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
   // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
+  let lastOff = null;
   for (let y = 0; y < state.yearIndex; y++) {
     const off = offseasonTransition(state.league, cfg, {
       masterSeed: state.masterSeed,
@@ -351,7 +364,11 @@ export function load(blob, options = {}) {
       year: state.firstSeason + y,
     });
     state.retiredPlayers.push(...off.retirees);
+    lastOff = off;
   }
+  // 保存時点シーズン（yearIndex）の開幕ILは「直前オフ（yearIndex-1）」の故障で決まる。
+  // 上記 replay の最終反復がまさにそれ＝live の advanceYear と同一 off から再構築（決定論）。
+  state.pendingInjuries = lastOff ? lastOff.injuries : [];
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;

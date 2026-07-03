@@ -27,10 +27,12 @@ import { simulatePostseason } from '../sim/postseason.mjs';
  * 1シーズンの日次ランタイムを開幕状態で作る。
  * @param {{teams:Array,players:Array}} league generateLeague の出力
  * @param {Object} cfg createConfig()
- * @param {{season:number, seed:number, park?:Object, playerTeamId:string}} opts
+ * @param {{season:number, seed:number, park?:Object, playerTeamId:string, injuries?:Array}} opts
+ *   injuries=直前オフで確定した故障 [{id,severity,gamesLost}]。各選手を新シーズン開幕から
+ *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
  * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
  */
-export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId }) {
+export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [] }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
   const standings = new Map();
@@ -39,6 +41,19 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
   }
   const stats = makeSeasonStats(season);
   const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
+  // 開幕IL: 故障選手を所属チームの起用状態に「day < gamesLost の間は不可」として載せる。
+  //   day は schedule の節index（1日≒1試合）＝gamesLost をそのまま離脱日数として扱う。
+  //   これで selectLineup/selectStarter/bullpenAvailable が離脱中の選手を除外し、ベンチ/控えが
+  //   自然に穴を埋める（phaseA の起用AI資産）。injuries が空（1年目）なら一切効かない。
+  const byId = new Map(league.players.map((p) => [p.id, p]));
+  const seasonInjuries = [];
+  for (const ev of injuries) {
+    const p = byId.get(ev.id);
+    if (!p || !ev.gamesLost) continue; // 引退で消えた選手（pid不在）は無視
+    const u = usageByTeam.get(p.teamId);
+    if (u) u.injuredUntil.set(ev.id, ev.gamesLost);
+    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, gamesLost: ev.gamesLost });
+  }
   const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
   const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
   return {
@@ -59,6 +74,7 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     runSplit,
     cursor: 0, // 次に処理する schedule の index（= gi。day 境界でのみ止まる）
     finalDay,
+    seasonInjuries, // 当該シーズン開幕IL（ハブ表示用・[{id,name,teamId,severity,gamesLost}]・当年のみ）
     playerGameLog: [], // 自チームの試合結果（当該シーズンのみ・§17）
     // 采配介入（フェーズC1b）: 自チーム監督プロファイルの人間差し替えログ。
     //   [{ day, teamId, manager:{buntTend,stealTend,ibbTend,quickHook} }]（絶対値）。

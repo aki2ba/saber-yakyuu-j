@@ -74,7 +74,16 @@ export function createUsageState(team, charts, cfg) {
     startDaysByPid: new Map(), // 先発投手 pid → [day,...]（登板間隔の検証用）
     pitchedByDay: new Map(), // 投手 pid → Map(day→球数)（連投制限・前日球数の判定）
     rotIdx: 0, // ローテの次の先発候補index
+    // 故障離脱(IL・C2.4/§10.5): pid → その日まで出場不可（day < untilDay で離脱）。
+    //   1年目は空＝一切無影響（simulateSeason/1年目ゲームは既存50較正と bit 同一）。
+    //   startSeasonRuntime が直前オフの故障(gamesLost)からシーズン開幕時に一度だけ埋める。
+    injuredUntil: new Map(),
   };
+}
+
+/** 故障離脱中か（day < 復帰日）。injuredUntil が空/未設定（1年目）なら常に false＝既存挙動と bit 同一。 */
+export function isInjured(state, pid, day) {
+  return (state.injuredUntil?.get(pid) ?? 0) > day;
 }
 
 /**
@@ -131,6 +140,7 @@ export function selectStarter(state, day, cfg) {
   let fallbackRest = -1;
   for (let k = 0; k < rot.length; k++) {
     const pid = rot[(state.rotIdx + k) % rot.length];
+    if (isInjured(state, pid, day)) continue; // 離脱中の先発は飛ばす（次のローテ投手が繰り上がる）
     const last = state.lastStartDay.get(pid);
     const rest = last == null ? Infinity : day - last - 1;
     if (rest >= need) return pid;
@@ -146,6 +156,7 @@ export function selectStarter(state, day, cfg) {
 export function bullpenAvailable(state, day, cfg) {
   const f = cfg.tuning.fatigue;
   return state.charts.dh.bullpen.filter((pid) => {
+    if (isInjured(state, pid, day)) return false; // 離脱中の救援は可用リストから外す（C2.4）
     const m = state.pitchedByDay.get(pid);
     if (!m) return true;
     if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
@@ -190,7 +201,8 @@ export function selectLineup(state, ctx, cfg) {
 
   const used = new Set(); // 今日すでにスタメンへ入れた選手
   const resting = new Set(); // 今日休養させる選手（スタメン候補から外す。代打等ベンチ待機は可）
-  const excluded = (pid) => used.has(pid) || resting.has(pid);
+  // 離脱中(IL)は候補から完全に除外＝担当が離脱なら控え/挑戦者が穴を埋める（C2.4/§10.5・phaseA資産）。
+  const excluded = (pid) => used.has(pid) || resting.has(pid) || isInjured(state, pid, ctx.day);
   const today = {}; // pos → 当日スタメン
 
   const positions = ctx.dh ? [...POSITION_DIFFICULTY, 'DH'] : POSITION_DIFFICULTY;
@@ -258,7 +270,8 @@ export function selectLineup(state, ctx, cfg) {
   // 打順スロットへ反映（交代者は同じ打順スロットを引き継ぐ）。9番'P'は initSide が当日先発を充填。
   const lineup = chart.lineup.map((s) => ({ playerId: s.pos === 'P' ? null : today[s.pos], pos: s.pos }));
   const inLineup = new Set(lineup.map((s) => s.playerId));
-  const bench = fielders.filter((pid) => !inLineup.has(pid)); // 休養者も代打要員としてベンチに残る
+  // 休養者は代打要員としてベンチに残るが、離脱中(IL)は代打にも出せないので除外する（C2.4）。
+  const bench = fielders.filter((pid) => !inLineup.has(pid) && !isInjured(state, pid, ctx.day));
   return { lineup, bench, rested: [...resting] };
 }
 

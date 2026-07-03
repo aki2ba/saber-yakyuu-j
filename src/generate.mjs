@@ -88,7 +88,13 @@ export function generatePitcher(rng, id) {
       vsBreaking: draw(rng, 23, 6), // 対変化球適性
     },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
-    career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
+    // §12.4: peakAge も能力タイプと相関させる（技巧＝制球高ほど後ろズレ／速球高ほど前ズレ）。
+    //   乱数は base の rng.normal 一発のみ（既引きの velocityKmh/control で決定論シフト）＝生成の
+    //   乱数列は不変＝1年目シム（既存50較正）に一切影響しない。晩成の“稀化/ゲート”を復活させる。
+    career: {
+      peakAge: Math.round(clamp(rng.normal(27, 2) + (control - 50) * 0.05 - (velocityKmh - 146) * 0.12, 23, 34)),
+      declineRate,
+    },
   });
 
   return createPlayer({
@@ -149,7 +155,13 @@ export function generateFielder(rng, id, primaryPos) {
       framing: primaryPos === 'C' ? draw(rng, 50, 10) : draw(rng, 30, 6),
     },
     baserunning: { steal: draw(rng, speed > 55 ? 55 : 46, 12), baserunIQ: draw(rng, 50, 10) },
-    career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
+    // §12.4: peakAge を能力タイプ相関で引く（走力系ほど前ズレ＝早熟／低走力の技巧・パワー型ほど
+    //   後ろズレ）。乱数は base の rng.normal 一発のみ（既引きの speed で決定論シフト）＝生成の
+    //   乱数列は不変＝1年目シム（既存50較正）に影響しない。晩成が“稀な少数テール”になるよう寄せる。
+    career: {
+      peakAge: Math.round(clamp(rng.normal(27, 2) - (speed - 50) * 0.06, 23, 34)),
+      declineRate,
+    },
   });
 
   // ブロッキング（§B1・捕手専用）: 独立シード(id基準)で引き、メインの生成ストリームを一切乱さない

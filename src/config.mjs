@@ -515,27 +515,32 @@ export const TUNING_DEFAULT = {
       speed: { grow: 0.5, peakShift: -3, declineOffset: -1, decline: 1.2 },
       reaction: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 1.0 },
       steal: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 0.9 },
-      // パワー（20代天井後 遅くまで残る）
-      power: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
-      ev: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
-      // 選球眼（むしろ伸びる＝加齢で微増）
-      eye: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      // パワー（20代天井後 遅くまで残る＝decline を遅らせるのは declineOffset で。成長終端は peak 近傍）
+      power: { grow: 0.9, peakShift: 1, declineOffset: 5, decline: 0.5 },
+      ev: { grow: 0.9, peakShift: 1, declineOffset: 5, decline: 0.5 },
+      // 選球眼（むしろ伸びる＝加齢で微増）。§10.1「ピーク26-28・32から本格衰え」に沿うよう
+      //   growEnd(=peak+peakShift)≈28 / onset(=peak+declineOffset)≈32 に抑える（旧値は+8/+14で
+      //   高価値ツールが全個体一律に34-35歳まで伸び、母集団の攻撃価値ピークが約33歳へ後ろ倒し
+      //   になっていた＝レビュー#3。加齢耐性は decline を小さく保つことで表現し、後半の“上振れ”は断つ）。
+      eye: { grow: 0.7, peakShift: 1, declineOffset: 3, decline: 0.2 },
       // コンタクト・三振耐性（終盤に悪化）
       contact: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
       vsFastball: { grow: 0.6, peakShift: 0, declineOffset: 3, decline: 0.9 },
       vsBreaking: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
-      // 技術・IQ（加齢に強い/伸びる）: LA最適化・制球・ポジIQ・走塁IQ・フレーミング
-      la: { grow: 0.8, peakShift: 7, declineOffset: 13, decline: 0.25 }, // 和田型（晩成）の主軸
-      pull: { grow: 0.3, peakShift: 6, declineOffset: 12, decline: 0.15 },
-      control: { grow: 0.7, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 石川雅規型（鉄人）
-      positioningIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
-      baserunIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
-      framing: { grow: 0.6, peakShift: 6, declineOffset: 12, decline: 0.25 },
-      blocking: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.35 },
-      gbRate: { grow: 0.2, peakShift: 5, declineOffset: 10, decline: 0.2 },
-      hold: { grow: 0.4, peakShift: 4, declineOffset: 9, decline: 0.3 },
-      positionProf: { grow: 0.6, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
-      pitchStuff: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.3 }, // 球種の質（出し入れは技巧で残る）
+      // 技術・IQ（加齢に強い＝decline は小さいが、成長終端・衰え開始は §10.1 窓へ引き戻す。
+      //   全個体一律の後半上振れが母集団の攻撃価値ピークを後ろ倒しにするのを防ぎ、§12.4 の
+      //   “晩成は稀な少数テール”へ寄せる。晩成個体は peakAge 相関＋高 gm の上振れから稀に出る）。
+      la: { grow: 0.8, peakShift: 1, declineOffset: 3, decline: 0.3 }, // 和田型（晩成）の主軸だが稀化
+      pull: { grow: 0.3, peakShift: 1, declineOffset: 3, decline: 0.2 },
+      control: { grow: 0.7, peakShift: 2, declineOffset: 6, decline: 0.35 }, // 石川雅規型（鉄人）
+      positioningIQ: { grow: 0.7, peakShift: 1, declineOffset: 3, decline: 0.2 },
+      baserunIQ: { grow: 0.7, peakShift: 1, declineOffset: 3, decline: 0.2 },
+      framing: { grow: 0.6, peakShift: 2, declineOffset: 6, decline: 0.25 },
+      blocking: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.35 },
+      gbRate: { grow: 0.2, peakShift: 2, declineOffset: 6, decline: 0.2 },
+      hold: { grow: 0.4, peakShift: 2, declineOffset: 6, decline: 0.3 },
+      positionProf: { grow: 0.6, peakShift: 2, declineOffset: 6, decline: 0.35 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
+      pitchStuff: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.3 }, // 球種の質（出し入れは技巧で残る）
       // 中間（肩・手・スタミナ）
       arm: { grow: 0.4, peakShift: 0, declineOffset: 3, decline: 0.6 },
       hands: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.45 },

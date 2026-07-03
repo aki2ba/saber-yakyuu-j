@@ -1315,27 +1315,32 @@ const TUNING_DEFAULT = {
       speed: { grow: 0.5, peakShift: -3, declineOffset: -1, decline: 1.2 },
       reaction: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 1.0 },
       steal: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 0.9 },
-      // パワー（20代天井後 遅くまで残る）
-      power: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
-      ev: { grow: 0.9, peakShift: 2, declineOffset: 6, decline: 0.5 },
-      // 選球眼（むしろ伸びる＝加齢で微増）
-      eye: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
+      // パワー（20代天井後 遅くまで残る＝decline を遅らせるのは declineOffset で。成長終端は peak 近傍）
+      power: { grow: 0.9, peakShift: 1, declineOffset: 5, decline: 0.5 },
+      ev: { grow: 0.9, peakShift: 1, declineOffset: 5, decline: 0.5 },
+      // 選球眼（むしろ伸びる＝加齢で微増）。§10.1「ピーク26-28・32から本格衰え」に沿うよう
+      //   growEnd(=peak+peakShift)≈28 / onset(=peak+declineOffset)≈32 に抑える（旧値は+8/+14で
+      //   高価値ツールが全個体一律に34-35歳まで伸び、母集団の攻撃価値ピークが約33歳へ後ろ倒し
+      //   になっていた＝レビュー#3。加齢耐性は decline を小さく保つことで表現し、後半の“上振れ”は断つ）。
+      eye: { grow: 0.7, peakShift: 1, declineOffset: 3, decline: 0.2 },
       // コンタクト・三振耐性（終盤に悪化）
       contact: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
       vsFastball: { grow: 0.6, peakShift: 0, declineOffset: 3, decline: 0.9 },
       vsBreaking: { grow: 0.6, peakShift: 1, declineOffset: 4, decline: 0.8 },
-      // 技術・IQ（加齢に強い/伸びる）: LA最適化・制球・ポジIQ・走塁IQ・フレーミング
-      la: { grow: 0.8, peakShift: 7, declineOffset: 13, decline: 0.25 }, // 和田型（晩成）の主軸
-      pull: { grow: 0.3, peakShift: 6, declineOffset: 12, decline: 0.15 },
-      control: { grow: 0.7, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 石川雅規型（鉄人）
-      positioningIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
-      baserunIQ: { grow: 0.7, peakShift: 8, declineOffset: 14, decline: 0.2 },
-      framing: { grow: 0.6, peakShift: 6, declineOffset: 12, decline: 0.25 },
-      blocking: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.35 },
-      gbRate: { grow: 0.2, peakShift: 5, declineOffset: 10, decline: 0.2 },
-      hold: { grow: 0.4, peakShift: 4, declineOffset: 9, decline: 0.3 },
-      positionProf: { grow: 0.6, peakShift: 5, declineOffset: 10, decline: 0.35 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
-      pitchStuff: { grow: 0.5, peakShift: 4, declineOffset: 9, decline: 0.3 }, // 球種の質（出し入れは技巧で残る）
+      // 技術・IQ（加齢に強い＝decline は小さいが、成長終端・衰え開始は §10.1 窓へ引き戻す。
+      //   全個体一律の後半上振れが母集団の攻撃価値ピークを後ろ倒しにするのを防ぎ、§12.4 の
+      //   “晩成は稀な少数テール”へ寄せる。晩成個体は peakAge 相関＋高 gm の上振れから稀に出る）。
+      la: { grow: 0.8, peakShift: 1, declineOffset: 3, decline: 0.3 }, // 和田型（晩成）の主軸だが稀化
+      pull: { grow: 0.3, peakShift: 1, declineOffset: 3, decline: 0.2 },
+      control: { grow: 0.7, peakShift: 2, declineOffset: 6, decline: 0.35 }, // 石川雅規型（鉄人）
+      positioningIQ: { grow: 0.7, peakShift: 1, declineOffset: 3, decline: 0.2 },
+      baserunIQ: { grow: 0.7, peakShift: 1, declineOffset: 3, decline: 0.2 },
+      framing: { grow: 0.6, peakShift: 2, declineOffset: 6, decline: 0.25 },
+      blocking: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.35 },
+      gbRate: { grow: 0.2, peakShift: 2, declineOffset: 6, decline: 0.2 },
+      hold: { grow: 0.4, peakShift: 2, declineOffset: 6, decline: 0.3 },
+      positionProf: { grow: 0.6, peakShift: 2, declineOffset: 6, decline: 0.35 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
+      pitchStuff: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.3 }, // 球種の質（出し入れは技巧で残る）
       // 中間（肩・手・スタミナ）
       arm: { grow: 0.4, peakShift: 0, declineOffset: 3, decline: 0.6 },
       hands: { grow: 0.5, peakShift: 2, declineOffset: 6, decline: 0.45 },
@@ -1890,7 +1895,13 @@ function generatePitcher(rng, id) {
       vsBreaking: draw(rng, 23, 6), // 対変化球適性
     },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
-    career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
+    // §12.4: peakAge も能力タイプと相関させる（技巧＝制球高ほど後ろズレ／速球高ほど前ズレ）。
+    //   乱数は base の rng.normal 一発のみ（既引きの velocityKmh/control で決定論シフト）＝生成の
+    //   乱数列は不変＝1年目シム（既存50較正）に一切影響しない。晩成の“稀化/ゲート”を復活させる。
+    career: {
+      peakAge: Math.round(clamp(rng.normal(27, 2) + (control - 50) * 0.05 - (velocityKmh - 146) * 0.12, 23, 34)),
+      declineRate,
+    },
   });
 
   return createPlayer({
@@ -1951,7 +1962,13 @@ function generateFielder(rng, id, primaryPos) {
       framing: primaryPos === 'C' ? draw(rng, 50, 10) : draw(rng, 30, 6),
     },
     baserunning: { steal: draw(rng, speed > 55 ? 55 : 46, 12), baserunIQ: draw(rng, 50, 10) },
-    career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
+    // §12.4: peakAge を能力タイプ相関で引く（走力系ほど前ズレ＝早熟／低走力の技巧・パワー型ほど
+    //   後ろズレ）。乱数は base の rng.normal 一発のみ（既引きの speed で決定論シフト）＝生成の
+    //   乱数列は不変＝1年目シム（既存50較正）に影響しない。晩成が“稀な少数テール”になるよう寄せる。
+    career: {
+      peakAge: Math.round(clamp(rng.normal(27, 2) - (speed - 50) * 0.06, 23, 34)),
+      declineRate,
+    },
   });
 
   // ブロッキング（§B1・捕手専用）: 独立シード(id基準)で引き、メインの生成ストリームを一切乱さない
@@ -4604,7 +4621,16 @@ function createUsageState(team, charts, cfg) {
     startDaysByPid: new Map(), // 先発投手 pid → [day,...]（登板間隔の検証用）
     pitchedByDay: new Map(), // 投手 pid → Map(day→球数)（連投制限・前日球数の判定）
     rotIdx: 0, // ローテの次の先発候補index
+    // 故障離脱(IL・C2.4/§10.5): pid → その日まで出場不可（day < untilDay で離脱）。
+    //   1年目は空＝一切無影響（simulateSeason/1年目ゲームは既存50較正と bit 同一）。
+    //   startSeasonRuntime が直前オフの故障(gamesLost)からシーズン開幕時に一度だけ埋める。
+    injuredUntil: new Map(),
   };
+}
+
+/** 故障離脱中か（day < 復帰日）。injuredUntil が空/未設定（1年目）なら常に false＝既存挙動と bit 同一。 */
+function isInjured(state, pid, day) {
+  return (state.injuredUntil?.get(pid) ?? 0) > day;
 }
 
 /**
@@ -4661,6 +4687,7 @@ function selectStarter(state, day, cfg) {
   let fallbackRest = -1;
   for (let k = 0; k < rot.length; k++) {
     const pid = rot[(state.rotIdx + k) % rot.length];
+    if (isInjured(state, pid, day)) continue; // 離脱中の先発は飛ばす（次のローテ投手が繰り上がる）
     const last = state.lastStartDay.get(pid);
     const rest = last == null ? Infinity : day - last - 1;
     if (rest >= need) return pid;
@@ -4676,6 +4703,7 @@ function selectStarter(state, day, cfg) {
 function bullpenAvailable(state, day, cfg) {
   const f = cfg.tuning.fatigue;
   return state.charts.dh.bullpen.filter((pid) => {
+    if (isInjured(state, pid, day)) return false; // 離脱中の救援は可用リストから外す（C2.4）
     const m = state.pitchedByDay.get(pid);
     if (!m) return true;
     if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
@@ -4720,7 +4748,8 @@ function selectLineup(state, ctx, cfg) {
 
   const used = new Set(); // 今日すでにスタメンへ入れた選手
   const resting = new Set(); // 今日休養させる選手（スタメン候補から外す。代打等ベンチ待機は可）
-  const excluded = (pid) => used.has(pid) || resting.has(pid);
+  // 離脱中(IL)は候補から完全に除外＝担当が離脱なら控え/挑戦者が穴を埋める（C2.4/§10.5・phaseA資産）。
+  const excluded = (pid) => used.has(pid) || resting.has(pid) || isInjured(state, pid, ctx.day);
   const today = {}; // pos → 当日スタメン
 
   const positions = ctx.dh ? [...POSITION_DIFFICULTY, 'DH'] : POSITION_DIFFICULTY;
@@ -4788,7 +4817,8 @@ function selectLineup(state, ctx, cfg) {
   // 打順スロットへ反映（交代者は同じ打順スロットを引き継ぐ）。9番'P'は initSide が当日先発を充填。
   const lineup = chart.lineup.map((s) => ({ playerId: s.pos === 'P' ? null : today[s.pos], pos: s.pos }));
   const inLineup = new Set(lineup.map((s) => s.playerId));
-  const bench = fielders.filter((pid) => !inLineup.has(pid)); // 休養者も代打要員としてベンチに残る
+  // 休養者は代打要員としてベンチに残るが、離脱中(IL)は代打にも出せないので除外する（C2.4）。
+  const bench = fielders.filter((pid) => !inLineup.has(pid) && !isInjured(state, pid, ctx.day));
   return { lineup, bench, rested: [...resting] };
 }
 
@@ -6260,10 +6290,12 @@ function selfCheck(seed = 20260701, n = 8) {
  * 1シーズンの日次ランタイムを開幕状態で作る。
  * @param {{teams:Array,players:Array}} league generateLeague の出力
  * @param {Object} cfg createConfig()
- * @param {{season:number, seed:number, park?:Object, playerTeamId:string}} opts
+ * @param {{season:number, seed:number, park?:Object, playerTeamId:string, injuries?:Array}} opts
+ *   injuries=直前オフで確定した故障 [{id,severity,gamesLost}]。各選手を新シーズン開幕から
+ *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
  * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
  */
-function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId }) {
+function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [] }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
   const standings = new Map();
@@ -6272,6 +6304,19 @@ function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, pl
   }
   const stats = makeSeasonStats(season);
   const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
+  // 開幕IL: 故障選手を所属チームの起用状態に「day < gamesLost の間は不可」として載せる。
+  //   day は schedule の節index（1日≒1試合）＝gamesLost をそのまま離脱日数として扱う。
+  //   これで selectLineup/selectStarter/bullpenAvailable が離脱中の選手を除外し、ベンチ/控えが
+  //   自然に穴を埋める（phaseA の起用AI資産）。injuries が空（1年目）なら一切効かない。
+  const byId = new Map(league.players.map((p) => [p.id, p]));
+  const seasonInjuries = [];
+  for (const ev of injuries) {
+    const p = byId.get(ev.id);
+    if (!p || !ev.gamesLost) continue; // 引退で消えた選手（pid不在）は無視
+    const u = usageByTeam.get(p.teamId);
+    if (u) u.injuredUntil.set(ev.id, ev.gamesLost);
+    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, gamesLost: ev.gamesLost });
+  }
   const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
   const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
   return {
@@ -6292,6 +6337,7 @@ function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, pl
     runSplit,
     cursor: 0, // 次に処理する schedule の index（= gi。day 境界でのみ止まる）
     finalDay,
+    seasonInjuries, // 当該シーズン開幕IL（ハブ表示用・[{id,name,teamId,severity,gamesLost}]・当年のみ）
     playerGameLog: [], // 自チームの試合結果（当該シーズンのみ・§17）
     // 采配介入（フェーズC1b）: 自チーム監督プロファイルの人間差し替えログ。
     //   [{ day, teamId, manager:{buntTend,stealTend,ibbTend,quickHook} }]（絶対値）。
@@ -6996,7 +7042,16 @@ function startYear(state) {
     season: state.year,
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
+    // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
+    //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
+    //   再構築されるため決定論（IL は真値でなく offseasonTransition の再計算で復元＝save に含めない）。
+    injuries: state.pendingInjuries ?? [],
   });
+  // 前年の采配介入は team.manager を in-place で書き換える（setManagerProfile/applyInterventionsForDay）。
+  // rt を作り直しても team.manager は張り替わらないため、明示的に「素の監督」へ戻さないと前年の
+  // プロファイルが翌年へリークし live/replay が分岐する（save→load が verifyStandings で例外）。
+  const myTeam = state.rt.teamById.get(state.playerTeamId);
+  if (myTeam) myTeam.manager = { ...state.baseManager };
   // 当該年の采配介入を rt に載せる（replay で同一 day に再適用＝決定論。他年の介入は除外）。
   state.rt.interventions = state.interventions.filter((iv) => (iv.yearIndex ?? 0) === state.yearIndex);
 }
@@ -7035,6 +7090,7 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
+    pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -7166,6 +7222,7 @@ function advanceYear(state) {
     year: state.year,
   });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
+  state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
   state.yearIndex += 1;
   state.year += 1;
   startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
@@ -7264,12 +7321,14 @@ function load(blob, options = {}) {
     teamHistory: data.teamHistory ?? [],
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
+    pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
     rt: null,
   };
   // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
   // 再適用し、真値もロスター（引退・補充）も保存時点へ復元する。trueAbility とロスター構成は §17
   // （集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
   // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
+  let lastOff = null;
   for (let y = 0; y < state.yearIndex; y++) {
     const off = offseasonTransition(state.league, cfg, {
       masterSeed: state.masterSeed,
@@ -7277,7 +7336,11 @@ function load(blob, options = {}) {
       year: state.firstSeason + y,
     });
     state.retiredPlayers.push(...off.retirees);
+    lastOff = off;
   }
+  // 保存時点シーズン（yearIndex）の開幕ILは「直前オフ（yearIndex-1）」の故障で決まる。
+  // 上記 replay の最終反復がまさにそれ＝live の advanceYear と同一 off から再構築（決定論）。
+  state.pendingInjuries = lastOff ? lastOff.injuries : [];
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;
@@ -7678,8 +7741,17 @@ function renderModalBasic(box, p, s, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '対球種成績（打率 / 本）'));
     box.append(kv([['対速球', `${avgOf(vf)} / ${vf.hr}`], ['対変化球', `${avgOf(vb)} / ${vb.hr}`]]));
   }
-  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
-  box.append(abilityBars(p.trueAbility, p.role));
+  // 三層構造の禁則（phaseC_spec 禁則・§1）: キャリアモードでは trueAbility（layer1・隠し値）を
+  // 直接出さない。プレイヤーが見るのは観測成績＋スカウト評価＝「コーチの見立て」（scoutSeed 由来の
+  // 決定論ノイズを乗せた粗い等級・layer3）。分析ダッシュボード（クイックシミュレート＝game.gs 無し）は
+  // 開発/分析用途として真値表示を許容する。
+  if (game.gs) {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, 'コーチの見立て（スカウト評価・等級）'));
+    box.append(scoutBars(p));
+  } else {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
+    box.append(abilityBars(p.trueAbility, p.role));
+  }
 }
 
 // 打球タブ: 打球質(Barrel/HardHit/SweetSpot・EV)・打球タイプ/方向・スプレー＋EV/LA散布図
@@ -7792,6 +7864,45 @@ function abilityBars(t, role) {
 }
 function section(title, bars) { return el('div', { class: 'abgroup' }, [el('div', { class: 'abtitle' }, title), ...bars]); }
 function barColor(v) { return v >= 70 ? '#e8b84b' : v >= 55 ? '#7bc47f' : v >= 45 ? '#cfc8b0' : '#9a8f78'; }
+
+// --- コーチの見立て（キャリアモード・三層構造 layer3）------------------------------
+// trueAbility（隠し値）を直接は出さず、scoutSeed 由来の決定論ノイズを乗せた「観測推定」を
+// 粗い等級（S/A/B/C/D/E）で示す。ノイズは軸ごと固定シード＝同じ選手を何度開いても同じ見立て。
+// 真値そのものは表示しない（バー幅も推定値ベース）。§1「合わせるのは分布」/ phaseC_spec 禁則。
+const SCOUT_GRADES = [[70, 'S'], [63, 'A'], [56, 'B'], [48, 'C'], [40, 'D']];
+function scoutGrade(v) { for (const [th, g] of SCOUT_GRADES) if (v >= th) return g; return 'E'; }
+function scoutBars(p) {
+  const t = p.trueAbility;
+  const role = p.role;
+  const cl20 = (x) => Math.max(20, Math.min(80, x));
+  const sd = (state.cfg?.tuning?.mgr?.scoutSd ?? 5) * 1.4; // 見立ては真値より粗い（観測誤差）
+  const seed = p.scoutSeed ?? hashSeed(p.id, 'scout');
+  // 軸ごとに固定シードで一度だけ誤差を引く（決定論・開くたびに同じ等級）。
+  const obs = (key, v) => cl20(v + makeRng(hashSeed(seed, 'coachView', key)).normal(0, sd));
+  const bar = (label, key, val) => {
+    const v = obs(key, val);
+    const g = scoutGrade(v);
+    return el('div', { class: 'barrow' }, [
+      el('span', { class: 'barlabel' }, label),
+      el('span', { class: 'bartrack' }, [el('span', { class: 'barfill', style: `width:${((v - 20) / 60) * 100}%;background:${barColor(v)}` })]),
+      el('span', { class: 'barval' }, g),
+    ]);
+  };
+  const c = t.common;
+  const groups = [section('共通', [bar('走力', 'speed', c.speed), bar('肩', 'arm', c.arm), bar('確実', 'hands', c.hands), bar('反応', 'reaction', c.reaction), bar('パワー', 'power', c.power)])];
+  if (role === 'pitcher') {
+    const pi = t.pitching;
+    const veloR = cl20(50 + (pi.velocityKmh - 146) * 2); // 球速は等級用にrating換算（実km/hは伏せる）
+    groups.push(section('投手', [bar('球速', 'velo', veloR), bar('制球', 'control', pi.control), bar('スタミナ', 'stamina', pi.stamina), bar('ゴロ率', 'gbRate', pi.gbRate), bar('クイック', 'hold', pi.hold)]));
+    groups.push(section('球種', pi.pitches.map((x, i) => bar(pitchName(x.type), 'pitch' + i, x.current))));
+  } else {
+    const b = t.batting;
+    groups.push(section('打撃', [bar('EV適性', 'ev', b.ev), bar('LA適性', 'la', b.la), bar('引張', 'pull', b.pull), bar('コンタクト', 'contact', b.contact), bar('選球眼', 'eye', b.eye)]));
+    groups.push(section('走塁', [bar('盗塁技術', 'steal', t.baserunning.steal), bar('走塁IQ', 'brIQ', t.baserunning.baserunIQ)]));
+    groups.push(section('守備', [bar('ポジIQ', 'posIQ', t.fielding.positioningIQ), bar('捕手F', 'framing', t.fielding.framing)]));
+  }
+  return el('div', { class: 'abilities' }, groups);
+}
 
 // --- スプレーチャート SVG（1-8, Lv2）--------------------------------------
 function sprayChart(balls) {
@@ -8162,6 +8273,21 @@ function renderHubHome(c) {
       el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）`),
       el('div', { class: 'nextmatch' }, nextCard.text),
     ]));
+  }
+
+  // 故障者リスト（C2.4/§10.5）: 自チームの現在離脱中の選手（残り離脱日数付き）を表示する。
+  //   離脱＝直前オフに確定した故障(gamesLost)。開幕から day 進むごとに復帰が近づく。1年目は無し。
+  const curDay = pendingDayOf(rt) - 1; // 0始まりの進行 day
+  const injured = (rt.seasonInjuries ?? [])
+    .filter((e) => e.teamId === gs.playerTeamId && e.gamesLost > curDay)
+    .sort((a, b) => b.gamesLost - a.gamesLost);
+  if (injured.length) {
+    c.append(el('h3', { class: 'leaguename' }, `故障者リスト（${injured.length}名離脱中）`));
+    c.append(el('div', { class: 'recentlist' }, injured.map((e) => el('div', { class: 'recentrow' }, [
+      el('span', { class: 'wl wll' }, e.severity === 'major' ? '重' : '軽'),
+      el('span', {}, `${pname(e.id)}（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）`),
+      el('span', { class: 'score' }, `残り約${e.gamesLost - curDay}試合`),
+    ]))));
   }
 
   // 直近結果（自チーム直近5試合）

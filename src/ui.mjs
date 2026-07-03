@@ -10,7 +10,7 @@ import {
   createConfig, generateLeague, simulateSeason, deriveLeagueConstants,
   playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct,
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
-  leagueBatting, leaguePitching,
+  leagueBatting, leaguePitching, makeRng, hashSeed,
 } from './engine.mjs';
 // フェーズC1 ゲーム層API（配布バンドルではグローバル・開発時Node解決用に import も書く）。
 // バンドルでは import 行が剥がれ、これらは先行スクリプト（game/index.mjs 由来）のグローバルを参照する。
@@ -396,8 +396,17 @@ function renderModalBasic(box, p, s, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '対球種成績（打率 / 本）'));
     box.append(kv([['対速球', `${avgOf(vf)} / ${vf.hr}`], ['対変化球', `${avgOf(vb)} / ${vb.hr}`]]));
   }
-  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
-  box.append(abilityBars(p.trueAbility, p.role));
+  // 三層構造の禁則（phaseC_spec 禁則・§1）: キャリアモードでは trueAbility（layer1・隠し値）を
+  // 直接出さない。プレイヤーが見るのは観測成績＋スカウト評価＝「コーチの見立て」（scoutSeed 由来の
+  // 決定論ノイズを乗せた粗い等級・layer3）。分析ダッシュボード（クイックシミュレート＝game.gs 無し）は
+  // 開発/分析用途として真値表示を許容する。
+  if (game.gs) {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, 'コーチの見立て（スカウト評価・等級）'));
+    box.append(scoutBars(p));
+  } else {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
+    box.append(abilityBars(p.trueAbility, p.role));
+  }
 }
 
 // 打球タブ: 打球質(Barrel/HardHit/SweetSpot・EV)・打球タイプ/方向・スプレー＋EV/LA散布図
@@ -510,6 +519,45 @@ function abilityBars(t, role) {
 }
 function section(title, bars) { return el('div', { class: 'abgroup' }, [el('div', { class: 'abtitle' }, title), ...bars]); }
 function barColor(v) { return v >= 70 ? '#e8b84b' : v >= 55 ? '#7bc47f' : v >= 45 ? '#cfc8b0' : '#9a8f78'; }
+
+// --- コーチの見立て（キャリアモード・三層構造 layer3）------------------------------
+// trueAbility（隠し値）を直接は出さず、scoutSeed 由来の決定論ノイズを乗せた「観測推定」を
+// 粗い等級（S/A/B/C/D/E）で示す。ノイズは軸ごと固定シード＝同じ選手を何度開いても同じ見立て。
+// 真値そのものは表示しない（バー幅も推定値ベース）。§1「合わせるのは分布」/ phaseC_spec 禁則。
+const SCOUT_GRADES = [[70, 'S'], [63, 'A'], [56, 'B'], [48, 'C'], [40, 'D']];
+function scoutGrade(v) { for (const [th, g] of SCOUT_GRADES) if (v >= th) return g; return 'E'; }
+function scoutBars(p) {
+  const t = p.trueAbility;
+  const role = p.role;
+  const cl20 = (x) => Math.max(20, Math.min(80, x));
+  const sd = (state.cfg?.tuning?.mgr?.scoutSd ?? 5) * 1.4; // 見立ては真値より粗い（観測誤差）
+  const seed = p.scoutSeed ?? hashSeed(p.id, 'scout');
+  // 軸ごとに固定シードで一度だけ誤差を引く（決定論・開くたびに同じ等級）。
+  const obs = (key, v) => cl20(v + makeRng(hashSeed(seed, 'coachView', key)).normal(0, sd));
+  const bar = (label, key, val) => {
+    const v = obs(key, val);
+    const g = scoutGrade(v);
+    return el('div', { class: 'barrow' }, [
+      el('span', { class: 'barlabel' }, label),
+      el('span', { class: 'bartrack' }, [el('span', { class: 'barfill', style: `width:${((v - 20) / 60) * 100}%;background:${barColor(v)}` })]),
+      el('span', { class: 'barval' }, g),
+    ]);
+  };
+  const c = t.common;
+  const groups = [section('共通', [bar('走力', 'speed', c.speed), bar('肩', 'arm', c.arm), bar('確実', 'hands', c.hands), bar('反応', 'reaction', c.reaction), bar('パワー', 'power', c.power)])];
+  if (role === 'pitcher') {
+    const pi = t.pitching;
+    const veloR = cl20(50 + (pi.velocityKmh - 146) * 2); // 球速は等級用にrating換算（実km/hは伏せる）
+    groups.push(section('投手', [bar('球速', 'velo', veloR), bar('制球', 'control', pi.control), bar('スタミナ', 'stamina', pi.stamina), bar('ゴロ率', 'gbRate', pi.gbRate), bar('クイック', 'hold', pi.hold)]));
+    groups.push(section('球種', pi.pitches.map((x, i) => bar(pitchName(x.type), 'pitch' + i, x.current))));
+  } else {
+    const b = t.batting;
+    groups.push(section('打撃', [bar('EV適性', 'ev', b.ev), bar('LA適性', 'la', b.la), bar('引張', 'pull', b.pull), bar('コンタクト', 'contact', b.contact), bar('選球眼', 'eye', b.eye)]));
+    groups.push(section('走塁', [bar('盗塁技術', 'steal', t.baserunning.steal), bar('走塁IQ', 'brIQ', t.baserunning.baserunIQ)]));
+    groups.push(section('守備', [bar('ポジIQ', 'posIQ', t.fielding.positioningIQ), bar('捕手F', 'framing', t.fielding.framing)]));
+  }
+  return el('div', { class: 'abilities' }, groups);
+}
 
 // --- スプレーチャート SVG（1-8, Lv2）--------------------------------------
 function sprayChart(balls) {
@@ -880,6 +928,21 @@ function renderHubHome(c) {
       el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）`),
       el('div', { class: 'nextmatch' }, nextCard.text),
     ]));
+  }
+
+  // 故障者リスト（C2.4/§10.5）: 自チームの現在離脱中の選手（残り離脱日数付き）を表示する。
+  //   離脱＝直前オフに確定した故障(gamesLost)。開幕から day 進むごとに復帰が近づく。1年目は無し。
+  const curDay = pendingDayOf(rt) - 1; // 0始まりの進行 day
+  const injured = (rt.seasonInjuries ?? [])
+    .filter((e) => e.teamId === gs.playerTeamId && e.gamesLost > curDay)
+    .sort((a, b) => b.gamesLost - a.gamesLost);
+  if (injured.length) {
+    c.append(el('h3', { class: 'leaguename' }, `故障者リスト（${injured.length}名離脱中）`));
+    c.append(el('div', { class: 'recentlist' }, injured.map((e) => el('div', { class: 'recentrow' }, [
+      el('span', { class: 'wl wll' }, e.severity === 'major' ? '重' : '軽'),
+      el('span', {}, `${pname(e.id)}（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）`),
+      el('span', { class: 'score' }, `残り約${e.gamesLost - curDay}試合`),
+    ]))));
   }
 
   // 直近結果（自チーム直近5試合）

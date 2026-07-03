@@ -21,7 +21,9 @@ import { startSeasonRuntime, advanceRuntimeDay, pendingDay } from './season_runt
 import { applyAging } from './aging.mjs';
 import { applyInjuries } from './injury.mjs';
 import { applyBreakouts } from './breakout.mjs';
-import { runRetirementAndDraft } from './roster.mjs';
+import { runRetirement, rebuildTeamRosters } from './roster.mjs';
+import { runMarket, teamEvalProfile } from './market.mjs';
+import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './transactions.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
@@ -40,32 +42,54 @@ function offseasonSeed(masterSeed, yearIndex) {
 }
 
 /**
- * オフシーズン遷移の中核（C2b）: 完了年 yearIndex の全選手に対し、故障→ブレイク→加齢→
- * 引退/新人補充を決定論的な順序で適用し、league.players/teams を翌年開幕の状態へ張り替える。
- * 純関数的（副作用は league と cfg 由来のみ）で、live の advanceYear と load の replay の
- * 両方から「同一 (masterSeed, yearIndex, year)」で呼ばれ bit 一致する（多年セーブの決定論）。
+ * オフシーズン遷移の中核（C2b＋C3a＋C3b）: 完了年 yearIndex の全選手に対し、決定論的な順序で
+ * 状態遷移を適用し、league.players/farm/teams を翌年開幕の状態へ張り替える。live の advanceYear と
+ * load の replay の両方から「同一 (masterSeed, yearIndex, year, careerStats, marketInterventions)」で
+ * 呼ばれ bit 一致する（多年セーブの決定論）。
  *
- * 順序の意味:
- *   1. 故障（injury）を先に判定 → 2. ブレイク（§10.4「故障明けの別人化」は当年の大怪我を参照）
- *   → 3. 加齢（applyAging が age++ もする）→ 4. 引退/補充（加齢後の年齢・能力で判定）。
- * 各フェーズは独立の階層シード座標（'injury'/'breakout'/'offseason'/'retire'/'draft'）を使う。
- * @returns {{injuries:Array, breakouts:Array, retirees:Array, rookies:Array}} オフシーズン要約
+ * 順序（phaseC_spec C3b）: 故障→ブレイク→加齢→**引退→FA→トレード→ドラフト/育成→戦力外/拾い上げ
+ * →契約更改**。各フェーズは独立の階層シード座標（'injury'/'breakout'/'offseason'/'retire'/'draft'/
+ * 'fa'/'trade'/'release' 等）を使う。FA/トレードは引退後の生存者を同型1:1でスワップ（構成恒常）し、
+ * 補充ドラフトの空き枠（＝引退枠）には影響しない。戦力外/拾い上げはドラフト後の全支配下から同型循環で
+ * 再分配する。三層構造: 入札/受諾/拾い上げの査定は evaluateProspect（観測＋スカウト＋球団の癖）、
+ * 放出判定だけ "実観測"（当年 statline＝出場機会依存）で下す（§12.2）。
+ *
+ * @param {Array} careerStats 全完了シーズンの選手集計（当年 statline を season==year で絞って観測に使う）
+ * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
+ * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings }) {
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], marketInterventions = [] }) {
   const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
-  // C3a 編成市場: 引退枠を「育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得」で埋める（§13/§15/§12.1）。
-  //   ウェーバー順は前年順位（standings）由来。standings は teamHistory 経由で live も load-replay も
-  //   同一値が渡る（save に含まれ再構築される）＝多年セーブの決定論。
-  const { retirees, rookies, promotions, draftLog } = runRetirementAndDraft(league, cfg, {
-    seed: hashSeed(masterSeed, 'retire', yearIndex),
-    yearIndex,
-    debutYear: year + 1,
-    masterSeed,
-    standings,
-  });
-  return { injuries, breakouts, retirees, rookies, promotions, draftLog };
+
+  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
+  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
+  const obs = new Map();
+  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+  // 当年ぶんのプレイヤー市場操作のみ適用（他年の介入は除外・再現可能）。
+  const ivs = marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === yearIndex);
+  // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
+  const profiles = new Map();
+  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+
+  // 引退（生存者を league.players へ・空き枠 vacancies を得る）。
+  const { retirees, vacancies } = runRetirement(league, cfg, { seed: hashSeed(masterSeed, 'retire', yearIndex), debutYear: year + 1 });
+  // FA → トレード（引退後の生存者を同型1:1スワップ・構成恒常・ドラフト枠に非干渉）。
+  const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
+  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
+  rebuildTeamRosters(league);
+  // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1 });
+  league.players = league.players.concat(promoted, rookies);
+  rebuildTeamRosters(league);
+  // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
+  const pickups = runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearIndex, standings, obs });
+  rebuildTeamRosters(league);
+  // 契約更改（フレーバー・エンジン非干渉）。
+  const contracts = runContractRenewal(league, cfg, { obs });
+
+  return { injuries, breakouts, retirees, rookies, promotions, draftLog, fa, trades, pickups, contracts };
 }
 
 /** 完了年 y（=firstSeason+y）の最終順位を teamHistory から取り出す（ウェーバー順の素）。 */
@@ -129,6 +153,7 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
+    marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
     pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
     rt: null, // 現行シーズンの日次ランタイム
   };
@@ -165,6 +190,42 @@ export function setManagerProfile(state, manager) {
 export function clearManagerProfile(state) {
   setManagerProfile(state, state.baseManager);
   state.settings.autoManage = true;
+}
+
+// --- 市場介入（C3b・オフシーズンで適用・save/replay で再現） -------------------
+// FA入札・トレード起案は「当年 yearIndex」のログとして marketInterventions に積む。次の
+// advanceYear（＝当年オフシーズン）で offseasonTransition が当年ぶんを適用する。人間の意思は
+// このログだけに載り、live も load-replay も同一結果を再現する（決定論・§介入ログ）。
+
+/**
+ * FA入札介入。自チームが FA宣言選手 playerId の獲得に動く意思をログする（当年オフで AI 入札を
+ * 上回る勝者として扱われる・人的補償は同型で自動）。相手が実際に宣言し補償が成立する時のみ発火。
+ * @returns {Object} 追加した介入
+ */
+export function bidFA(state, playerId) {
+  const iv = { yearIndex: state.yearIndex, phase: 'fa', playerId, teamId: state.playerTeamId };
+  state.marketInterventions = state.marketInterventions.filter(
+    (m) => !(m.phase === 'fa' && m.yearIndex === state.yearIndex && m.playerId === playerId),
+  );
+  state.marketInterventions.push(iv);
+  return iv;
+}
+
+/**
+ * トレード起案介入。自チームの選手 aPlayer と、相手チームの選手 bPlayer（同 role/primaryPos）の
+ * 交換を起案する。当年オフで相手 AI が自評価で受諾判定する（受諾＝成立・拒否＝ログのみ）。
+ * @returns {Object} 追加した介入
+ */
+export function proposeTrade(state, aPlayer, bPlayer) {
+  const a = state.league.players.find((p) => p.id === aPlayer);
+  const b = state.league.players.find((p) => p.id === bPlayer);
+  if (!a || !b) throw new Error('proposeTrade: 選手が見つからない');
+  const iv = { yearIndex: state.yearIndex, phase: 'trade', aTeam: a.teamId, aPlayer, bTeam: b.teamId, bPlayer };
+  state.marketInterventions = state.marketInterventions.filter(
+    (m) => !(m.phase === 'trade' && m.yearIndex === state.yearIndex && m.aPlayer === aPlayer && m.bPlayer === bPlayer),
+  );
+  state.marketInterventions.push(iv);
+  return iv;
 }
 
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
@@ -260,6 +321,8 @@ export function advanceYear(state) {
     yearIndex: state.yearIndex,
     year: state.year,
     standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
+    careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
+    marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
   });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
@@ -313,6 +376,7 @@ export function save(state) {
     careerStats: state.careerStats, // 完了シーズン集計（永続）
     teamHistory: state.teamHistory,
     interventions: state.interventions,
+    marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -362,6 +426,7 @@ export function load(blob, options = {}) {
     teamHistory: data.teamHistory ?? [],
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
+    marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
     rt: null,
   };
@@ -377,6 +442,9 @@ export function load(blob, options = {}) {
       year: state.firstSeason + y,
       // ウェーバー順の素 = 完了年の順位。teamHistory は blob から復元済み＝live と同一値（決定論）。
       standings: standingsForYear(state, state.firstSeason + y),
+      // 放出/契約更改の "実観測" は careerStats（blob 復元済み）を season==year で絞る＝live と同一部分集合。
+      careerStats: state.careerStats,
+      marketInterventions: state.marketInterventions,
     });
     state.retiredPlayers.push(...off.retirees);
     lastOff = off;

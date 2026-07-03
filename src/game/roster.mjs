@@ -1,40 +1,49 @@
 // ============================================================================
 // フェーズC2b: 引退・世代交代（§10.6） ／ C3a: 補充をドラフト＋育成昇格へ置換（§13/§15/§12.1）
 //
-//   runRetirementAndDraft(league, cfg, { seed, yearIndex, debutYear, masterSeed, standings })
-//     … 能力・年齢・故障から各選手の引退を確率判定し（生存バイアス）、引退で空いた枠を
-//        **編成市場**（src/game/market.mjs の runMarket）で埋める:
-//          ① 育成枠からの昇格（同型の空き枠がある時に稀に・§12.1）
-//          ② ドラフト（ウェーバー逆順×1位競合くじ・球団AI評価差で宝がこぼれる・§13/§15）
-//        ドラフト漏れ（過小評価された宝）は育成枠へ回る。league.players/farm/teams[].playerIds を
-//        in-place で張り替える。構成恒常（promoted+rookies == 引退枠数）。
+//   runRetirement(league, cfg, { seed, yearIndex, debutYear })
+//     … 能力・年齢・故障から各選手の引退を確率判定し（生存バイアス）、生存者を league.players へ
+//        張り替え、引退で空いた枠(teamId,role,primaryPos)の一覧 vacancies を返す。
+//        補充（ドラフト/育成昇格＝runMarket）と C3b の市場（FA/トレード/戦力外）は呼び出し側
+//        （index.mjs の offseasonTransition）がこの後に順序立てて実行する。
+//   rebuildTeamRosters(league)
+//     … league.players から各 team.playerIds を張り直す（移動/補充の後に呼ぶ・構成の同期）。
 //
 // 設計原則（phaseC_spec・厳守）:
 //   - 生存バイアス（§10.6）はそのままで正しい: 弱い個体が引退で消え、40代まで残るのは
 //     「衰えなかった個体（低declineRate＝鉄人）」だけ → 鉄人が自動でレア化する。
-//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。市場（ドラフト/くじ/昇格）も
-//     階層シード rng のみ。ウェーバー順は前年順位（standings＝teamHistory 経由で load-replay も同一）。
+//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。ウェーバー順は前年順位
+//     （standings＝teamHistory 経由で load-replay も同一）。
 //   - 引退判定は「能力＋年齢＋故障歴」の純関数（観測成績/出場機会に依存しない）。
 //     ＝ load の replay（過去年のオフを再走）で season 再シムなしに同一ロスターを再構築できる。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp } from '../model/util.mjs';
-import { runMarket } from './market.mjs';
 
 /**
- * オフシーズンの引退判定＋補充（ドラフト/育成昇格）を適用する（in-place）。
- *
- * C3a で「1:1 同チーム同枠の新人補充」を **編成市場**（球団AI評価差＋ドラフト＋育成昇格）へ置換した。
- * 引退で空いた枠(teamId,role,primaryPos)を、①育成枠からの昇格 と ②ドラフト（ウェーバー逆順×くじ）で
- * 埋める。ドラフト漏れ（＝球団評価に過小評価された宝）は育成枠へ回る（§12.1/§13/§15）。
- * 構成恒常（promoted+rookies == vacancies）・決定論は runMarket が保証する。
- *
- * @param {{players:Array, teams:Array, farm?:Array}} league
- * @param {Object} cfg createConfig()（cfg.tuning.retire / cfg.tuning.market を参照）
- * @param {{seed:number, yearIndex:number, debutYear:number, masterSeed:number, standings:?Array}} o
- * @returns {{retirees:Array, rookies:Array, promotions:Array, draftLog:Object}} 引退者・補充・昇格・ドラフト記録
+ * 各 team.playerIds を league.players（現在の teamId）から張り直す（移動/補充後の同期）。
+ * 育成（minor）は支配下ロスターに含めない。
  */
-export function runRetirementAndDraft(league, cfg, { seed, yearIndex, debutYear, masterSeed, standings }) {
+export function rebuildTeamRosters(league) {
+  const idsByTeam = new Map();
+  for (const p of league.players) {
+    if (!idsByTeam.has(p.teamId)) idsByTeam.set(p.teamId, []);
+    idsByTeam.get(p.teamId).push(p.id);
+  }
+  for (const t of league.teams) t.playerIds = idsByTeam.get(t.id) ?? [];
+}
+
+/**
+ * オフシーズンの引退判定（in-place）。生存者を league.players へ張り替え、引退で空いた枠一覧を返す。
+ * 補充（ドラフト/育成昇格）は呼び出し側が runMarket で行う（C3b で FA/トレードを引退と補充の間に
+ * 挟むため、引退と補充を分離した）。
+ *
+ * @param {{players:Array, teams:Array}} league
+ * @param {Object} cfg createConfig()（cfg.tuning.retire を参照）
+ * @param {{seed:number, debutYear:number}} o
+ * @returns {{retirees:Array, vacancies:Array}} 引退者サマリと空き枠(teamId,role,primaryPos)一覧
+ */
+export function runRetirement(league, cfg, { seed, debutYear }) {
   const survivors = [];
   const retirees = [];
   const gone = []; // 引退選手（枠 = teamId/role/primaryPos の供給源）
@@ -54,25 +63,9 @@ export function runRetirementAndDraft(league, cfg, { seed, yearIndex, debutYear,
   gone.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const vacancies = gone.map((p) => ({ teamId: p.teamId, role: p.role, primaryPos: p.primaryPos }));
 
-  // 編成市場: 育成昇格 → ドラフト → 育成獲得。promoted+rookies が vacancies を過不足なく埋める。
-  const { promoted, rookies, draftLog, promotions } = runMarket(league, cfg, {
-    vacancies,
-    standings,
-    masterSeed,
-    yearIndex,
-    debutYear,
-  });
-
-  // league を張り替える（生存者＋昇格＋新人）。人口=survivors+vacancies=不変（構成恒常）。
-  league.players = survivors.concat(promoted, rookies);
-  const idsByTeam = new Map();
-  for (const p of league.players) {
-    if (!idsByTeam.has(p.teamId)) idsByTeam.set(p.teamId, []);
-    idsByTeam.get(p.teamId).push(p.id);
-  }
-  for (const t of league.teams) t.playerIds = idsByTeam.get(t.id) ?? [];
-
-  return { retirees, rookies, promotions, draftLog };
+  league.players = survivors;
+  rebuildTeamRosters(league);
+  return { retirees, vacancies };
 }
 
 /**

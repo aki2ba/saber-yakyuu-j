@@ -446,7 +446,12 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (isIBB) {
       outcome = 'BB';
       paPitches = cfg.tuning.ibb.pitches;
-      pStat.pitching.pitches += Math.round(paPitches); // 敬遠は機械を通さない＝投球数を別途計上
+      // 敬遠は機械を通さない＝投球数を別途計上。§B1-2 の恒等（Σbatter.pitches==Σpitcher.pitches）を保つため打者側も同数加算（対称に）。
+      // lumpedPitches にも計上し、一球swing模型の率(Zone%/CSW%/SwStr%)の分母から除外できるようにする。
+      pStat.pitching.pitches += Math.round(paPitches);
+      pStat.pitching.lumpedPitches += Math.round(paPitches);
+      bStat.batting.pitches += Math.round(paPitches);
+      bStat.batting.lumpedPitches += Math.round(paPitches);
     } else {
       const pa = runPlateAppearance({
         batter, pitcher, catcher, cfg, rng, tto,
@@ -834,7 +839,11 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
   const pc = t.pitches;
   fielding.cur.pitches += pc;
   fielding.cur.bf++;
+  // 犠打も機械を通さない＝投球数を別途計上。§B1-2 の恒等を保つため打者側も同数加算（対称に）。lumpedPitches にも計上（率の分母から除外用）。
   pStat.pitching.pitches += Math.round(pc);
+  pStat.pitching.lumpedPitches += Math.round(pc);
+  bStat.batting.pitches += Math.round(pc);
+  bStat.batting.lumpedPitches += Math.round(pc);
   pStat.pitching.bf++;
   bStat.batting.pa++;
 

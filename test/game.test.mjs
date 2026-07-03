@@ -281,6 +281,22 @@ test('シーズン: IBB⊆BB（打者・投手の両側）（S2）', () => {
   assert.ok(ibbP > 0, '投手側にもIBBが計上される');
 });
 
+test('シーズン: 一球生カウントの打者=投手恒等（Σ打者==Σ投手・§B1-2 対称）（B1）', () => {
+  // 状態機械は一球ごとに打者/投手へ対称加算する。機械を通さない敬遠/犠打も
+  // pitches/lumpedPitches の両側へ同数計上するため、リーグ合算では完全一致する。
+  const b = { pitches: 0, lumpedPitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0, zonePitches: 0, oZonePitches: 0, firstPitchStrikes: 0 };
+  const p = { ...b };
+  for (const s of seasonRes.playerSeasons) {
+    for (const k of Object.keys(b)) { b[k] += s.batting[k]; p[k] += s.pitching[k]; }
+  }
+  for (const k of Object.keys(b)) {
+    assert.equal(b[k], p[k], `${k} の打者=投手恒等 (打者${b[k]} != 投手${p[k]})`);
+  }
+  assert.ok(b.lumpedPitches > 0, '敬遠/犠打の lumpedPitches が発現');
+  // 機械球数 = pitches − lumpedPitches（swing模型の率の分母）は正で pitches より少ない
+  assert.ok(b.pitches - b.lumpedPitches > 0 && b.lumpedPitches < b.pitches, '機械球数が正');
+});
+
 test('シーズン: 投手打席はDH無しリーグ主催の試合で発現し、L1球団の投手PAがL2球団より多い（S2）', () => {
   const leagueOf = new Map(lg.teams.map((t) => [t.id, t.league]));
   const pa = { L1: 0, L2: 0 };

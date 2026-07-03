@@ -140,15 +140,18 @@ function runOnce(seed) {
       framingLeader = Math.max(framingLeader, s.fielding.framingRuns);
     }
   }
-  // 規律系の率（リーグ集計の生カウントから。打者側=投手側の恒等なので lgBat を使用）---
+  // 規律系の率（リーグ集計の生カウントから。IBB/犠打も両側へ対称計上され打者側=投手側の恒等が成立＝lgBat を使用。§B1-2）---
+  // 投球数/PA は総球数（IBB/犠打を含む＝実測の投球数/PA）。一方 Zone%/CSW%/SwStr% は一球swing模型の率なので
+  // 機械を通さない敬遠/犠打の投球（lumpedPitches）を分母から除外する（機械球数=pitches−lumpedPitches）。
+  const machinePitches = lgBat.pitches - lgBat.lumpedPitches;
   const disc = {
     pitchesPerPA: lgBat.pa ? lgBat.pitches / lgBat.pa : 0,
-    zonePct: lgBat.pitches ? lgBat.zonePitches / lgBat.pitches : 0,
+    zonePct: machinePitches ? lgBat.zonePitches / machinePitches : 0,
     oSwingPct: lgBat.oZonePitches ? lgBat.oSwings / lgBat.oZonePitches : 0,
     zSwingPct: lgBat.zonePitches ? lgBat.zSwings / lgBat.zonePitches : 0,
     contactPct: lgBat.swings ? (lgBat.swings - lgBat.whiffs) / lgBat.swings : 0,
-    swStrPct: lgBat.pitches ? lgBat.whiffs / lgBat.pitches : 0,
-    cswPct: lgBat.pitches ? (lgBat.calledStrikes + lgBat.whiffs) / lgBat.pitches : 0,
+    swStrPct: machinePitches ? lgBat.whiffs / machinePitches : 0,
+    cswPct: machinePitches ? (lgBat.calledStrikes + lgBat.whiffs) / machinePitches : 0,
     fStrikePct: lgBat.pa ? lgBat.firstPitchStrikes / lgBat.pa : 0,
     starterPitchesPerGame: starterStarts ? starterPitches / starterStarts : 0,
     wpPbPerTeam: wpPbTotal / numTeams,

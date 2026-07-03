@@ -563,6 +563,9 @@ function createBattingLine() {
     // zonePitches/oZonePitches=ゾーン内/明確ボールの球数, z/oSwings=各帯スイング, z/oWhiffs=各帯空振り,
     // ballsInDirt=ワンバウンド球数。率(Zone%/O-Swing%/Contact%/SwStr%/CSW%)はこれらから metrics で算出。
     pitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
+    // lumpedPitches=状態機械を通さない打席（敬遠/犠打）の投球数。pitches に含めて恒等(§B1-2 Σ打者==Σ投手)を保つが、
+    // 一球swing模型の率(Zone%/CSW%/SwStr%)の分母からは除外する（EV/LA非模型のため）＝機械球数=pitches−lumpedPitches。
+    lumpedPitches: 0,
     zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     firstPitchStrikes: 0, // 初球がストライク判定(見逃し/空振り/ファウル/インプレー)だった打席数（F-Strike%の分子）
     // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
@@ -628,6 +631,7 @@ function createPitchingLine() {
     cg: 0, // 完投（監査B4で計上）
     sho: 0, // 完封（監査B4で計上）
     pitches: 0, // 投球数
+    lumpedPitches: 0, // 敬遠/犠打の投球数（打者側と対称・機械球数=pitches−lumpedPitches。率の分母から除外）
     // --- B1 一球ごとの生カウント（投手視点・§B1-2）。打者側と対称。被O-Swing等=「釣れる投手」の素。
     swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
@@ -3586,7 +3590,12 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (isIBB) {
       outcome = 'BB';
       paPitches = cfg.tuning.ibb.pitches;
-      pStat.pitching.pitches += Math.round(paPitches); // 敬遠は機械を通さない＝投球数を別途計上
+      // 敬遠は機械を通さない＝投球数を別途計上。§B1-2 の恒等（Σbatter.pitches==Σpitcher.pitches）を保つため打者側も同数加算（対称に）。
+      // lumpedPitches にも計上し、一球swing模型の率(Zone%/CSW%/SwStr%)の分母から除外できるようにする。
+      pStat.pitching.pitches += Math.round(paPitches);
+      pStat.pitching.lumpedPitches += Math.round(paPitches);
+      bStat.batting.pitches += Math.round(paPitches);
+      bStat.batting.lumpedPitches += Math.round(paPitches);
     } else {
       const pa = runPlateAppearance({
         batter, pitcher, catcher, cfg, rng, tto,
@@ -3974,7 +3983,11 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
   const pc = t.pitches;
   fielding.cur.pitches += pc;
   fielding.cur.bf++;
+  // 犠打も機械を通さない＝投球数を別途計上。§B1-2 の恒等を保つため打者側も同数加算（対称に）。lumpedPitches にも計上（率の分母から除外用）。
   pStat.pitching.pitches += Math.round(pc);
+  pStat.pitching.lumpedPitches += Math.round(pc);
+  bStat.batting.pitches += Math.round(pc);
+  bStat.batting.lumpedPitches += Math.round(pc);
   pStat.pitching.bf++;
   bStat.batting.pa++;
 

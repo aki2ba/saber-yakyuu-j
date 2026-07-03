@@ -51,17 +51,27 @@ function offseasonSeed(masterSeed, yearIndex) {
  * 各フェーズは独立の階層シード座標（'injury'/'breakout'/'offseason'/'retire'/'draft'）を使う。
  * @returns {{injuries:Array, breakouts:Array, retirees:Array, rookies:Array}} オフシーズン要約
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year }) {
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings }) {
   const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
-  const { retirees, rookies } = runRetirementAndDraft(league, cfg, {
+  // C3a 編成市場: 引退枠を「育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得」で埋める（§13/§15/§12.1）。
+  //   ウェーバー順は前年順位（standings）由来。standings は teamHistory 経由で live も load-replay も
+  //   同一値が渡る（save に含まれ再構築される）＝多年セーブの決定論。
+  const { retirees, rookies, promotions, draftLog } = runRetirementAndDraft(league, cfg, {
     seed: hashSeed(masterSeed, 'retire', yearIndex),
-    draftSeed: hashSeed(masterSeed, 'draft', yearIndex),
     yearIndex,
     debutYear: year + 1,
+    masterSeed,
+    standings,
   });
-  return { injuries, breakouts, retirees, rookies };
+  return { injuries, breakouts, retirees, rookies, promotions, draftLog };
+}
+
+/** 完了年 y（=firstSeason+y）の最終順位を teamHistory から取り出す（ウェーバー順の素）。 */
+function standingsForYear(state, year) {
+  const hist = state.teamHistory.find((h) => h.year === year);
+  return hist ? hist.standings : null;
 }
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
@@ -100,6 +110,7 @@ function captureBaseManager(state) {
 export function newGame(masterSeed, playerTeamId, options = {}) {
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(masterSeed, cfg);
+  league.farm = []; // 育成枠（C3a・支配下396とは別枠）。1年目は空＝既存50較正に無影響
   if (!league.teams.some((t) => t.id === playerTeamId)) {
     throw new Error(`playerTeamId ${playerTeamId} がリーグに存在しない`);
   }
@@ -248,6 +259,7 @@ export function advanceYear(state) {
     masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
     year: state.year,
+    standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
   });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
@@ -334,6 +346,7 @@ export function load(blob, options = {}) {
   }
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(data.masterSeed >>> 0, cfg);
+  league.farm = []; // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -362,6 +375,8 @@ export function load(blob, options = {}) {
       masterSeed: state.masterSeed,
       yearIndex: y,
       year: state.firstSeason + y,
+      // ウェーバー順の素 = 完了年の順位。teamHistory は blob から復元済み＝live と同一値（決定論）。
+      standings: standingsForYear(state, state.firstSeason + y),
     });
     state.retiredPlayers.push(...off.retirees);
     lastOff = off;

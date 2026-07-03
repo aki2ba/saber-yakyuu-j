@@ -143,7 +143,9 @@ test('C2a: advanceYear は継続選手を age++ し真値を動かす（世代�
       if (p.trueAbility.batting.eye !== eyeBefore.get(p.id)) changed++;
       survived++;
     } else {
-      assert.ok(p.age >= cfg.game.rookieAgeMin && p.age <= cfg.game.rookieAgeMax, '新人は若い');
+      // C3a: 補充はドラフト（世代生成）に置換。新人年齢は高卒18/大卒22/社会人25相当の混合分布。
+      const co = cfg.tuning.market.cohort;
+      assert.ok(p.age >= co.hsAge && p.age <= co.corpAge, '新人は世代帯（18〜25）の若手');
     }
   }
   assert.equal(st1.league.players.length, nBefore, 'リーグ人口は恒常（引退＝補充）');

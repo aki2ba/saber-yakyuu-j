@@ -1,68 +1,70 @@
 // ============================================================================
-// フェーズC2b: 引退・世代交代（§10.6）
+// フェーズC2b: 引退・世代交代（§10.6） ／ C3a: 補充をドラフト＋育成昇格へ置換（§13/§15/§12.1）
 //
-//   runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex, debutYear })
-//     … 能力・年齢・故障から各選手の引退を確率判定し、引退枠へ「同チーム・同role・同primaryPos」
-//        の新人（ドラフト相当）を1:1で補充する。→ リーグ人口とロスター構成を恒常に保つ。
-//        league.players / league.teams[].playerIds を in-place で張り替える。
+//   runRetirementAndDraft(league, cfg, { seed, yearIndex, debutYear, masterSeed, standings })
+//     … 能力・年齢・故障から各選手の引退を確率判定し（生存バイアス）、引退で空いた枠を
+//        **編成市場**（src/game/market.mjs の runMarket）で埋める:
+//          ① 育成枠からの昇格（同型の空き枠がある時に稀に・§12.1）
+//          ② ドラフト（ウェーバー逆順×1位競合くじ・球団AI評価差で宝がこぼれる・§13/§15）
+//        ドラフト漏れ（過小評価された宝）は育成枠へ回る。league.players/farm/teams[].playerIds を
+//        in-place で張り替える。構成恒常（promoted+rookies == 引退枠数）。
 //
 // 設計原則（phaseC_spec・厳守）:
 //   - 生存バイアス（§10.6）はそのままで正しい: 弱い個体が引退で消え、40代まで残るのは
 //     「衰えなかった個体（低declineRate＝鉄人）」だけ → 鉄人が自動でレア化する。
-//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。新人IDは
-//     `${teamId}Y${yearIndex}N${k}`（チーム内の引退者をid昇順で採番）で live/replay 一致。
+//   - 決定論・順序非依存: 引退判定は id 基準 rng（配列順に依らない）。市場（ドラフト/くじ/昇格）も
+//     階層シード rng のみ。ウェーバー順は前年順位（standings＝teamHistory 経由で load-replay も同一）。
 //   - 引退判定は「能力＋年齢＋故障歴」の純関数（観測成績/出場機会に依存しない）。
 //     ＝ load の replay（過去年のオフを再走）で season 再シムなしに同一ロスターを再構築できる。
-//     真の出場機会依存の戦力外/拾い上げ（§12.2）は C3 で導入する（本stageは能力を代理に使う）。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp } from '../model/util.mjs';
-import { generateRookie } from '../generate.mjs';
+import { runMarket } from './market.mjs';
 
 /**
- * オフシーズンの引退判定＋新人補充を適用する（in-place）。
- * @param {{players:Array, teams:Array}} league
- * @param {Object} cfg createConfig()（cfg.tuning.retire / cfg.game.rookieAge* を参照）
- * @param {{seed:number, draftSeed:number, yearIndex:number, debutYear:number}} o
- * @returns {{retirees:Array, rookies:Array}} 引退者サマリと補充新人
+ * オフシーズンの引退判定＋補充（ドラフト/育成昇格）を適用する（in-place）。
+ *
+ * C3a で「1:1 同チーム同枠の新人補充」を **編成市場**（球団AI評価差＋ドラフト＋育成昇格）へ置換した。
+ * 引退で空いた枠(teamId,role,primaryPos)を、①育成枠からの昇格 と ②ドラフト（ウェーバー逆順×くじ）で
+ * 埋める。ドラフト漏れ（＝球団評価に過小評価された宝）は育成枠へ回る（§12.1/§13/§15）。
+ * 構成恒常（promoted+rookies == vacancies）・決定論は runMarket が保証する。
+ *
+ * @param {{players:Array, teams:Array, farm?:Array}} league
+ * @param {Object} cfg createConfig()（cfg.tuning.retire / cfg.tuning.market を参照）
+ * @param {{seed:number, yearIndex:number, debutYear:number, masterSeed:number, standings:?Array}} o
+ * @returns {{retirees:Array, rookies:Array, promotions:Array, draftLog:Object}} 引退者・補充・昇格・ドラフト記録
  */
-export function runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex, debutYear }) {
+export function runRetirementAndDraft(league, cfg, { seed, yearIndex, debutYear, masterSeed, standings }) {
   const survivors = [];
   const retirees = [];
-  const goneByTeam = new Map(); // teamId → 引退選手[]（新人補充の枠）
+  const gone = []; // 引退選手（枠 = teamId/role/primaryPos の供給源）
 
   for (const p of league.players) {
     const prng = makeRng(hashSeed(seed, 'retire', p.id));
     if (decideRetire(p, cfg, prng)) {
       p.rosterStatus = 'retired';
       retirees.push(summarizeRetiree(p, debutYear - 1));
-      if (!goneByTeam.has(p.teamId)) goneByTeam.set(p.teamId, []);
-      goneByTeam.get(p.teamId).push(p);
+      gone.push(p);
     } else {
       survivors.push(p);
     }
   }
 
-  // 新人補充（同チーム・同role・同primaryPos で1:1＝人口/構成恒常）。id は引退者をid昇順に採番。
-  const rookies = [];
-  for (const [teamId, gone] of goneByTeam) {
-    gone.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    gone.forEach((old, k) => {
-      const rid = `${teamId}Y${yearIndex}N${k}`;
-      const rook = generateRookie(draftSeed, rid, {
-        role: old.role,
-        primaryPos: old.primaryPos,
-        ageMin: cfg.game.rookieAgeMin,
-        ageMax: cfg.game.rookieAgeMax,
-        debutYear,
-      });
-      rook.teamId = teamId;
-      rookies.push(rook);
-    });
-  }
+  // 引退枠を id 昇順で確定（決定論・順序非依存）。同型(role:pos)は等価なので枠内順序は結果に無影響。
+  gone.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const vacancies = gone.map((p) => ({ teamId: p.teamId, role: p.role, primaryPos: p.primaryPos }));
 
-  // league を張り替える（生存者＋新人）。順序は生存者（既存順）→新人（チーム走査順）で決定論。
-  league.players = survivors.concat(rookies);
+  // 編成市場: 育成昇格 → ドラフト → 育成獲得。promoted+rookies が vacancies を過不足なく埋める。
+  const { promoted, rookies, draftLog, promotions } = runMarket(league, cfg, {
+    vacancies,
+    standings,
+    masterSeed,
+    yearIndex,
+    debutYear,
+  });
+
+  // league を張り替える（生存者＋昇格＋新人）。人口=survivors+vacancies=不変（構成恒常）。
+  league.players = survivors.concat(promoted, rookies);
   const idsByTeam = new Map();
   for (const p of league.players) {
     if (!idsByTeam.has(p.teamId)) idsByTeam.set(p.teamId, []);
@@ -70,7 +72,7 @@ export function runRetirementAndDraft(league, cfg, { seed, draftSeed, yearIndex,
   }
   for (const t of league.teams) t.playerIds = idsByTeam.get(t.id) ?? [];
 
-  return { retirees, rookies };
+  return { retirees, rookies, promotions, draftLog };
 }
 
 /**

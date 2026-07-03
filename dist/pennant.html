@@ -674,7 +674,7 @@ function addPlayerSeason(dst, src) {
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-const CONFIG_VERSION = '0.0.7-phaseA-s5';
+const CONFIG_VERSION = '0.0.8-phaseA-fix';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
@@ -710,7 +710,7 @@ const CALIBRATION_TARGETS = {
     obp: [0.32, 0.328],
     slg: [0.39, 0.41],
     ops: [0.715, 0.735], // 下限を.715へ僅かに緩和（フェーズA）
-    kPct: [0.18, 0.2],
+    kPct: [0.18, 0.205], // 上限を.205へ（投手打撃の現実化で投手被Kが増え、リーグK%~.20はNPB水準として妥当）
     bbPct: [0.078, 0.083],
     hrPerTeam: [110, 130], // per team / 143G ⚠️過剰HR＝最大の地雷＝第一の門番指標
     runsPerTeamPerGame: [3.9, 4.3],
@@ -745,7 +745,12 @@ const CALIBRATION_TARGETS = {
     hitterShare: [0.53, 0.57], // 野手:投手 ≈ 55:45
     leaderHitter: [7, 9.5], // 野手WAR王
     leaderPitcher: [5.5, 8], // 投手WAR王
-    floorMin200PA: -2.5, // 200PA以上の野手の最小WAR > この値（「WAR-6」の根絶＝起用AIの機能証明）
+    // WAR下限（起用AIの機能証明・原則2「WAR-6の根絶」）を2本立てで判定する:
+    //   floorCatastrophe: 全シード中の単一最悪値 > これ（系統的な起用崩壊＝WAR-4〜-6の根絶を保証）
+    //   floorTypical:     各シーズンの最悪レギュラーWARの平均 > これ（典型的な最下位が破局的でない）
+    // 単一minを典型閾値で判定すると、稀な貧ロスター（捕手難）の1選手で極値統計が落ちるため分離。
+    floorCatastrophe: -4.0, // 単一最悪 > -4.0（絶対に -5/-6 を出さない）
+    floorTypical: -2.5, // 各シーズン最悪の平均 > -2.5
     uzrTop: [20, 30],
   },
   // 起用・休養の発現
@@ -760,20 +765,21 @@ const CALIBRATION_TARGETS = {
  * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
  */
 const TUNING_DEFAULT = {
-  hrScale: 0.9885, // 本塁打産出スケール（門番: hrPerTeam）※S5較正済み。⚠️HRは閾値のため感度大
+  hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
-  replBatterPer600: 19, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
+  replBatterPer600: 18.8, // (PA/600)×これ ※WAR較正（救援repl現実化後、野手WAR比を0.53下限から離す）
   // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
   // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
-  replStarterPer9: 0.155, // 先発の代替水準（wins/9IP）※S5較正（投手WAR王5.5-8の門番）
-  replRelieverPer9: 0.012, // 救援の代替水準（wins/9IP）※S5較正（総WAR≤430との両立）
+  replStarterPer9: 0.153, // 先発の代替水準（wins/9IP）※投手WAR王5.5-8の門番（総WAR/野手比とのトレードオフの均衡点）
+  replRelieverPer9: 0.020, // 救援の代替水準（wins/9IP）※レビュー#2: 0.012はブルペン総WARを負に沈める→約0へ引上げ（野手WAR比との両立で0.020）
+  // FanGraphs方式（救援は先発より低い代替水準だが極端でない）へ寄せ、ブルペン総WARを僅かに正へ。
 
   // 打席規律層（1-1）: log5/オッズ比で K/BB/HBP/インプレー を分岐する較正ノブ。
   // League は打席1回あたりの基準確率、Slope は能力(20-80)→logit の感度。
   pa: {
-    kLeague: 0.191, // リーグK率（NPB ~19%）※S5較正
+    kLeague: 0.191, // リーグK率（NPB ~19-20%）
     bbLeague: 0.0795, // リーグBB率 ※較正済み
     hbpLeague: 0.009, // リーグHBP率
     kSlope: 0.22, // K感度 ※較正済み（分布の裾M4を圧縮）
@@ -781,7 +787,7 @@ const TUNING_DEFAULT = {
     hbpSlope: 0.1, // HBP感度（投手制球の荒れ）
     kContactW: 0.65, // 打者K傾向へのコンタクト寄与 ※S5較正（打者側K裾の圧縮・投手側は不変）
     kEyeW: 0.3, // 打者K傾向への選球眼寄与
-    kVeloPerKmh: 0.85, // 投手奪三振への球速寄与 ※S5較正（エース級K裾＝投手WAR王の門番）
+    kVeloPerKmh: 0.85, // 投手奪三振への球速寄与 ※エース級K裾＝投手WAR王の門番
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
@@ -805,6 +811,7 @@ const TUNING_DEFAULT = {
     attemptBase: 0.16, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.9, // 投手打席はほぼ必ずバント
+    pitcherMaxScoreDiff: 6, // 投手はこの点差以内でのみバント（大差では打たせる。野手より広い）
     weakBatterWoba: 0.3, // 「非強打者」の目安（観測wOBAがこれ未満）※S2予備調整
     pitches: 2.5, // バント打席の投球数近似（S2）
   },
@@ -869,7 +876,11 @@ const TUNING_DEFAULT = {
     fielderRestProb: 0.026, // 野手の休養基本率/試合 ※S5較正
     streakW: 0.004, // 連続出場1試合ごとの休養率加算
     benchWoba: 0.295, // 不振ベンチの発動水準（観測ベース混合評価＋レンジ項がこれ未満・S5較正）
-    slumpBenchProb: 0.75, // 不振ベンチの発動率/試合（捕手は対象外・S5較正）
+    slumpBenchProb: 0.75, // 不振ベンチの発動率/試合（捕手は通常対象外・S5較正）
+    // 捕手は希少性・リード継続性から通常の不振ベンチ対象外だが、「壊滅的」水準（benchWobaより
+    // 更に下＝wRAA最悪級×守備破綻）に限り控えと出場を分け、WAR-3級の定着を防ぐ（原則2「WAR-6の根絶」）。
+    catcherDisasterWoba: 0.258, // 捕手の壊滅判定（混合評価＋レンジがこれ未満で作動）
+    catcherDisasterBenchProb: 0.4, // 壊滅捕手の休養率/試合（完全ベンチでなく控えと分担＝正捕手枠は保つ）
   },
 
   // 投手疲労・可用性（S3。連投制限・中6日の基盤）
@@ -1053,6 +1064,234 @@ function deepAssign(base, over) {
 }
 
 
+// ===== src/sim/fielding.mjs =====
+// ============================================================================
+// 守備の能力→結果 結線（2-7）＋ OAA→UZR run換算（2-8）（§7 / 自己レビュー M1・B-7）
+//
+// Range（守備範囲）= ポジショニングIQ + 初動(Reaction) + 走力(Speed)（§7.1）を合成し、
+// 打球結果解決(resolveBattedBall)に注入して「実効被安打率」を個人スキルで上下させる。
+// 期待アウトのベースラインはリーグ平均(ポジション中立)のままなので、
+// 実結果 − 期待 の累積(oaaOuts)が個人のレンジ・シグナルになる（MLBAM OAAと同型）。
+// ============================================================================
+
+const OUTFIELD = new Set(['LF', 'CF', 'RF']);
+
+/** 野手のRangeレーティング（50=リーグ平均）。§7.1 の Range = ポジIQ+初動+走力 */
+function rangeRating(player, cfg) {
+  const f = player.trueAbility.fielding;
+  const c = player.trueAbility.common;
+  const w = cfg.tuning.field.wRange;
+  return w.positioningIQ * f.positioningIQ + w.reaction * c.reaction + w.speed * c.speed;
+}
+
+/** 選手シーズンの主守備位置（守備アウト最多）。出場イニング0なら ''（S2: 代打のみの選手が出うる） */
+function mainPosition(fieldingLine) {
+  let pos = '';
+  let mx = 0;
+  for (const k of Object.keys(fieldingLine.positionOuts)) {
+    if (fieldingLine.positionOuts[k] > mx) {
+      mx = fieldingLine.positionOuts[k];
+      pos = k;
+    }
+  }
+  return pos;
+}
+
+/** 選手の総守備イニング */
+function totalFieldInnings(fieldingLine) {
+  let o = 0;
+  for (const k of Object.keys(fieldingLine.positionOuts)) o += fieldingLine.positionOuts[k];
+  return o / 3;
+}
+
+/**
+ * ポジション別に中心化した OAA（アウト単位）。
+ * 生の oaaOuts はリーグ中立基準ゆえ「出場している守備者（＝上手い選手ばかり）」が全員プラスに
+ * 偏る。正しくは「そのポジションで実際に守る選手の平均」を0とすべき（UZRの定義）。
+ * lc.oaaCenterPerInn（主ポジ別のOAA/イニング平均）を差し引いて中心化する。
+ */
+function centeredOAAOuts(ps, lc) {
+  const raw = ps.fielding.oaaOuts;
+  if (!lc || !lc.oaaCenterPerInn) return raw;
+  const pos = mainPosition(ps.fielding);
+  const inn = totalFieldInnings(ps.fielding);
+  return raw - (lc.oaaCenterPerInn[pos] || 0) * inn;
+}
+
+/**
+ * 失策run成分（ErrR・§7.2 / 監査A3）。OAAは失策"前"の判定で範囲成分のみを表すため、
+ * 捕球ミス（Hands）の価値はここで別勘定する（二重計上しない）。
+ * ポジション平均の失策率で中心化し、平均より失策が少ない＝プラス。
+ */
+function errRunsAboveAvg(ps, cfg, lc) {
+  if (!lc || !lc.errCenterPerInn) return 0;
+  const pos = mainPosition(ps.fielding);
+  const inn = totalFieldInnings(ps.fielding);
+  const expE = (lc.errCenterPerInn[pos] || 0) * inn;
+  return -((ps.fielding.e || 0) - expE) * cfg.tuning.field.runPerError;
+}
+
+/**
+ * UZR相当(run単位) = 範囲成分(中心化OAA×run/out) + 失策成分(ErrR) + 捕手フレーミング(framingRuns)。
+ * 内野0.75 / 外野0.90（Statcast FRV, §7.2）。捕手は範囲=0で framing が主成分（監査B5）。
+ */
+function uzrRuns(ps, cfg, lc) {
+  const pos = mainPosition(ps.fielding);
+  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
+  return centeredOAAOuts(ps, lc) * rpo + errRunsAboveAvg(ps, cfg, lc) + (ps.fielding.framingRuns || 0);
+}
+
+
+// ===== src/sim/team.mjs =====
+// ============================================================================
+// チーム編成（1-4a/b/d → フェーズA S1 で v2 化）— ロスターから編成表を組む
+//
+// buildDepthChart v2（§S1-3）:
+//   守備配置:   positionRank（習熟×守備素材＋打撃考慮）の上位を難ポジ優先で割当。
+//   打順:       アーキタイプ制。1番=OBP×俊足 / 2番=コンタクト・出塁 / 3番=最強総合 /
+//               4番=最強パワー / 5番=次点パワー / 6-8番=残り降順 /
+//               9番=DH無なら投手（プレースホルダ・S2が当日の先発を充填）/ DH有なら最弱野手。
+//   ベンチ:     スタメン外野手の hitScore 降順（S2の代打/代走/守備固めの母集団）。
+//   ローテ:     cfg.league.rotationSize 人（中6日=6人）。
+//   ブルペン:   relieverScore 順に closer / setup8 / setup7 / middle[] / long（最下位）。
+// ここは「編成の初期値」なので trueAbility を直接参照してよい（三層構造の原則。
+// シーズン中の見直しは S3 usage.mjs が観測成績＋スカウトノイズで行う）。
+// ============================================================================
+
+
+
+/** 打撃スコア（総合打力。3番・DH・ベンチ序列に使用） */
+function hitScore(p) {
+  const b = p.trueAbility.batting;
+  const c = p.trueAbility.common;
+  return b.ev + b.contact + b.eye + c.power + b.la * 0.5;
+}
+
+/** 出塁スコア（eye重視。1-2番アーキタイプの選抜に使用・§S1-3） */
+function obpScore(p) {
+  const b = p.trueAbility.batting;
+  return b.eye * 1.6 + b.contact + b.ev * 0.4;
+}
+
+/** パワースコア（4-5番アーキタイプの選抜に使用・§S1-3） */
+function powerScore(p) {
+  const b = p.trueAbility.batting;
+  const c = p.trueAbility.common;
+  return c.power * 1.2 + b.ev + b.la * 0.6;
+}
+
+/** 先発スコア（スタミナ主・§16。球種数も加点） */
+function starterScore(p) {
+  const pt = p.trueAbility.pitching;
+  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
+  return pt.stamina * 1.6 + pt.control + whiff + pt.pitches.length * 8 + (pt.velocityKmh - 140);
+}
+
+/** リリーフの質（クローザー/セットアッパー序列） */
+function relieverScore(p) {
+  const pt = p.trueAbility.pitching;
+  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
+  return whiff + pt.control + (pt.velocityKmh - 140) * 1.2;
+}
+
+/** ポジション候補スコア（習熟＋守備素材(Range)＋打撃考慮。重みは config.tuning.depth） */
+function posRankScore(p, pos, cfg) {
+  const d = cfg.tuning.depth;
+  const prof = p.trueAbility.fielding.positionProf[pos];
+  // hitScore(平均≈225)を 50 中心のレーティング相当へスケール（/4.5）して混合
+  return prof + d.posToolW * (rangeRating(p, cfg) - 50) + d.posBatW * (hitScore(p) / 4.5 - 50);
+}
+
+/**
+ * ロスターから編成表を作る（v2）。
+ * @param {Array} roster
+ * @param {Object} cfg createConfig() の設定（rotationSize / tuning.depth を参照）
+ * @param {{dh?:boolean}} opts dh=false でDH無し打順（9番=投手プレースホルダ）。既定 true。
+ *   ※S1では season 側は常に dh:true（DH規則=ホーム球団リーグの適用は S2 initSide v2）。
+ * @returns {{lineup:Array<{playerId:?string,pos:string}>, defense:Object, bench:string[],
+ *   positionRank:Object, rotation:string[], bullpen:string[], bullpenRoles:Object, byId:Map}}
+ */
+function buildDepthChart(roster, cfg, opts = {}) {
+  const dh = opts.dh ?? true;
+  const rotationSize = cfg.league.rotationSize;
+  const pitchers = roster.filter((p) => p.role === 'pitcher');
+  const fielders = roster.filter((p) => p.role === 'fielder');
+  const byId = new Map(roster.map((p) => [p.id, p]));
+
+  // positionRank: ポジションごとの候補ランキング（S3 usage.mjs の見直し対象の初期値）
+  const positionRank = {};
+  for (const pos of FIELD_POSITIONS) {
+    positionRank[pos] = fielders
+      .slice()
+      .sort((a, b) => posRankScore(b, pos, cfg) - posRankScore(a, pos, cfg))
+      .map((p) => p.id);
+  }
+
+  // 守備配置: 難ポジ優先（C→SS→CF→…）で positionRank 上位の未使用選手を割当
+  const used = new Set();
+  const defense = {};
+  for (const pos of POSITION_DIFFICULTY) {
+    const pid = positionRank[pos].find((id) => !used.has(id));
+    used.add(pid);
+    defense[pos] = pid;
+  }
+
+  // スタメン外の野手（hitScore降順）。DH有なら先頭がDH、残りがベンチ。
+  const reserves = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
+  const dhId = dh ? (reserves.length ? reserves[0].id : defense['1B']) : null;
+  const bench = reserves.filter((f) => f.id !== dhId).map((f) => f.id);
+
+  // --- 打順アーキタイプ（§S1-3） -------------------------------------------
+  const pool = FIELD_POSITIONS.map((pos) => ({ playerId: defense[pos], pos }));
+  if (dh && dhId) pool.push({ playerId: dhId, pos: 'DH' });
+  const P = (e) => byId.get(e.playerId);
+  const take = (scoreFn) => {
+    let bi = -1;
+    let bv = -Infinity;
+    for (let i = 0; i < pool.length; i++) {
+      const v = scoreFn(P(pool[i]));
+      if (v > bv) {
+        bv = v;
+        bi = i;
+      }
+    }
+    return pool.splice(bi, 1)[0];
+  };
+
+  const slots = new Array(9).fill(null);
+  // 9番: DH無なら投手（当日の先発。S2 initSide v2 が playerId を充填）、DH有なら最弱野手
+  slots[8] = dh ? take((p) => -hitScore(p)) : { playerId: null, pos: 'P' };
+  slots[2] = take(hitScore); // 3番=最強総合
+  slots[3] = take(powerScore); // 4番=最強パワー
+  slots[4] = take(powerScore); // 5番=次点パワー
+  slots[0] = take((p) => obpScore(p) + cfg.tuning.depth.leadoffSpeedW * (p.trueAbility.common.speed - 50)); // 1番=OBP×俊足
+  slots[1] = take((p) => obpScore(p) + p.trueAbility.batting.contact); // 2番=コンタクト/出塁
+  // 6-8番: 残りを hitScore 降順
+  const rest = pool.slice().sort((a, b) => hitScore(P(b)) - hitScore(P(a)));
+  slots[5] = rest[0];
+  slots[6] = rest[1];
+  slots[7] = rest[2];
+
+  // --- ローテ＆ブルペン ------------------------------------------------------
+  const sortedP = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
+  const rotation = sortedP.slice(0, rotationSize).map((p) => p.id);
+  const bullpen = sortedP
+    .slice(rotationSize)
+    .sort((a, b) => relieverScore(b) - relieverScore(a))
+    .map((p) => p.id);
+  // ブルペン役割（§S1-3）: relieverScore順に closer/setup8/setup7、long は最下位、残り middle
+  const bullpenRoles = {
+    closer: bullpen[0] ?? null,
+    setup8: bullpen[1] ?? null,
+    setup7: bullpen[2] ?? null,
+    middle: bullpen.slice(3, Math.max(3, bullpen.length - 1)),
+    long: bullpen.length >= 4 ? bullpen[bullpen.length - 1] : null,
+  };
+
+  return { lineup: slots, defense, bench, positionRank, rotation, bullpen, bullpenRoles, byId };
+}
+
+
 // ===== src/generate.mjs =====
 // ============================================================================
 // 架空選手・チーム・リーグのジェネレータ（§0法的前提 / §1 / §10.2 / 0-6）
@@ -1065,6 +1304,7 @@ function deepAssign(base, over) {
 //   - 分布の平均/分散は初期値。最終的な"リアルさ"は較正(1-11)でこのノブを回して合わせる。
 //   - masterSeed＋階層シードで、生成は決定論・順序非依存（誰が回しても同じリーグ）。
 // ============================================================================
+
 
 
 
@@ -1132,7 +1372,16 @@ function generatePitcher(rng, id) {
       reaction: draw(rng, 48, 9),
       power: draw(rng, 40, 8), // S5較正: 投手打席を実NPB水準（打率~.13）へ＝セパ得点差の門番
     },
-    batting: { ev: draw(rng, 25, 7), la: draw(rng, 40, 7), contact: draw(rng, 23, 7), eye: draw(rng, 32, 7) },
+    // 投手打撃は実NPB水準（AVG~.15 / K%~30 / 極低BB）へ。特に対球種適性を低く設定しないと
+    // 既定50（球種に対し平均打者）のままK%が上がらずAVGが.21まで膨れ、セパ得点差が埋没する（レビュー#3）。
+    batting: {
+      ev: draw(rng, 25, 6),
+      la: draw(rng, 39, 6),
+      contact: draw(rng, 24, 6),
+      eye: draw(rng, 29, 6),
+      vsFastball: draw(rng, 25, 6), // 対速球適性（低＝速球で三振を取られる）
+      vsBreaking: draw(rng, 23, 6), // 対変化球適性
+    },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
     career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
   });
@@ -1256,26 +1505,60 @@ function generateLeague(masterSeed, config) {
   const numTeams = config.league.numTeams;
   const leagues = config.league.leagues ?? null;
   const perLeague = leagues ? Math.ceil(numTeams / leagues.length) : numTeams;
-  const teams = [];
-  const players = [];
+
+  // 1) 全チームのロスターを生成（チームシードで決定論・順序非依存）＋攻撃力を測る。
+  const built = [];
   for (let ti = 0; ti < numTeams; ti++) {
     const teamId = `T${ti + 1}`;
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
     const roster = generateTeam(trng, teamId);
     for (const p of roster) p.teamId = teamId;
-    // リーグ割当（前半6球団=L1 / 後半=L2）
-    const leagueId = leagues ? leagues[Math.min(Math.floor(ti / perLeague), leagues.length - 1)].id : null;
-    // 監督は別ストリームで生成（ロスター生成の決定論・順序非依存を汚さない）
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
-    teams.push({
-      id: teamId,
-      name: TEAM_NAMES[ti] ?? teamId,
-      league: leagueId,
-      manager,
-      playerIds: roster.map((p) => p.id),
-    });
-    players.push(...roster);
+    // 攻撃力＝野手のhitScore合計（投手はDH無で常に打つため、均衡はDH枠以外の野手攻撃で測る）。
+    const offense = roster.filter((p) => p.role === 'fielder').reduce((a, p) => a + hitScore(p), 0);
+    built.push({ teamId, roster, manager, offense });
   }
+
+  // 2) リーグ均衡割当（2リーグ×偶数のみ）: 攻撃力降順にグリーディで「総攻撃力が小さいリーグ」へ
+  //    詰め、両リーグの野手攻撃を近づける。→ セ・パ得点差がDH効果だけを反映して安定する（競争均衡）。
+  //    それ以外の構成は従来どおり前半L1/後半L2の連番割当。
+  const leagueOf = new Map();
+  if (leagues && leagues.length === 2 && numTeams % 2 === 0) {
+    const half = numTeams / 2;
+    const sums = [0, 0];
+    const counts = [0, 0];
+    for (const t of built.slice().sort((a, b) => b.offense - a.offense)) {
+      let g;
+      if (counts[0] >= half) g = 1;
+      else if (counts[1] >= half) g = 0;
+      else g = sums[0] <= sums[1] ? 0 : 1;
+      leagueOf.set(t.teamId, g);
+      sums[g] += t.offense;
+      counts[g]++;
+    }
+  } else {
+    built.forEach((t, ti) =>
+      leagueOf.set(t.teamId, leagues ? Math.min(Math.floor(ti / perLeague), leagues.length - 1) : 0),
+    );
+  }
+
+  // 3) teams配列を [L1..., L2...] 順（各リーグ内はチーム番号順）に並べ、名前を最終位置で付与。
+  const ordered = leagues
+    ? built.slice().sort((a, b) => leagueOf.get(a.teamId) - leagueOf.get(b.teamId))
+    : built;
+  const teams = [];
+  const players = [];
+  ordered.forEach((t, idx) => {
+    const gi = leagueOf.get(t.teamId);
+    teams.push({
+      id: t.teamId,
+      name: TEAM_NAMES[idx] ?? t.teamId,
+      league: leagues ? leagues[gi].id : null,
+      manager: t.manager,
+      playerIds: t.roster.map((p) => p.id),
+    });
+    players.push(...t.roster);
+  });
   return { masterSeed, teams, players };
 }
 
@@ -1662,234 +1945,6 @@ function selectPitch(pitcher, rng, cfg) {
 }
 
 
-// ===== src/sim/fielding.mjs =====
-// ============================================================================
-// 守備の能力→結果 結線（2-7）＋ OAA→UZR run換算（2-8）（§7 / 自己レビュー M1・B-7）
-//
-// Range（守備範囲）= ポジショニングIQ + 初動(Reaction) + 走力(Speed)（§7.1）を合成し、
-// 打球結果解決(resolveBattedBall)に注入して「実効被安打率」を個人スキルで上下させる。
-// 期待アウトのベースラインはリーグ平均(ポジション中立)のままなので、
-// 実結果 − 期待 の累積(oaaOuts)が個人のレンジ・シグナルになる（MLBAM OAAと同型）。
-// ============================================================================
-
-const OUTFIELD = new Set(['LF', 'CF', 'RF']);
-
-/** 野手のRangeレーティング（50=リーグ平均）。§7.1 の Range = ポジIQ+初動+走力 */
-function rangeRating(player, cfg) {
-  const f = player.trueAbility.fielding;
-  const c = player.trueAbility.common;
-  const w = cfg.tuning.field.wRange;
-  return w.positioningIQ * f.positioningIQ + w.reaction * c.reaction + w.speed * c.speed;
-}
-
-/** 選手シーズンの主守備位置（守備アウト最多）。出場イニング0なら ''（S2: 代打のみの選手が出うる） */
-function mainPosition(fieldingLine) {
-  let pos = '';
-  let mx = 0;
-  for (const k of Object.keys(fieldingLine.positionOuts)) {
-    if (fieldingLine.positionOuts[k] > mx) {
-      mx = fieldingLine.positionOuts[k];
-      pos = k;
-    }
-  }
-  return pos;
-}
-
-/** 選手の総守備イニング */
-function totalFieldInnings(fieldingLine) {
-  let o = 0;
-  for (const k of Object.keys(fieldingLine.positionOuts)) o += fieldingLine.positionOuts[k];
-  return o / 3;
-}
-
-/**
- * ポジション別に中心化した OAA（アウト単位）。
- * 生の oaaOuts はリーグ中立基準ゆえ「出場している守備者（＝上手い選手ばかり）」が全員プラスに
- * 偏る。正しくは「そのポジションで実際に守る選手の平均」を0とすべき（UZRの定義）。
- * lc.oaaCenterPerInn（主ポジ別のOAA/イニング平均）を差し引いて中心化する。
- */
-function centeredOAAOuts(ps, lc) {
-  const raw = ps.fielding.oaaOuts;
-  if (!lc || !lc.oaaCenterPerInn) return raw;
-  const pos = mainPosition(ps.fielding);
-  const inn = totalFieldInnings(ps.fielding);
-  return raw - (lc.oaaCenterPerInn[pos] || 0) * inn;
-}
-
-/**
- * 失策run成分（ErrR・§7.2 / 監査A3）。OAAは失策"前"の判定で範囲成分のみを表すため、
- * 捕球ミス（Hands）の価値はここで別勘定する（二重計上しない）。
- * ポジション平均の失策率で中心化し、平均より失策が少ない＝プラス。
- */
-function errRunsAboveAvg(ps, cfg, lc) {
-  if (!lc || !lc.errCenterPerInn) return 0;
-  const pos = mainPosition(ps.fielding);
-  const inn = totalFieldInnings(ps.fielding);
-  const expE = (lc.errCenterPerInn[pos] || 0) * inn;
-  return -((ps.fielding.e || 0) - expE) * cfg.tuning.field.runPerError;
-}
-
-/**
- * UZR相当(run単位) = 範囲成分(中心化OAA×run/out) + 失策成分(ErrR) + 捕手フレーミング(framingRuns)。
- * 内野0.75 / 外野0.90（Statcast FRV, §7.2）。捕手は範囲=0で framing が主成分（監査B5）。
- */
-function uzrRuns(ps, cfg, lc) {
-  const pos = mainPosition(ps.fielding);
-  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
-  return centeredOAAOuts(ps, lc) * rpo + errRunsAboveAvg(ps, cfg, lc) + (ps.fielding.framingRuns || 0);
-}
-
-
-// ===== src/sim/team.mjs =====
-// ============================================================================
-// チーム編成（1-4a/b/d → フェーズA S1 で v2 化）— ロスターから編成表を組む
-//
-// buildDepthChart v2（§S1-3）:
-//   守備配置:   positionRank（習熟×守備素材＋打撃考慮）の上位を難ポジ優先で割当。
-//   打順:       アーキタイプ制。1番=OBP×俊足 / 2番=コンタクト・出塁 / 3番=最強総合 /
-//               4番=最強パワー / 5番=次点パワー / 6-8番=残り降順 /
-//               9番=DH無なら投手（プレースホルダ・S2が当日の先発を充填）/ DH有なら最弱野手。
-//   ベンチ:     スタメン外野手の hitScore 降順（S2の代打/代走/守備固めの母集団）。
-//   ローテ:     cfg.league.rotationSize 人（中6日=6人）。
-//   ブルペン:   relieverScore 順に closer / setup8 / setup7 / middle[] / long（最下位）。
-// ここは「編成の初期値」なので trueAbility を直接参照してよい（三層構造の原則。
-// シーズン中の見直しは S3 usage.mjs が観測成績＋スカウトノイズで行う）。
-// ============================================================================
-
-
-
-/** 打撃スコア（総合打力。3番・DH・ベンチ序列に使用） */
-function hitScore(p) {
-  const b = p.trueAbility.batting;
-  const c = p.trueAbility.common;
-  return b.ev + b.contact + b.eye + c.power + b.la * 0.5;
-}
-
-/** 出塁スコア（eye重視。1-2番アーキタイプの選抜に使用・§S1-3） */
-function obpScore(p) {
-  const b = p.trueAbility.batting;
-  return b.eye * 1.6 + b.contact + b.ev * 0.4;
-}
-
-/** パワースコア（4-5番アーキタイプの選抜に使用・§S1-3） */
-function powerScore(p) {
-  const b = p.trueAbility.batting;
-  const c = p.trueAbility.common;
-  return c.power * 1.2 + b.ev + b.la * 0.6;
-}
-
-/** 先発スコア（スタミナ主・§16。球種数も加点） */
-function starterScore(p) {
-  const pt = p.trueAbility.pitching;
-  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
-  return pt.stamina * 1.6 + pt.control + whiff + pt.pitches.length * 8 + (pt.velocityKmh - 140);
-}
-
-/** リリーフの質（クローザー/セットアッパー序列） */
-function relieverScore(p) {
-  const pt = p.trueAbility.pitching;
-  const whiff = pt.pitches.length ? pt.pitches.reduce((a, x) => a + x.whiff, 0) / pt.pitches.length : 40;
-  return whiff + pt.control + (pt.velocityKmh - 140) * 1.2;
-}
-
-/** ポジション候補スコア（習熟＋守備素材(Range)＋打撃考慮。重みは config.tuning.depth） */
-function posRankScore(p, pos, cfg) {
-  const d = cfg.tuning.depth;
-  const prof = p.trueAbility.fielding.positionProf[pos];
-  // hitScore(平均≈225)を 50 中心のレーティング相当へスケール（/4.5）して混合
-  return prof + d.posToolW * (rangeRating(p, cfg) - 50) + d.posBatW * (hitScore(p) / 4.5 - 50);
-}
-
-/**
- * ロスターから編成表を作る（v2）。
- * @param {Array} roster
- * @param {Object} cfg createConfig() の設定（rotationSize / tuning.depth を参照）
- * @param {{dh?:boolean}} opts dh=false でDH無し打順（9番=投手プレースホルダ）。既定 true。
- *   ※S1では season 側は常に dh:true（DH規則=ホーム球団リーグの適用は S2 initSide v2）。
- * @returns {{lineup:Array<{playerId:?string,pos:string}>, defense:Object, bench:string[],
- *   positionRank:Object, rotation:string[], bullpen:string[], bullpenRoles:Object, byId:Map}}
- */
-function buildDepthChart(roster, cfg, opts = {}) {
-  const dh = opts.dh ?? true;
-  const rotationSize = cfg.league.rotationSize;
-  const pitchers = roster.filter((p) => p.role === 'pitcher');
-  const fielders = roster.filter((p) => p.role === 'fielder');
-  const byId = new Map(roster.map((p) => [p.id, p]));
-
-  // positionRank: ポジションごとの候補ランキング（S3 usage.mjs の見直し対象の初期値）
-  const positionRank = {};
-  for (const pos of FIELD_POSITIONS) {
-    positionRank[pos] = fielders
-      .slice()
-      .sort((a, b) => posRankScore(b, pos, cfg) - posRankScore(a, pos, cfg))
-      .map((p) => p.id);
-  }
-
-  // 守備配置: 難ポジ優先（C→SS→CF→…）で positionRank 上位の未使用選手を割当
-  const used = new Set();
-  const defense = {};
-  for (const pos of POSITION_DIFFICULTY) {
-    const pid = positionRank[pos].find((id) => !used.has(id));
-    used.add(pid);
-    defense[pos] = pid;
-  }
-
-  // スタメン外の野手（hitScore降順）。DH有なら先頭がDH、残りがベンチ。
-  const reserves = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
-  const dhId = dh ? (reserves.length ? reserves[0].id : defense['1B']) : null;
-  const bench = reserves.filter((f) => f.id !== dhId).map((f) => f.id);
-
-  // --- 打順アーキタイプ（§S1-3） -------------------------------------------
-  const pool = FIELD_POSITIONS.map((pos) => ({ playerId: defense[pos], pos }));
-  if (dh && dhId) pool.push({ playerId: dhId, pos: 'DH' });
-  const P = (e) => byId.get(e.playerId);
-  const take = (scoreFn) => {
-    let bi = -1;
-    let bv = -Infinity;
-    for (let i = 0; i < pool.length; i++) {
-      const v = scoreFn(P(pool[i]));
-      if (v > bv) {
-        bv = v;
-        bi = i;
-      }
-    }
-    return pool.splice(bi, 1)[0];
-  };
-
-  const slots = new Array(9).fill(null);
-  // 9番: DH無なら投手（当日の先発。S2 initSide v2 が playerId を充填）、DH有なら最弱野手
-  slots[8] = dh ? take((p) => -hitScore(p)) : { playerId: null, pos: 'P' };
-  slots[2] = take(hitScore); // 3番=最強総合
-  slots[3] = take(powerScore); // 4番=最強パワー
-  slots[4] = take(powerScore); // 5番=次点パワー
-  slots[0] = take((p) => obpScore(p) + cfg.tuning.depth.leadoffSpeedW * (p.trueAbility.common.speed - 50)); // 1番=OBP×俊足
-  slots[1] = take((p) => obpScore(p) + p.trueAbility.batting.contact); // 2番=コンタクト/出塁
-  // 6-8番: 残りを hitScore 降順
-  const rest = pool.slice().sort((a, b) => hitScore(P(b)) - hitScore(P(a)));
-  slots[5] = rest[0];
-  slots[6] = rest[1];
-  slots[7] = rest[2];
-
-  // --- ローテ＆ブルペン ------------------------------------------------------
-  const sortedP = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
-  const rotation = sortedP.slice(0, rotationSize).map((p) => p.id);
-  const bullpen = sortedP
-    .slice(rotationSize)
-    .sort((a, b) => relieverScore(b) - relieverScore(a))
-    .map((p) => p.id);
-  // ブルペン役割（§S1-3）: relieverScore順に closer/setup8/setup7、long は最下位、残り middle
-  const bullpenRoles = {
-    closer: bullpen[0] ?? null,
-    setup8: bullpen[1] ?? null,
-    setup7: bullpen[2] ?? null,
-    middle: bullpen.slice(3, Math.max(3, bullpen.length - 1)),
-    long: bullpen.length >= 4 ? bullpen[bullpen.length - 1] : null,
-  };
-
-  return { lineup: slots, defense, bench, positionRank, rotation, bullpen, bullpenRoles, byId };
-}
-
-
 // ===== src/sim/leagueStats.mjs =====
 // ============================================================================
 // リーグ集計指標（1-7の一部・1-11較正で再利用）
@@ -2204,7 +2259,10 @@ function buntAttemptProb(situ, cfg) {
   const t = cfg.tuning.bunt;
   if (situ.outs >= 2) return 0;
   if (situ.bases[2] || (!situ.bases[0] && !situ.bases[1])) return 0; // 走者1B/2B×三塁空きのみ
-  if (situ.isPitcher) return t.pitcherAttempt;
+  if (situ.isPitcher) {
+    // 投手は野手より広い点差でバントするが、大差では打たせる（点差ゲートを先に評価）
+    return Math.abs(situ.scoreDiff) > t.pitcherMaxScoreDiff ? 0 : t.pitcherAttempt;
+  }
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (situ.batterWoba >= t.weakBatterWoba) return 0; // 強打者にはバントさせない
   return expit(logit(t.attemptBase) + ratingDelta(situ.manager.buntTend, t.tendW));
@@ -2650,7 +2708,7 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
   return {
     homeScore: home.score,
     awayScore: away.score,
-    innings: inning,
+    innings: Math.min(inning, maxInnings), // 12回引分でループ脱出時 inning=13 になるためクリップ（off-by-one修正）
     tie: home.score === away.score,
     pitchers: { home: usage(home), away: usage(away) }, // 投手使用ログ（S3の疲労管理素材）
     subs: { home: home.subs, away: away.subs },
@@ -3173,10 +3231,13 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
   installPitcher(fielding, next, inning, lead);
 }
 
-/** 現投手のゲーム成績を log に確定（bf>0の実登板のみ・幽霊リリーフ除外）。
+/** 現投手のゲーム成績を log に確定（実登板のみ・幽霊リリーフ除外）。
+ *  実登板の判定は「対戦打者あり(bf>0) または 記録アウトあり(outs>0)」。
+ *  後者は回頭で登板し打者と対戦する前に盗塁死で第3アウトを記録した投手を拾う
+ *  （outs>0 だが bf=0 で log から欠落する幽霊登板を防止・IPと登板Gの整合）。
  *  exitDiff=退場時の投手側リード差（ホールド/ブローンセーブ判定用・監査B3）。 */
 function flushPitcher(side, oppScore) {
-  if (side.cur.bf > 0) {
+  if (side.cur.bf > 0 || side.cur.outs > 0) {
     side.cur.exitDiff = side.score - (oppScore ?? side.score);
     side.log.push({ ...side.cur });
   }
@@ -3508,11 +3569,15 @@ function selectLineup(state, ctx, cfg) {
     // UZR産出に比例する静的成分）がベンチ水準を割る担当は、見直し(25試合)の周期を待たず
     // 日次でPA蓄積を絞る（打撃崩壊型・レンジ破綻型の双方が数百打席積むのを防ぐ）。
     // 逆に「守備の名手×貧打」はレンジ加点で先発が保たれる（現実のNPBの守備型レギュラー）。
-    // 捕手は守備優先の起用が現実（打撃基準では座らせない）につき対象外。
-    if (pid != null && pos !== 'C') {
+    // 捕手は守備優先の起用が現実につき通常は対象外だが、「壊滅的」水準（catcherDisasterWoba未満＝
+    // wRAA最悪級×守備破綻）に限り控えと分担させ、WAR-3級の定着を防ぐ（原則2）。
+    if (pid != null) {
+      const isC = pos === 'C';
       const benchEval =
         baseEval(pid) + (pos === 'DH' ? 0 : u.rangeWobaPerPt * ((state.rangeEval?.get(pid) ?? 50) - 50));
-      if (benchEval < r.benchWoba && ctx.rng.next() < r.slumpBenchProb) {
+      const thr = isC ? r.catcherDisasterWoba : r.benchWoba;
+      const prob = isC ? r.catcherDisasterBenchProb : r.slumpBenchProb;
+      if (benchEval < thr && ctx.rng.next() < prob) {
         resting.add(pid);
         pid = null;
       }
@@ -3683,7 +3748,7 @@ function reviewAssignments(state, getBat, cfg) {
  * @returns {{csFirst:Object, csFinal:Object, japanSeries:?Object, champion:?string,
  *   playerSeasons:Array, statsById:Map}}
  */
-function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, park = NEUTRAL_PARK }) {
+function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, season = 2026, park = NEUTRAL_PARK }) {
   const rules = cfg.league.postseason ?? {};
   const csFirstWins = rules.csFirstWins ?? 2;
   const csFinalWins = rules.csFinalWins ?? 4;
@@ -3771,19 +3836,12 @@ function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, s
   let japanSeries = null;
   let champion = finalists.length === 1 ? finalists[0].teamId : null;
   if (finalists.length >= 2) {
-    const rowOf = (tid) => {
-      for (const l of rankings) {
-        const r = l.rows.find((x) => x.teamId === tid);
-        if (r) return r;
-      }
-      return { w: 0, l: 0, rs: 0, ra: 0 };
-    };
-    const pct = (r) => (r.w + r.l ? r.w / (r.w + r.l) : 0);
     const [fa, fb] = [finalists[0].teamId, finalists[1].teamId];
-    const ra = rowOf(fa);
-    const rb = rowOf(fb);
-    // 本拠地アドバンテージ: レギュラーシーズン勝率上位（同率は得失点差→先のリーグ）
-    const aFirst = pct(ra) > pct(rb) || (pct(ra) === pct(rb) && ra.rs - ra.ra >= rb.rs - rb.ra);
+    // 本拠地アドバンテージ: NPB方式＝主催リーグを年の偶奇で交互（勝率無関係）。
+    // 偶数年は leagues[0]、奇数年は leagues[1] のリーグ王者が第1,2,6,7戦を主催。
+    const leagues = cfg.league.leagues ?? [];
+    const hostLeague = leagues.length === 2 ? leagues[season % 2].id : finalists[0].league;
+    const aFirst = finalists[0].league === hostLeague;
     const upper = aFirst ? fa : fb;
     const lower = aFirst ? fb : fa;
     const hosts = [upper, upper, lower, lower, lower, upper, upper]; // 2-3-2
@@ -4099,6 +4157,7 @@ function simulateSeason(league, cfg, opts = {}) {
       leagueDh,
       cfg,
       seed: hashSeed(seed, 'postseason'),
+      season, // 日本シリーズの主催リーグを年の偶奇で交互にするため（NPB方式）
       park,
     });
   }
@@ -4328,7 +4387,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.7.0-phaseA-s5';
+const ENGINE_VERSION = '0.8.0-phaseA-fix';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 

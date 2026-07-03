@@ -59,7 +59,10 @@ test('較正目標は古典寄り（打率.255-.262・ERA3.5-3.9・HR110-130）�
   // フェーズA: セ・パ得点差 / 犠打セ>パ / WAR下限 / 正捕手出場（S4 calibrate が消費）
   assert.deepEqual(CALIBRATION_TARGETS.batting.runDiffDhMinusNoDh, [0.1, 0.45]);
   assert.ok(CALIBRATION_TARGETS.tactics.shPerTeamNoDh[0] > CALIBRATION_TARGETS.tactics.shPerTeamDh[0], '犠打はセ系>パ系');
-  assert.equal(CALIBRATION_TARGETS.war.floorMin200PA, -2.5);
+  // WAR下限は2本立て（破局min>-4.0 ＋ 典型mean>-2.5）で「WAR-6の根絶」を判定
+  assert.equal(CALIBRATION_TARGETS.war.floorCatastrophe, -4.0);
+  assert.equal(CALIBRATION_TARGETS.war.floorTypical, -2.5);
+  assert.ok(CALIBRATION_TARGETS.war.floorCatastrophe < CALIBRATION_TARGETS.war.floorTypical, '破局判定は典型判定より緩い');
   assert.deepEqual(CALIBRATION_TARGETS.war.totalLeague, [370, 430], '12球団×143試合');
   assert.deepEqual(CALIBRATION_TARGETS.usage.catcherStarterGames, [100, 135]);
 });

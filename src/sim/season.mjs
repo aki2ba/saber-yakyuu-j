@@ -301,6 +301,7 @@ export function simulateSeason(league, cfg, opts = {}) {
       leagueDh,
       cfg,
       seed: hashSeed(seed, 'postseason'),
+      season, // 日本シリーズの主催リーグを年の偶奇で交互にするため（NPB方式）
       park,
     });
   }

@@ -27,7 +27,7 @@ import { simulateGame } from './game.mjs';
  * @returns {{csFirst:Object, csFinal:Object, japanSeries:?Object, champion:?string,
  *   playerSeasons:Array, statsById:Map}}
  */
-export function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, park = NEUTRAL_PARK }) {
+export function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, season = 2026, park = NEUTRAL_PARK }) {
   const rules = cfg.league.postseason ?? {};
   const csFirstWins = rules.csFirstWins ?? 2;
   const csFinalWins = rules.csFinalWins ?? 4;
@@ -115,19 +115,12 @@ export function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh,
   let japanSeries = null;
   let champion = finalists.length === 1 ? finalists[0].teamId : null;
   if (finalists.length >= 2) {
-    const rowOf = (tid) => {
-      for (const l of rankings) {
-        const r = l.rows.find((x) => x.teamId === tid);
-        if (r) return r;
-      }
-      return { w: 0, l: 0, rs: 0, ra: 0 };
-    };
-    const pct = (r) => (r.w + r.l ? r.w / (r.w + r.l) : 0);
     const [fa, fb] = [finalists[0].teamId, finalists[1].teamId];
-    const ra = rowOf(fa);
-    const rb = rowOf(fb);
-    // 本拠地アドバンテージ: レギュラーシーズン勝率上位（同率は得失点差→先のリーグ）
-    const aFirst = pct(ra) > pct(rb) || (pct(ra) === pct(rb) && ra.rs - ra.ra >= rb.rs - rb.ra);
+    // 本拠地アドバンテージ: NPB方式＝主催リーグを年の偶奇で交互（勝率無関係）。
+    // 偶数年は leagues[0]、奇数年は leagues[1] のリーグ王者が第1,2,6,7戦を主催。
+    const leagues = cfg.league.leagues ?? [];
+    const hostLeague = leagues.length === 2 ? leagues[season % 2].id : finalists[0].league;
+    const aFirst = finalists[0].league === hostLeague;
     const upper = aFirst ? fa : fb;
     const lower = aFirst ? fb : fa;
     const hosts = [upper, upper, lower, lower, lower, upper, upper]; // 2-3-2

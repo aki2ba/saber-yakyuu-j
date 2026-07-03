@@ -229,11 +229,15 @@ export function selectLineup(state, ctx, cfg) {
     // UZR産出に比例する静的成分）がベンチ水準を割る担当は、見直し(25試合)の周期を待たず
     // 日次でPA蓄積を絞る（打撃崩壊型・レンジ破綻型の双方が数百打席積むのを防ぐ）。
     // 逆に「守備の名手×貧打」はレンジ加点で先発が保たれる（現実のNPBの守備型レギュラー）。
-    // 捕手は守備優先の起用が現実（打撃基準では座らせない）につき対象外。
-    if (pid != null && pos !== 'C') {
+    // 捕手は守備優先の起用が現実につき通常は対象外だが、「壊滅的」水準（catcherDisasterWoba未満＝
+    // wRAA最悪級×守備破綻）に限り控えと分担させ、WAR-3級の定着を防ぐ（原則2）。
+    if (pid != null) {
+      const isC = pos === 'C';
       const benchEval =
         baseEval(pid) + (pos === 'DH' ? 0 : u.rangeWobaPerPt * ((state.rangeEval?.get(pid) ?? 50) - 50));
-      if (benchEval < r.benchWoba && ctx.rng.next() < r.slumpBenchProb) {
+      const thr = isC ? r.catcherDisasterWoba : r.benchWoba;
+      const prob = isC ? r.catcherDisasterBenchProb : r.slumpBenchProb;
+      if (benchEval < thr && ctx.rng.next() < prob) {
         resting.add(pid);
         pid = null;
       }

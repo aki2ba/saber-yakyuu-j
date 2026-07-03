@@ -53,6 +53,36 @@ test('simulateGame: 同一seedで完全に決定論（スコア・投手ログ�
   assert.deepEqual(JSON.parse(JSON.stringify(a.res)), JSON.parse(JSON.stringify(b.res)));
 });
 
+test('引分試合の innings は maxInnings(12) を超えない（off-by-one 回帰）', () => {
+  // 12回制で引分に至った試合が innings=13 を返さないこと（決着試合は最大12）。
+  let ties = 0;
+  let decided = 0;
+  for (let seed = 0; seed < 60; seed++) {
+    const { res } = playGame(seed, seed % 2 === 0);
+    assert.ok(res.innings <= 12, `innings が 12 を超えた (seed=${seed}, innings=${res.innings})`);
+    if (res.tie) {
+      ties++;
+      assert.equal(res.innings, 12, `引分は12回で確定すべき (seed=${seed}, innings=${res.innings})`);
+    } else {
+      decided++;
+      assert.ok(res.innings >= 9, `決着は9回以降 (seed=${seed}, innings=${res.innings})`);
+    }
+  }
+  assert.ok(ties > 0, `検証に足る引分試合が発生しなかった（ties=${ties}）`);
+  assert.ok(decided > 0);
+});
+
+test('記録アウトのある投手は必ず登板G>0（幽霊登板の回帰・盗塁死のみで降板を含む）', () => {
+  // 盗塁死の第3アウトのみで降板した投手（bf=0, outs>0）も登板として計上されること。
+  // シーズン全体で「pitching.outs>0 なのに g=0」の投手が1人も出ないことを不変量として検証。
+  const r = simulateSeason(lg, cfg, { seed: 4242, postseason: false });
+  let violations = 0;
+  for (const s of r.playerSeasons) {
+    if (s.pitching.outs > 0 && s.pitching.g === 0) violations++;
+  }
+  assert.equal(violations, 0, `記録アウトはあるが登板G=0の幽霊投手が ${violations} 人`);
+});
+
 test('投手打席はDH無し試合のみ（DH有=投手PA0 / DH無=投手が打席に立つ）（S2）', () => {
   for (let seed = 0; seed < 5; seed++) {
     const dhGame = playGame(seed, true);

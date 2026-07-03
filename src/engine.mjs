@@ -45,7 +45,7 @@ import { playerBatting, playerPitching, playerBaserunning } from './sim/metrics.
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
-export const ENGINE_VERSION = '0.7.0-phaseA-s5';
+export const ENGINE_VERSION = '0.8.0-phaseA-fix';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {

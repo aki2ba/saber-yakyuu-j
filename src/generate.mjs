@@ -13,6 +13,7 @@ import { makeRng, hashSeed } from './rng.mjs';
 import { createPlayer, createTrueAbility, createPitch } from './model/player.mjs';
 import { FIELD_POSITIONS, PITCH_TYPES } from './model/positions.mjs';
 import { clamp, clampRating } from './model/util.mjs';
+import { hitScore } from './sim/team.mjs';
 
 // --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
 const SURNAMES = [
@@ -76,7 +77,16 @@ export function generatePitcher(rng, id) {
       reaction: draw(rng, 48, 9),
       power: draw(rng, 40, 8), // S5較正: 投手打席を実NPB水準（打率~.13）へ＝セパ得点差の門番
     },
-    batting: { ev: draw(rng, 25, 7), la: draw(rng, 40, 7), contact: draw(rng, 23, 7), eye: draw(rng, 32, 7) },
+    // 投手打撃は実NPB水準（AVG~.15 / K%~30 / 極低BB）へ。特に対球種適性を低く設定しないと
+    // 既定50（球種に対し平均打者）のままK%が上がらずAVGが.21まで膨れ、セパ得点差が埋没する（レビュー#3）。
+    batting: {
+      ev: draw(rng, 25, 6),
+      la: draw(rng, 39, 6),
+      contact: draw(rng, 24, 6),
+      eye: draw(rng, 29, 6),
+      vsFastball: draw(rng, 25, 6), // 対速球適性（低＝速球で三振を取られる）
+      vsBreaking: draw(rng, 23, 6), // 対変化球適性
+    },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
     career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
   });
@@ -200,26 +210,60 @@ export function generateLeague(masterSeed, config) {
   const numTeams = config.league.numTeams;
   const leagues = config.league.leagues ?? null;
   const perLeague = leagues ? Math.ceil(numTeams / leagues.length) : numTeams;
-  const teams = [];
-  const players = [];
+
+  // 1) 全チームのロスターを生成（チームシードで決定論・順序非依存）＋攻撃力を測る。
+  const built = [];
   for (let ti = 0; ti < numTeams; ti++) {
     const teamId = `T${ti + 1}`;
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
     const roster = generateTeam(trng, teamId);
     for (const p of roster) p.teamId = teamId;
-    // リーグ割当（前半6球団=L1 / 後半=L2）
-    const leagueId = leagues ? leagues[Math.min(Math.floor(ti / perLeague), leagues.length - 1)].id : null;
-    // 監督は別ストリームで生成（ロスター生成の決定論・順序非依存を汚さない）
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
-    teams.push({
-      id: teamId,
-      name: TEAM_NAMES[ti] ?? teamId,
-      league: leagueId,
-      manager,
-      playerIds: roster.map((p) => p.id),
-    });
-    players.push(...roster);
+    // 攻撃力＝野手のhitScore合計（投手はDH無で常に打つため、均衡はDH枠以外の野手攻撃で測る）。
+    const offense = roster.filter((p) => p.role === 'fielder').reduce((a, p) => a + hitScore(p), 0);
+    built.push({ teamId, roster, manager, offense });
   }
+
+  // 2) リーグ均衡割当（2リーグ×偶数のみ）: 攻撃力降順にグリーディで「総攻撃力が小さいリーグ」へ
+  //    詰め、両リーグの野手攻撃を近づける。→ セ・パ得点差がDH効果だけを反映して安定する（競争均衡）。
+  //    それ以外の構成は従来どおり前半L1/後半L2の連番割当。
+  const leagueOf = new Map();
+  if (leagues && leagues.length === 2 && numTeams % 2 === 0) {
+    const half = numTeams / 2;
+    const sums = [0, 0];
+    const counts = [0, 0];
+    for (const t of built.slice().sort((a, b) => b.offense - a.offense)) {
+      let g;
+      if (counts[0] >= half) g = 1;
+      else if (counts[1] >= half) g = 0;
+      else g = sums[0] <= sums[1] ? 0 : 1;
+      leagueOf.set(t.teamId, g);
+      sums[g] += t.offense;
+      counts[g]++;
+    }
+  } else {
+    built.forEach((t, ti) =>
+      leagueOf.set(t.teamId, leagues ? Math.min(Math.floor(ti / perLeague), leagues.length - 1) : 0),
+    );
+  }
+
+  // 3) teams配列を [L1..., L2...] 順（各リーグ内はチーム番号順）に並べ、名前を最終位置で付与。
+  const ordered = leagues
+    ? built.slice().sort((a, b) => leagueOf.get(a.teamId) - leagueOf.get(b.teamId))
+    : built;
+  const teams = [];
+  const players = [];
+  ordered.forEach((t, idx) => {
+    const gi = leagueOf.get(t.teamId);
+    teams.push({
+      id: t.teamId,
+      name: TEAM_NAMES[idx] ?? t.teamId,
+      league: leagues ? leagues[gi].id : null,
+      manager: t.manager,
+      playerIds: t.roster.map((p) => p.id),
+    });
+    players.push(...t.roster);
+  });
   return { masterSeed, teams, players };
 }
 

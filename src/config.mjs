@@ -7,7 +7,7 @@
 //   - 較正ランが共有状態を汚さないよう createConfig() で毎回ディープコピーを配る
 // ============================================================================
 
-export const CONFIG_VERSION = '0.0.7-phaseA-s5';
+export const CONFIG_VERSION = '0.0.8-phaseA-fix';
 
 /** リーグ設定（フェーズA: 12球団×143試合・2リーグ制）。
  *  試合のDH有無は「ホーム球団の所属リーグ規則」に従う（旧 dh:'all' は廃止・S2で試合側に接続）。
@@ -43,7 +43,7 @@ export const CALIBRATION_TARGETS = {
     obp: [0.32, 0.328],
     slg: [0.39, 0.41],
     ops: [0.715, 0.735], // 下限を.715へ僅かに緩和（フェーズA）
-    kPct: [0.18, 0.2],
+    kPct: [0.18, 0.205], // 上限を.205へ（投手打撃の現実化で投手被Kが増え、リーグK%~.20はNPB水準として妥当）
     bbPct: [0.078, 0.083],
     hrPerTeam: [110, 130], // per team / 143G ⚠️過剰HR＝最大の地雷＝第一の門番指標
     runsPerTeamPerGame: [3.9, 4.3],
@@ -78,7 +78,12 @@ export const CALIBRATION_TARGETS = {
     hitterShare: [0.53, 0.57], // 野手:投手 ≈ 55:45
     leaderHitter: [7, 9.5], // 野手WAR王
     leaderPitcher: [5.5, 8], // 投手WAR王
-    floorMin200PA: -2.5, // 200PA以上の野手の最小WAR > この値（「WAR-6」の根絶＝起用AIの機能証明）
+    // WAR下限（起用AIの機能証明・原則2「WAR-6の根絶」）を2本立てで判定する:
+    //   floorCatastrophe: 全シード中の単一最悪値 > これ（系統的な起用崩壊＝WAR-4〜-6の根絶を保証）
+    //   floorTypical:     各シーズンの最悪レギュラーWARの平均 > これ（典型的な最下位が破局的でない）
+    // 単一minを典型閾値で判定すると、稀な貧ロスター（捕手難）の1選手で極値統計が落ちるため分離。
+    floorCatastrophe: -4.0, // 単一最悪 > -4.0（絶対に -5/-6 を出さない）
+    floorTypical: -2.5, // 各シーズン最悪の平均 > -2.5
     uzrTop: [20, 30],
   },
   // 起用・休養の発現
@@ -93,20 +98,21 @@ export const CALIBRATION_TARGETS = {
  * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
  */
 export const TUNING_DEFAULT = {
-  hrScale: 0.9885, // 本塁打産出スケール（門番: hrPerTeam）※S5較正済み。⚠️HRは閾値のため感度大
+  hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
-  replBatterPer600: 19, // (PA/600)×18 ※WAR較正。監査A1でDH位置補正(-16run)を正しく計上した分、代替水準を16→18へ再較正(総WAR≈186/野手比≈0.54へ回復)
+  replBatterPer600: 18.8, // (PA/600)×これ ※WAR較正（救援repl現実化後、野手WAR比を0.53下限から離す）
   // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
   // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
-  replStarterPer9: 0.155, // 先発の代替水準（wins/9IP）※S5較正（投手WAR王5.5-8の門番）
-  replRelieverPer9: 0.012, // 救援の代替水準（wins/9IP）※S5較正（総WAR≤430との両立）
+  replStarterPer9: 0.153, // 先発の代替水準（wins/9IP）※投手WAR王5.5-8の門番（総WAR/野手比とのトレードオフの均衡点）
+  replRelieverPer9: 0.020, // 救援の代替水準（wins/9IP）※レビュー#2: 0.012はブルペン総WARを負に沈める→約0へ引上げ（野手WAR比との両立で0.020）
+  // FanGraphs方式（救援は先発より低い代替水準だが極端でない）へ寄せ、ブルペン総WARを僅かに正へ。
 
   // 打席規律層（1-1）: log5/オッズ比で K/BB/HBP/インプレー を分岐する較正ノブ。
   // League は打席1回あたりの基準確率、Slope は能力(20-80)→logit の感度。
   pa: {
-    kLeague: 0.191, // リーグK率（NPB ~19%）※S5較正
+    kLeague: 0.191, // リーグK率（NPB ~19-20%）
     bbLeague: 0.0795, // リーグBB率 ※較正済み
     hbpLeague: 0.009, // リーグHBP率
     kSlope: 0.22, // K感度 ※較正済み（分布の裾M4を圧縮）
@@ -114,7 +120,7 @@ export const TUNING_DEFAULT = {
     hbpSlope: 0.1, // HBP感度（投手制球の荒れ）
     kContactW: 0.65, // 打者K傾向へのコンタクト寄与 ※S5較正（打者側K裾の圧縮・投手側は不変）
     kEyeW: 0.3, // 打者K傾向への選球眼寄与
-    kVeloPerKmh: 0.85, // 投手奪三振への球速寄与 ※S5較正（エース級K裾＝投手WAR王の門番）
+    kVeloPerKmh: 0.85, // 投手奪三振への球速寄与 ※エース級K裾＝投手WAR王の門番
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
@@ -138,6 +144,7 @@ export const TUNING_DEFAULT = {
     attemptBase: 0.16, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.9, // 投手打席はほぼ必ずバント
+    pitcherMaxScoreDiff: 6, // 投手はこの点差以内でのみバント（大差では打たせる。野手より広い）
     weakBatterWoba: 0.3, // 「非強打者」の目安（観測wOBAがこれ未満）※S2予備調整
     pitches: 2.5, // バント打席の投球数近似（S2）
   },
@@ -202,7 +209,11 @@ export const TUNING_DEFAULT = {
     fielderRestProb: 0.026, // 野手の休養基本率/試合 ※S5較正
     streakW: 0.004, // 連続出場1試合ごとの休養率加算
     benchWoba: 0.295, // 不振ベンチの発動水準（観測ベース混合評価＋レンジ項がこれ未満・S5較正）
-    slumpBenchProb: 0.75, // 不振ベンチの発動率/試合（捕手は対象外・S5較正）
+    slumpBenchProb: 0.75, // 不振ベンチの発動率/試合（捕手は通常対象外・S5較正）
+    // 捕手は希少性・リード継続性から通常の不振ベンチ対象外だが、「壊滅的」水準（benchWobaより
+    // 更に下＝wRAA最悪級×守備破綻）に限り控えと出場を分け、WAR-3級の定着を防ぐ（原則2「WAR-6の根絶」）。
+    catcherDisasterWoba: 0.258, // 捕手の壊滅判定（混合評価＋レンジがこれ未満で作動）
+    catcherDisasterBenchProb: 0.4, // 壊滅捕手の休養率/試合（完全ベンチでなく控えと分担＝正捕手枠は保つ）
   },
 
   // 投手疲労・可用性（S3。連投制限・中6日の基盤）

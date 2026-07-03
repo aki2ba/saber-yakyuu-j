@@ -251,7 +251,7 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   return {
     homeScore: home.score,
     awayScore: away.score,
-    innings: inning,
+    innings: Math.min(inning, maxInnings), // 12回引分でループ脱出時 inning=13 になるためクリップ（off-by-one修正）
     tie: home.score === away.score,
     pitchers: { home: usage(home), away: usage(away) }, // 投手使用ログ（S3の疲労管理素材）
     subs: { home: home.subs, away: away.subs },
@@ -774,10 +774,13 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
   installPitcher(fielding, next, inning, lead);
 }
 
-/** 現投手のゲーム成績を log に確定（bf>0の実登板のみ・幽霊リリーフ除外）。
+/** 現投手のゲーム成績を log に確定（実登板のみ・幽霊リリーフ除外）。
+ *  実登板の判定は「対戦打者あり(bf>0) または 記録アウトあり(outs>0)」。
+ *  後者は回頭で登板し打者と対戦する前に盗塁死で第3アウトを記録した投手を拾う
+ *  （outs>0 だが bf=0 で log から欠落する幽霊登板を防止・IPと登板Gの整合）。
  *  exitDiff=退場時の投手側リード差（ホールド/ブローンセーブ判定用・監査B3）。 */
 function flushPitcher(side, oppScore) {
-  if (side.cur.bf > 0) {
+  if (side.cur.bf > 0 || side.cur.outs > 0) {
     side.cur.exitDiff = side.score - (oppScore ?? side.score);
     side.log.push({ ...side.cur });
   }

@@ -21,7 +21,7 @@ import { hitterWAR, pitcherWAR } from '../src/sim/war.mjs';
 // 較正結果は src/config.mjs のデフォルトに焼込済。空＝デフォルト構成を検証（回帰チェック）。
 const OVERRIDES = {};
 
-const SEEDS = [1, 2, 3, 4, 5]; // 平均を取るリーグ数
+const SEEDS = [1,2,3,4,5,6,7,8,9,10,11,12]; // tail指標の安定化のため12シード平均
 
 function runOnce(seed) {
   const cfg = createConfig(OVERRIDES);
@@ -212,7 +212,8 @@ console.log(row('総WAR', avgR((r) => r.warTotal), T.war.totalLeague, 0));
 console.log(row('野手WAR比', avgR((r) => r.warShare), T.war.hitterShare));
 console.log(row('野手WAR王', avgR((r) => r.warHitLeader), T.war.leaderHitter, 1));
 console.log(row('投手WAR王', avgR((r) => r.warPitLeader), T.war.leaderPitcher, 1));
-console.log(rowMin('WAR下限(200PA)', minR((r) => r.warFloor200), T.war.floorMin200PA)); // 全シード最悪値
+console.log(rowMin('WAR破局(単一最悪)', minR((r) => r.warFloor200), T.war.floorCatastrophe)); // 全シード中の単一最悪
+console.log(rowMin('WAR下限(典型平均)', avgR((r) => r.warFloor200), T.war.floorTypical)); // 各シーズン最悪の平均
 console.log('');
 console.log('--- 起用・休養の発現 ---');
 console.log(row('規定到達/球団', avgR((r) => r.qualifiedPerTeam), T.usage.qualifiedPerTeam, 1));

@@ -83,7 +83,10 @@ export function buntAttemptProb(situ, cfg) {
   const t = cfg.tuning.bunt;
   if (situ.outs >= 2) return 0;
   if (situ.bases[2] || (!situ.bases[0] && !situ.bases[1])) return 0; // 走者1B/2B×三塁空きのみ
-  if (situ.isPitcher) return t.pitcherAttempt;
+  if (situ.isPitcher) {
+    // 投手は野手より広い点差でバントするが、大差では打たせる（点差ゲートを先に評価）
+    return Math.abs(situ.scoreDiff) > t.pitcherMaxScoreDiff ? 0 : t.pitcherAttempt;
+  }
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (situ.batterWoba >= t.weakBatterWoba) return 0; // 強打者にはバントさせない
   return expit(logit(t.attemptBase) + ratingDelta(situ.manager.buntTend, t.tendW));

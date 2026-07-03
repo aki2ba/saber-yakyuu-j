@@ -158,7 +158,7 @@ export const TUNING_DEFAULT = {
   // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
   context: CONTEXT_CONST,
 
-  hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
+  hrScale: 0.985, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
@@ -184,6 +184,61 @@ export const TUNING_DEFAULT = {
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
+  },
+
+  // ==========================================================================
+  // 一球ごとシミュレーション（B1・§B1）: (balls,strikes) カウント状態機械のノブ。
+  // plateAppearance.mjs の runPlateAppearance が消費する。K/BB/HBP は 3ストライク/4ボール/
+  // 死球として創発する（旧 pa.* の log5 一発抽選は廃止し legacy 化）。全ノブをここへ集約。
+  // 較正の第一目標帯（§B1-3）: 投球数/打席3.7-4.0・Zone%42-48・O-Swing26-34/Z-Swing60-70・
+  //   Contact75-81・SwStr8.5-12・CSW26-31・F-Strike58-64。
+  // ==========================================================================
+  pitch: {
+    // --- 投球ロケーション（ゾーン内/ボーダー/明確ボールの3帯） ---
+    zoneBase: 0.42, // 基準ゾーン内率（control50・even count）※Zone%の主ノブ
+    zoneControlW: 0.005, // 制球(50中心)→ゾーン率（制球でストライク先行）
+    zoneAheadW: -0.10, // 追い込み(0-2,1-2)でゾーン率減（ボールで釣る）
+    zoneBehindW: 0.15, // ビハインド(3-0,3-1,2-0)でゾーン率増（置きにいく）
+    zoneEvenBehindW: 0.04, // balls>strikes の軽いビハインドでゾーン率増
+    borderShare: 0.34, // 非ゾーンのうちボーダー帯（フレーミングが効く縁）の割合。残りは明確ボール
+    // --- 打者スイング判断 ---
+    zSwingBase: 0.66, // ゾーン内スイング率（Z-Swing%の主ノブ）
+    bSwingBase: 0.46, // ボーダー帯スイング率
+    oSwingBase: 0.235, // ボール球スイング率（chase・O-Swing%の主ノブ）
+    swingEyeW: 0.006, // eye(50中心)→ボーダー/ボール球スイング率減（見極め）
+    swingZoneEyeW: 0.0015, // eye→ゾーンスイング率減（わずか。巧打者は good pitch を待てる）
+    twoStrikeSwingW: 0.11, // 2ストライクの保護スイング増（全帯）
+    threeOhTakeW: 0.42, // 3-0での自重（スイング率減）
+    // --- スイング時の空振り ---
+    whiffZoneBase: 0.095, // ゾーン内スイングの空振り基準
+    whiffBorderBase: 0.16, // ボーダー帯スイングの空振り基準
+    whiffOBase: 0.26, // ボール球スイング（chase）の空振り基準
+    whiffPitchW: 0.006, // 球種whiff(50中心)→空振り増
+    whiffContactW: 0.006, // 打者contact(50中心)→空振り減
+    whiffAptW: 0.004, // 対該当クラス適性(50中心)→空振り減
+    // --- 接触時: ファウル vs インプレー ---
+    foulBase: 0.47, // 接触のうちファウルになる基準
+    foulTwoStrikeW: 0.08, // 2ストライクでファウル率増（粘り＝カット）
+    // --- 見逃し時: ボーダー帯の捕手フレーミング判定 ---
+    borderCsBase: 0.24, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時）
+    frameSlopePerPt: 0.0045, // framing(50中心)→ボーダーCS率±（一球単位の創発）
+    runPerCall: 0.125, // 1コール(vs中立)→run（framingRuns。per-inning近似の置換・§7.3）
+    // --- HBP（内角外れの低確率イベント。現行率~0.9%/PAを維持） ---
+    hbpPerClearBall: 0.007, // 明確ボール1球あたりのHBP率
+    hbpControlW: 0.006, // 制球が低い(50-control)ほどHBP増
+    // --- 暴投/捕逸（ワンバウンド球×捕手blocking） ---
+    dirtBaseBreaking: 0.11, // 明確ボール(変化球)がワンバウンドになる率
+    blockSlopePerPt: 0.005, // blocking(50中心)→ワンバウンド抜け回避
+    wildBase: 0.52, // ワンバウンド×走者ありで球が抜ける基準（blockで減）
+    wpShare: 0.6, // 抜けたうち暴投(投手起因→wp)の割合。残りは捕逸(捕手起因→pb)
+    // --- プラトーン/TTO の一球パラメータ再配置（旧 pa.platoon/tto の log5 相当を一球へ） ---
+    platoonWhiffSame: 0.03, // 同利きで空振り率増（K↑）
+    platoonOSwingSame: 0.03, // 同利きでchase増（BB↓）
+    ttoWhiff: 0.010, // 巡目(tto)ごとに空振り率減（打者が慣れる＝K↓・EV↑は bb.tto側）
+    // --- 球種選択のカウント依存重み（selectPitchByCount） ---
+    fastballWeight: 2.0, // even時の速球系重み（残り球種=1.0）
+    putawayWhiffBias: 0.9, // 2ストライク時、高whiff球種(whiff-50)に比例して重み増（決め球）
+    behindFastballBias: 1.6, // ビハインド(3ball/2-0)で速球系重みを追加（制球しやすい球）
   },
 
   // 左右プラトーン（S1・M7解消）: 同利き手（実効打席サイド==投手の利き腕）へのペナルティ。
@@ -247,15 +302,15 @@ export const TUNING_DEFAULT = {
   pen: {
     saveLeadMax: 3, // セーブ機会のリード上限（1〜3点差）
     leverageMinInning: 7, // 勝ちパターン継投の開始回（7回=setup7）
-    starterPitchBase: 82, // 先発の球数上限の基礎（+ stamina×starterPitchStamW）
-    starterPitchStamW: 0.73, // スタミナ→球数上限の感度 ※S5較正（高スタミナ先発の深投~110球）
-    quickHookW: 0.5, // 監督quickHook(50中心)→球数上限の減分（早い継投ほど上限低）
+    starterPitchBase: 70, // 先発の球数上限の基礎（+ stamina×starterPitchStamW）
+    starterPitchStamW: 0.64, // スタミナ→球数上限の感度 ※S5較正（高スタミナ先発の深投~110球）
+    quickHookW: 0.44, // 監督quickHook(50中心)→球数上限の減分（早い継投ほど上限低）
     starterMaxRuns: 6, // 先発の失点即降板ライン
     tiredOuts: 18, // 6回以降（アウト数）で
     tiredRuns: 4, // 4失点なら降板
     starterStayRuns: 1, // 7-8回のセーブ機会でも失点これ以下の先発は続投 ※S5較正（8回はセットアッパーへ＝HLD王の門番）
     cgMinOuts: 21, // 9回続投（完投・完封狙い）に必要な先発アウト数（かつ無失点）
-    cgMaxPitches: 102, // 9回続投を許す球数上限（完投の門番・S5較正。リード有無に依らず適用）
+    cgMaxPitches: 80, // 9回続投を許す球数上限（完投の門番・S5較正。リード有無に依らず適用）
     relieverMaxOuts: 3, // 勝ちパターン役割（closer/setup8/setup7）は基本1イニング
     middleMaxOuts: 6, // middle（非役割）は複数イニング可（登板数王の圧縮・S5較正）
     relieverMaxRuns: 3, // 救援の失点降板ライン
@@ -279,7 +334,7 @@ export const TUNING_DEFAULT = {
   // 投手疲労・可用性（S3。連投制限・中6日の基盤）
   fatigue: {
     maxConsecDays: 2, // 2連投まで（3連投禁止）
-    prevDayPitchLimit: 24, // 前日この球数以上→当日不可 ※S5較正（SV/HLD/登板数の負荷分散）
+    prevDayPitchLimit: 21, // 前日この球数以上→当日不可 ※S5較正（SV/HLD/登板数の負荷分散）
     starterRestDays: 5, // 先発は中5日以上
   },
 

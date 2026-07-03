@@ -151,6 +151,10 @@ export function generateFielder(rng, id, primaryPos) {
     career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
   });
 
+  // ブロッキング（§B1・捕手専用）: 独立シード(id基準)で引き、メインの生成ストリームを一切乱さない
+  // （既存リーグ生成をバイト一致で保つ＝B1の変更を「一球シム化」だけに閉じる）。非捕手は既定50=WP/PB非関与。
+  if (primaryPos === 'C') t.fielding.blocking = clampRating(makeRng(hashSeed(id, 'block')).normal(50, 10));
+
   return createPlayer({
     id,
     name: generateName(rng),

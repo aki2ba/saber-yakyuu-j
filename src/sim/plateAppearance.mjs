@@ -9,6 +9,9 @@
 import { logit, expit, ratingDelta } from './rates.mjs';
 import { pitchClass } from '../model/positions.mjs';
 import { isSameHand } from '../model/player.mjs';
+import { clamp } from '../model/util.mjs';
+import { selectPitchByCount } from './pitchGrid.mjs';
+import { generateBattedBall } from './battedBall.mjs';
 
 export const PA_OUTCOME = { K: 'K', BB: 'BB', HBP: 'HBP', IN_PLAY: 'inPlay' };
 
@@ -87,4 +90,199 @@ export function resolvePADiscipline(batter, pitcher, cfg, rng, tto = 0, pitch = 
   if (u < pK + pBB) return PA_OUTCOME.BB;
   if (u < pK + pBB + pHBP) return PA_OUTCOME.HBP;
   return PA_OUTCOME.IN_PLAY;
+}
+
+// ============================================================================
+// B1: (balls, strikes) カウント状態機械（§B1-1）
+//
+// 1打席を1球ずつ回し、3ストライク=K / 4ボール=BB / 死球=HBP / 接触=インプレー を「創発」させる。
+// 各一球で pitches/swings/whiffs/fouls/calledStrikes/zone/oZone/…/ballsInDirt を打者・投手の
+// 生カウントへ直接加算する（使い捨てオブジェクトを作らない・§B1-4 性能）。
+// インプレーが出たら既存の generateBattedBall を呼ぶ（EV/LA/方向パイプラインは不変）。
+// ============================================================================
+
+// 走者塁状態のビット化（0..7）。game.mjs と同義（重複定義・importを増やさない）。
+function baseBits(bases) {
+  return (bases[0] ? 1 : 0) | (bases[1] ? 2 : 0) | (bases[2] ? 4 : 0);
+}
+
+/** ワンバウンド球が抜けた時の走者進塁（全員1つ・三塁は生還）。得点数を返し bases を破壊更新。 */
+function advanceOnWildPitch(bases) {
+  let runs = 0;
+  if (bases[2]) { runs++; bases[2] = null; } // 三塁→生還
+  if (bases[1]) { bases[2] = bases[1]; bases[1] = null; } // 二塁→三塁
+  if (bases[0]) { bases[1] = bases[0]; bases[0] = null; } // 一塁→二塁
+  return runs;
+}
+
+// 一球ごとに使い捨てオブジェクトを作らないための、単一の再利用結果構造体（単スレッド・即時消費）。
+const PA_RESULT = {
+  outcome: null, // 'K'|'BB'|'HBP'|'inPlay'
+  battedBall: null, // インプレー時の BattedBall（それ以外 null）
+  decisiveClass: null, // 決着球のクラス（'fastball'|'breaking'）＝対球種スプリット計上用
+  pitches: 0, // この打席の投球数
+  wpRuns: 0, // 打席中の暴投/捕逸で入った得点（打者の得点機会外・game側で加点）
+  countBucket: 'even', // byCount 圧縮分類（ahead/even/behind）
+  passed02: false, // 0-2 を通過したか
+  passed30: false, // 3-0 を通過したか
+};
+
+/**
+ * 1打席をカウント状態機械で解決する（§B1-1）。
+ * @param {Object} env {batter,pitcher,catcher, cfg,rng, tto, bLine,pLine,cLine, bases, outs}
+ *   bLine=打者 battingLine / pLine=投手 pitchingLine / cLine=捕手 fieldingLine(なければnull)
+ *   bases=[1B,2B,3B]（暴投判定・インプレー塁状態に使う。WPで破壊更新されうる）
+ * @returns {typeof PA_RESULT} 再利用構造体（呼び出し側は即座に読み出すこと）
+ */
+export function runPlateAppearance(env) {
+  const { batter, pitcher, catcher, cfg, rng, tto, bLine, pLine, cLine, bases } = env;
+  const K = cfg.tuning.pitch;
+  const bat = batter.trueAbility;
+  const pit = pitcher.trueAbility.pitching;
+  const same = cfg.tuning.platoon && isSameHand(batter, pitcher);
+  const framing = catcher ? catcher.trueAbility.fielding.framing : 50;
+  const blocking = catcher ? (catcher.trueAbility.fielding.blocking ?? 50) : 50;
+
+  let balls = 0;
+  let strikes = 0;
+  let nPitches = 0;
+  let wpRuns = 0;
+  let passed02 = false;
+  let passed30 = false;
+
+  const R = PA_RESULT;
+  R.outcome = null;
+  R.battedBall = null;
+  R.decisiveClass = null;
+  R.wpRuns = 0;
+
+  while (true) {
+    if (balls === 0 && strikes === 2) passed02 = true;
+    if (balls === 3 && strikes === 0) passed30 = true;
+
+    // (a) 球種選択（カウント依存）
+    const pitch = selectPitchByCount(pitcher, rng, cfg, balls, strikes);
+    const cls = pitch ? pitchClass(pitch.type) : 'fastball';
+    const whiffVal = pitch ? pitch.whiff : 50;
+    const apt = cls === 'fastball' ? bat.batting.vsFastball : bat.batting.vsBreaking;
+    nPitches++;
+    bLine.pitches++;
+    pLine.pitches++;
+
+    // (b) ロケーション帯: ゾーン内率 = f(control, カウント)
+    let zone = K.zoneBase + K.zoneControlW * (pit.control - 50);
+    if (strikes === 2 && balls < 2) zone += K.zoneAheadW; // 0-2,1-2 → ボールで釣る
+    else if (balls === 3) zone += K.zoneBehindW; // 3-x → ゾーンへ置きにいく
+    else if (balls === 2 && strikes === 0) zone += K.zoneBehindW * 0.6; // 2-0
+    else if (balls > strikes) zone += K.zoneEvenBehindW; // 軽いビハインド
+    zone = clamp(zone, 0.15, 0.85);
+    const border = (1 - zone) * K.borderShare;
+    const u1 = rng.next();
+    const band = u1 < zone ? 0 : u1 < zone + border ? 1 : 2; // 0=ゾーン,1=ボーダー,2=明確ボール
+
+    if (band === 0) { bLine.zonePitches++; pLine.zonePitches++; }
+    else if (band === 2) { bLine.oZonePitches++; pLine.oZonePitches++; }
+
+    // (f) HBP: 明確ボール（内角外れ）の低確率イベント
+    if (band === 2) {
+      const pHbp = K.hbpPerClearBall * (1 + K.hbpControlW * (50 - pit.control));
+      if (rng.next() < pHbp) { R.outcome = 'HBP'; R.decisiveClass = cls; break; }
+    }
+
+    // (c) スイング判断: Swing% = f(帯, eye, カウント)
+    let pSwing;
+    if (band === 0) pSwing = K.zSwingBase - K.swingZoneEyeW * (bat.batting.eye - 50);
+    else if (band === 1) pSwing = K.bSwingBase - K.swingEyeW * (bat.batting.eye - 50);
+    else pSwing = K.oSwingBase - K.swingEyeW * (bat.batting.eye - 50) + (same ? K.platoonOSwingSame : 0);
+    if (strikes === 2) pSwing += K.twoStrikeSwingW; // 2ストライクの保護スイング
+    if (balls === 3 && strikes === 0) pSwing -= K.threeOhTakeW; // 3-0は自重
+    pSwing = clamp(pSwing, 0.01, 0.99);
+    const swung = rng.next() < pSwing;
+
+    if (swung) {
+      bLine.swings++; pLine.swings++;
+      if (band === 0) { bLine.zSwings++; pLine.zSwings++; }
+      else if (band === 2) { bLine.oSwings++; pLine.oSwings++; }
+      // (d) 空振り率 = f(球種whiff, contact, 帯, 適性)
+      const base = band === 0 ? K.whiffZoneBase : band === 1 ? K.whiffBorderBase : K.whiffOBase;
+      let pWhiff =
+        base +
+        K.whiffPitchW * (whiffVal - 50) -
+        K.whiffContactW * (bat.batting.contact - 50) -
+        K.whiffAptW * (apt - 50) +
+        (same ? K.platoonWhiffSame : 0) -
+        tto * K.ttoWhiff;
+      pWhiff = clamp(pWhiff, 0.01, 0.95);
+      if (rng.next() < pWhiff) {
+        bLine.whiffs++; pLine.whiffs++;
+        if (band === 0) { bLine.zWhiffs++; pLine.zWhiffs++; }
+        else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
+        strikes++;
+        if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
+      } else {
+        // 接触: ファウル vs インプレー（2ストライクのファウルはカウント維持）
+        let pFoul = K.foulBase + (strikes === 2 ? K.foulTwoStrikeW : 0);
+        pFoul = clamp(pFoul, 0.05, 0.95);
+        if (rng.next() < pFoul) {
+          bLine.fouls++; pLine.fouls++;
+          if (strikes < 2) strikes++;
+        } else {
+          // インプレー → 既存の打球パイプライン（不変）
+          R.battedBall = generateBattedBall(batter, pitcher, cfg, rng, {
+            baseState: baseBits(bases), outs: env.outs, tto, pitch,
+          });
+          R.outcome = 'inPlay';
+          R.decisiveClass = cls;
+          break;
+        }
+      }
+    } else {
+      // (e) 見逃し: ゾーン内=ストライク / ボーダー=フレーミング判定 / 外=ボール
+      if (band === 0) {
+        bLine.calledStrikes++; pLine.calledStrikes++;
+        strikes++;
+        if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
+      } else if (band === 1) {
+        const pCS = clamp(K.borderCsBase + K.frameSlopePerPt * (framing - 50), 0.02, 0.98);
+        const gotStrike = rng.next() < pCS;
+        if (cLine) {
+          const delta = (gotStrike ? 1 : 0) - K.borderCsBase; // 中立捕手(framing50)対比
+          cLine.frameCalls += delta;
+          cLine.framingRuns += delta * K.runPerCall; // per-inning近似の置換（§7.3）
+        }
+        if (gotStrike) {
+          bLine.calledStrikes++; pLine.calledStrikes++;
+          strikes++;
+          if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
+        } else {
+          balls++;
+          if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
+        }
+      } else {
+        // 明確ボール: (g) ワンバウンド球×捕手blocking → 暴投/捕逸
+        if (cls === 'breaking' && rng.next() < K.dirtBaseBreaking) {
+          bLine.ballsInDirt++; pLine.ballsInDirt++;
+          if (bases[0] || bases[1] || bases[2]) {
+            if (cLine) cLine.blockOpp++;
+            const pPass = clamp(K.wildBase - K.blockSlopePerPt * (blocking - 50), 0.02, 0.9);
+            if (rng.next() < pPass) {
+              if (cLine) { if (rng.next() < K.wpShare) cLine.wp++; else cLine.pb++; }
+              else rng.next(); // 捕手不在でも乱数消費数を一定に
+              wpRuns += advanceOnWildPitch(bases);
+            }
+          }
+        }
+        balls++;
+        if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
+      }
+    }
+  }
+
+  R.pitches = nPitches;
+  R.wpRuns = wpRuns;
+  R.passed02 = passed02;
+  R.passed30 = passed30;
+  // byCount 圧縮分類（決着直前カウント balls vs strikes）
+  R.countBucket = balls > strikes ? 'ahead' : balls < strikes ? 'behind' : 'even';
+  return R;
 }

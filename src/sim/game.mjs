@@ -9,14 +9,11 @@
 // フェーズCで人間の采配に差し替えるフック＝判断関数の入替だけで済む構造）。
 // 個人R(得点者)は保留、チーム得点(RS/RA)と投手失点のみ計上（§18・自己レビューF6）。
 // ============================================================================
-import { resolvePADiscipline } from './plateAppearance.mjs';
-import { generateBattedBall } from './battedBall.mjs';
+import { runPlateAppearance } from './plateAppearance.mjs';
 import { resolveBattedBall, battedType } from './battedBallResult.mjs';
 import { accumulateBatted } from './battedBallStats.mjs';
 import { rangeRating } from './fielding.mjs';
-import { selectPitch } from './pitchGrid.mjs';
 import { logit, expit, ratingDelta } from './rates.mjs';
-import { pitchClass } from '../model/positions.mjs';
 import { effectiveBats } from '../model/player.mjs';
 import { clamp } from '../model/util.mjs';
 import {
@@ -140,14 +137,6 @@ function resolveAdv(pid, baseProb, ctx, cfg, rng) {
     return took;
   }
   return (rng ? rng.next() : 1) < baseProb;
-}
-
-/** 投球数の近似（除去判定用） */
-function pitchesFor(outcome) {
-  if (outcome === 'K') return 4.8;
-  if (outcome === 'BB') return 5.2;
-  if (outcome === 'HBP') return 3.5;
-  return 3.6;
 }
 
 function baseBits(bases) {
@@ -447,13 +436,33 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
 
     // 対戦巡目（この登板でこの投手が何度打線を通過したか。§3.3）
     const tto = Math.floor(fielding.cur.bf / 9);
-    // 球種格子(§4段階1): この打席で投げる球種を1つ選ぶ（敬遠は勝負しない＝球種なし）
-    const pitch = isIBB ? null : selectPitch(pitcher, rng, cfg);
-    const outcome = isIBB ? 'BB' : resolvePADiscipline(batter, pitcher, cfg, rng, tto, pitch);
-    const pc = isIBB ? cfg.tuning.ibb.pitches : pitchesFor(outcome);
-    fielding.cur.pitches += pc;
+    // 一球ごとカウント状態機械（§B1）。敬遠(isIBB)は勝負しない＝機械を回さず4ボール扱い。
+    // K=3ストライク/BB=4ボール/HBP=死球/inPlay=接触 を創発。per-pitch生カウントは機械が bStat/pStat へ直接加算。
+    const catcherPid = fielding.defense.C;
+    const catcher = catcherPid ? fielding.byId.get(catcherPid) : null;
+    const cLine = catcherPid ? statFor(catcherPid, fielding.teamId).fielding : null;
+    let outcome, decisiveClass = null, wpRuns = 0;
+    let battedBall = null, paPitches, paBucket = 'even', paPassed02 = false, paPassed30 = false;
+    if (isIBB) {
+      outcome = 'BB';
+      paPitches = cfg.tuning.ibb.pitches;
+      pStat.pitching.pitches += Math.round(paPitches); // 敬遠は機械を通さない＝投球数を別途計上
+    } else {
+      const pa = runPlateAppearance({
+        batter, pitcher, catcher, cfg, rng, tto,
+        bLine: bStat.batting, pLine: pStat.pitching, cLine, bases, outs,
+      });
+      outcome = pa.outcome; // 'K'|'BB'|'HBP'|'inPlay'
+      battedBall = pa.battedBall;
+      decisiveClass = pa.decisiveClass;
+      wpRuns = pa.wpRuns; // 打席中の暴投/捕逸で入った得点（下で加点・投手失点へ）
+      paPitches = pa.pitches;
+      paBucket = pa.countBucket;
+      paPassed02 = pa.passed02;
+      paPassed30 = pa.passed30;
+    }
+    fielding.cur.pitches += paPitches;
     fielding.cur.bf++;
-    pStat.pitching.pitches += Math.round(pc);
     pStat.pitching.bf++;
     bStat.batting.pa++;
 
@@ -479,7 +488,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       bStat.batting.hbp++;
       pStat.pitching.hbp++;
     } else {
-      const bb = generateBattedBall(batter, pitcher, cfg, rng, { baseState: baseBits(bases), outs, tto, pitch });
+      const bb = battedBall; // 機械が生成済み（EV/LA/方向パイプラインは不変）
       // 守備者個人のRangeを注入（2-7）: 担当ポジションの野手能力で被安打率を上下
       const r = resolveBattedBall(bb, cfg, rng, park, (pos) => {
         const fp = fielding.byId.get(fielding.defense[pos]);
@@ -518,9 +527,9 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       if (onBattedBall) onBattedBall(batterId, batting.teamId, bb, result);
     }
 
-    // 対球種スプリット記録（§4段階1: 対ストレート成績等の素）
-    if (pitch) {
-      const sl = pitchClass(pitch.type) === 'fastball' ? bStat.batting.vsFastball : bStat.batting.vsBreaking;
+    // 対球種スプリット記録（§4段階1: 対ストレート成績等の素）。決着球のクラスで分類（§B1）。
+    if (decisiveClass) {
+      const sl = decisiveClass === 'fastball' ? bStat.batting.vsFastball : bStat.batting.vsBreaking;
       sl.pa++;
       if (outcome === 'BB') sl.bb++;
       else if (outcome !== 'HBP') {
@@ -532,6 +541,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         }
       }
     }
+    // カウント別成績の圧縮版（§B1-2）: ahead/even/behind＋通過した 0-2/3-0 セルへ配る（IBBは除外）。
+    if (!isIBB) recordByCount(bStat.batting.byCount, paBucket, paPassed02, paPassed30, outcome, result);
 
     // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
     // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
@@ -547,7 +558,10 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     }
 
     const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId };
-    const runs = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+    const advRuns = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+    // 打席中の暴投/捕逸で入った得点(wpRuns)は打点対象外だが投手失点＝自責（失策後は非自責）。
+    // 打席プレー全体の得点として一括計上し、文脈指標(gc)へも合算で渡す（RE24/WPAの telescoping を保つ）。
+    const runs = advRuns + wpRuns;
 
     if (result === 'out') {
       if (isAirOut && runs > 0) {
@@ -585,7 +599,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     }
     if (runs > 0) {
       batting.score += runs;
-      if (result !== 'E') bStat.batting.rbi += runs; // 失策の得点は打点なし
+      // 打点は打撃結果の得点(advRuns)のみ・失策は打点なし。暴投/捕逸(wpRuns)は打点対象外。
+      if (result !== 'E') bStat.batting.rbi += advRuns;
       pStat.pitching.r += runs;
       pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
       fielding.cur.runs += runs;
@@ -644,13 +659,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
   for (const pos of Object.keys(fielding.defense)) {
     statFor(fielding.defense[pos], fielding.teamId).fielding.positionOuts[pos] += outs;
   }
-  // 捕手フレーミング（監査B5・§7.3）: 当該イニング分の (framing-50) をrun換算して framingRuns に加算。
-  // 死蔵していた捕手フレーミング能力を守備価値としてWARに接続する。
-  const cPid = fielding.defense.C;
-  if (cPid) {
-    const framing = fielding.byId.get(cPid).trueAbility.fielding.framing;
-    statFor(cPid, fielding.teamId).fielding.framingRuns += (framing - 50) * cfg.tuning.field.framePerInning * (outs / 3);
-  }
+  // 捕手フレーミング（§B1・§7.3）: per-inning 近似（旧 framePerInning）は廃止し、ボーダー球の見逃し判定を
+  // 一球単位で創発させる（runPlateAppearance が cLine.frameCalls/framingRuns へ直接加算済み）。ここでは何もしない。
   // DHの出場イニング相当を計上（守備に就かないDHにも守備位置補正 -17.5/1350 を効かせる。
   // 攻撃側ハーフのアウト数＝そのイニング数分の在籍。§9・監査A1）。
   const dhPid = batting.dhSlot >= 0 ? batting.slots[batting.dhSlot].playerId : null;
@@ -663,6 +673,29 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
 /** 文脈指標フックの呼び出し（§B2）。gc が無ければ何もしない（乱数非消費・結果不変）。 */
 function creditPlay(gc, p) {
   if (gc) gc.onPlay(p);
+}
+
+/**
+ * カウント別成績の圧縮版へ1打席を計上（§B1-2）。ahead/even/behind（決着直前カウント）＋
+ * 通過した 0-2/3-0 の代表セルへ、{pa,ab,h,hr,bb,so} を配る（乱数非消費・最新シーズン内訳表示用）。
+ */
+function recordByCount(byCount, bucket, passed02, passed30, outcome, result) {
+  const dab = outcome === 'BB' || outcome === 'HBP' ? 0 : 1;
+  const dh = result === '1B' || result === '2B' || result === '3B' || result === 'HR' ? 1 : 0;
+  const dhr = result === 'HR' ? 1 : 0;
+  const dbb = outcome === 'BB' ? 1 : 0;
+  const dso = outcome === 'K' ? 1 : 0;
+  const bump = (c) => {
+    c.pa++;
+    c.ab += dab;
+    c.h += dh;
+    c.hr += dhr;
+    c.bb += dbb;
+    c.so += dso;
+  };
+  bump(byCount[bucket]);
+  if (passed02) bump(byCount.c02);
+  if (passed30) bump(byCount.c30);
 }
 
 /** スプリット器1つへ1打席ぶんのデルタを加算（§B3b）。 */

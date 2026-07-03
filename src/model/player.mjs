@@ -74,6 +74,7 @@ export function createTrueAbility(over = {}) {
       positionProf: fielderProfInit(), // ポジション別習熟テーブル（経験で上下, §13）
       positioningIQ: 50, // ポジショニングIQ — 経験・技巧寄り・加齢に強い
       framing: 50, // フレーミング（捕手専用）
+      blocking: 50, // ブロッキング（捕手専用・§B1）: ワンバウンド球を止める能力（WP/PB抑止）
     },
     // §2.6 走塁系
     baserunning: {

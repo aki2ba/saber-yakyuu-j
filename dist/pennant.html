@@ -312,6 +312,7 @@ function createTrueAbility(over = {}) {
       positionProf: fielderProfInit(), // ポジション別習熟テーブル（経験で上下, §13）
       positioningIQ: 50, // ポジショニングIQ — 経験・技巧寄り・加齢に強い
       framing: 50, // フレーミング（捕手専用）
+      blocking: 50, // ブロッキング（捕手専用・§B1）: ワンバウンド球を止める能力（WP/PB抑止）
     },
     // §2.6 走塁系
     baserunning: {
@@ -557,9 +558,24 @@ function createBattingLine() {
     sb: 0, // 盗塁（wSBの素, §6）
     cs: 0, // 盗塁死
     rbi: 0,
+    // --- B1 一球ごとの生カウント（打者視点・§B1-2）。カウント状態機械の副産物。
+    // pitches=見た球数, swings=スイング数, whiffs=空振り, fouls=ファウル, calledStrikes=見逃しストライク,
+    // zonePitches/oZonePitches=ゾーン内/明確ボールの球数, z/oSwings=各帯スイング, z/oWhiffs=各帯空振り,
+    // ballsInDirt=ワンバウンド球数。率(Zone%/O-Swing%/Contact%/SwStr%/CSW%)はこれらから metrics で算出。
+    pitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
+    zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
     vsFastball: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
     vsBreaking: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
+    // カウント別成績の圧縮版（§B1-2）: ahead/even/behind（打者視点 balls vs strikes）＋代表2セル 0-2/3-0。
+    // 各セルは PA終端の直前カウントで分類し {pa,ab,h,hr,bb,so} を積む。通算集計では合算しない（ネスト）。
+    byCount: {
+      ahead: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // balls > strikes
+      even: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // balls == strikes
+      behind: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // balls < strikes
+      c02: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // 0ボール2ストライクを通過
+      c30: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // 3ボール0ストライクを通過
+    },
     // --- B3a 追加集計（一球データ不要・打球イベントの副産物。§B3） ------------
     // 打球期待値アキュムレータ（xBA/xSLG/xwOBA）: resolveBattedBall の期待out率/塁打分布を
     // rng抽選の"前"に累積（モデル=シムゆえ リーグ xwOBA≈wOBA が恒等成立→較正チェックに使う）。
@@ -611,6 +627,9 @@ function createPitchingLine() {
     cg: 0, // 完投（監査B4で計上）
     sho: 0, // 完封（監査B4で計上）
     pitches: 0, // 投球数
+    // --- B1 一球ごとの生カウント（投手視点・§B1-2）。打者側と対称。被O-Swing等=「釣れる投手」の素。
+    swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
+    zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     // --- B3a 追加集計: 被打球分類（被GB/LD/FB/PU%・HR/FB・xFIP用の被FB）とQS。§B3 ---
     bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
     qs: 0, // クオリティスタート（先発が6IP=18アウト以上・自責3以下で降板）
@@ -655,6 +674,11 @@ function createFieldingLine() {
     dpTurned: 0, // うち併殺成立（DPR＝対リーグ平均転換率で metrics 側が run 換算）
     sbAllowed: 0, // 捕手: 許した盗塁（rSBの素）
     csMade: 0, // 捕手: 刺した盗塁死（rSBの素）
+    // --- B1 捕手の一球ごとの創発（§B1-2）。フレーミング/ブロッキングを一球単位で計上。
+    frameCalls: 0, // ボーダー球で獲得した見逃しストライク − 中立(borderCsBase) の累積（対リーグ平均）
+    wp: 0, // 暴投（この捕手が受けた投手の暴投・走者進塁を許した数）
+    pb: 0, // 捕逸（この捕手起因の後逸・走者進塁）
+    blockOpp: 0, // ブロッキング機会（走者ありでのワンバウンド球数。wp+pb の分母）
   };
 }
 
@@ -887,7 +911,7 @@ const TUNING_DEFAULT = {
   // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
   context: CONTEXT_CONST,
 
-  hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
+  hrScale: 0.985, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
@@ -913,6 +937,61 @@ const TUNING_DEFAULT = {
     // 球種格子 段階1（2-1）: 1打席ごとに投手の球種を1つ選び、その whiff で解決。
     fastballWeight: 2.0, // 球種選択で速球系を重く（残りは1.0）
     whiffAptW: 0.24, // 打者の対該当クラス適性が高いほどKしにくい
+  },
+
+  // ==========================================================================
+  // 一球ごとシミュレーション（B1・§B1）: (balls,strikes) カウント状態機械のノブ。
+  // plateAppearance.mjs の runPlateAppearance が消費する。K/BB/HBP は 3ストライク/4ボール/
+  // 死球として創発する（旧 pa.* の log5 一発抽選は廃止し legacy 化）。全ノブをここへ集約。
+  // 較正の第一目標帯（§B1-3）: 投球数/打席3.7-4.0・Zone%42-48・O-Swing26-34/Z-Swing60-70・
+  //   Contact75-81・SwStr8.5-12・CSW26-31・F-Strike58-64。
+  // ==========================================================================
+  pitch: {
+    // --- 投球ロケーション（ゾーン内/ボーダー/明確ボールの3帯） ---
+    zoneBase: 0.42, // 基準ゾーン内率（control50・even count）※Zone%の主ノブ
+    zoneControlW: 0.005, // 制球(50中心)→ゾーン率（制球でストライク先行）
+    zoneAheadW: -0.10, // 追い込み(0-2,1-2)でゾーン率減（ボールで釣る）
+    zoneBehindW: 0.15, // ビハインド(3-0,3-1,2-0)でゾーン率増（置きにいく）
+    zoneEvenBehindW: 0.04, // balls>strikes の軽いビハインドでゾーン率増
+    borderShare: 0.34, // 非ゾーンのうちボーダー帯（フレーミングが効く縁）の割合。残りは明確ボール
+    // --- 打者スイング判断 ---
+    zSwingBase: 0.66, // ゾーン内スイング率（Z-Swing%の主ノブ）
+    bSwingBase: 0.46, // ボーダー帯スイング率
+    oSwingBase: 0.235, // ボール球スイング率（chase・O-Swing%の主ノブ）
+    swingEyeW: 0.006, // eye(50中心)→ボーダー/ボール球スイング率減（見極め）
+    swingZoneEyeW: 0.0015, // eye→ゾーンスイング率減（わずか。巧打者は good pitch を待てる）
+    twoStrikeSwingW: 0.11, // 2ストライクの保護スイング増（全帯）
+    threeOhTakeW: 0.42, // 3-0での自重（スイング率減）
+    // --- スイング時の空振り ---
+    whiffZoneBase: 0.095, // ゾーン内スイングの空振り基準
+    whiffBorderBase: 0.16, // ボーダー帯スイングの空振り基準
+    whiffOBase: 0.26, // ボール球スイング（chase）の空振り基準
+    whiffPitchW: 0.006, // 球種whiff(50中心)→空振り増
+    whiffContactW: 0.006, // 打者contact(50中心)→空振り減
+    whiffAptW: 0.004, // 対該当クラス適性(50中心)→空振り減
+    // --- 接触時: ファウル vs インプレー ---
+    foulBase: 0.47, // 接触のうちファウルになる基準
+    foulTwoStrikeW: 0.08, // 2ストライクでファウル率増（粘り＝カット）
+    // --- 見逃し時: ボーダー帯の捕手フレーミング判定 ---
+    borderCsBase: 0.24, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時）
+    frameSlopePerPt: 0.0045, // framing(50中心)→ボーダーCS率±（一球単位の創発）
+    runPerCall: 0.125, // 1コール(vs中立)→run（framingRuns。per-inning近似の置換・§7.3）
+    // --- HBP（内角外れの低確率イベント。現行率~0.9%/PAを維持） ---
+    hbpPerClearBall: 0.007, // 明確ボール1球あたりのHBP率
+    hbpControlW: 0.006, // 制球が低い(50-control)ほどHBP増
+    // --- 暴投/捕逸（ワンバウンド球×捕手blocking） ---
+    dirtBaseBreaking: 0.11, // 明確ボール(変化球)がワンバウンドになる率
+    blockSlopePerPt: 0.005, // blocking(50中心)→ワンバウンド抜け回避
+    wildBase: 0.52, // ワンバウンド×走者ありで球が抜ける基準（blockで減）
+    wpShare: 0.6, // 抜けたうち暴投(投手起因→wp)の割合。残りは捕逸(捕手起因→pb)
+    // --- プラトーン/TTO の一球パラメータ再配置（旧 pa.platoon/tto の log5 相当を一球へ） ---
+    platoonWhiffSame: 0.03, // 同利きで空振り率増（K↑）
+    platoonOSwingSame: 0.03, // 同利きでchase増（BB↓）
+    ttoWhiff: 0.010, // 巡目(tto)ごとに空振り率減（打者が慣れる＝K↓・EV↑は bb.tto側）
+    // --- 球種選択のカウント依存重み（selectPitchByCount） ---
+    fastballWeight: 2.0, // even時の速球系重み（残り球種=1.0）
+    putawayWhiffBias: 0.9, // 2ストライク時、高whiff球種(whiff-50)に比例して重み増（決め球）
+    behindFastballBias: 1.6, // ビハインド(3ball/2-0)で速球系重みを追加（制球しやすい球）
   },
 
   // 左右プラトーン（S1・M7解消）: 同利き手（実効打席サイド==投手の利き腕）へのペナルティ。
@@ -976,15 +1055,15 @@ const TUNING_DEFAULT = {
   pen: {
     saveLeadMax: 3, // セーブ機会のリード上限（1〜3点差）
     leverageMinInning: 7, // 勝ちパターン継投の開始回（7回=setup7）
-    starterPitchBase: 82, // 先発の球数上限の基礎（+ stamina×starterPitchStamW）
-    starterPitchStamW: 0.73, // スタミナ→球数上限の感度 ※S5較正（高スタミナ先発の深投~110球）
-    quickHookW: 0.5, // 監督quickHook(50中心)→球数上限の減分（早い継投ほど上限低）
+    starterPitchBase: 70, // 先発の球数上限の基礎（+ stamina×starterPitchStamW）
+    starterPitchStamW: 0.64, // スタミナ→球数上限の感度 ※S5較正（高スタミナ先発の深投~110球）
+    quickHookW: 0.44, // 監督quickHook(50中心)→球数上限の減分（早い継投ほど上限低）
     starterMaxRuns: 6, // 先発の失点即降板ライン
     tiredOuts: 18, // 6回以降（アウト数）で
     tiredRuns: 4, // 4失点なら降板
     starterStayRuns: 1, // 7-8回のセーブ機会でも失点これ以下の先発は続投 ※S5較正（8回はセットアッパーへ＝HLD王の門番）
     cgMinOuts: 21, // 9回続投（完投・完封狙い）に必要な先発アウト数（かつ無失点）
-    cgMaxPitches: 102, // 9回続投を許す球数上限（完投の門番・S5較正。リード有無に依らず適用）
+    cgMaxPitches: 80, // 9回続投を許す球数上限（完投の門番・S5較正。リード有無に依らず適用）
     relieverMaxOuts: 3, // 勝ちパターン役割（closer/setup8/setup7）は基本1イニング
     middleMaxOuts: 6, // middle（非役割）は複数イニング可（登板数王の圧縮・S5較正）
     relieverMaxRuns: 3, // 救援の失点降板ライン
@@ -1008,7 +1087,7 @@ const TUNING_DEFAULT = {
   // 投手疲労・可用性（S3。連投制限・中6日の基盤）
   fatigue: {
     maxConsecDays: 2, // 2連投まで（3連投禁止）
-    prevDayPitchLimit: 24, // 前日この球数以上→当日不可 ※S5較正（SV/HLD/登板数の負荷分散）
+    prevDayPitchLimit: 21, // 前日この球数以上→当日不可 ※S5較正（SV/HLD/登板数の負荷分散）
     starterRestDays: 5, // 先発は中5日以上
   },
 
@@ -1655,6 +1734,10 @@ function generateFielder(rng, id, primaryPos) {
     career: { peakAge: Math.round(clamp(rng.normal(27, 2), 23, 34)), declineRate },
   });
 
+  // ブロッキング（§B1・捕手専用）: 独立シード(id基準)で引き、メインの生成ストリームを一切乱さない
+  // （既存リーグ生成をバイト一致で保つ＝B1の変更を「一球シム化」だけに閉じる）。非捕手は既定50=WP/PB非関与。
+  if (primaryPos === 'C') t.fielding.blocking = clampRating(makeRng(hashSeed(id, 'block')).normal(50, 10));
+
   return createPlayer({
     id,
     name: generateName(rng),
@@ -1815,96 +1898,65 @@ function log5(leagueRate, batterDelta, pitcherDelta) {
 }
 
 
-// ===== src/sim/plateAppearance.mjs =====
+// ===== src/sim/pitchGrid.mjs =====
 // ============================================================================
-// 打席解決の規律層（1-1）— 2段パイプラインの第1段（§3.1 / 自己レビュー F29）
-//
-// ここでは打者能力 vs 投手能力を log5/オッズ比で合成し、打席の分岐だけを決める:
-//   { K(三振) / BB(四球) / HBP(死球) / IN_PLAY(インプレー=打球化) }
-// 安打/アウト/長打は決めない。IN_PLAY は第2段(1-2/1-3 EV/LA→球場→守備)へ渡す。
-// 「結果を先に決めてゾーンを後付け」を避け、決定権をこの1箇所に閉じる。
+// 球種格子 段階1（2-1/2-2 / §4）
+// 1打席ごとに投手の球種を1つ選び、その球種の (whiff/hrSuppress/contactQuality) と
+// 打者の (対速球/対変化球) 適性で解決する。これにより:
+//   - 対ストレート成績が球種別ログの集計として湧く
+//   - フォーク習得で開花（列が一本生える＝新しい優秀な球種の追加）
+//   - 球種構成＝投手タイプ / 先発・リリーフ適性
 // ============================================================================
 
 
-
-
-const PA_OUTCOME = { K: 'K', BB: 'BB', HBP: 'HBP', IN_PLAY: 'inPlay' };
-
-/** 投手の平均空振り資質（球種whiffの平均）。球種未設定なら平均50。 */
-function meanWhiff(pit) {
-  const arr = pit.pitches;
-  if (!arr || arr.length === 0) return 50;
-  let s = 0;
-  for (const p of arr) s += p.whiff;
-  return s / arr.length;
+/** その打席で投げる球種を1つ選ぶ（速球系を重く重み付け・legacy: 打席1回1球種の旧API） */
+function selectPitch(pitcher, rng, cfg) {
+  const pitches = pitcher.trueAbility.pitching.pitches;
+  if (!pitches || pitches.length === 0) return null;
+  const fw = cfg.tuning.pa.fastballWeight;
+  let total = 0;
+  for (const p of pitches) total += FASTBALL_TYPES.has(p.type) ? fw : 1;
+  let r = rng.next() * total;
+  for (const p of pitches) {
+    r -= FASTBALL_TYPES.has(p.type) ? fw : 1;
+    if (r <= 0) return p;
+  }
+  return pitches[pitches.length - 1];
 }
 
 /**
- * 打席の分岐確率（pK, pBB, pHBP）を log5 合成で算出。IN_PLAY は残余。
- * @returns {{pK:number, pBB:number, pHBP:number, pInPlay:number}}
+ * 一球ごとの球種選択（B1・§B1-1(a)）: (balls,strikes) 依存の重みで投手の球種構成から1球を選ぶ。
+ *   - even/追い込み前 = 速球系を重く（fastballWeight）
+ *   - 2ストライク（決め球）= whiff の高い球種ほど重く（putawayWhiffBias×(whiff-50)）
+ *   - ビハインド（3ボール, 2-0）= 速球系をさらに重く（制球しやすい球・behindFastballBias）
+ * 決定論: rng を1回だけ消費。使い捨てオブジェクトは作らない（重み合計→線形走査）。
  */
-function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
-  const pa = cfg.tuning.pa;
-  const b = batter.trueAbility.batting;
-  const p = pitcher.trueAbility.pitching;
-
-  // --- 左右プラトーン（S1・M7解消）: 同利き（スイッチは常に有利側=逆打席）で K↑ BB↓ ---
-  const pl = cfg.tuning.platoon;
-  const same = pl && isSameHand(batter, pitcher);
-
-  // --- K: 打者のK傾向（コンタクト/選球眼＋対該当球種クラス適性）×投手の奪三振資質 ---
-  // 球種格子(§4段階1): pitch があればその球種の whiff を使い、打者の対クラス適性で補正。
-  const whiffVal = pitch ? pitch.whiff : meanWhiff(p);
-  let aptAdj = 0;
-  if (pitch) {
-    const apt = pitchClass(pitch.type) === 'fastball' ? b.vsFastball : b.vsBreaking;
-    aptAdj = pa.whiffAptW * (apt - 50); // 適性高い→Kしにくい
+function selectPitchByCount(pitcher, rng, cfg, balls, strikes) {
+  const pitches = pitcher.trueAbility.pitching.pitches;
+  if (!pitches || pitches.length === 0) return null;
+  if (pitches.length === 1) {
+    rng.next(); // 乱数消費数をカウント状態に依存させない（決定論の安定化）
+    return pitches[0];
   }
-  // 巡目(tto)が進むほど打者はK を回避しやすい（§3.3）。
-  const kProne = 50 - pa.kContactW * (b.contact - 50) - pa.kEyeW * (b.eye - 50) - aptAdj;
-  const kStuff = whiffVal + pa.kVeloPerKmh * (p.velocityKmh - 146);
-  let pK = expit(
-    logit(pa.kLeague) +
-      ratingDelta(kProne, pa.kSlope) +
-      ratingDelta(kStuff, pa.kSlope) -
-      tto * cfg.tuning.tto.kPerTime +
-      (same ? pl.kLogitSame : 0),
-  );
-
-  // --- BB: 打者選球眼（高→増）×投手制球（高→減） ---
-  let pBB = expit(
-    logit(pa.bbLeague) +
-      ratingDelta(b.eye, pa.bbSlope) -
-      ratingDelta(p.control, pa.bbSlope) +
-      (same ? pl.bbLogitSame : 0),
-  );
-
-  // --- HBP: 小。投手制球が低いほどわずかに増 ---
-  let pHBP = expit(logit(pa.hbpLeague) - ratingDelta(p.control, pa.hbpSlope));
-
-  // 端の組み合わせで合計が1に近づき過ぎないようガード（IN_PLAY を最低限残す）
-  const sum = pK + pBB + pHBP;
-  const cap = 0.95;
-  if (sum > cap) {
-    const s = cap / sum;
-    pK *= s;
-    pBB *= s;
-    pHBP *= s;
+  const K = cfg.tuning.pitch;
+  const behind = balls === 3 || (balls === 2 && strikes === 0);
+  const putaway = strikes === 2;
+  let total = 0;
+  for (const p of pitches) {
+    let w = FASTBALL_TYPES.has(p.type) ? K.fastballWeight : 1;
+    if (behind && FASTBALL_TYPES.has(p.type)) w += K.behindFastballBias;
+    if (putaway) w += K.putawayWhiffBias * Math.max(0, (p.whiff - 50) / 10); // 決め球=高whiff球種
+    total += w;
   }
-  return { pK, pBB, pHBP, pInPlay: 1 - pK - pBB - pHBP };
-}
-
-/**
- * 打席の分岐を1回抽選（決定論・rng使用）。
- * @returns {'K'|'BB'|'HBP'|'inPlay'}
- */
-function resolvePADiscipline(batter, pitcher, cfg, rng, tto = 0, pitch = null) {
-  const { pK, pBB, pHBP } = paProbabilities(batter, pitcher, cfg, tto, pitch);
-  const u = rng.next();
-  if (u < pK) return PA_OUTCOME.K;
-  if (u < pK + pBB) return PA_OUTCOME.BB;
-  if (u < pK + pBB + pHBP) return PA_OUTCOME.HBP;
-  return PA_OUTCOME.IN_PLAY;
+  let r = rng.next() * total;
+  for (const p of pitches) {
+    let w = FASTBALL_TYPES.has(p.type) ? K.fastballWeight : 1;
+    if (behind && FASTBALL_TYPES.has(p.type)) w += K.behindFastballBias;
+    if (putaway) w += K.putawayWhiffBias * Math.max(0, (p.whiff - 50) / 10);
+    r -= w;
+    if (r <= 0) return p;
+  }
+  return pitches[pitches.length - 1];
 }
 
 
@@ -1991,6 +2043,297 @@ function generateBattedBall(batter, pitcher, cfg, rng, ctx = {}) {
   });
   bb2.runnerSpeed = batter.trueAbility.common.speed; // 三塁打の脚力依存に使用（監査B1）
   return bb2;
+}
+
+
+// ===== src/sim/plateAppearance.mjs =====
+// ============================================================================
+// 打席解決の規律層（1-1）— 2段パイプラインの第1段（§3.1 / 自己レビュー F29）
+//
+// ここでは打者能力 vs 投手能力を log5/オッズ比で合成し、打席の分岐だけを決める:
+//   { K(三振) / BB(四球) / HBP(死球) / IN_PLAY(インプレー=打球化) }
+// 安打/アウト/長打は決めない。IN_PLAY は第2段(1-2/1-3 EV/LA→球場→守備)へ渡す。
+// 「結果を先に決めてゾーンを後付け」を避け、決定権をこの1箇所に閉じる。
+// ============================================================================
+
+
+
+
+
+
+
+const PA_OUTCOME = { K: 'K', BB: 'BB', HBP: 'HBP', IN_PLAY: 'inPlay' };
+
+/** 投手の平均空振り資質（球種whiffの平均）。球種未設定なら平均50。 */
+function meanWhiff(pit) {
+  const arr = pit.pitches;
+  if (!arr || arr.length === 0) return 50;
+  let s = 0;
+  for (const p of arr) s += p.whiff;
+  return s / arr.length;
+}
+
+/**
+ * 打席の分岐確率（pK, pBB, pHBP）を log5 合成で算出。IN_PLAY は残余。
+ * @returns {{pK:number, pBB:number, pHBP:number, pInPlay:number}}
+ */
+function paProbabilities(batter, pitcher, cfg, tto = 0, pitch = null) {
+  const pa = cfg.tuning.pa;
+  const b = batter.trueAbility.batting;
+  const p = pitcher.trueAbility.pitching;
+
+  // --- 左右プラトーン（S1・M7解消）: 同利き（スイッチは常に有利側=逆打席）で K↑ BB↓ ---
+  const pl = cfg.tuning.platoon;
+  const same = pl && isSameHand(batter, pitcher);
+
+  // --- K: 打者のK傾向（コンタクト/選球眼＋対該当球種クラス適性）×投手の奪三振資質 ---
+  // 球種格子(§4段階1): pitch があればその球種の whiff を使い、打者の対クラス適性で補正。
+  const whiffVal = pitch ? pitch.whiff : meanWhiff(p);
+  let aptAdj = 0;
+  if (pitch) {
+    const apt = pitchClass(pitch.type) === 'fastball' ? b.vsFastball : b.vsBreaking;
+    aptAdj = pa.whiffAptW * (apt - 50); // 適性高い→Kしにくい
+  }
+  // 巡目(tto)が進むほど打者はK を回避しやすい（§3.3）。
+  const kProne = 50 - pa.kContactW * (b.contact - 50) - pa.kEyeW * (b.eye - 50) - aptAdj;
+  const kStuff = whiffVal + pa.kVeloPerKmh * (p.velocityKmh - 146);
+  let pK = expit(
+    logit(pa.kLeague) +
+      ratingDelta(kProne, pa.kSlope) +
+      ratingDelta(kStuff, pa.kSlope) -
+      tto * cfg.tuning.tto.kPerTime +
+      (same ? pl.kLogitSame : 0),
+  );
+
+  // --- BB: 打者選球眼（高→増）×投手制球（高→減） ---
+  let pBB = expit(
+    logit(pa.bbLeague) +
+      ratingDelta(b.eye, pa.bbSlope) -
+      ratingDelta(p.control, pa.bbSlope) +
+      (same ? pl.bbLogitSame : 0),
+  );
+
+  // --- HBP: 小。投手制球が低いほどわずかに増 ---
+  let pHBP = expit(logit(pa.hbpLeague) - ratingDelta(p.control, pa.hbpSlope));
+
+  // 端の組み合わせで合計が1に近づき過ぎないようガード（IN_PLAY を最低限残す）
+  const sum = pK + pBB + pHBP;
+  const cap = 0.95;
+  if (sum > cap) {
+    const s = cap / sum;
+    pK *= s;
+    pBB *= s;
+    pHBP *= s;
+  }
+  return { pK, pBB, pHBP, pInPlay: 1 - pK - pBB - pHBP };
+}
+
+/**
+ * 打席の分岐を1回抽選（決定論・rng使用）。
+ * @returns {'K'|'BB'|'HBP'|'inPlay'}
+ */
+function resolvePADiscipline(batter, pitcher, cfg, rng, tto = 0, pitch = null) {
+  const { pK, pBB, pHBP } = paProbabilities(batter, pitcher, cfg, tto, pitch);
+  const u = rng.next();
+  if (u < pK) return PA_OUTCOME.K;
+  if (u < pK + pBB) return PA_OUTCOME.BB;
+  if (u < pK + pBB + pHBP) return PA_OUTCOME.HBP;
+  return PA_OUTCOME.IN_PLAY;
+}
+
+// ============================================================================
+// B1: (balls, strikes) カウント状態機械（§B1-1）
+//
+// 1打席を1球ずつ回し、3ストライク=K / 4ボール=BB / 死球=HBP / 接触=インプレー を「創発」させる。
+// 各一球で pitches/swings/whiffs/fouls/calledStrikes/zone/oZone/…/ballsInDirt を打者・投手の
+// 生カウントへ直接加算する（使い捨てオブジェクトを作らない・§B1-4 性能）。
+// インプレーが出たら既存の generateBattedBall を呼ぶ（EV/LA/方向パイプラインは不変）。
+// ============================================================================
+
+// 走者塁状態のビット化（0..7）。game.mjs と同義（重複定義・importを増やさない）。
+function baseBits(bases) {
+  return (bases[0] ? 1 : 0) | (bases[1] ? 2 : 0) | (bases[2] ? 4 : 0);
+}
+
+/** ワンバウンド球が抜けた時の走者進塁（全員1つ・三塁は生還）。得点数を返し bases を破壊更新。 */
+function advanceOnWildPitch(bases) {
+  let runs = 0;
+  if (bases[2]) { runs++; bases[2] = null; } // 三塁→生還
+  if (bases[1]) { bases[2] = bases[1]; bases[1] = null; } // 二塁→三塁
+  if (bases[0]) { bases[1] = bases[0]; bases[0] = null; } // 一塁→二塁
+  return runs;
+}
+
+// 一球ごとに使い捨てオブジェクトを作らないための、単一の再利用結果構造体（単スレッド・即時消費）。
+const PA_RESULT = {
+  outcome: null, // 'K'|'BB'|'HBP'|'inPlay'
+  battedBall: null, // インプレー時の BattedBall（それ以外 null）
+  decisiveClass: null, // 決着球のクラス（'fastball'|'breaking'）＝対球種スプリット計上用
+  pitches: 0, // この打席の投球数
+  wpRuns: 0, // 打席中の暴投/捕逸で入った得点（打者の得点機会外・game側で加点）
+  countBucket: 'even', // byCount 圧縮分類（ahead/even/behind）
+  passed02: false, // 0-2 を通過したか
+  passed30: false, // 3-0 を通過したか
+};
+
+/**
+ * 1打席をカウント状態機械で解決する（§B1-1）。
+ * @param {Object} env {batter,pitcher,catcher, cfg,rng, tto, bLine,pLine,cLine, bases, outs}
+ *   bLine=打者 battingLine / pLine=投手 pitchingLine / cLine=捕手 fieldingLine(なければnull)
+ *   bases=[1B,2B,3B]（暴投判定・インプレー塁状態に使う。WPで破壊更新されうる）
+ * @returns {typeof PA_RESULT} 再利用構造体（呼び出し側は即座に読み出すこと）
+ */
+function runPlateAppearance(env) {
+  const { batter, pitcher, catcher, cfg, rng, tto, bLine, pLine, cLine, bases } = env;
+  const K = cfg.tuning.pitch;
+  const bat = batter.trueAbility;
+  const pit = pitcher.trueAbility.pitching;
+  const same = cfg.tuning.platoon && isSameHand(batter, pitcher);
+  const framing = catcher ? catcher.trueAbility.fielding.framing : 50;
+  const blocking = catcher ? (catcher.trueAbility.fielding.blocking ?? 50) : 50;
+
+  let balls = 0;
+  let strikes = 0;
+  let nPitches = 0;
+  let wpRuns = 0;
+  let passed02 = false;
+  let passed30 = false;
+
+  const R = PA_RESULT;
+  R.outcome = null;
+  R.battedBall = null;
+  R.decisiveClass = null;
+  R.wpRuns = 0;
+
+  while (true) {
+    if (balls === 0 && strikes === 2) passed02 = true;
+    if (balls === 3 && strikes === 0) passed30 = true;
+
+    // (a) 球種選択（カウント依存）
+    const pitch = selectPitchByCount(pitcher, rng, cfg, balls, strikes);
+    const cls = pitch ? pitchClass(pitch.type) : 'fastball';
+    const whiffVal = pitch ? pitch.whiff : 50;
+    const apt = cls === 'fastball' ? bat.batting.vsFastball : bat.batting.vsBreaking;
+    nPitches++;
+    bLine.pitches++;
+    pLine.pitches++;
+
+    // (b) ロケーション帯: ゾーン内率 = f(control, カウント)
+    let zone = K.zoneBase + K.zoneControlW * (pit.control - 50);
+    if (strikes === 2 && balls < 2) zone += K.zoneAheadW; // 0-2,1-2 → ボールで釣る
+    else if (balls === 3) zone += K.zoneBehindW; // 3-x → ゾーンへ置きにいく
+    else if (balls === 2 && strikes === 0) zone += K.zoneBehindW * 0.6; // 2-0
+    else if (balls > strikes) zone += K.zoneEvenBehindW; // 軽いビハインド
+    zone = clamp(zone, 0.15, 0.85);
+    const border = (1 - zone) * K.borderShare;
+    const u1 = rng.next();
+    const band = u1 < zone ? 0 : u1 < zone + border ? 1 : 2; // 0=ゾーン,1=ボーダー,2=明確ボール
+
+    if (band === 0) { bLine.zonePitches++; pLine.zonePitches++; }
+    else if (band === 2) { bLine.oZonePitches++; pLine.oZonePitches++; }
+
+    // (f) HBP: 明確ボール（内角外れ）の低確率イベント
+    if (band === 2) {
+      const pHbp = K.hbpPerClearBall * (1 + K.hbpControlW * (50 - pit.control));
+      if (rng.next() < pHbp) { R.outcome = 'HBP'; R.decisiveClass = cls; break; }
+    }
+
+    // (c) スイング判断: Swing% = f(帯, eye, カウント)
+    let pSwing;
+    if (band === 0) pSwing = K.zSwingBase - K.swingZoneEyeW * (bat.batting.eye - 50);
+    else if (band === 1) pSwing = K.bSwingBase - K.swingEyeW * (bat.batting.eye - 50);
+    else pSwing = K.oSwingBase - K.swingEyeW * (bat.batting.eye - 50) + (same ? K.platoonOSwingSame : 0);
+    if (strikes === 2) pSwing += K.twoStrikeSwingW; // 2ストライクの保護スイング
+    if (balls === 3 && strikes === 0) pSwing -= K.threeOhTakeW; // 3-0は自重
+    pSwing = clamp(pSwing, 0.01, 0.99);
+    const swung = rng.next() < pSwing;
+
+    if (swung) {
+      bLine.swings++; pLine.swings++;
+      if (band === 0) { bLine.zSwings++; pLine.zSwings++; }
+      else if (band === 2) { bLine.oSwings++; pLine.oSwings++; }
+      // (d) 空振り率 = f(球種whiff, contact, 帯, 適性)
+      const base = band === 0 ? K.whiffZoneBase : band === 1 ? K.whiffBorderBase : K.whiffOBase;
+      let pWhiff =
+        base +
+        K.whiffPitchW * (whiffVal - 50) -
+        K.whiffContactW * (bat.batting.contact - 50) -
+        K.whiffAptW * (apt - 50) +
+        (same ? K.platoonWhiffSame : 0) -
+        tto * K.ttoWhiff;
+      pWhiff = clamp(pWhiff, 0.01, 0.95);
+      if (rng.next() < pWhiff) {
+        bLine.whiffs++; pLine.whiffs++;
+        if (band === 0) { bLine.zWhiffs++; pLine.zWhiffs++; }
+        else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
+        strikes++;
+        if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
+      } else {
+        // 接触: ファウル vs インプレー（2ストライクのファウルはカウント維持）
+        let pFoul = K.foulBase + (strikes === 2 ? K.foulTwoStrikeW : 0);
+        pFoul = clamp(pFoul, 0.05, 0.95);
+        if (rng.next() < pFoul) {
+          bLine.fouls++; pLine.fouls++;
+          if (strikes < 2) strikes++;
+        } else {
+          // インプレー → 既存の打球パイプライン（不変）
+          R.battedBall = generateBattedBall(batter, pitcher, cfg, rng, {
+            baseState: baseBits(bases), outs: env.outs, tto, pitch,
+          });
+          R.outcome = 'inPlay';
+          R.decisiveClass = cls;
+          break;
+        }
+      }
+    } else {
+      // (e) 見逃し: ゾーン内=ストライク / ボーダー=フレーミング判定 / 外=ボール
+      if (band === 0) {
+        bLine.calledStrikes++; pLine.calledStrikes++;
+        strikes++;
+        if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
+      } else if (band === 1) {
+        const pCS = clamp(K.borderCsBase + K.frameSlopePerPt * (framing - 50), 0.02, 0.98);
+        const gotStrike = rng.next() < pCS;
+        if (cLine) {
+          const delta = (gotStrike ? 1 : 0) - K.borderCsBase; // 中立捕手(framing50)対比
+          cLine.frameCalls += delta;
+          cLine.framingRuns += delta * K.runPerCall; // per-inning近似の置換（§7.3）
+        }
+        if (gotStrike) {
+          bLine.calledStrikes++; pLine.calledStrikes++;
+          strikes++;
+          if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
+        } else {
+          balls++;
+          if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
+        }
+      } else {
+        // 明確ボール: (g) ワンバウンド球×捕手blocking → 暴投/捕逸
+        if (cls === 'breaking' && rng.next() < K.dirtBaseBreaking) {
+          bLine.ballsInDirt++; pLine.ballsInDirt++;
+          if (bases[0] || bases[1] || bases[2]) {
+            if (cLine) cLine.blockOpp++;
+            const pPass = clamp(K.wildBase - K.blockSlopePerPt * (blocking - 50), 0.02, 0.9);
+            if (rng.next() < pPass) {
+              if (cLine) { if (rng.next() < K.wpShare) cLine.wp++; else cLine.pb++; }
+              else rng.next(); // 捕手不在でも乱数消費数を一定に
+              wpRuns += advanceOnWildPitch(bases);
+            }
+          }
+        }
+        balls++;
+        if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
+      }
+    }
+  }
+
+  R.pitches = nPitches;
+  R.wpRuns = wpRuns;
+  R.passed02 = passed02;
+  R.passed30 = passed30;
+  // byCount 圧縮分類（決着直前カウント balls vs strikes）
+  R.countBucket = balls > strikes ? 'ahead' : balls < strikes ? 'behind' : 'even';
+  return R;
 }
 
 
@@ -2153,33 +2496,6 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
   const base = decideBases(bb, type, cfg, rng);
   bb.result = base;
   return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
-}
-
-
-// ===== src/sim/pitchGrid.mjs =====
-// ============================================================================
-// 球種格子 段階1（2-1/2-2 / §4）
-// 1打席ごとに投手の球種を1つ選び、その球種の (whiff/hrSuppress/contactQuality) と
-// 打者の (対速球/対変化球) 適性で解決する。これにより:
-//   - 対ストレート成績が球種別ログの集計として湧く
-//   - フォーク習得で開花（列が一本生える＝新しい優秀な球種の追加）
-//   - 球種構成＝投手タイプ / 先発・リリーフ適性
-// ============================================================================
-
-
-/** その打席で投げる球種を1つ選ぶ（速球系を重く重み付け） */
-function selectPitch(pitcher, rng, cfg) {
-  const pitches = pitcher.trueAbility.pitching.pitches;
-  if (!pitches || pitches.length === 0) return null;
-  const fw = cfg.tuning.pa.fastballWeight;
-  let total = 0;
-  for (const p of pitches) total += FASTBALL_TYPES.has(p.type) ? fw : 1;
-  let r = rng.next() * total;
-  for (const p of pitches) {
-    r -= FASTBALL_TYPES.has(p.type) ? fw : 1;
-    if (r <= 0) return p;
-  }
-  return pitches[pitches.length - 1];
 }
 
 
@@ -2831,9 +3147,6 @@ function accumulateBatted(bat, pit, bb, r, pullSign, cfg) {
 
 
 
-
-
-
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
 const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']); // ARM（外野送球）対象ポジション（§B3b）
 
@@ -2940,14 +3253,6 @@ function resolveAdv(pid, baseProb, ctx, cfg, rng) {
     return took;
   }
   return (rng ? rng.next() : 1) < baseProb;
-}
-
-/** 投球数の近似（除去判定用） */
-function pitchesFor(outcome) {
-  if (outcome === 'K') return 4.8;
-  if (outcome === 'BB') return 5.2;
-  if (outcome === 'HBP') return 3.5;
-  return 3.6;
 }
 
 function baseBits(bases) {
@@ -3247,13 +3552,33 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
 
     // 対戦巡目（この登板でこの投手が何度打線を通過したか。§3.3）
     const tto = Math.floor(fielding.cur.bf / 9);
-    // 球種格子(§4段階1): この打席で投げる球種を1つ選ぶ（敬遠は勝負しない＝球種なし）
-    const pitch = isIBB ? null : selectPitch(pitcher, rng, cfg);
-    const outcome = isIBB ? 'BB' : resolvePADiscipline(batter, pitcher, cfg, rng, tto, pitch);
-    const pc = isIBB ? cfg.tuning.ibb.pitches : pitchesFor(outcome);
-    fielding.cur.pitches += pc;
+    // 一球ごとカウント状態機械（§B1）。敬遠(isIBB)は勝負しない＝機械を回さず4ボール扱い。
+    // K=3ストライク/BB=4ボール/HBP=死球/inPlay=接触 を創発。per-pitch生カウントは機械が bStat/pStat へ直接加算。
+    const catcherPid = fielding.defense.C;
+    const catcher = catcherPid ? fielding.byId.get(catcherPid) : null;
+    const cLine = catcherPid ? statFor(catcherPid, fielding.teamId).fielding : null;
+    let outcome, decisiveClass = null, wpRuns = 0;
+    let battedBall = null, paPitches, paBucket = 'even', paPassed02 = false, paPassed30 = false;
+    if (isIBB) {
+      outcome = 'BB';
+      paPitches = cfg.tuning.ibb.pitches;
+      pStat.pitching.pitches += Math.round(paPitches); // 敬遠は機械を通さない＝投球数を別途計上
+    } else {
+      const pa = runPlateAppearance({
+        batter, pitcher, catcher, cfg, rng, tto,
+        bLine: bStat.batting, pLine: pStat.pitching, cLine, bases, outs,
+      });
+      outcome = pa.outcome; // 'K'|'BB'|'HBP'|'inPlay'
+      battedBall = pa.battedBall;
+      decisiveClass = pa.decisiveClass;
+      wpRuns = pa.wpRuns; // 打席中の暴投/捕逸で入った得点（下で加点・投手失点へ）
+      paPitches = pa.pitches;
+      paBucket = pa.countBucket;
+      paPassed02 = pa.passed02;
+      paPassed30 = pa.passed30;
+    }
+    fielding.cur.pitches += paPitches;
     fielding.cur.bf++;
-    pStat.pitching.pitches += Math.round(pc);
     pStat.pitching.bf++;
     bStat.batting.pa++;
 
@@ -3279,7 +3604,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       bStat.batting.hbp++;
       pStat.pitching.hbp++;
     } else {
-      const bb = generateBattedBall(batter, pitcher, cfg, rng, { baseState: baseBits(bases), outs, tto, pitch });
+      const bb = battedBall; // 機械が生成済み（EV/LA/方向パイプラインは不変）
       // 守備者個人のRangeを注入（2-7）: 担当ポジションの野手能力で被安打率を上下
       const r = resolveBattedBall(bb, cfg, rng, park, (pos) => {
         const fp = fielding.byId.get(fielding.defense[pos]);
@@ -3318,9 +3643,9 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       if (onBattedBall) onBattedBall(batterId, batting.teamId, bb, result);
     }
 
-    // 対球種スプリット記録（§4段階1: 対ストレート成績等の素）
-    if (pitch) {
-      const sl = pitchClass(pitch.type) === 'fastball' ? bStat.batting.vsFastball : bStat.batting.vsBreaking;
+    // 対球種スプリット記録（§4段階1: 対ストレート成績等の素）。決着球のクラスで分類（§B1）。
+    if (decisiveClass) {
+      const sl = decisiveClass === 'fastball' ? bStat.batting.vsFastball : bStat.batting.vsBreaking;
       sl.pa++;
       if (outcome === 'BB') sl.bb++;
       else if (outcome !== 'HBP') {
@@ -3332,6 +3657,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         }
       }
     }
+    // カウント別成績の圧縮版（§B1-2）: ahead/even/behind＋通過した 0-2/3-0 セルへ配る（IBBは除外）。
+    if (!isIBB) recordByCount(bStat.batting.byCount, paBucket, paPassed02, paPassed30, outcome, result);
 
     // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
     // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
@@ -3347,7 +3674,10 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     }
 
     const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId };
-    const runs = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+    const advRuns = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+    // 打席中の暴投/捕逸で入った得点(wpRuns)は打点対象外だが投手失点＝自責（失策後は非自責）。
+    // 打席プレー全体の得点として一括計上し、文脈指標(gc)へも合算で渡す（RE24/WPAの telescoping を保つ）。
+    const runs = advRuns + wpRuns;
 
     if (result === 'out') {
       if (isAirOut && runs > 0) {
@@ -3385,7 +3715,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     }
     if (runs > 0) {
       batting.score += runs;
-      if (result !== 'E') bStat.batting.rbi += runs; // 失策の得点は打点なし
+      // 打点は打撃結果の得点(advRuns)のみ・失策は打点なし。暴投/捕逸(wpRuns)は打点対象外。
+      if (result !== 'E') bStat.batting.rbi += advRuns;
       pStat.pitching.r += runs;
       pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
       fielding.cur.runs += runs;
@@ -3444,13 +3775,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
   for (const pos of Object.keys(fielding.defense)) {
     statFor(fielding.defense[pos], fielding.teamId).fielding.positionOuts[pos] += outs;
   }
-  // 捕手フレーミング（監査B5・§7.3）: 当該イニング分の (framing-50) をrun換算して framingRuns に加算。
-  // 死蔵していた捕手フレーミング能力を守備価値としてWARに接続する。
-  const cPid = fielding.defense.C;
-  if (cPid) {
-    const framing = fielding.byId.get(cPid).trueAbility.fielding.framing;
-    statFor(cPid, fielding.teamId).fielding.framingRuns += (framing - 50) * cfg.tuning.field.framePerInning * (outs / 3);
-  }
+  // 捕手フレーミング（§B1・§7.3）: per-inning 近似（旧 framePerInning）は廃止し、ボーダー球の見逃し判定を
+  // 一球単位で創発させる（runPlateAppearance が cLine.frameCalls/framingRuns へ直接加算済み）。ここでは何もしない。
   // DHの出場イニング相当を計上（守備に就かないDHにも守備位置補正 -17.5/1350 を効かせる。
   // 攻撃側ハーフのアウト数＝そのイニング数分の在籍。§9・監査A1）。
   const dhPid = batting.dhSlot >= 0 ? batting.slots[batting.dhSlot].playerId : null;
@@ -3463,6 +3789,29 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
 /** 文脈指標フックの呼び出し（§B2）。gc が無ければ何もしない（乱数非消費・結果不変）。 */
 function creditPlay(gc, p) {
   if (gc) gc.onPlay(p);
+}
+
+/**
+ * カウント別成績の圧縮版へ1打席を計上（§B1-2）。ahead/even/behind（決着直前カウント）＋
+ * 通過した 0-2/3-0 の代表セルへ、{pa,ab,h,hr,bb,so} を配る（乱数非消費・最新シーズン内訳表示用）。
+ */
+function recordByCount(byCount, bucket, passed02, passed30, outcome, result) {
+  const dab = outcome === 'BB' || outcome === 'HBP' ? 0 : 1;
+  const dh = result === '1B' || result === '2B' || result === '3B' || result === 'HR' ? 1 : 0;
+  const dhr = result === 'HR' ? 1 : 0;
+  const dbb = outcome === 'BB' ? 1 : 0;
+  const dso = outcome === 'K' ? 1 : 0;
+  const bump = (c) => {
+    c.pa++;
+    c.ab += dab;
+    c.h += dh;
+    c.hr += dhr;
+    c.bb += dbb;
+    c.so += dso;
+  };
+  bump(byCount[bucket]);
+  if (passed02) bump(byCount.c02);
+  if (passed30) bump(byCount.c30);
 }
 
 /** スプリット器1つへ1打席ぶんのデルタを加算（§B3b）。 */
@@ -5503,7 +5852,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.8.0-phaseA-fix';
+const ENGINE_VERSION = '0.9.0-phaseB1-pitch';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 

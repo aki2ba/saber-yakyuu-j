@@ -41,9 +41,24 @@ export function createBattingLine() {
     sb: 0, // 盗塁（wSBの素, §6）
     cs: 0, // 盗塁死
     rbi: 0,
+    // --- B1 一球ごとの生カウント（打者視点・§B1-2）。カウント状態機械の副産物。
+    // pitches=見た球数, swings=スイング数, whiffs=空振り, fouls=ファウル, calledStrikes=見逃しストライク,
+    // zonePitches/oZonePitches=ゾーン内/明確ボールの球数, z/oSwings=各帯スイング, z/oWhiffs=各帯空振り,
+    // ballsInDirt=ワンバウンド球数。率(Zone%/O-Swing%/Contact%/SwStr%/CSW%)はこれらから metrics で算出。
+    pitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
+    zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     // 対球種スプリット（§4段階1）。※通算集計では合算しない（最新シーズンの内訳表示用）
     vsFastball: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
     vsBreaking: { pa: 0, ab: 0, h: 0, hr: 0, so: 0, bb: 0 },
+    // カウント別成績の圧縮版（§B1-2）: ahead/even/behind（打者視点 balls vs strikes）＋代表2セル 0-2/3-0。
+    // 各セルは PA終端の直前カウントで分類し {pa,ab,h,hr,bb,so} を積む。通算集計では合算しない（ネスト）。
+    byCount: {
+      ahead: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // balls > strikes
+      even: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // balls == strikes
+      behind: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // balls < strikes
+      c02: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // 0ボール2ストライクを通過
+      c30: { pa: 0, ab: 0, h: 0, hr: 0, bb: 0, so: 0 }, // 3ボール0ストライクを通過
+    },
     // --- B3a 追加集計（一球データ不要・打球イベントの副産物。§B3） ------------
     // 打球期待値アキュムレータ（xBA/xSLG/xwOBA）: resolveBattedBall の期待out率/塁打分布を
     // rng抽選の"前"に累積（モデル=シムゆえ リーグ xwOBA≈wOBA が恒等成立→較正チェックに使う）。
@@ -95,6 +110,9 @@ export function createPitchingLine() {
     cg: 0, // 完投（監査B4で計上）
     sho: 0, // 完封（監査B4で計上）
     pitches: 0, // 投球数
+    // --- B1 一球ごとの生カウント（投手視点・§B1-2）。打者側と対称。被O-Swing等=「釣れる投手」の素。
+    swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
+    zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     // --- B3a 追加集計: 被打球分類（被GB/LD/FB/PU%・HR/FB・xFIP用の被FB）とQS。§B3 ---
     bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
     qs: 0, // クオリティスタート（先発が6IP=18アウト以上・自責3以下で降板）
@@ -139,6 +157,11 @@ export function createFieldingLine() {
     dpTurned: 0, // うち併殺成立（DPR＝対リーグ平均転換率で metrics 側が run 換算）
     sbAllowed: 0, // 捕手: 許した盗塁（rSBの素）
     csMade: 0, // 捕手: 刺した盗塁死（rSBの素）
+    // --- B1 捕手の一球ごとの創発（§B1-2）。フレーミング/ブロッキングを一球単位で計上。
+    frameCalls: 0, // ボーダー球で獲得した見逃しストライク − 中立(borderCsBase) の累積（対リーグ平均）
+    wp: 0, // 暴投（この捕手が受けた投手の暴投・走者進塁を許した数）
+    pb: 0, // 捕逸（この捕手起因の後逸・走者進塁）
+    blockOpp: 0, // ブロッキング機会（走者ありでのワンバウンド球数。wp+pb の分母）
   };
 }
 

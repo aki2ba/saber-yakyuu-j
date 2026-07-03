@@ -22,10 +22,10 @@ import {
 } from './config.mjs';
 import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager } from './generate.mjs';
 import { logit, expit, ratingDelta, log5 } from './sim/rates.mjs';
-import { PA_OUTCOME, paProbabilities, resolvePADiscipline } from './sim/plateAppearance.mjs';
+import { PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance } from './sim/plateAppearance.mjs';
 import { generateBattedBall } from './sim/battedBall.mjs';
 import { battedType, computeGeometry, assignFielder, resolveBattedBall } from './sim/battedBallResult.mjs';
-import { selectPitch } from './sim/pitchGrid.mjs';
+import { selectPitch, selectPitchByCount } from './sim/pitchGrid.mjs';
 import { buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore } from './sim/team.mjs';
 import {
   neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,
@@ -46,13 +46,13 @@ import { playerBatting, playerPitching, playerBaserunning, battingSplits, player
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
-export const ENGINE_VERSION = '0.8.0-phaseA-fix';
+export const ENGINE_VERSION = '0.9.0-phaseB1-pitch';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {
   mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng,
   POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_1350, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass,
-  selectPitch,
+  selectPitch, selectPitchByCount,
   createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand,
   createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt,
   createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine,
@@ -60,7 +60,7 @@ export {
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
   generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager,
   logit, expit, ratingDelta, log5,
-  PA_OUTCOME, paProbabilities, resolvePADiscipline,
+  PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,
   buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore,
   neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,

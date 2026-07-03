@@ -221,6 +221,13 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
   const maxInnings = opts.maxInnings ?? MAX_INNINGS;
+  // 文脈指標フック（§B2）: 存在するときのみ各プレー確定点で ΔRE/ΔWPA/LI を積む。
+  // 乱数は一切消費しないため、gc の有無で試合結果は不変（決定論・較正30指標が不変）。
+  const gc = opts.gameContext ?? null;
+  if (gc) {
+    gc.maxInnings = maxInnings;
+    gc.startGame();
+  }
 
   // 得点推移ログ（勝敗の正確な判定用）: 得点が入るたびに両軍のスコアと現投手を記録
   const runLog = [];
@@ -229,10 +236,10 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
 
   let inning = 1;
   while (true) {
-    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning); // 表: away攻撃
+    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc); // 表: away攻撃
     if (inning >= 9 && home.score > away.score) break; // 裏を省略（ホームリード）
     const bottomWalkoff = inning >= 9;
-    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning); // 裏: home攻撃
+    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc); // 裏: home攻撃
     if (inning >= 9 && home.score !== away.score) break;
     inning++;
     if (inning > maxInnings) break;
@@ -241,6 +248,8 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   flushPitcher(home, away.score);
   flushPitcher(away, home.score);
   assignDecisions(home, away, statFor, runLog);
+  // シャットダウン/メルトダウン（§B2）: 救援の1登板WPAを閾値判定（加算パスのみ）。
+  if (gc && gc.mode === 'accumulate') classifyShutdowns(home, away, statFor, cfg);
 
   const usage = (side) =>
     side.log.map((ap) => ({
@@ -306,7 +315,7 @@ function initSide(init, cfg) {
     pendingPitcher: false, // 投手への代打→次の守備から新投手（§S2-2）
     pregame: buildPregameEval(d.byId, cfg), // 監督の当日メモ（編成時評価。以降trueAbilityは見ない）
     // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
-    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1 },
+    cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1, wpa: 0 },
     log: [],
     subs: [], // 交代ログ {type,inning,outPid,inPid}（再出場不可の検証・S3素材）
     score: 0,
@@ -314,11 +323,12 @@ function initSide(init, cfg) {
 }
 
 function emptyCur() {
-  return { pid: null, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 0 };
+  return { pid: null, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 0, wpa: 0 };
 }
 
-/** 半イニングを消化（batting=攻撃側, fielding=守備側） */
-function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning) {
+/** 半イニングを消化（batting=攻撃側, fielding=守備側）。battingIsHome=攻撃側がホーム（裏）か・
+ *  gc=文脈指標フック（§B2・任意）。 */
+function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc) {
   // 守備側の投手整備: 投手への代打の後始末→回頭の役割ベース継投（§S2-2/§S2-7）
   halfStartPitching(fielding, batting.score, inning, statFor, cfg);
   // 守備固め（§S2-3: 8回以降・リード1-3・当日メモで優位時のみ）
@@ -329,7 +339,29 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
   let errorInInning = false; // 失策発生後の得点は非自責（§ERA整合）
   while (outs < 3) {
     // 盗塁機会（走者一塁・二塁空き）。§6 wSB×采配ゲート。PA解決の前に処理。
+    const stBase = baseBits(bases);
+    const stOuts = outs;
+    const stRunner = bases[0];
     outs = attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng);
+    // 文脈指標（§B2）: 盗塁/盗塁死で状態が動いたら ΔRE/ΔWPA を走者へ（投手は−側）。
+    if (gc && stRunner != null && (baseBits(bases) !== stBase || outs !== stOuts)) {
+      gc.onPlay({
+        kind: 'steal',
+        battingIsHome,
+        inning,
+        batSideStat: statFor(stRunner, batting.teamId).baserunning,
+        pitStat: statFor(fielding.curPid, fielding.teamId).pitching,
+        pitcherCur: fielding.cur,
+        firstBatterOfApp: false,
+        baseBefore: stBase,
+        outsBefore: stOuts,
+        baseAfter: baseBits(bases),
+        outsAfter: outs,
+        runsOnPlay: 0,
+        batScoreBefore: batting.score,
+        fldScore: fielding.score,
+      });
+    }
     if (outs >= 3) break;
 
     // 代打（§S2-3）: 打席に入る前に差し替える（判断は manager.mjs）
@@ -347,6 +379,12 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const bStat = statFor(batterId, batting.teamId);
     const pStat = statFor(fielding.curPid, fielding.teamId);
     const batterWoba = observedWoba(bStat.batting, cfg); // 采配用の観測評価（真値は見ない）
+
+    // 文脈指標（§B2）: 打席プレーの「状態前」（盗塁/代打反映後）と登板初打者フラグを控える。
+    const paBase = baseBits(bases);
+    const paOuts = outs;
+    const paScore = batting.score;
+    const firstBF = fielding.cur.bf === 0; // 登板初打者（gmLI用・bf++の前）
 
     // 敬遠（§S2-5・守備側監督の判断）: PA解決の前に判断し、成立なら申告四球
     const pIBB = ibbProb(
@@ -378,6 +416,22 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       );
       if (pBunt > 0 && rng.next() < pBunt) {
         outs = resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat);
+        creditPlay(gc, {
+          kind: 'pa',
+          battingIsHome,
+          inning,
+          batSideStat: bStat.batting,
+          pitStat: pStat.pitching,
+          pitcherCur: fielding.cur,
+          firstBatterOfApp: firstBF,
+          baseBefore: paBase,
+          outsBefore: paOuts,
+          baseAfter: baseBits(bases),
+          outsAfter: outs,
+          runsOnPlay: batting.score - paScore,
+          batScoreBefore: paScore,
+          fldScore: fielding.score,
+        });
         maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
         if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg);
         continue;
@@ -510,6 +564,25 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       if (recordRun) recordRun(); // 得点推移を記録（勝敗判定用）
     }
 
+    // 文脈指標（§B2）: 打席プレー確定＝状態前→状態後（進塁/併殺/得点込み）で ΔRE/ΔWPA/LI を付与。
+    // サヨナラ break の前に置き、終端(決着)勝率を正しく計上する（ゼロサム＝勝者±0.5）。
+    creditPlay(gc, {
+      kind: 'pa',
+      battingIsHome,
+      inning,
+      batSideStat: bStat.batting,
+      pitStat: pStat.pitching,
+      pitcherCur: fielding.cur,
+      firstBatterOfApp: firstBF,
+      baseBefore: paBase,
+      outsBefore: paOuts,
+      baseAfter: baseBits(bases),
+      outsAfter: outs,
+      runsOnPlay: runs,
+      batScoreBefore: paScore,
+      fldScore: fielding.score,
+    });
+
     // 代走（§S2-3）: PA解決後、塁上の鈍足走者をベンチ最速と交代
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
@@ -536,6 +609,24 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
   if (dhPid) {
     const dl = statFor(dhPid, batting.teamId).fielding.positionOuts;
     dl.DH = (dl.DH || 0) + outs;
+  }
+}
+
+/** 文脈指標フックの呼び出し（§B2）。gc が無ければ何もしない（乱数非消費・結果不変）。 */
+function creditPlay(gc, p) {
+  if (gc) gc.onPlay(p);
+}
+
+/** シャットダウン/メルトダウン（§B2）。救援の1登板WPAが ±閾値を超えたら sd/md を計上（加算パス）。 */
+function classifyShutdowns(home, away, statFor, cfg) {
+  const thr = cfg.tuning.context.sdThreshold;
+  for (const side of [home, away]) {
+    for (const ap of side.log) {
+      if (ap.pid === side.starterId || !(ap.bf > 0)) continue; // 救援の実登板のみ
+      const s = statFor(ap.pid, side.teamId).pitching;
+      if (ap.wpa >= thr) s.sd++;
+      else if (ap.wpa <= -thr) s.md++;
+    }
   }
 }
 
@@ -694,7 +785,7 @@ function installPitcher(side, pid, inning, lead) {
   side.curPid = pid;
   side.usedPitchers.add(pid);
   if (side.pitcherSlot >= 0) side.slots[side.pitcherSlot].playerId = pid;
-  side.cur = { pid, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: lead, enterInning: inning };
+  side.cur = { pid, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: lead, enterInning: inning, wpa: 0 };
 }
 
 /**

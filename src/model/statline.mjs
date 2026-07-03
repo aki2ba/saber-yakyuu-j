@@ -46,6 +46,11 @@ export function createBattingLine() {
     bbPull: 0, bbCent: 0, bbOppo: 0,
     // 打球質（Barrel/HardHit/SweetSpot・分母=bbEvents）と打球速度（平均=evSum/bbEvents, 最大=evMax）。
     barrels: 0, hardHits: 0, sweetSpots: 0, evSum: 0, evMax: 0,
+    // --- B2 文脈指標（RE24/WPA/LI・§B2。2パスでRE行列/WE表/LI表を焼いてから accumulate）------
+    // 打者の打席プレーぶんの ΔRE(得点期待値変化＋得点) と ΔWE(勝率変化=WPA)、
+    // liSum=打席状態レバレッジの合計（aLI = liSum/pa）、wpaLiSum=Σ(打席WPA/打席LI)（文脈中立WPA/LI）。
+    // context無効時は 0 のまま（既存較正は不変）。
+    re24: 0, wpa: 0, liSum: 0, wpaLiSum: 0,
   };
 }
 
@@ -75,6 +80,12 @@ export function createPitchingLine() {
     // --- B3a 追加集計: 被打球分類（被GB/LD/FB/PU%・HR/FB・xFIP用の被FB）とQS。§B3 ---
     bbGB: 0, bbLD: 0, bbFB: 0, bbPU: 0, bbEvents: 0,
     qs: 0, // クオリティスタート（先発が6IP=18アウト以上・自責3以下で降板）
+    // --- B2 文脈指標（RE24/WPA/LI・§B2）------------------------------------------
+    // 投手の被 ΔRE(−側)・被 WPA(−側)、liSum=対戦打者ぶんの状態レバレッジ合計（pLI = liSum/bf）、
+    // gmLiSum/gmLiN=登板時レバレッジ（救援WARのレバレッジ加重に使用・gmLI = gmLiSum/gmLiN）、
+    // wpaLiSum=Σ(被WPA/打席LI)（文脈中立WPA/LI）、sd/md=シャットダウン(≥+0.06)/メルトダウン(≤−0.06)。
+    // context無効時は 0（既存較正は不変）。
+    re24: 0, wpa: 0, liSum: 0, wpaLiSum: 0, gmLiSum: 0, gmLiN: 0, sd: 0, md: 0,
   };
 }
 
@@ -85,6 +96,8 @@ export function createBaserunningLine() {
     advTaken: 0, // うち追加進塁（生還）を取った回数
     outsOnBase: 0, // 走塁死
     gdpOpp: 0, // 併殺機会（wGDPの分母）
+    // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2）: 盗塁/追加進塁は走者へ ΔRE/ΔWE を付与 ---
+    re24: 0, wpa: 0,
   };
 }
 

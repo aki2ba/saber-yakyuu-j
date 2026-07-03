@@ -43,7 +43,11 @@ export function hitterWAR(ps, cfg, lc) {
   };
 }
 
-/** 投手WAR（役割別代替水準・S3）。平均比の価値 + 役割別の代替水準ボーナス。 */
+/** 投手WAR（役割別代替水準・S3）。平均比の価値 + 役割別の代替水準ボーナス。
+ *  救援WARのレバレッジ加重（§B2・FG方式・req_1 §8.3「WARの死角」の完成）:
+ *    登板時レバレッジ gmLI があるとき、救援ぶんの代替水準対比runに (1+gmLI)/2 を乗じる。
+ *    先発は不変（gsShare で加重＝gsShare=1 なら mult=1）。gmLI 未算出（文脈指標オフ＝
+ *    gmLiN=0）のときは mult=1 に落ちるため、既存の較正済みWARは完全に不変（30指標を守る）。 */
 export function pitcherWAR(ps, cfg, lc) {
   const pit = playerPitching(ps, lc);
   const lgFIP = lc.lgFIP || 3.8;
@@ -51,8 +55,13 @@ export function pitcherWAR(ps, cfg, lc) {
   // 役割 = GS/G 比で先発/救援を按分（スイングマンは中間の代替水準になる）
   const gsShare = pit.g ? pit.gs / pit.g : 0;
   const replPer9 = gsShare * cfg.tuning.replStarterPer9 + (1 - gsShare) * cfg.tuning.replRelieverPer9;
-  const war = (((lgFIP - pit.fip) / 9) * pit.ip) / rpw + (pit.ip / 9) * replPer9;
-  return { ip: pit.ip, fip: pit.fip, replPer9, war };
+  let war = (((lgFIP - pit.fip) / 9) * pit.ip) / rpw + (pit.ip / 9) * replPer9;
+  // レバレッジ加重（救援ぶんのみ・gmLI があるとき）
+  const gmLiN = ps.pitching.gmLiN || 0;
+  const gmLI = gmLiN ? ps.pitching.gmLiSum / gmLiN : null;
+  const leverageMult = gmLI != null ? 1 + (1 - gsShare) * ((1 + gmLI) / 2 - 1) : 1;
+  war *= leverageMult;
+  return { ip: pit.ip, fip: pit.fip, replPer9, gmLI, leverageMult, war };
 }
 
 /** 選手のWAR（役割で分岐） */

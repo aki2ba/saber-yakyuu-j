@@ -86,6 +86,12 @@ export function playerBatting(ps, lc) {
     evAvg: div(b.evSum, bbe),
     evMax: b.evMax,
     bbEvents: bbe,
+    // --- B2 文脈指標（RE24/WPA/LI・§B2。context有効時のみ非0） ---
+    re24: b.re24,
+    wpa: b.wpa,
+    aLI: div(b.liSum, b.pa), // 打席加重レバレッジ（リーグ平均=1.0）
+    wpaLI: b.wpaLiSum, // 文脈中立WPA（Σ 打席WPA/打席LI）
+    clutch: div(b.wpa, div(b.liSum, b.pa)) - b.wpaLiSum, // Clutch = WPA/aLI − WPA/LI
   };
 }
 
@@ -119,6 +125,9 @@ export function playerBaserunning(ps, cfg, lc) {
     ubr,
     wGDP,
     bsr: wSB + ubr + wGDP,
+    // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2。context有効時のみ非0） ---
+    re24: br.re24 || 0, // 盗塁/追加進塁の得点期待値寄与
+    wpa: br.wpa || 0, // 盗塁/追加進塁の勝率寄与
   };
 }
 
@@ -210,5 +219,14 @@ export function playerPitching(ps, lc, cfg = null) {
     hrFbPct: div(p.hr, p.bbFB),
     qs: p.qs,
     bbEvents: bbe,
+    // --- B2 文脈指標（RE24/WPA/LI・§B2。context有効時のみ非0） ---
+    re24: p.re24,
+    wpa: p.wpa,
+    pLI: div(p.liSum, p.bf), // 投手の平均レバレッジ（リーグ平均=1.0）
+    gmLI: div(p.gmLiSum, p.gmLiN), // 登板時レバレッジ（救援WARのレバレッジ加重に使用）
+    wpaLI: p.wpaLiSum, // 文脈中立WPA（Σ 被WPA/打席LI）
+    clutch: div(p.wpa, div(p.liSum, p.bf)) - p.wpaLiSum, // Clutch = WPA/pLI − WPA/LI
+    sd: p.sd, // シャットダウン（1登板WPA ≥ +0.06）
+    md: p.md, // メルトダウン（1登板WPA ≤ −0.06）
   };
 }

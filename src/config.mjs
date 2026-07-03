@@ -119,12 +119,30 @@ export const METRICS_CONST = {
 };
 
 /**
+ * B2 文脈指標（RE24/WPA/LI・§B2）の定義/導出定数。
+ * 状態キー（イニング/表裏/点差クリップ/塁アウト）の粒度と、勝率表(WE)の階層平滑化強度、
+ * シャットダウン/メルトダウンの WPA 閾値を集約する。これらは較正ラン相当の大標本から
+ * RE行列・WE表・LI表を導出する2パス（season.mjs で結線）で参照される。
+ */
+export const CONTEXT_CONST = {
+  innMax: 9, // イニングのクリップ上限（延長は9回バケットへ集約）
+  scoreDiffClip: 8, // 点差クリップ ±8（打者側視点 = 攻撃側得点−守備側得点）
+  sdThreshold: 0.06, // SD(≥+0.06)/MD(≤−0.06) の1登板WPA閾値（FG方式）
+  // WE 勝率表の階層平滑化: fine(24状態)←coarse(イニング/表裏/点差)←diff周辺←0.5
+  weSmoothK: 40, // fine セル← coarse事前分布の平滑化擬似標本
+  weCoarseK: 40, // coarse セル← diff周辺分布の平滑化擬似標本
+  weDiffK: 20, // diff周辺← 0.5 への軽い平滑化擬似標本
+};
+
+/**
  * エンジン調整ノブ（初期値・較正で動かす）。§18主要定数＋新EV/LAエンジン固有ノブ。
  * 新エンジンでは BABIP/HR は打球格子から創発するため、旧「結果先決め」定数と1:1でない（F44）。
  */
 export const TUNING_DEFAULT = {
   // B3a 追加系指標（率/期待値）の定義定数（§B3・上の METRICS_CONST を集約）。
   metrics: METRICS_CONST,
+  // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
+  context: CONTEXT_CONST,
 
   hrScale: 0.992, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
   babipBase: 0.3, // インプレー打球の安打基準

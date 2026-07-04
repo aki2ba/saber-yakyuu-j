@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createConfig, qualifiedPA, qualifiedIP } from '../src/config.mjs';
-import { newGame, advanceTo, advanceYear } from '../src/game/index.mjs';
+import { newGame, advanceTo, advanceYear, allPlayersById } from '../src/game/index.mjs';
 import {
   computeSeasonAwards, evalSeason, seasonLeagueConstants, nicknameFor,
   milestones, leagueRecords, teamRecords, playerAwardHistory,
@@ -235,6 +235,41 @@ test('C4: advanceYear が off.awards / off.milestones を決定論で返す（2�
   assert.ok(Array.isArray(o1.milestones), 'off.milestones が配列');
   // 開幕年（1年目完了時）は新人王を付与しない（全員デビュー）
   for (const lg of o1.awards.leagues) assert.equal(lg.roty, null, '開幕年は新人王なし');
+});
+
+test('C4: 引退選手が通算記録・受賞履歴から脱落しない（allPlayersById・検証修正の回帰）', () => {
+  // 複数年運用して引退選手を出し、記録/受賞履歴が「現役のみ」byId では脱落するが
+  // allPlayersById（現役＋引退者サマリ）では保持されることを不変量として検証。
+  const st = newGame(SEED, 'T1', { cfg });
+  for (let y = 0; y < 6; y++) {
+    advanceTo(st, 'seasonEnd');
+    if (y < 5) advanceYear(st);
+  }
+  assert.ok(st.retiredPlayers.length > 0, `引退選手が発生している（${st.retiredPlayers.length}）`);
+
+  const activeById = new Map(st.league.players.map((p) => [p.id, p]));
+  const allById = allPlayersById(st);
+  assert.ok(allById.size > activeById.size, '全時代byIdは現役byIdより大きい（引退者を含む）');
+
+  // careerStats には引退選手のシーズンが残っており、その id は活動byIdには無いが全時代byIdにはある
+  const retiredIdInStats = st.careerStats
+    .map((s) => s.playerId)
+    .find((id) => !activeById.has(id) && allById.has(id));
+  assert.ok(retiredIdInStats, 'careerStatsに現役外(引退)選手のシーズンが残っている');
+
+  // リーグ記録: 現役のみbyIdだと引退選手の通算/シーズン記録が落ちる。全時代byIdなら残る。
+  const recActive = leagueRecords({ careerStats: st.careerStats, playersById: activeById, cfg });
+  const recAll = leagueRecords({ careerStats: st.careerStats, playersById: allById, cfg });
+  const idsIn = (rec) => new Set(Object.values(rec).flat().map((r) => r.playerId ?? r.id).filter(Boolean));
+  const retiredInAll = [...idsIn(recAll)].some((id) => !activeById.has(id));
+  assert.ok(retiredInAll, '全時代byIdのリーグ記録に引退選手が含まれる');
+  assert.ok(idsIn(recAll).size >= idsIn(recActive).size, '全時代byIdの記録は現役のみより脱落が少ない');
+
+  // 受賞履歴: 引退選手のIDでも過去年の受賞が全時代byIdなら再計算で拾える（純関数・例外なし）
+  const hist = playerAwardHistory(retiredIdInStats, {
+    careerStats: st.careerStats, teamHistory: st.teamHistory, playersById: allById, cfg,
+  });
+  assert.ok(Array.isArray(hist), '引退選手の受賞履歴が例外なく計算できる');
 });
 
 test('C4: 表彰は 1年目レギュラーシーズンのシムを一切変えない（集計/表示のみ・エンジン不変）', () => {

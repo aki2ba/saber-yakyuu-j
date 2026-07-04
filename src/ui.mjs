@@ -15,7 +15,7 @@ import {
 // フェーズC1 ゲーム層API（配布バンドルではグローバル・開発時Node解決用に import も書く）。
 // バンドルでは import 行が剥がれ、これらは先行スクリプト（game/index.mjs 由来）のグローバルを参照する。
 import {
-  newGame, advanceDay, advanceTo, save, load,
+  newGame, advanceDay, advanceTo, save, load, allPlayersById,
   setManagerProfile, clearManagerProfile,
   // C4 演出: 表彰/記録/二つ名/ニュース（バンドルではグローバル・開発時Node解決用に import）。
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
@@ -529,8 +529,9 @@ function renderModalCareer(box, p, isPitcher) {
   } else {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '完了シーズンの成績はまだありません（今季進行中）。'));
   }
-  // 受賞履歴（全年の表彰を再計算して収集）。
-  const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: state.byId, cfg: gs.cfg });
+  // 受賞履歴（全年の表彰を再計算して収集）。全時代byId＝引退した真の受賞者を過去年の再計算から
+  // 落とさない（現役のみだと過去年の表彰が現役選手へ誤帰属する・C4検証修正）。
+  const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: allPlayersById(gs), cfg: gs.cfg });
   box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '受賞履歴'));
   if (hist.length) {
     box.append(el('div', { class: 'awardlist' }, hist.map((a) => el('div', { class: 'awardrow' }, [
@@ -1112,7 +1113,8 @@ function teamSeasonStar(rt, teamId) {
 // --- 記録タブ（C4・球団史／リーグ記録／マイルストーン） -----------------------------
 function renderRecords(c) {
   const gs = game.gs;
-  const byId = new Map(gs.league.players.map((p) => [p.id, p]));
+  // 全時代byId（現役＋引退者サマリ）: 引退選手を通算記録/マイルストーンから落とさない（C4検証修正）
+  const byId = allPlayersById(gs);
   // 球団史（自チームの年度別順位・日本一）
   c.append(el('h3', { class: 'leaguename' }, `球団史 — ${tname(gs.playerTeamId)}`));
   const th = teamRecords(gs.teamHistory, gs.playerTeamId);

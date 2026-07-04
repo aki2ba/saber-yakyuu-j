@@ -488,6 +488,24 @@ export function load(blob, options = {}) {
   return state;
 }
 
+/**
+ * 全時代の選手インデックス（記録/受賞履歴/マイルストーンの再計算用）。
+ * 現役 league.players ＋ 引退者サマリ(retiredPlayers) を統合する。
+ *
+ * careerStats は全年ぶん永続する一方、引退選手は league.players から外れる。
+ * leagueRecords/playerAwardHistory/milestones が careerStats を走査する際、
+ * 引退選手を playersById から引けないと buildEvals がそのシーズンを丸ごと落とし、
+ * 「引退したレジェンドが通算記録から消える」「過去年の表彰が当時の真の受賞者(引退済)を
+ * 除外して現役選手へ誤帰属する」不具合になる（C4検証・§17）。
+ * 引退者サマリは {id,name,role,primaryPos} を持ち、awards が使う
+ * evalSeason(role)/ベストナイン(primaryPos)/表示(name) の必要項目を満たす。
+ */
+export function allPlayersById(state) {
+  const m = new Map(state.league.players.map((p) => [p.id, p]));
+  for (const r of state.retiredPlayers) if (!m.has(r.id)) m.set(r.id, r);
+  return m;
+}
+
 // --- C4 演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う。バンドルでは
 //     各元関数が strip 後にグローバル化するため、この export 行は build.mjs で剥がれても機能する）。
 export {

@@ -8887,6 +8887,24 @@ function load(blob, options = {}) {
   return state;
 }
 
+/**
+ * 全時代の選手インデックス（記録/受賞履歴/マイルストーンの再計算用）。
+ * 現役 league.players ＋ 引退者サマリ(retiredPlayers) を統合する。
+ *
+ * careerStats は全年ぶん永続する一方、引退選手は league.players から外れる。
+ * leagueRecords/playerAwardHistory/milestones が careerStats を走査する際、
+ * 引退選手を playersById から引けないと buildEvals がそのシーズンを丸ごと落とし、
+ * 「引退したレジェンドが通算記録から消える」「過去年の表彰が当時の真の受賞者(引退済)を
+ * 除外して現役選手へ誤帰属する」不具合になる（C4検証・§17）。
+ * 引退者サマリは {id,name,role,primaryPos} を持ち、awards が使う
+ * evalSeason(role)/ベストナイン(primaryPos)/表示(name) の必要項目を満たす。
+ */
+function allPlayersById(state) {
+  const m = new Map(state.league.players.map((p) => [p.id, p]));
+  for (const r of state.retiredPlayers) if (!m.has(r.id)) m.set(r.id, r);
+  return m;
+}
+
 // --- C4 演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う。バンドルでは
 //     各元関数が strip 後にグローバル化するため、この export 行は build.mjs で剥がれても機能する）。
 
@@ -9407,8 +9425,9 @@ function renderModalCareer(box, p, isPitcher) {
   } else {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '完了シーズンの成績はまだありません（今季進行中）。'));
   }
-  // 受賞履歴（全年の表彰を再計算して収集）。
-  const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: state.byId, cfg: gs.cfg });
+  // 受賞履歴（全年の表彰を再計算して収集）。全時代byId＝引退した真の受賞者を過去年の再計算から
+  // 落とさない（現役のみだと過去年の表彰が現役選手へ誤帰属する・C4検証修正）。
+  const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: allPlayersById(gs), cfg: gs.cfg });
   box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '受賞履歴'));
   if (hist.length) {
     box.append(el('div', { class: 'awardlist' }, hist.map((a) => el('div', { class: 'awardrow' }, [
@@ -9990,7 +10009,8 @@ function teamSeasonStar(rt, teamId) {
 // --- 記録タブ（C4・球団史／リーグ記録／マイルストーン） -----------------------------
 function renderRecords(c) {
   const gs = game.gs;
-  const byId = new Map(gs.league.players.map((p) => [p.id, p]));
+  // 全時代byId（現役＋引退者サマリ）: 引退選手を通算記録/マイルストーンから落とさない（C4検証修正）
+  const byId = allPlayersById(gs);
   // 球団史（自チームの年度別順位・日本一）
   c.append(el('h3', { class: 'leaguename' }, `球団史 — ${tname(gs.playerTeamId)}`));
   const th = teamRecords(gs.teamHistory, gs.playerTeamId);

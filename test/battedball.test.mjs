@@ -165,6 +165,53 @@ test('スイッチヒッターの引っ張り方向は実効打席サイドに�
   assert.ok(meanSpray(puller('S'), mkPit('L')) < -3, '対左は右打席＝spray負(左方向)へ引っ張る');
 });
 
+test('D1-1: HRは打者power/EVへ急峻に依存する（スラッガーのHR率≫非力打者）', () => {
+  // 同一の投手・乱数列で、強打者(power/ev高)と非力打者(低)の生成打球を解決し、HR率を比較。
+  const slugger = createPlayer({
+    role: 'fielder',
+    trueAbility: createTrueAbility({ common: { power: 80 }, batting: { ev: 80, la: 60, pull: 65 } }),
+  });
+  const weak = createPlayer({
+    role: 'fielder',
+    trueAbility: createTrueAbility({ common: { power: 25 }, batting: { ev: 25, la: 60, pull: 65 } }),
+  });
+  const pit = avgPitcher();
+  const hrRate = (bat) => {
+    const rng = makeRng(99); // 同一シードでノイズ列を揃える
+    let hr = 0;
+    const n = 30000;
+    for (let i = 0; i < n; i++) {
+      const bb = generateBattedBall(bat, pit, cfg, rng);
+      if (resolveBattedBall(bb, cfg, rng).result === 'HR') hr++;
+    }
+    return hr / n;
+  };
+  const rS = hrRate(slugger);
+  const rW = hrRate(weak);
+  // 急峻依存: スラッガーは非力打者の数倍以上のHR率（v²＋HR飛距離モデルの非線形性）
+  assert.ok(rS > rW * 4, `スラッガーHR率(${rS.toFixed(4)}) ≫ 非力打者(${rW.toFixed(4)})`);
+  assert.ok(rS > 0.02, `スラッガーは十分なHR率 (${rS.toFixed(4)})`);
+});
+
+test('D1-1: HR判定は決定論的（同一シードで同一結果列を再現）', () => {
+  const bat = createPlayer({
+    role: 'fielder',
+    trueAbility: createTrueAbility({ common: { power: 70 }, batting: { ev: 70 } }),
+  });
+  const pit = avgPitcher();
+  const seq = (seed) => {
+    const rng = makeRng(seed);
+    const out = [];
+    for (let i = 0; i < 500; i++) {
+      const bb = generateBattedBall(bat, pit, cfg, rng);
+      out.push(resolveBattedBall(bb, cfg, rng).result);
+    }
+    return out.join(',');
+  };
+  assert.equal(seq(7), seq(7), '同一シードは同一結果列（rng経由のみ・Date.now/Math.random不使用）');
+  assert.notEqual(seq(7), seq(8), '異なるシードは異なる列');
+});
+
 test('平均マッチアップのインプレーBABIP/HRが現実的な域（較正前サニティ）', () => {
   const rng = makeRng(2026);
   const bat = avgBatter();

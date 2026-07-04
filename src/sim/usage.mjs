@@ -46,10 +46,18 @@ export function createUsageState(team, charts, cfg) {
   // レンジ評価（S5較正）: 実際の守備run産出（OAA→UZR）は習熟でなく rangeRating に比例する。
   // 習熟主導の defEval だけでは「習熟高×レンジ最悪」のCF/LFが定着し UZR -20級 → WAR-3級を生むため、
   // 50中心のレンジ項を別途持つ（rangeWobaPerPt で換算）。
+  // D1-3（三層構造の徹底）: 守備評価も真値の無ノイズ参照をやめ、scoutSeed由来の決定論ノイズを付与。
+  //   1選手＝単一のノイズを rangeEval と def[pos] 双方へ一貫適用（球団の守備の読み違えは首尾一貫）。
+  //   scoutDefSd=0 なら旧挙動（真値参照）と bit 同一。門番（WAR下限）維持のため小さめのSD。
   const rangeEval = new Map();
   for (const [pid, p] of chart.byId) {
     if (p.role !== 'fielder') continue;
-    rangeEval.set(pid, rangeRating(p, cfg));
+    const dn = u.scoutDefSd
+      ? makeRng(hashSeed(p.scoutSeed ?? hashSeed(pid, 'scout'), 'usageDefScout')).normal(0, u.scoutDefSd)
+      : 0;
+    rangeEval.set(pid, rangeRating(p, cfg) + dn);
+    const e = defEval.get(pid); // 同一ノイズを守備習熟評価にも一貫付与（rangeと符号を揃える）
+    if (dn && e) for (const pos of Object.keys(e.def)) e.def[pos] += dn;
   }
   // ポジション担当: regular=編成時のスタメン、challenger=見直しで浮上した控え（share=先発シェア）
   const assign = {};

@@ -170,7 +170,7 @@ export const TUNING_DEFAULT = {
   // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
   context: CONTEXT_CONST,
 
-  hrScale: 0.985, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大
+  hrScale: 0.985, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大（D1-1: HR飛距離モデル明示化・集中は無効のため baseline 値を維持）
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
@@ -245,8 +245,8 @@ export const TUNING_DEFAULT = {
     wildBase: 0.52, // ワンバウンド×走者ありで球が抜ける基準（blockで減）
     wpShare: 0.6, // 抜けたうち暴投(投手起因→wp)の割合。残りは捕逸(捕手起因→pb)
     // --- プラトーン/TTO の一球パラメータ再配置（旧 pa.platoon/tto の log5 相当を一球へ） ---
-    platoonWhiffSame: 0.03, // 同利きで空振り率増（K↑）
-    platoonOSwingSame: 0.03, // 同利きでchase増（BB↓）
+    platoonWhiffSame: 0.03, // 同利きで空振り率増（K↑）※D1-2: baseline維持（league K%を帯内に保つため据置）
+    platoonOSwingSame: 0.05, // 同利きでchase増（BB↓）※D1-2 0.03→0.05（同利きBB抑制を強化）
     ttoWhiff: 0.010, // 巡目(tto)ごとに空振り率減（打者が慣れる＝K↓・EV↑は bb.tto側）
     // --- 球種選択のカウント依存重み（selectPitchByCount） ---
     fastballWeight: 2.0, // even時の速球系重み（残り球種=1.0）
@@ -258,9 +258,16 @@ export const TUNING_DEFAULT = {
   // スイッチ(S)は常に投手と逆打席＝有利側に立つ（同利きにならない）。
   // 効果量の初期値は同利きで wOBA −.020〜.030 相当（S5較正で調整）。
   platoon: {
-    kLogitSame: 0.1, // 同利きで K の logit 増（三振しやすい）
-    bbLogitSame: -0.08, // 同利きで BB の logit 減（四球を選びにくい）
-    evKmhSame: -1.2, // 同利きで打球EVの中心を下げる (km/h)
+    // D1-2: 同利きwOBAを −.012→−.023 へ引上げ（目標帯 −.020〜.025・レビュー#4残差の解消）。
+    //   ⚠️一球シム(runPlateAppearance)で実際に効く同利きノブは【pitch.platoonWhiffSame(K側)・
+    //     pitch.platoonOSwingSame(chase/BB側)・この evKmhSame(EV→wOBA側)】の3つ。
+    //     kLogitSame/bbLogitSame は旧 log5 一発抽選(paProbabilities)専用＝legacy（現行シムは不使用・
+    //     単体テストのみ）。よって wOBA差の主ノブは evKmhSame とし、K%を膨らませないよう whiff は
+    //     baseline維持・chase(oSwing)のみ増。EV減で落ちたリーグ得点環境は bb.evBase(139→139.55)で
+    //     全体を再センタリング（同利き差=相対値は不変・§D1-2）。
+    kLogitSame: 0.18, // 【legacy】同利きで K の logit 増（paProbabilities専用・現行シム不使用）※D1-2で意図に合わせ0.10→0.18
+    bbLogitSame: -0.14, // 【legacy】同利きで BB の logit 減（同上）※D1-2 -0.08→-0.14
+    evKmhSame: -2.5, // 同利きで打球EVの中心を下げる (km/h)※D1-2 -1.2→-2.5（一球シムで効く wOBA差の主ノブ）
   },
 
   // 犠打（S2 maybeBunt が消費。§S2-4）: 試行判断・結果テーブル。2ストライク概念はフェーズB。
@@ -355,7 +362,12 @@ export const TUNING_DEFAULT = {
   usage: {
     reviewInterval: 25, // 見直し間隔（試合）
     trustPA: 80, // 観測wOBAの信頼度加重の半飽和PA（少PAは回帰）※S5較正
-    scoutSd: 5, // スカウト評価ノイズのSD（rating単位・scoutSeed基準）※S5較正
+    scoutSd: 5, // スカウト打撃評価ノイズのSD（rating単位・scoutSeed基準）※S5較正
+    // D1-3（三層構造の徹底）: 守備の起用評価(defEval/rangeEval)も真値の無ノイズ参照をやめ、
+    //   打撃scoutEvalと同様に scoutSeed由来の決定論ノイズ（球団が守備を読み違える成分）を付与する。
+    //   1選手につき単一のノイズを rangeEval と def[pos] 双方へ一貫適用（読み違えは首尾一貫）。
+    //   ⚠️WAR下限の門番（破局/典型）を壊さない小さめのSD。0で完全無効（旧＝真値参照）。
+    scoutDefSd: 3, // スカウト守備評価ノイズのSD（rating単位・scoutSeed基準・§D1-3）
     swapMargin: 0.005, // レギュラー入替に要する実効wOBA差 ※S5較正
     catcherSwapMargin: 0.04, // 捕手のみ厚め（リード面の継続性＝正捕手100-135試合の門番・S5較正）
     platoonMargin: 0.005, // プラトーン入替に要する実効wOBA差
@@ -437,7 +449,7 @@ export const TUNING_DEFAULT = {
   //    かつ分布の裾も 打率王.348/HR王47 まで圧縮=M4対応。RBI王~145は満員打線ゆえ構造的に高め）。
   bb: {
     // EV(打球速度 km/h)
-    evBase: 139, // 平均打球速度の中心
+    evBase: 139.55, // 平均打球速度の中心 ※D1-2: 同利きEV罰則強化(-1.2→-2.5)でリーグ平均EVが下がった分を全体で再センタリング（139→139.55・同利き相対差は不変）
     evPerEV: 0.355, // 打者EV適性1pt → km/h ※S5較正（裾圧縮＝野手WAR王7-9.5）
     evPerPower: 0.2, // 生体power1pt → km/h ※S5較正
     evPitchSuppress: 0.3, // 投手の被コンタクト質抑止1pt → km/h減（選択球種のcontactQuality）
@@ -454,6 +466,25 @@ export const TUNING_DEFAULT = {
     spraySd: 17,
     // 飛距離モデル
     carry: 0.6, // v^2/g に掛ける実効係数（空気抵抗込みの縮み）
+    // --- HR分布形状（D1-1・§D1）: フェンス越え判定を「HR専用飛距離モデル」として明示化 ---
+    // 幾何の distanceM（安打/長打の落下点用・carry×lift幅24・peak26）と同一入力から、フェンス
+    // 越え専用の hrDist を再構成する（battedBallResult）。HR飛距離は打者power/EV/最適LAへ依存:
+    //   hrDist = carry・(v²/g)・hrLift(LA;peak,conc)・evBoost(EV;ref,width,gain)
+    // hrLift=適角ガウス、evBoost=飽和ロジスティック（よく捉えた強打へ上限gainまでのボーナス。
+    //   線形の青天井で怪物打者が暴走するのを避ける）。hrScale は総量ノブ（門番: HR/team・HR王）。
+    //
+    // ⚠️D1較正の重要知見: HR王(裾)の seed窓分散は「その seed にスラッガーが生成されたか」に律速
+    //   される生成側の性質。打球モデル側の集中(concを狭める/evBoostを強める)は HR/team据え置き下で
+    //   平均への集中が floor seed(怪物不在)のリーダーHRを uniform な hrScale 引下げで削り、
+    //   out-of-sample の窓2(seeds13-24)を 40.8→38 へ悪化させる（＝裾を伸ばすと床が抜けるトレード
+    //   オフ／閾値HRの hrScale 過敏）。~15通りの探索で「HR/team∈[110,130] 下で3窓すべて帯内かつ床>40」
+    //   を最も頑健に満たすのは中立設定(=baseline)。よって集中は無効化(gain=0)し、モデルは明示化のみ
+    //   残す（D2パークファクターが hrDist×球場フェンスで『同じ打球がHRにも凡フライにも』を出す土台）。
+    hrLaPeak: 26, // HR最適打球角度（度）。幾何のliftと一致（中立＝baseline HR挙動を維持）
+    hrLaConcentration: 24, // HR飛距離ガウスの幅（度）。幾何のliftと一致（狭めると床が抜けるため中立）
+    hrEvRef: 152, // 飽和evBoostの中心速度(km/h)。スラッガー帯（gain=0で現在無効＝realism調整/将来フック）
+    hrEvWidth: 4, // 飽和evBoostの立ち上がり幅(km/h)
+    hrEvGain: 0, // evBoostの上限（0=無効＝中立/baseline維持）。>0で「よく捉えた球」のHR飛距離を最大+この割合
     // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
     hitGB: 0.2195, // ※S5較正
     hitLD: 0.672, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束

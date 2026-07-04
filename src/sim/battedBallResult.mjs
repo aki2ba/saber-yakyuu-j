@@ -120,10 +120,21 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
   computeGeometry(bb, cfg, park);
   const type = battedType(bb.laDeg);
 
-  // --- HR判定: 適角のフライ/ライナーが（hrScale込みで）フェンスを越える ---
+  // --- HR判定（D1-1・§D1）: 適角のフライ/ライナーが「HR専用飛距離」でフェンスを越える ---
+  // 幾何の distanceM（安打/長打の落下点用）とは別に、フェンス越え専用の飛距離 hrDist を明示化:
+  //   hrDist = carry・(v²/g)・hrLift(適角ガウス;peak,conc)・evBoost(飽和ロジスティック;ref,width,gain)
+  // 打者power/EV/最適LAへの依存を露わにする（v²＋evBoostで高EVほど非線形にHR化＝スラッガー書き分け）。
+  // 既定は集中無効(gain=0・peak26/conc24=幾何lift一致)で baseline HR挙動を維持（D1調査: 集中は
+  // out-of-sample の HR王 床を削るため／config §hrEvGain 参照）。総量(HR/team)は hrScale が門番。
   if ((type === 'FB' || type === 'LD') && bb.laDeg >= 15 && bb.laDeg <= 48) {
+    const g = cfg.tuning.bb;
     const fence = fenceDistanceAt(bb.sprayDeg, park);
-    if (bb.distanceM * cfg.tuning.hrScale >= fence) {
+    const v = bb.evKmh / 3.6; // m/s
+    const hrLift = Math.exp(-Math.pow((bb.laDeg - g.hrLaPeak) / g.hrLaConcentration, 2)); // 適角へ狭く集中
+    // 飽和EVブースト: よく捉えた球(EV>hrEvRef)へ上限 hrEvGain までのHR飛距離ボーナス（怪物の暴走を抑える）
+    const evBoost = 1 + g.hrEvGain / (1 + Math.exp(-(bb.evKmh - g.hrEvRef) / g.hrEvWidth));
+    const hrDist = g.carry * ((v * v) / G) * hrLift * evBoost;
+    if (hrDist * cfg.tuning.hrScale >= fence) {
       bb.fielderPos = assignFielder(bb, type);
       bb.result = 'HR';
       return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };

@@ -93,8 +93,11 @@ function mkPlatoonState() {
   }
   const lineup = [...POS.map((pos) => ({ playerId: `R${pos}`, pos })), { playerId: null, pos: 'P' }];
   const chart = { byId, defense, positionRank, lineup, rotation: [], bullpen: [] };
-  const state = createUsageState({ id: 'T' }, { dh: chart, noDh: chart }, cfg);
-  for (const pid of state.scoutEval.keys()) state.scoutEval.set(pid, 0); // スカウト評価を均一化
+  // プラトーン判断のみを分離検証するため、打撃・守備のスカウトノイズを共に無効化する
+  //   （D1-3で守備評価にも scoutSeed 由来ノイズが乗るため scoutDefSd=0 で建てる）。
+  const cfgNoScoutNoise = createConfig({ tuning: { usage: { scoutDefSd: 0 } } });
+  const state = createUsageState({ id: 'T' }, { dh: chart, noDh: chart }, cfgNoScoutNoise);
+  for (const pid of state.scoutEval.keys()) state.scoutEval.set(pid, 0); // スカウト打撃評価を均一化
   return state;
 }
 
@@ -119,6 +122,33 @@ test('selectLineup: 相手先発が右なら同利きのRF正選手を左のベ�
     cfg,
   );
   assert.equal(vsL.lineup.find((s) => s.pos === 'RF').playerId, 'RRF', '対左投手は右の正選手のまま');
+});
+
+// --- 単体: D1-3 守備評価のスカウトノイズ（三層構造の徹底） -----------------------
+
+test('D1-3: 守備評価(rangeEval/defEval)に scoutSeed 由来の決定論ノイズが乗る（無効化で真値・同一構築で再現）', () => {
+  const mkChart = () => {
+    // 同一能力の2野手（id違い＝scoutSeed違い）。CFに2候補を置く。
+    const a = mkF('AAA', { bat: 55 });
+    const b = mkF('BBB', { bat: 55 });
+    const byId = new Map([[a.id, a], [b.id, b]]);
+    return { byId, defense: { CF: 'AAA' }, positionRank: { CF: ['AAA', 'BBB'] }, lineup: [{ playerId: 'AAA', pos: 'CF' }], rotation: [], bullpen: [] };
+  };
+  // ノイズ有効（既定 scoutDefSd=3）: 同一能力でも id 違いで rangeEval が分岐する
+  const cfgOn = createConfig();
+  const sOn = createUsageState({ id: 'T' }, { dh: mkChart(), noDh: mkChart() }, cfgOn);
+  assert.ok(cfgOn.tuning.usage.scoutDefSd > 0, '既定でノイズ有効');
+  assert.notEqual(sOn.rangeEval.get('AAA'), sOn.rangeEval.get('BBB'), '同一能力でもスカウト評価は分岐（守備の読み違え）');
+  assert.notEqual(sOn.defEval.get('AAA').def.CF, sOn.defEval.get('BBB').def.CF, 'defEvalにも一貫ノイズ');
+
+  // ノイズ無効（scoutDefSd=0）: 真値参照＝同一能力なら完全一致（旧挙動と bit 同一）
+  const cfgOff = createConfig({ tuning: { usage: { scoutDefSd: 0 } } });
+  const sOff = createUsageState({ id: 'T' }, { dh: mkChart(), noDh: mkChart() }, cfgOff);
+  assert.equal(sOff.rangeEval.get('AAA'), sOff.rangeEval.get('BBB'), 'ノイズ0なら同一能力は一致');
+
+  // 決定論: 同一構築で同一ノイズを再現（rng は scoutSeed 起点のみ）
+  const sOn2 = createUsageState({ id: 'T' }, { dh: mkChart(), noDh: mkChart() }, cfgOn);
+  assert.equal(sOn.rangeEval.get('AAA'), sOn2.rangeEval.get('AAA'), '同一構築は同一ノイズ（決定論）');
 });
 
 // --- 単体: 観測ベース見直し（漸進昇格） ----------------------------------------

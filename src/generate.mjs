@@ -183,15 +183,46 @@ export function generateFielder(rng, id, primaryPos) {
 }
 
 /**
+ * 時代トレンド（D3・§11.3）の新人への反映（in-place・乱数非消費＝決定論）。
+ * era.veloBump=平均球速の経年上昇（投手のみ）、era.cohortQuality=世代の波（ドラフト当たり/外れ年）を
+ * 新人の主要レーティングへ加算する。boost=王朝均衡の弱球団再分配（team.balanceBoost・非負）。
+ * era はプレーンデータ（game/era.mjs の computeEra 由来）＝ generate は game/ を import しない。
+ * @param {Object} p 生成直後の新人（trueAbility を持つ）
+ * @param {{veloBump?:number, cohortQuality?:number}} era 時代成分（省略時は無効果）
+ * @param {number} boost 王朝均衡の追加 rating boost（>=0・省略時0）
+ */
+export function applyEraToRookie(p, era = null, boost = 0) {
+  const dRating = (era && era.cohortQuality ? era.cohortQuality : 0) + (boost || 0);
+  const dVelo = era && era.veloBump ? era.veloBump : 0;
+  if (!dRating && !dVelo) return p;
+  const t = p.trueAbility;
+  if (dVelo) t.pitching.velocityKmh = clamp(t.pitching.velocityKmh + dVelo, 130, 168);
+  if (!dRating) return p;
+  const bump = (obj, key) => { obj[key] = clampRating(obj[key] + dRating); };
+  if (p.role === 'pitcher') {
+    bump(t.pitching, 'control');
+    bump(t.pitching, 'stamina');
+    for (const pi of t.pitching.pitches) { bump(pi, 'current'); bump(pi, 'whiff'); }
+  } else {
+    for (const k of ['ev', 'la', 'contact', 'eye']) bump(t.batting, k);
+    bump(t.common, 'power');
+    bump(t.common, 'speed');
+    bump(t.fielding.positionProf, p.primaryPos);
+  }
+  return p;
+}
+
+/**
  * 新人（ドラフト相当）を1人生成する（C2b 世代交代・§10.6）。
  * 既存の generatePitcher/generateFielder を id 基準の独立シードで駆動し、年齢だけを
  * 高卒/大卒相当（rookieAgeMin..Max）へ上書きする（生成の乱数列は消費済みで決定論・順序非依存）。
  * @param {number} seed ドラフト用の階層シード（hashSeed(masterSeed,'draft',yearIndex)）
  * @param {string} id 新人の一意ID（例 'T4Y3N0'）。live/replay で同一なら bit 一致
- * @param {{role:'pitcher'|'fielder', primaryPos:string, ageMin:number, ageMax:number, debutYear:number}} o
+ * @param {{role:'pitcher'|'fielder', primaryPos:string, ageMin:number, ageMax:number, debutYear:number, era?:Object}} o
+ *   era=時代トレンド成分（D3・§11.3）。指定時は生成後に球速の経年上昇/世代の波を反映（乱数非消費）。
  * @returns {Object} Player（teamId は呼び出し側で設定）
  */
-export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear }) {
+export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear, era = null }) {
   const rng = makeRng(hashSeed(seed, id));
   const p = role === 'pitcher' ? generatePitcher(rng, id) : generateFielder(rng, id, primaryPos);
   // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
@@ -200,6 +231,8 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
   p.age = ageMin + aRng.int(Math.max(1, ageMax - ageMin + 1));
   p.birthSeason = debutYear != null ? debutYear - p.age : null;
   p.primaryPos = role === 'pitcher' ? 'P' : primaryPos;
+  // 時代トレンド（D3）: 世代の波・球速の経年上昇を反映（王朝均衡の team boost は draft 割当後に別途）。
+  if (era) applyEraToRookie(p, era, 0);
   return p;
 }
 

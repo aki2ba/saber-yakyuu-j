@@ -1387,6 +1387,35 @@ const TUNING_DEFAULT = {
   },
 
   // ==========================================================================
+  // 時代トレンドと王朝均衡（D3・§11.3「集団・時代系」・多年運用）: オフシーズン遷移で「時代」を
+  //   ゆっくり動かすノブ。src/game/era.mjs の computeEra/eraSeasonConfig/teamBalanceBoost が消費。
+  //   ⚠️**1年目（yearIndex=0）は完全に identity**（computeEra が全成分ゼロ・eraSeasonConfig が
+  //   baseCfg を同一参照で返す）＝既存50較正は完全不変（byte一致）。ドリフトは2年目以降のみ。
+  //   決定論: era は (masterSeed, yearIndex) の純関数＝live/replay で bit 一致。
+  // ==========================================================================
+  era: {
+    enabled: true, // false でD3を無効化（全年 identity＝多年でもドリフト無し）
+    // --- 得点環境の緩やかな揺れ（投高打低↔打高投低）: EV中心(bb.evBase)を正弦で上下 ---
+    //   位相0の sin(2π·yi/period) ゆえ yi=0 で必ず0（year0 identity の担保）。振幅±0.8km/h で
+    //   得点環境が緩やかに上下する（打高/投高の時代）。周期は世界ごとに散らす。
+    offenseAmpKmh: 0.8, // EV中心の揺れ振幅(km/h)
+    wavePeriod: 9, // 揺れの基本周期(年)
+    wavePeriodSd: 2.0, // 周期の世界差SD(年)（位相0は保持）
+    // --- 平均球速の経年上昇（新人世代が世代ごとに速くなる・約+0.5km/h/年）---
+    veloPerYear: 0.5, // 新人生成の平均球速が1年（yearIndex）あたり+これ(km/h)
+    veloBumpMax: 10, // 経年上昇の上限(km/h)（暴走防止）
+    // --- 世代の波（ドラフト当たり年/外れ年→黄金世代）: 新人品質(rating)を年ごとに揺らす ---
+    cohortSd: 1.2, // 通常年の新人品質の揺れSD(rating)
+    goldenProb: 0.12, // 黄金世代（当たり年）の確率
+    goldenBoost: 5.0, // 黄金世代の新人品質ボーナス(rating)
+    leanProb: 0.12, // 外れ年の確率
+    leanPenalty: 4.0, // 外れ年の新人品質ペナルティ(rating)
+    // --- 王朝と均衡（戦力の平均回帰＝ドラフト再分配）: 弱い球団の新人を厚く ---
+    balanceReversion: 40, // 勝率.500未満ぶん(0-1)×これ＝新人 rating boost（弱い球団ほど良い人材）
+    balanceMaxDev: 0.15, // 反映する勝率不足の上限（.35以下は同扱い＝暴走防止）
+  },
+
+  // ==========================================================================
   // 加齢・成長カーブ（C2a・§10.1-10.3 / §12.4）: オフシーズンに trueAbility を動かすノブ。
   // src/game/aging.mjs の applyAging が消費する（1年目レギュラーシーズンには一切効かない
   // ＝加齢は2年目以降のみ。既存50較正指標は完全不変）。
@@ -2226,15 +2255,46 @@ function generateFielder(rng, id, primaryPos) {
 }
 
 /**
+ * 時代トレンド（D3・§11.3）の新人への反映（in-place・乱数非消費＝決定論）。
+ * era.veloBump=平均球速の経年上昇（投手のみ）、era.cohortQuality=世代の波（ドラフト当たり/外れ年）を
+ * 新人の主要レーティングへ加算する。boost=王朝均衡の弱球団再分配（team.balanceBoost・非負）。
+ * era はプレーンデータ（game/era.mjs の computeEra 由来）＝ generate は game/ を import しない。
+ * @param {Object} p 生成直後の新人（trueAbility を持つ）
+ * @param {{veloBump?:number, cohortQuality?:number}} era 時代成分（省略時は無効果）
+ * @param {number} boost 王朝均衡の追加 rating boost（>=0・省略時0）
+ */
+function applyEraToRookie(p, era = null, boost = 0) {
+  const dRating = (era && era.cohortQuality ? era.cohortQuality : 0) + (boost || 0);
+  const dVelo = era && era.veloBump ? era.veloBump : 0;
+  if (!dRating && !dVelo) return p;
+  const t = p.trueAbility;
+  if (dVelo) t.pitching.velocityKmh = clamp(t.pitching.velocityKmh + dVelo, 130, 168);
+  if (!dRating) return p;
+  const bump = (obj, key) => { obj[key] = clampRating(obj[key] + dRating); };
+  if (p.role === 'pitcher') {
+    bump(t.pitching, 'control');
+    bump(t.pitching, 'stamina');
+    for (const pi of t.pitching.pitches) { bump(pi, 'current'); bump(pi, 'whiff'); }
+  } else {
+    for (const k of ['ev', 'la', 'contact', 'eye']) bump(t.batting, k);
+    bump(t.common, 'power');
+    bump(t.common, 'speed');
+    bump(t.fielding.positionProf, p.primaryPos);
+  }
+  return p;
+}
+
+/**
  * 新人（ドラフト相当）を1人生成する（C2b 世代交代・§10.6）。
  * 既存の generatePitcher/generateFielder を id 基準の独立シードで駆動し、年齢だけを
  * 高卒/大卒相当（rookieAgeMin..Max）へ上書きする（生成の乱数列は消費済みで決定論・順序非依存）。
  * @param {number} seed ドラフト用の階層シード（hashSeed(masterSeed,'draft',yearIndex)）
  * @param {string} id 新人の一意ID（例 'T4Y3N0'）。live/replay で同一なら bit 一致
- * @param {{role:'pitcher'|'fielder', primaryPos:string, ageMin:number, ageMax:number, debutYear:number}} o
+ * @param {{role:'pitcher'|'fielder', primaryPos:string, ageMin:number, ageMax:number, debutYear:number, era?:Object}} o
+ *   era=時代トレンド成分（D3・§11.3）。指定時は生成後に球速の経年上昇/世代の波を反映（乱数非消費）。
  * @returns {Object} Player（teamId は呼び出し側で設定）
  */
-function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear }) {
+function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear, era = null }) {
   const rng = makeRng(hashSeed(seed, id));
   const p = role === 'pitcher' ? generatePitcher(rng, id) : generateFielder(rng, id, primaryPos);
   // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
@@ -2243,6 +2303,8 @@ function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, 
   p.age = ageMin + aRng.int(Math.max(1, ageMax - ageMin + 1));
   p.birthSeason = debutYear != null ? debutYear - p.age : null;
   p.primaryPos = role === 'pitcher' ? 'P' : primaryPos;
+  // 時代トレンド（D3）: 世代の波・球速の経年上昇を反映（王朝均衡の team boost は draft 割当後に別途）。
+  if (era) applyEraToRookie(p, era, 0);
   return p;
 }
 
@@ -7555,7 +7617,7 @@ function pickCohortAge(rng, cohort) {
  * スカウト観測（世代年齢・真値）付きで作る。surplus が選択肢を生み、球団評価差＝宝の源になる。
  * @returns {Map<string, Array>} typeKey('role:pos') → prospect[]
  */
-function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear }) {
+function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = null }) {
   const mk = cfg.tuning.market;
   const byType = new Map();
   for (const v of vacancies) {
@@ -7571,7 +7633,8 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear }) {
     for (let i = 0; i < n; i++) {
       const id = `D${yearIndex}n${gi++}`;
       const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
-      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear });
+      // era（時代トレンド・D3）: 世代の波・球速の経年上昇を新人生成時に反映（王朝均衡 boost は draft 後）。
+      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era });
       arr.push(p);
     }
     pool.set(tk, arr);
@@ -7733,7 +7796,7 @@ function pruneFarm(league, cfg) {
  * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
  * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
  */
-function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear }) {
+function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null }) {
   const mk = cfg.tuning.market;
   if (!league.farm) league.farm = [];
   const profiles = new Map();
@@ -7764,10 +7827,18 @@ function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, d
   }
   league.farm = stillFarm;
 
-  // 3. ドラフト（残り枠）。
-  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear });
+  // 3. ドラフト（残り枠）。era＝世代の波/球速上昇を pool 生成時に反映（D3・§11.3）。
+  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
   const order = waiverOrder(standings, league);
   const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex });
+  // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
+  //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
+  if (balanceBoost && balanceBoost.size) {
+    for (const p of rookies) {
+      const b = balanceBoost.get(p.teamId) || 0;
+      if (b) applyEraToRookie(p, null, b);
+    }
+  }
 
   // 4. 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。5. 剪定。
   signDevelopment(league, cfg, undrafted, order);
@@ -8163,6 +8234,114 @@ function runContractRenewal(league, cfg, { obs }) {
 }
 
 
+// ===== src/game/era.mjs =====
+// ============================================================================
+// フェーズD3: 時代トレンドと王朝均衡（§11.3「集団・時代系」・多年運用）
+//
+//   computeEra(masterSeed, yearIndex, cfg) → EraState
+//     … その年（yearIndex）の「時代」を (masterSeed, yearIndex) から純粋に決める。
+//       投高打低↔打高投低の緩やかな揺れ（offenseWave→evBaseDelta）・平均球速の経年上昇
+//       （veloBump）・世代の波（cohortQuality＝ドラフト当たり年/外れ年→黄金世代）を返す。
+//   eraSeasonConfig(baseCfg, era) → cfg
+//     … シーズンシムに使う「時代補正済み config」を作る（bb.evBase を evBaseDelta ぶん動かす）。
+//   teamBalanceBoost(standings, cfg) → Map<teamId, number>
+//     … 王朝均衡（戦力の平均回帰）: 前年に勝ち越した球団のドラフト新人を控えめに、負け越した
+//       球団の新人を厚めにする再分配 boost（新人品質rating・weak teams ほど大）。
+//
+// 設計原則（phaseD_spec D3・厳守）:
+//   - **1年目（yearIndex=0）は完全に identity**: computeEra は全成分ゼロを返し、eraSeasonConfig は
+//     baseCfg を同一参照で返す＝1年目レギュラーシーズンは D3 前と byte 一致（既存50較正不変）。
+//     ドリフトは 2年目以降にのみ効く。
+//   - 決定論維持: 乱数は makeRng(hashSeed(masterSeed, ...)) のみ。Date.now/Math.random 非使用。
+//     era は (masterSeed, yearIndex) の純関数＝live の advanceYear と load の replay で bit 一致。
+//   - config集約: 揺れ幅・周期・球速上昇率・黄金世代確率・均衡強度は cfg.tuning.era のノブ。
+//   - 揺れは位相0の正弦（sin(2π·yi/period)）で表現する。yi=0 で必ず 0（year0 identity の担保）。
+//     周期は世界（masterSeed）ごとに少し散らす（時代の巡りが世界で違う）が位相0は保つ。
+// ============================================================================
+
+
+/** 1年目（identity）用の EraState。全成分ゼロ＝D3 前と完全一致。 */
+function identityEra(yearIndex) {
+  return { yearIndex, offenseWave: 0, evBaseDelta: 0, veloBump: 0, cohortQuality: 0, isGolden: false, isLean: false };
+}
+
+/**
+ * その年の「時代」を (masterSeed, yearIndex) から決める（純関数・決定論）。
+ * yearIndex<=0 は identity（1年目不変の担保）。cfg.tuning.era 未定義/無効時も identity。
+ * @returns {{yearIndex:number, offenseWave:number, evBaseDelta:number, veloBump:number,
+ *            cohortQuality:number, isGolden:boolean, isLean:boolean}}
+ */
+function computeEra(masterSeed, yearIndex, cfg) {
+  const E = cfg && cfg.tuning ? cfg.tuning.era : null;
+  if (!E || E.enabled === false || yearIndex <= 0) return identityEra(yearIndex);
+
+  // --- 得点環境の緩やかな揺れ（投高打低↔打高投低）---------------------------------
+  // 周期は世界ごとに散らす（位相は0固定＝sin(0)=0 で year0 identity）。1世界で1回だけ引く。
+  const period = Math.max(4, E.wavePeriod + makeRng(hashSeed(masterSeed, 'era-phase')).normal(0, E.wavePeriodSd));
+  const offenseWave = Math.sin((2 * Math.PI * yearIndex) / period); // -1..+1（+=打高 / −=投高）
+  const evBaseDelta = offenseWave * E.offenseAmpKmh; // EV中心の上下（km/h）＝得点環境の揺れ
+
+  // --- 平均球速の経年上昇（新人世代が世代ごとに速くなる・約+0.5km/h/年）---------------
+  const veloBump = Math.min(E.veloPerYear * yearIndex, E.veloBumpMax);
+
+  // --- 世代の波（ドラフト当たり年/外れ年→黄金世代）--------------------------------
+  const cr = makeRng(hashSeed(masterSeed, 'era-cohort', yearIndex));
+  const u = cr.next();
+  let cohortQuality = cr.normal(0, E.cohortSd); // 通常年の小さな揺れ
+  let isGolden = false;
+  let isLean = false;
+  if (u < E.goldenProb) {
+    cohortQuality += E.goldenBoost; // 当たり年（黄金世代・稀）
+    isGolden = true;
+  } else if (u > 1 - E.leanProb) {
+    cohortQuality -= E.leanPenalty; // 外れ年
+    isLean = true;
+  }
+
+  return { yearIndex, offenseWave, evBaseDelta, veloBump, cohortQuality, isGolden, isLean };
+}
+
+/**
+ * シーズンシム用の「時代補正済み config」を返す（bb.evBase を evBaseDelta ぶん動かす）。
+ * evBaseDelta=0（1年目 or 無効）なら baseCfg を**同一参照**で返す＝byte一致の担保。
+ * それ以外は shallow spread で tuning.bb.evBase だけ差し替えた新オブジェクトを返す（他は共有＝
+ * シムは読み取り専用で参照するため安全。leagueConstants はシムが都度導出し cfg を書き換えない）。
+ */
+function eraSeasonConfig(baseCfg, era) {
+  if (!era || !era.evBaseDelta) return baseCfg;
+  return {
+    ...baseCfg,
+    tuning: {
+      ...baseCfg.tuning,
+      bb: { ...baseCfg.tuning.bb, evBase: baseCfg.tuning.bb.evBase + era.evBaseDelta },
+    },
+  };
+}
+
+/**
+ * 王朝均衡（戦力の平均回帰）: 前年順位（勝率）から各球団のドラフト新人 boost を導く。
+ * 勝ち越した球団（winPct>.500）は boost=0（既にウェーバー順で不利＝再分配で更に控えめに）、
+ * 負け越した球団ほど新人品質を厚くする（弱い球団に良い人材が回る＝FA/ドラフト再分配の増幅）。
+ * これで強い球団の連覇（王朝）が数年で崩れる振り子が生まれる（§11.3）。
+ * 決定論: standings（勝率）は teamHistory 由来＝save/replay で同一。boost は純粋な算術。
+ * @param {Array} standings 完了年の順位表行（w/l を持つ）
+ * @param {Object} cfg cfg.tuning.era.balanceReversion / balanceMaxDev
+ * @returns {Map<string, number>} teamId → 新人 rating boost（>=0）
+ */
+function teamBalanceBoost(standings, cfg) {
+  const E = cfg && cfg.tuning ? cfg.tuning.era : null;
+  const boost = new Map();
+  if (!E || E.enabled === false || !E.balanceReversion || !standings || !standings.length) return boost;
+  for (const s of standings) {
+    const dec = (s.w ?? 0) + (s.l ?? 0);
+    const winPct = dec ? s.w / dec : 0.5;
+    const deficit = Math.min(E.balanceMaxDev, Math.max(0, 0.5 - winPct)); // .500 未満ぶん（上限クランプ）
+    boost.set(s.teamId, deficit * E.balanceReversion);
+  }
+  return boost;
+}
+
+
 // ===== src/game/awards.mjs =====
 // ============================================================================
 // フェーズC4: 表彰・記録・二つ名（§16/§17・phaseC_spec C4）
@@ -8433,6 +8612,64 @@ function nicknameFor(player, careerStats, cfg) {
   if (c.iso >= N.isoSlugger && c.hr >= N.isoSluggerHr) return 'スラッガー';
   if (c.bbPct >= N.onbaseBbPct) return '出塁の職人';
   return 'いぶし銀';
+}
+
+// --- 記録の時代補正（D3・§11.3「記録の文脈」）------------------------------------
+/**
+ * 通算の「時代補正 +指標」（D3・§11.3）: 各シーズンの記録を**その年の**リーグ環境で正規化し、
+ * PA/IP 加重で通算平均する。wRC+ / ERA- / FIP- は元々その年の lgwOBA/lgERA/lgFIP に対する相対値
+ * ゆえ、打高時代の .320 と投高時代の .290 が「同価値」として揃う（生の打率/防御率が時代で化ける
+ * のを補正する）。各年の lc はその年の全選手観測から導出（seasonLeagueConstants・観測のみ・三層構造）。
+ *
+ * 決定論: (careerStats, teamHistory) の純関数（各年の lc は当年の playerSeasons/standings から再現）。
+ * @param {string} playerId
+ * @param {{careerStats:Array, teamHistory:Array, playersById:Map, cfg:Object}} ctx
+ * @returns {{role:string, seasons:number, wrcPlus:number|null, eraMinus:number|null,
+ *            fipMinus:number|null, byYear:Array}} 加重通算＋年次内訳（未出場は null）
+ */
+function careerEraPlus(playerId, { careerStats, teamHistory, playersById, cfg }) {
+  const player = playersById.get(playerId);
+  if (!player) return { role: null, seasons: 0, wrcPlus: null, eraMinus: null, fipMinus: null, byYear: [] };
+  // 年→その年の全 playerSeasons（当年リーグ環境の母集団）と standings（PF/リーグ判定の素）。
+  const byYear = new Map();
+  for (const s of careerStats) {
+    if (!byYear.has(s.season)) byYear.set(s.season, []);
+    byYear.get(s.season).push(s);
+  }
+  const standByYear = new Map();
+  for (const h of teamHistory || []) standByYear.set(h.year, h.standings);
+
+  const out = [];
+  let num = 0; // 加重合計（分子）
+  let den = 0; // 加重（PA or IP）合計
+  const isPit = player.role === 'pitcher';
+  for (const season of [...byYear.keys()].sort((a, b) => a - b)) {
+    const ps = byYear.get(season);
+    const mine = ps.find((s) => s.playerId === playerId);
+    if (!mine) continue;
+    const lc = seasonLeagueConstants(ps, standByYear.get(season) || null);
+    if (isPit) {
+      const pm = playerPitching(mine, lc, cfg);
+      if (!pm.ip) continue;
+      out.push({ year: season, ip: pm.ip, eraMinus: pm.eraMinus, fipMinus: pm.fipMinus });
+      num += pm.fipMinus * pm.ip; // 代表値は FIP-（守備/運に頑健）
+      den += pm.ip;
+    } else {
+      const bm = playerBatting(mine, lc);
+      if (!bm.pa) continue;
+      out.push({ year: season, pa: bm.pa, wrcPlus: bm.wrcPlus });
+      num += bm.wrcPlus * bm.pa;
+      den += bm.pa;
+    }
+  }
+  const wt = den ? num / den : null;
+  if (isPit) {
+    // ERA- も別途 IP 加重（表示用）。
+    let eraNum = 0;
+    for (const r of out) eraNum += r.eraMinus * r.ip;
+    return { role: 'pitcher', seasons: out.length, wrcPlus: null, eraMinus: den ? eraNum / den : null, fipMinus: wt, byYear: out };
+  }
+  return { role: 'fielder', seasons: out.length, wrcPlus: wt, eraMinus: null, fipMinus: null, byYear: out };
 }
 
 // --- 記録（球団史・リーグ記録・マイルストーン） --------------------------------
@@ -8709,6 +8946,7 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 
 
 
+
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
 //   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
 //   ここで 
@@ -8768,8 +9006,14 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
   const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
   rebuildTeamRosters(league);
+  // 時代トレンド（D3・§11.3）: 翌年（debut年）の世代の波・球速の経年上昇＝computeEra(yearIndex+1)。
+  //   ＋王朝均衡: 完了年順位から弱球団の新人再分配 boost（戦力の平均回帰＝振り子）。
+  //   1年目（yearIndex=0）でも「翌年=2年目」の新人にはドリフトが乗る（＝2年目以降のみ変化。
+  //   1年目レギュラーシーズン自体は startYear 側の era=identity で完全不変）。
+  const rookieEra = computeEra(masterSeed, yearIndex + 1, cfg);
+  const balanceBoost = teamBalanceBoost(standings, cfg);
   // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
-  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1 });
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost });
   league.players = league.players.concat(promoted, rookies);
   rebuildTeamRosters(league);
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
@@ -8789,7 +9033,12 @@ function standingsForYear(state, year) {
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
 function startYear(state) {
-  state.rt = startSeasonRuntime(state.league, state.cfg, {
+  // 時代トレンド（D3・§11.3）: 得点環境の緩やかな揺れ（投高打低↔打高投低）を bb.evBase に反映した
+  //   シーズン用 config を作る。**yearIndex=0 は computeEra が identity ＝ eraSeasonConfig が
+  //   state.cfg を同一参照で返す＝1年目レギュラーシーズンは D3 前と byte 一致**（既存50較正不変）。
+  state.era = computeEra(state.masterSeed, state.yearIndex, state.cfg);
+  const seasonCfg = eraSeasonConfig(state.cfg, state.era);
+  state.rt = startSeasonRuntime(state.league, seasonCfg, {
     season: state.year,
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
@@ -9187,6 +9436,8 @@ function allPlayersById(state) {
 
 // --- C4 演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う。バンドルでは
 //     各元関数が strip 後にグローバル化するため、この export 行は build.mjs で剥がれても機能する）。
+
+// 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 
 </script>
 <script>

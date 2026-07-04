@@ -24,6 +24,7 @@ import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
 import { runMarket, teamEvalProfile } from './market.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './transactions.mjs';
+import { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
 //   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
 //   ここで import することでバンドル（build.mjs のグラフ）にも同梱され、UI から
@@ -31,7 +32,7 @@ import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './tra
 import {
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones,
-  careerBatting, careerPitching, DEF_AWARD_NAME, TITLE_LABELS,
+  careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
 } from './awards.mjs';
 import { detectGameNotables, notableHeadline, streakOf, weeklyDigest } from './news.mjs';
 
@@ -89,8 +90,14 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
   const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
   rebuildTeamRosters(league);
+  // 時代トレンド（D3・§11.3）: 翌年（debut年）の世代の波・球速の経年上昇＝computeEra(yearIndex+1)。
+  //   ＋王朝均衡: 完了年順位から弱球団の新人再分配 boost（戦力の平均回帰＝振り子）。
+  //   1年目（yearIndex=0）でも「翌年=2年目」の新人にはドリフトが乗る（＝2年目以降のみ変化。
+  //   1年目レギュラーシーズン自体は startYear 側の era=identity で完全不変）。
+  const rookieEra = computeEra(masterSeed, yearIndex + 1, cfg);
+  const balanceBoost = teamBalanceBoost(standings, cfg);
   // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
-  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1 });
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost });
   league.players = league.players.concat(promoted, rookies);
   rebuildTeamRosters(league);
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
@@ -110,7 +117,12 @@ function standingsForYear(state, year) {
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
 function startYear(state) {
-  state.rt = startSeasonRuntime(state.league, state.cfg, {
+  // 時代トレンド（D3・§11.3）: 得点環境の緩やかな揺れ（投高打低↔打高投低）を bb.evBase に反映した
+  //   シーズン用 config を作る。**yearIndex=0 は computeEra が identity ＝ eraSeasonConfig が
+  //   state.cfg を同一参照で返す＝1年目レギュラーシーズンは D3 前と byte 一致**（既存50較正不変）。
+  state.era = computeEra(state.masterSeed, state.yearIndex, state.cfg);
+  const seasonCfg = eraSeasonConfig(state.cfg, state.era);
+  state.rt = startSeasonRuntime(state.league, seasonCfg, {
     season: state.year,
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
@@ -511,6 +523,8 @@ export function allPlayersById(state) {
 export {
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones,
-  careerBatting, careerPitching, DEF_AWARD_NAME, TITLE_LABELS,
+  careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
   detectGameNotables, notableHeadline, streakOf, weeklyDigest,
 };
+// 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
+export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';

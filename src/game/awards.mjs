@@ -269,6 +269,64 @@ export function nicknameFor(player, careerStats, cfg) {
   return 'いぶし銀';
 }
 
+// --- 記録の時代補正（D3・§11.3「記録の文脈」）------------------------------------
+/**
+ * 通算の「時代補正 +指標」（D3・§11.3）: 各シーズンの記録を**その年の**リーグ環境で正規化し、
+ * PA/IP 加重で通算平均する。wRC+ / ERA- / FIP- は元々その年の lgwOBA/lgERA/lgFIP に対する相対値
+ * ゆえ、打高時代の .320 と投高時代の .290 が「同価値」として揃う（生の打率/防御率が時代で化ける
+ * のを補正する）。各年の lc はその年の全選手観測から導出（seasonLeagueConstants・観測のみ・三層構造）。
+ *
+ * 決定論: (careerStats, teamHistory) の純関数（各年の lc は当年の playerSeasons/standings から再現）。
+ * @param {string} playerId
+ * @param {{careerStats:Array, teamHistory:Array, playersById:Map, cfg:Object}} ctx
+ * @returns {{role:string, seasons:number, wrcPlus:number|null, eraMinus:number|null,
+ *            fipMinus:number|null, byYear:Array}} 加重通算＋年次内訳（未出場は null）
+ */
+export function careerEraPlus(playerId, { careerStats, teamHistory, playersById, cfg }) {
+  const player = playersById.get(playerId);
+  if (!player) return { role: null, seasons: 0, wrcPlus: null, eraMinus: null, fipMinus: null, byYear: [] };
+  // 年→その年の全 playerSeasons（当年リーグ環境の母集団）と standings（PF/リーグ判定の素）。
+  const byYear = new Map();
+  for (const s of careerStats) {
+    if (!byYear.has(s.season)) byYear.set(s.season, []);
+    byYear.get(s.season).push(s);
+  }
+  const standByYear = new Map();
+  for (const h of teamHistory || []) standByYear.set(h.year, h.standings);
+
+  const out = [];
+  let num = 0; // 加重合計（分子）
+  let den = 0; // 加重（PA or IP）合計
+  const isPit = player.role === 'pitcher';
+  for (const season of [...byYear.keys()].sort((a, b) => a - b)) {
+    const ps = byYear.get(season);
+    const mine = ps.find((s) => s.playerId === playerId);
+    if (!mine) continue;
+    const lc = seasonLeagueConstants(ps, standByYear.get(season) || null);
+    if (isPit) {
+      const pm = playerPitching(mine, lc, cfg);
+      if (!pm.ip) continue;
+      out.push({ year: season, ip: pm.ip, eraMinus: pm.eraMinus, fipMinus: pm.fipMinus });
+      num += pm.fipMinus * pm.ip; // 代表値は FIP-（守備/運に頑健）
+      den += pm.ip;
+    } else {
+      const bm = playerBatting(mine, lc);
+      if (!bm.pa) continue;
+      out.push({ year: season, pa: bm.pa, wrcPlus: bm.wrcPlus });
+      num += bm.wrcPlus * bm.pa;
+      den += bm.pa;
+    }
+  }
+  const wt = den ? num / den : null;
+  if (isPit) {
+    // ERA- も別途 IP 加重（表示用）。
+    let eraNum = 0;
+    for (const r of out) eraNum += r.eraMinus * r.ip;
+    return { role: 'pitcher', seasons: out.length, wrcPlus: null, eraMinus: den ? eraNum / den : null, fipMinus: wt, byYear: out };
+  }
+  return { role: 'fielder', seasons: out.length, wrcPlus: wt, eraMinus: null, fipMinus: null, byYear: out };
+}
+
 // --- 記録（球団史・リーグ記録・マイルストーン） --------------------------------
 /** 球団史: 各年の順位（自リーグ内）と日本一。teamHistory から。 */
 export function teamRecords(teamHistory, teamId) {

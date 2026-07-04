@@ -20,7 +20,7 @@
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp, clampRating } from '../model/util.mjs';
-import { generateRookie } from '../generate.mjs';
+import { generateRookie, applyEraToRookie } from '../generate.mjs';
 import { applyAging } from './aging.mjs';
 import { POSITION_ADJUST_PER_1350 } from '../model/positions.mjs';
 
@@ -157,7 +157,7 @@ function pickCohortAge(rng, cohort) {
  * スカウト観測（世代年齢・真値）付きで作る。surplus が選択肢を生み、球団評価差＝宝の源になる。
  * @returns {Map<string, Array>} typeKey('role:pos') → prospect[]
  */
-function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear }) {
+function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = null }) {
   const mk = cfg.tuning.market;
   const byType = new Map();
   for (const v of vacancies) {
@@ -173,7 +173,8 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear }) {
     for (let i = 0; i < n; i++) {
       const id = `D${yearIndex}n${gi++}`;
       const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
-      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear });
+      // era（時代トレンド・D3）: 世代の波・球速の経年上昇を新人生成時に反映（王朝均衡 boost は draft 後）。
+      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era });
       arr.push(p);
     }
     pool.set(tk, arr);
@@ -335,7 +336,7 @@ function pruneFarm(league, cfg) {
  * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
  * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
  */
-export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear }) {
+export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null }) {
   const mk = cfg.tuning.market;
   if (!league.farm) league.farm = [];
   const profiles = new Map();
@@ -366,10 +367,18 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
   }
   league.farm = stillFarm;
 
-  // 3. ドラフト（残り枠）。
-  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear });
+  // 3. ドラフト（残り枠）。era＝世代の波/球速上昇を pool 生成時に反映（D3・§11.3）。
+  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
   const order = waiverOrder(standings, league);
   const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex });
+  // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
+  //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
+  if (balanceBoost && balanceBoost.size) {
+    for (const p of rookies) {
+      const b = balanceBoost.get(p.teamId) || 0;
+      if (b) applyEraToRookie(p, null, b);
+    }
+  }
 
   // 4. 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。5. 剪定。
   signDevelopment(league, cfg, undrafted, order);

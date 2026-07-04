@@ -145,13 +145,13 @@ assert.ok(roleCells.includes('先発') && roleCells.includes('救援'), '役割�
 battingTab._onclick();
 const batThNodes = walk(appDiv).filter((n) => n.tag === 'th');
 const batThTexts = batThNodes.map(textOf);
-for (const col of ['xwOBA', 'Barrel%', 'HardHit%', 'WPA', 'Clutch']) {
+for (const col of ['xwOBA', 'Barrel%', 'HardHit%', 'WPA', 'Clutch', 'wRC+PF']) {
   assert.ok(batThTexts.some((t) => t.startsWith(col)), `打撃表に新指標列 ${col} (${batThTexts.join(',')})`);
 }
 assert.ok(batThNodes.some((n) => n.attrs.title && n.attrs.title.length > 0), '列見出しに定義ツールチップ(title)がある');
 pitchingTab._onclick();
 const pitThTexts2 = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
-for (const col of ['xFIP', 'SIERA', 'K-BB%', 'LOB%', 'QS', 'WPA']) {
+for (const col of ['xFIP', 'SIERA', 'K-BB%', 'LOB%', 'QS', 'WPA', 'ERA-PF', 'FIP-PF']) {
   assert.ok(pitThTexts2.some((t) => t.startsWith(col)), `投手表に新指標列 ${col} (${pitThTexts2.join(',')})`);
 }
 
@@ -325,6 +325,8 @@ careerTab._onclick();
 assert.ok(walk(cOverlay).some((n) => (n.className || '').includes('nickname')), '経歴タブに二つ名が表示される');
 assert.ok(walk(cOverlay).some((n) => (n.className || '').includes('growth')), '経歴タブに成長曲線SVGが描かれる');
 assert.ok(walk(cOverlay).some((n) => textOf(n).includes('受賞履歴')), '経歴タブに受賞履歴セクションがある');
+// D3・§11.3: 記録の時代補正「+指標」が経歴タブに表示される（完了1季ぶんで発現）。
+assert.ok(walk(cOverlay).some((n) => textOf(n).includes('時代補正 +指標')), '経歴タブに時代補正+指標セクションがある（D3「見せる」）');
 
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 

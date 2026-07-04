@@ -20,6 +20,7 @@ import {
   // C4 演出: 表彰/記録/二つ名/ニュース（バンドルではグローバル・開発時Node解決用に import）。
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones, careerBatting, careerPitching,
+  careerEraPlus, // D3・§11.3: 記録の時代補正「+指標」（打高/投高時代を跨いで同価値化）
   DEF_AWARD_NAME, TITLE_LABELS, detectGameNotables, notableHeadline, streakOf, weeklyDigest,
 } from './game/index.mjs';
 
@@ -59,6 +60,7 @@ const TIP = {
   woba: 'wOBA: 出塁の質を得点価値で重み付けした打撃総合レート（リーグ平均≈.320）。',
   xwoba: 'xwOBA: 打球の速度と角度から期待されるwOBA。運を除いた実力寄りの指標。',
   wrcPlus: 'wRC+: 得点創出力を100=リーグ平均で指数化。150で平均比5割増、100が平均、70で3割減。',
+  wrcPlusPF: 'wRC+PF: wRC+を本拠地の球場補正（パークファクター）で調整。打高球場の選手は割り引かれ、実力がリーグ100基準で公平に並ぶ（§11.2 文脈で正しく評価）。',
   opsPlus: 'OPS+: OPSをリーグ平均100で指数化した指標（球場補正はフェーズD）。',
   iso: 'ISO: 長打率−打率。純粋な長打力（本塁打・長打の多さ）。',
   barrelPct: 'Barrel%: 最も安打/長打になりやすいEV×角度帯に入った打球の割合。強打者ほど高い。',
@@ -70,6 +72,8 @@ const TIP = {
   kPct: 'K%: 三振÷打席。低いほど三振が少ない。',
   era: 'ERA: 防御率。9回あたりの自責点。',
   fip: 'FIP: 三振/四球/被本塁打だけで評価する守備非依存の防御指標（ERAスケール）。',
+  eraMinusPF: 'ERA-PF: ERA-を本拠地の球場補正で調整（100=リーグ平均・低いほど良い）。打高球場の投手は優遇され、球場個性を除いた実力で並ぶ（§11.2）。',
+  fipMinusPF: 'FIP-PF: FIP-を本拠地の球場補正で調整（100=リーグ平均・低いほど良い）。被本塁打が出やすい球場の投手を公平に評価（§11.2）。',
   xfip: 'xFIP: FIPの被本塁打をリーグ平均HR/FBで補正。長期の実力寄りで運に強い。',
   siera: 'SIERA: 三振/四球/ゴロ率から推定する技術ベースの防御指標（ERAスケール）。',
   kwera: 'kwERA: K%−BB% のみから算出する簡易防御指標（ERAスケール）。',
@@ -252,7 +256,7 @@ const BAT_COLS = [
   ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['pos', '守', 'left'],
   ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'],
   ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['woba', 'wOBA'], ['xwoba', 'xwOBA'],
-  ['wrcPlus', 'wRC+'], ['opsPlus', 'OPS+'], ['iso', 'ISO'],
+  ['wrcPlus', 'wRC+'], ['wrcPlusPF', 'wRC+PF'], ['opsPlus', 'OPS+'], ['iso', 'ISO'],
   ['barrelPct', 'Barrel%'], ['hardHitPct', 'HardHit%'],
   ['bsr', 'BsR'], ['wpa', 'WPA'], ['clutch', 'Clutch'], ['bbPct', 'BB%'], ['kPct', 'K%'],
   ['sh', '犠打'], ['ibb', '敬遠'], ['ph', '代打'], // S4: 采配の発現（SH/IBB/PH）
@@ -275,6 +279,7 @@ function renderBatting(c) {
 const PIT_COLS = [
   ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['role', '役割', 'left'], ['war', 'WAR'],
   ['w', '勝'], ['l', '敗'], ['sv', 'S'], ['hld', 'H'], ['ip', '回'], ['era', '防御'], ['fip', 'FIP'],
+  ['eraMinusPF', 'ERA-PF'], ['fipMinusPF', 'FIP-PF'],
   ['xfip', 'xFIP'], ['siera', 'SIERA'], ['kwera', 'kwERA'],
   ['so', '奪三'], ['kPer9', 'K/9'], ['whip', 'WHIP'], ['bbPct', 'BB%'], ['kbbPct', 'K-BB%'], ['lobPct', 'LOB%'],
   ['qs', 'QS'], ['wpa', 'WPA'], ['clutch', 'Clutch'],
@@ -393,7 +398,7 @@ function renderModalBasic(box, p, s, isPitcher) {
     box.append(kv([['WAR', pw.war.toFixed(1)], ['登板', m.g], ['勝', m.w], ['敗', m.l], ['S', m.sv], ['投球回', m.ip.toFixed(1)], ['防御率', f2(m.era)], ['FIP', f2(m.fip)], ['奪三', m.so], ['K/9', f2(m.kPer9)]]));
   } else {
     const m = playerBatting(s, state.lc);
-    box.append(kv([['打席', m.pa], ['打率', fmt3(m.avg)], ['本塁打', m.hr], ['打点', m.rbi], ['盗塁', m.sb], ['出塁', fmt3(m.obp)], ['長打', fmt3(m.slg)], ['OPS', fmt3(m.ops)], ['wOBA', fmt3(m.woba)], ['wRC+', m.wrcPlus.toFixed(0)]]));
+    box.append(kv([['打席', m.pa], ['打率', fmt3(m.avg)], ['本塁打', m.hr], ['打点', m.rbi], ['盗塁', m.sb], ['出塁', fmt3(m.obp)], ['長打', fmt3(m.slg)], ['OPS', fmt3(m.ops)], ['wOBA', fmt3(m.woba)], ['wRC+', m.wrcPlus.toFixed(0)], ['wRC+PF', m.wrcPlusPF.toFixed(0)]]));
     const w = hitterWAR(s, state.cfg, state.lc);
     box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `WAR ${w.war.toFixed(1)} 内訳`));
     box.append(kv([['打wRAA', w.wraa.toFixed(1)], ['走BsR', w.bsr.toFixed(1)], ['守UZR', w.uzr.toFixed(1)], ['位置', w.posAdj.toFixed(1)], ['OAA', centeredOAAOuts(s, state.lc).toFixed(1)]]));
@@ -493,6 +498,12 @@ function renderModalPitch(box, s) {
     ['FIP', f2(m.fip)], ['xFIP', f2(m.xfip)], ['SIERA', f2(m.siera)], ['kwERA', f2(m.kwera)],
     ['K-BB%', pct(m.kbbPct)], ['WHIP', f2(m.whip)], ['LOB%', pct(m.lobPct)], ['QS', m.qs],
   ]));
+  // パーク補正版 ERA-/FIP-（D2・§11.2）: 100=リーグ平均・低いほど良い。球場個性を除いた実力。
+  box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '球場補正（100=平均・低いほど良い）'));
+  box.append(kv([
+    ['ERA-', m.eraMinus.toFixed(0)], ['ERA-PF', m.eraMinusPF.toFixed(0)],
+    ['FIP-', m.fipMinus.toFixed(0)], ['FIP-PF', m.fipMinusPF.toFixed(0)],
+  ]));
   box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '被打球（インプレー割合）・被本塁打'));
   box.append(kv([
     ['GB%', pct(m.gbPct)], ['LD%', pct(m.ldPct)], ['FB%', pct(m.fbPct)], ['PU%', pct(m.puPct)], ['HR/FB', pct(m.hrFbPct)],
@@ -528,6 +539,18 @@ function renderModalCareer(box, p, isPitcher) {
     box.append(growthCurveSVG(yearRows));
   } else {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '完了シーズンの成績はまだありません（今季進行中）。'));
+  }
+  // 時代補正「+指標」（D3・§11.3「記録の文脈」）: 各年の記録をその年のリーグ環境で正規化し
+  //   PA/IP 加重で通算平均。打高時代の.320と投高時代の.290が同価値に揃う（生成績の時代インフレ補正）。
+  const eraAdj = careerEraPlus(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: allPlayersById(gs), cfg: gs.cfg });
+  if (eraAdj.seasons > 0) {
+    box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, `時代補正 +指標（通算${eraAdj.seasons}季・PA/IP加重・100=各年リーグ平均）`));
+    box.append(kv(isPitcher
+      ? [['通算ERA-', eraAdj.eraMinus != null ? eraAdj.eraMinus.toFixed(0) : '-'], ['通算FIP-', eraAdj.fipMinus != null ? eraAdj.fipMinus.toFixed(0) : '-']]
+      : [['通算wRC+', eraAdj.wrcPlus != null ? eraAdj.wrcPlus.toFixed(0) : '-']]));
+    box.append(el('div', { class: 'muted', style: 'margin-top:4px' },
+      isPitcher ? '低いほど良い。打高/投高時代を跨いで防御の実力を同じ物差しで比較できる。'
+        : '100=平均。打高時代の記録は割り引かれ、時代を跨いだ打撃実力を公平に比較できる。'));
   }
   // 受賞履歴（全年の表彰を再計算して収集）。全時代byId＝引退した真の受賞者を過去年の再計算から
   // 落とさない（現役のみだと過去年の表彰が現役選手へ誤帰属する・C4検証修正）。

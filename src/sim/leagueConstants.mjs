@@ -7,6 +7,7 @@
 // ============================================================================
 import { leagueBatting, leaguePitching } from './leagueStats.mjs';
 import { mainPosition, totalFieldInnings } from './fielding.mjs';
+import { deriveParkFactors } from './parkFactor.mjs';
 
 // 各イベントの得点価値（アウト基準=0の線形ウェイト・runs単位）。FanGraphs標準の
 // "runs above out" 系（wRAAが正しいラン単位になり、WARの絶対値が文献スケールに乗る・レビューB-2）。
@@ -35,9 +36,15 @@ export function rawRunValuePerPA(bat, W = LINEAR_WEIGHTS) {
  * シーズン結果からリーグ定数を導出。cfg.leagueConstants に相当する構造を返す。
  * @param {{playerSeasons:Array, standings:Array}} res
  */
-export function deriveLeagueConstants(res) {
+export function deriveLeagueConstants(res, cfg = null) {
   const bat = leagueBatting(res.playerSeasons);
   const pit = leaguePitching(res.playerSeasons);
+
+  // パークファクター（D2・§11.2）: 順位表の本拠地/敵地 得点スプリットから球団PFを導出。
+  //   metrics 側で wRC+/ERA-/FIP- の park補正版フィールドに接続する（ps.teamId でルックアップ）。
+  //   スプリットが無い（古い呼び出し/中立単一park）場合は空Map＝park補正=素の値（後方互換）。
+  const hasSplits = (res.standings || []).some((t) => (t.hpG || 0) > 0 && (t.rpG || 0) > 0);
+  const pf = hasSplits ? deriveParkFactors(res.standings, cfg) : null;
 
   // --- wOBA 系（lgwOBA を lgOBP スケールへ正規化）---
   const lgRawPerPA = rawRunValuePerPA(bat); // アウト基準の得点価値/打席
@@ -162,12 +169,16 @@ export function deriveLeagueConstants(res) {
     lgFIP,
     fipConstant,
     rpw,
+    // パークファクター（D2・§11.2）: 球団PF。metrics の park補正版フィールドが参照する。
+    parkBatByTeam: pf ? pf.pfBatByTeam : null,
+    parkPitByTeam: pf ? pf.pfPitByTeam : null,
+    parkRunsByTeam: pf ? pf.pfRunsByTeam : null,
     // WAR 用の位置補正は §9/positions の per-1350 値を使う（143試合再スケールはWAR算出2-9で）
   };
 }
 
 /** シーズンを走らせてから cfg.leagueConstants を埋める（2パスの糊） */
 export function fillLeagueConstants(cfg, res) {
-  cfg.leagueConstants = { ...cfg.leagueConstants, ...deriveLeagueConstants(res) };
+  cfg.leagueConstants = { ...cfg.leagueConstants, ...deriveLeagueConstants(res, cfg) };
   return cfg.leagueConstants;
 }

@@ -50,27 +50,35 @@ export function createBattedBall(o = {}) {
 }
 
 /**
- * 球場ジオメトリ。中立球場は左右対称。フェンス距離は方向角の関数で表す（パークファクターはフェーズ4）。
+ * 球場ジオメトリ（フェーズD2・§11.2「文脈で化ける」）。中立球場は左右対称。
+ * フェンス距離は方向角の関数で表し、左翼線(lfLineM)/右翼線(rfLineM)を独立に持つ（非対称球場）。
  * NPB標準寄りの中立値: 両翼 100m / 中堅 122m / フェンス高 4m。
+ *   実在球場名は使わない（完全架空・§11.2）。lfLineM/rfLineM 省略時は lineDistM（左右対称）へ落ちる。
+ *   狭い翼×引っ張り打者 → 同じ打球がHRに、広い中堅 → 同じ打球が凡フライに（D2の核心）。
  */
 export function createBallpark(o = {}) {
+  const line = o.lineDistM ?? 100;
   return {
     name: o.name ?? 'Neutral Park',
-    lineDistM: o.lineDistM ?? 100, // 両翼（ファウルライン上, |spray|=45）
+    lineDistM: line, // 両翼の代表値（左右対称時。非対称は lf/rf を使う）
+    lfLineM: o.lfLineM ?? line, // 左翼線（spray=−45）
+    rfLineM: o.rfLineM ?? line, // 右翼線（spray=+45）
     centerDistM: o.centerDistM ?? 122, // 中堅（spray=0）
-    gapDistM: o.gapDistM ?? 116, // 左右中間の目安（|spray|≈20）
+    gapDistM: o.gapDistM ?? 116, // 左右中間の目安（|spray|≈20・表示用）
     fenceHeightM: o.fenceHeightM ?? 4,
   };
 }
 
-/** 中立球場（既定） */
+/** 中立球場（既定・左右対称100/122/4m） */
 export const NEUTRAL_PARK = createBallpark();
 
 /**
- * 指定方向角のフェンスまでの距離(m)。ライン(100)〜中堅(122)を滑らかに補間。
- * cos ベースの単純近似（中堅で最大、ライン方向で最小）。パーク非対称はフェーズ4で拡張。
+ * 指定方向角のフェンスまでの距離(m)。中堅(centerDistM)〜翼線を滑らかに補間。
+ * 方向角の符号で左翼線(lfLineM)/右翼線(rfLineM)を選ぶ（非対称球場・D2）。
+ * 中立球場は lf=rf=lineDistM ゆえ従来と完全一致（後方互換）。
  */
 export function fenceDistanceAt(sprayDeg, park = NEUTRAL_PARK) {
   const a = Math.min(Math.abs(sprayDeg), 45) / 45; // 0(中堅)..1(ライン)
-  return park.centerDistM + (park.lineDistM - park.centerDistM) * a;
+  const line = sprayDeg < 0 ? (park.lfLineM ?? park.lineDistM) : (park.rfLineM ?? park.lineDistM);
+  return park.centerDistM + (line - park.centerDistM) * a;
 }

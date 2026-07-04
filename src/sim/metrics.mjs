@@ -77,6 +77,11 @@ export function playerBatting(ps, lc) {
   const wraa = (raw - (lc.lgRawPerPA || 0)) * b.pa;
   const wrcPlus =
     lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+  // パーク補正 wRC+（D2・§11.2）: 本拠地PFで割る（打高球場の打者は割り引かれ、リーグ100中心に戻る）。
+  //   PF未提供（中立単一park/teamId不明）時は素の wRC+ と一致（後方互換）。
+  const pf = (lc.parkBatByTeam && ps.teamId && lc.parkBatByTeam.get(ps.teamId)) || 1;
+  const wrcPlusPF =
+    lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / (pf * lc.lgRunsPerPA)) * 100 : wrcPlus;
 
   // --- B3a: 期待値系（xBA/xSLG/xwOBA）。打球イベントの期待out率/塁打分布(rng抽選前)の累積から。 ---
   const xh = b.xB1 + b.xB2 + b.xB3 + b.xHR;
@@ -118,6 +123,8 @@ export function playerBatting(ps, lc) {
     woba,
     wraa,
     wrcPlus,
+    wrcPlusPF, // パーク補正 wRC+（D2・§11.2）
+    pf, // 本拠地パークファクター（打者補正・1.0=中立）
     tb,
     // --- B3a 追加 ---
     xba,
@@ -202,6 +209,8 @@ export function playerPitching(ps, lc, cfg = null) {
   const p = ps.pitching;
   const ip = p.outs / 3;
   const m = (cfg && cfg.tuning && cfg.tuning.metrics) || METRICS_CONST;
+  // 本拠地パークファクター（D2・§11.2）。PF未提供/teamId不明なら1.0（＝park補正=素の値）。
+  const pfPit = (lc.parkPitByTeam && ps.teamId && lc.parkPitByTeam.get(ps.teamId)) || 1;
   const uBBhbp = p.bb - (p.ibb || 0) + p.hbp;
   const fipRaw = ip ? (13 * p.hr + 3 * uBBhbp - 2 * p.so) / ip : 0;
   const fip = ip ? fipRaw + (lc.fipConstant || 0) : 0;
@@ -268,10 +277,15 @@ export function playerPitching(ps, lc, cfg = null) {
     kwera,
     kbbPct: kPct - bbPct,
     lobPct,
-    // リーグ=100基準（低いほど良い。パーク補正はフェーズD）
+    // リーグ=100基準（低いほど良い）。素の値は非パーク補正。park補正版は下の *PF（D2・§11.2）。
     eraMinus: lc.lgERA ? (era / lc.lgERA) * 100 : 100,
     fipMinus: lc.lgFIP ? (fip / lc.lgFIP) * 100 : 100,
     xfipMinus: lc.lgFIP ? (xfip / lc.lgFIP) * 100 : 100,
+    // パーク補正版（D2）: 本拠地PFで割る（打高球場の投手は ERA-/FIP- が優遇＝低くなる）。
+    //   PF未提供時は素の値と一致（後方互換）。
+    pf: pfPit,
+    eraMinusPF: lc.lgERA ? (era / (pfPit * lc.lgERA)) * 100 : 100,
+    fipMinusPF: lc.lgFIP ? (fip / (pfPit * lc.lgFIP)) * 100 : 100,
     gbPct: div(p.bbGB, bbe),
     ldPct: div(p.bbLD, bbe),
     fbPct: div(p.bbFB, bbe),

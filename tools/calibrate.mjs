@@ -15,6 +15,7 @@ import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
 import { leagueSummary, leagueSummaryByLeague } from '../src/sim/leagueStats.mjs';
 import { deriveLeagueConstants } from '../src/sim/leagueConstants.mjs';
+import { deriveParkFactors, parkFactorSpread } from '../src/sim/parkFactor.mjs';
 import { hitterWAR, pitcherWAR } from '../src/sim/war.mjs';
 // --- フェーズB B3c 追加系指標の健全性チェック用（既存30には一切影響しない） ---
 import { createBattingLine, createPitchingLine, addBattingLine, addPitchingLine } from '../src/model/statline.mjs';
@@ -74,7 +75,19 @@ function runOnce(seed) {
   }
 
   // --- WAR（総量・比率・リーダー・下限） ---
-  const lc = deriveLeagueConstants(res);
+  const lc = deriveLeagueConstants(res, cfg);
+
+  // --- D2 パークファクター（§11.2）: PF散らばり・ゼロサム・park補正wRC+の100中心 ---
+  const pfd = deriveParkFactors(res.standings, cfg);
+  const pfSp = parkFactorSpread(pfd.pfRunsByTeam);
+  let wrcPfSum = 0;
+  let wrcPfPA = 0;
+  for (const s of res.playerSeasons) {
+    if (s.batting.pa < 1) continue;
+    wrcPfSum += playerBatting(s, lc).wrcPlusPF * s.batting.pa;
+    wrcPfPA += s.batting.pa;
+  }
+  const parkWrcPlusCenter = wrcPfPA ? wrcPfSum / wrcPfPA : 100;
   const byId = new Map(lg.players.map((p) => [p.id, p]));
   let warHit = 0;
   let warPit = 0;
@@ -190,6 +203,10 @@ function runOnce(seed) {
     armLeader,
     qsRate: totGS ? totQS / totGS : 0,
     disc,
+    // --- D2 パークファクター ---
+    pfRunsSpread: pfSp.spread,
+    pfRunsMean: pfSp.mean,
+    parkWrcPlusCenter,
   };
 }
 
@@ -383,4 +400,25 @@ console.log('');
 console.log('注: QS率は B1一球化（投球経済の是正）＋継投再較正で NPB帯(45-60%) に収束済み（旧: 上振れ0.63）。');
 console.log('');
 console.log(`=== フェーズB追加チェック PASS ${bPass} / FAIL ${bFail} ===`);
-console.log(`=== 総合: 既存30 [PASS ${nPass}/FAIL ${nFail}]  ＋  フェーズB追加 [PASS ${bPass}/FAIL ${bFail}] ===`);
+
+// ============================================================================
+// フェーズD2 パークファクター（§11.2）の健全性チェック（新規・上の既存50とは独立の帯）。
+//   得点環境の据え置きは既存50（HR/team・runs・ERA 等）が保証。ここは「PFが球団ごとに散る」
+//   「PF平均≈1＝ゼロサム（得点環境据え置きの担保）」「park補正wRC+がリーグ100中心」を検証。
+// ============================================================================
+let dPass = 0;
+let dFail = 0;
+const D = T.phaseD;
+const drow = (label, val, range, dec = 3) => {
+  const ok = inRange(val, range) ? 'PASS' : 'FAIL';
+  ok === 'PASS' ? dPass++ : dFail++;
+  return `${ok}  ${label.padEnd(20)} ${val.toFixed(dec).padStart(9)}   [${range[0]}, ${range[1]}]`;
+};
+console.log('');
+console.log('=== フェーズD2 パークファクター健全性チェック（新規・§11.2） ===');
+console.log(drow('PF散らばり(max−min)', avgR((r) => r.pfRunsSpread), D.pfRunsSpread, 3));
+console.log(drow('PF平均(ゼロサム)', avgR((r) => r.pfRunsMean), D.pfRunsMean, 4));
+console.log(drow('park補正wRC+(100中心)', avgR((r) => r.parkWrcPlusCenter), D.parkWrcPlusCenter, 2));
+console.log('');
+console.log(`=== フェーズD2追加チェック PASS ${dPass} / FAIL ${dFail} ===`);
+console.log(`=== 総合: 既存30 [PASS ${nPass}/FAIL ${nFail}]  ＋  フェーズB追加 [PASS ${bPass}/FAIL ${bFail}]  ＋  フェーズD2 [PASS ${dPass}/FAIL ${dFail}] ===`);

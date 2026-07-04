@@ -34,6 +34,8 @@ import { simulatePostseason } from '../sim/postseason.mjs';
  */
 export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [] }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
+  // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
+  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
   const standings = new Map();
   for (const t of league.teams) {
@@ -62,6 +64,7 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     season,
     seed,
     park,
+    parkByTeam,
     playerTeamId,
     leagueDh,
     teamById,
@@ -125,6 +128,7 @@ export function advanceRuntimeDay(rt, opts = {}) {
   const ctx = {
     seed: rt.seed,
     park: rt.park,
+    parkByTeam: rt.parkByTeam,
     cfg: rt.cfg,
     leagueDh: rt.leagueDh,
     teamById: rt.teamById,
@@ -184,6 +188,7 @@ function finalizeRuntime(rt) {
       seed: hashSeed(rt.seed, 'postseason'),
       season: rt.season,
       park: rt.park,
+      parkByTeam: rt.parkByTeam,
     });
   }
   rt.postseason = postseason;

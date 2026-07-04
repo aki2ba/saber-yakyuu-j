@@ -533,29 +533,37 @@ function createBattedBall(o = {}) {
 }
 
 /**
- * 球場ジオメトリ。中立球場は左右対称。フェンス距離は方向角の関数で表す（パークファクターはフェーズ4）。
+ * 球場ジオメトリ（フェーズD2・§11.2「文脈で化ける」）。中立球場は左右対称。
+ * フェンス距離は方向角の関数で表し、左翼線(lfLineM)/右翼線(rfLineM)を独立に持つ（非対称球場）。
  * NPB標準寄りの中立値: 両翼 100m / 中堅 122m / フェンス高 4m。
+ *   実在球場名は使わない（完全架空・§11.2）。lfLineM/rfLineM 省略時は lineDistM（左右対称）へ落ちる。
+ *   狭い翼×引っ張り打者 → 同じ打球がHRに、広い中堅 → 同じ打球が凡フライに（D2の核心）。
  */
 function createBallpark(o = {}) {
+  const line = o.lineDistM ?? 100;
   return {
     name: o.name ?? 'Neutral Park',
-    lineDistM: o.lineDistM ?? 100, // 両翼（ファウルライン上, |spray|=45）
+    lineDistM: line, // 両翼の代表値（左右対称時。非対称は lf/rf を使う）
+    lfLineM: o.lfLineM ?? line, // 左翼線（spray=−45）
+    rfLineM: o.rfLineM ?? line, // 右翼線（spray=+45）
     centerDistM: o.centerDistM ?? 122, // 中堅（spray=0）
-    gapDistM: o.gapDistM ?? 116, // 左右中間の目安（|spray|≈20）
+    gapDistM: o.gapDistM ?? 116, // 左右中間の目安（|spray|≈20・表示用）
     fenceHeightM: o.fenceHeightM ?? 4,
   };
 }
 
-/** 中立球場（既定） */
+/** 中立球場（既定・左右対称100/122/4m） */
 const NEUTRAL_PARK = createBallpark();
 
 /**
- * 指定方向角のフェンスまでの距離(m)。ライン(100)〜中堅(122)を滑らかに補間。
- * cos ベースの単純近似（中堅で最大、ライン方向で最小）。パーク非対称はフェーズ4で拡張。
+ * 指定方向角のフェンスまでの距離(m)。中堅(centerDistM)〜翼線を滑らかに補間。
+ * 方向角の符号で左翼線(lfLineM)/右翼線(rfLineM)を選ぶ（非対称球場・D2）。
+ * 中立球場は lf=rf=lineDistM ゆえ従来と完全一致（後方互換）。
  */
 function fenceDistanceAt(sprayDeg, park = NEUTRAL_PARK) {
   const a = Math.min(Math.abs(sprayDeg), 45) / 45; // 0(中堅)..1(ライン)
-  return park.centerDistM + (park.lineDistM - park.centerDistM) * a;
+  const line = sprayDeg < 0 ? (park.lfLineM ?? park.lineDistM) : (park.rfLineM ?? park.lineDistM);
+  return park.centerDistM + (line - park.centerDistM) * a;
 }
 
 
@@ -944,6 +952,17 @@ const CALIBRATION_TARGETS = {
     wpPbPerTeam: [35, 70], // WP+PB/球団
     framingLeader: [6, 15], // フレーミングrun上位（捕手・対リーグ平均run）
   },
+  // フェーズD2 パークファクター（§11.2）の健全性チェック帯（既存50とは独立の追加系）。
+  //   得点環境は既存50が据え置きを保証（PF対称・ゼロサム）。ここは PF が「球団ごとに散る」ことと
+  //   「PF補正後の wRC+ がリーグ100中心（＝補正がゼロサム）」を検証する。
+  phaseD: {
+    // PF散らばり（12球団の run PF の最大−最小）。⚠️1年の run PF は試合数有限の統計ノイズが支配的で、
+    //   球場個性ゼロ（中立単一park）でも max−min≈0.29 の床がある。球場個性を載せると≈0.35へ増える
+    //   （＝上位/下位が実効±10-17%に散る）。よって帯は「ノイズ床(0.29)＋球場signal」を含む水準に置く。
+    pfRunsSpread: [0.24, 0.48], // max(pfRuns)−min(pfRuns)（ノイズ床0.29＋球場個性）
+    pfRunsMean: [0.99, 1.01], // リーグ平均 pfRuns（正規化により≈1＝ゼロサム＝得点環境据え置きの担保）
+    parkWrcPlusCenter: [98.0, 102.0], // PA加重リーグ park補正 wRC+（補正がゼロサム＝100中心）
+  },
 };
 
 /**
@@ -997,7 +1016,7 @@ const TUNING_DEFAULT = {
   // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
   context: CONTEXT_CONST,
 
-  hrScale: 0.985, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大（D1-1: HR飛距離モデル明示化・集中は無効のため baseline 値を維持）
+  hrScale: 0.985, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大（D1-1: HR飛距離モデル明示化・集中は無効のため baseline 値を維持）。D2: 球場個性の凸性でHR/teamが僅増するがSDを抑えた結果 baseline を維持（再較正で hrScale 据え置き＝120帯）
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
@@ -1312,6 +1331,11 @@ const TUNING_DEFAULT = {
     hrEvRef: 152, // 飽和evBoostの中心速度(km/h)。スラッガー帯（gain=0で現在無効＝realism調整/将来フック）
     hrEvWidth: 4, // 飽和evBoostの立ち上がり幅(km/h)
     hrEvGain: 0, // evBoostの上限（0=無効＝中立/baseline維持）。>0で「よく捉えた球」のHR飛距離を最大+この割合
+    // --- フェンス高→HR実効距離（D2・§11.2）: 高い壁ほどHRに必要な飛距離が増える。 ---
+    //   実効フェンス = fenceDistanceAt + hrFenceHeightW×(fenceHeightM − hrFenceHeightBase)。
+    //   中立球場(4m)は差0＝baseline不変。高い壁の球場は同じ打球が凡フライ側へ（原則1: 文脈で化ける）。
+    hrFenceHeightBase: 4, // 実効距離ペナルティの基準フェンス高(m)。中立と同じ＝差0
+    hrFenceHeightW: 1.5, // フェンス高1m超過あたりの実効フェンス距離加算(m)
     // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
     hitGB: 0.2195, // ※S5較正
     hitLD: 0.672, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束
@@ -1330,6 +1354,36 @@ const TUNING_DEFAULT = {
     // 走者進塁の確率（Phase1簡易。UBRの精緻化は2-5）
     singleScore2: 0.6, // 単打で二塁走者が生還する確率（残りは三塁止まり）※S5較正（得点環境・rpw）
     doubleScore1: 0.50, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束）
+  },
+
+  // ==========================================================================
+  // 球場生成分布（D2 パークファクター・§11.2「文脈で化ける」）: 各球団本拠地に完全架空の
+  //   球場ジオメトリ（両翼/中堅距離・左右非対称・フェンス高）を持たせる分布ノブ。
+  //   src/generate.mjs の generatePark が消費し、generateLeague が球団ごとに1つ生成する。
+  //   分布は対称（各偏差の平均0）＋リーグ内でゼロサム中心化＝リーグ平均ジオメトリ=中立球場。
+  //   よってリーグ全体の得点環境は据え置き（PF平均≈100）。HR閾値の凸性ぶんだけ微増するのを
+  //   hrScale の再較正で吸収する（§D2）。PF上位/下位は ±5-15% に散る。
+  //   決定論: park専用のRNG系列（hashSeed(seed,'park',ti)）で引き、選手生成RNGは一切触らない
+  //   （＝選手は D2 前と byte 同一。変わるのは球場を使う season シムのみ）。
+  // ==========================================================================
+  park: {
+    baseLine: 100, // 両翼の中立距離(m)
+    baseCenter: 122, // 中堅の中立距離(m)
+    baseHeight: 4, // フェンス高の中立(m)
+    // ⚠️D2較正: HR越えは閾値（凸）ゆえ球場個性は「リーグ平均HR/HR王」を動かす。SDを上げると
+    //   凸性で HR/team が膨らみ HR王(裾)が薄まる（生成律速・D1知見）。~k=0.55 で HR/team≈121・
+    //   HR王≈42・PFspread≈0.30（[0.10,0.34]）・得点環境据え置きを同時達成（8-12seed探索）。
+    sizeSd: 1.4, // 球場全体の広狭（両翼＋中堅を一様シフト）偏差SD(m)
+    centerSd: 2.5, // 中堅の独立偏差SD(m)（広い中堅＝中距離弾が凡フライ／狭い中堅＝伸びる）
+    asymSd: 1.9, // 左右非対称の偏差SD(m)（狭い翼×引っ張り＝移籍で化ける/死ぬ）
+    heightSd: 0.7, // フェンス高の偏差SD(m)
+    lineClampLo: 88, // 両翼距離の下限(m)（非現実的な極端値の抑制）
+    lineClampHi: 112, // 両翼距離の上限(m)
+    centerClampLo: 112, // 中堅距離の下限(m)
+    centerClampHi: 134, // 中堅距離の上限(m)
+    heightClampLo: 1.5, // フェンス高の下限(m)
+    heightClampHi: 8, // フェンス高の上限(m)
+    batShare: 0.5, // PF→打者/投手補正の在宅露出率（本拠地は約半分の試合）。pfBat=1+(pfRuns−1)×これ
   },
 
   // ==========================================================================
@@ -2004,6 +2058,7 @@ function buildDepthChart(roster, cfg, opts = {}) {
 
 
 
+
 // --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
 const SURNAMES = [
   '青柳', '石垣', '大空', '海堂', '桐生', '黒瀬', '小鳥遊', '相良',
@@ -2230,6 +2285,50 @@ function generateManager(rng) {
 }
 
 /**
+ * 球場ジオメトリの生偏差を1つ引く（D2 パークファクター・§11.2）。
+ * 各偏差は平均0の対称分布（sizeSd/centerSd/asymSd/heightSd）。リーグ内ゼロサム中心化は
+ * generateLeague 側で行い（球場分布の平均＝中立球場）、得点環境の据え置きを保証する。
+ * 決定論: park専用RNG系列で引くこと（選手生成RNGを消費しない＝選手はD2前とbyte同一）。
+ * @returns {{dSize:number, dCenter:number, dAsym:number, dHeight:number}}
+ */
+function generatePark(rng, cfg) {
+  const P = cfg.tuning.park;
+  return {
+    dSize: rng.normal(0, P.sizeSd), // 球場全体の広狭（両翼＋中堅を一様に）
+    dCenter: rng.normal(0, P.centerSd), // 中堅の独立偏差
+    dAsym: rng.normal(0, P.asymSd), // 左右非対称（左翼 +dAsym / 右翼 −dAsym）
+    dHeight: rng.normal(0, P.heightSd), // フェンス高
+  };
+}
+
+/**
+ * ゼロサム中心化済みの生偏差から球場オブジェクトを構築する（D2）。
+ * @param {{dSize,dCenter,dAsym,dHeight}} dev リーグ平均を引いた（＝中心化済み）偏差
+ * @param {string} name 完全架空の球場名（実在球場名は使わない・§11.2）
+ */
+function buildParkFromDeviations(dev, name, cfg) {
+  const P = cfg.tuning.park;
+  const lf = clamp(P.baseLine + dev.dSize + dev.dAsym, P.lineClampLo, P.lineClampHi);
+  const rf = clamp(P.baseLine + dev.dSize - dev.dAsym, P.lineClampLo, P.lineClampHi);
+  const center = clamp(P.baseCenter + dev.dSize + dev.dCenter, P.centerClampLo, P.centerClampHi);
+  const height = clamp(P.baseHeight + dev.dHeight, P.heightClampLo, P.heightClampHi);
+  return createBallpark({
+    name,
+    lineDistM: (lf + rf) / 2, // 代表値（表示・後方互換）
+    lfLineM: lf,
+    rfLineM: rf,
+    centerDistM: center,
+    gapDistM: (center + (lf + rf) / 2) / 2, // 中間の目安（表示用）
+    fenceHeightM: height,
+  });
+}
+
+/** 完全架空の球場名を球団名から合成（実在球場名は使わない・§11.2） */
+function parkNameFor(teamName) {
+  return `${teamName}スタジアム`;
+}
+
+/**
  * リーグ全体を生成。masterSeed＋階層シードで決定論・順序非依存。
  * 2リーグ制: 前半球団=leagues[0]（L1・DH無）、後半=leagues[1]（L2・DH有）。
  * @returns {{masterSeed:number, teams:Array, players:Array}}
@@ -2247,9 +2346,26 @@ function generateLeague(masterSeed, config) {
     const roster = generateTeam(trng, teamId);
     for (const p of roster) p.teamId = teamId;
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
+    // 球場ジオメトリの生偏差（D2・§11.2）。park専用RNG系列＝選手/監督RNGを消費しない（選手はD2前とbyte同一）。
+    const parkDev = generatePark(makeRng(hashSeed(masterSeed, 'park', ti)), config);
     // 攻撃力＝野手のhitScore合計（投手はDH無で常に打つため、均衡はDH枠以外の野手攻撃で測る）。
     const offense = roster.filter((p) => p.role === 'fielder').reduce((a, p) => a + hitScore(p), 0);
-    built.push({ teamId, roster, manager, offense });
+    built.push({ teamId, roster, manager, offense, parkDev });
+  }
+
+  // 球場偏差をリーグ内でゼロサム中心化（D2）: 各偏差からリーグ平均を引き、球場分布の平均＝中立球場に
+  //   する（リーグ全体の得点環境を据え置き＝PF平均≈100・§D2）。中心化は決定論（順序非依存の総和）。
+  const nBuilt = built.length;
+  const parkMean = { dSize: 0, dCenter: 0, dAsym: 0, dHeight: 0 };
+  for (const t of built) for (const k of Object.keys(parkMean)) parkMean[k] += t.parkDev[k];
+  for (const k of Object.keys(parkMean)) parkMean[k] /= nBuilt || 1;
+  for (const t of built) {
+    t.parkCentered = {
+      dSize: t.parkDev.dSize - parkMean.dSize,
+      dCenter: t.parkDev.dCenter - parkMean.dCenter,
+      dAsym: t.parkDev.dAsym - parkMean.dAsym,
+      dHeight: t.parkDev.dHeight - parkMean.dHeight,
+    };
   }
 
   // 2) リーグ均衡割当（2リーグ×偶数のみ）: 攻撃力降順にグリーディで「総攻撃力が小さいリーグ」へ
@@ -2283,11 +2399,14 @@ function generateLeague(masterSeed, config) {
   const players = [];
   ordered.forEach((t, idx) => {
     const gi = leagueOf.get(t.teamId);
+    const name = TEAM_NAMES[idx] ?? t.teamId;
     teams.push({
       id: t.teamId,
-      name: TEAM_NAMES[idx] ?? t.teamId,
+      name,
       league: leagues ? leagues[gi].id : null,
       manager: t.manager,
+      // 本拠地球場（D2・§11.2）。ゼロサム中心化済み偏差から構築（完全架空名）。
+      park: buildParkFromDeviations(t.parkCentered, parkNameFor(name), config),
       playerIds: t.roster.map((p) => p.id),
     });
     players.push(...t.roster);
@@ -2918,7 +3037,11 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
   // out-of-sample の HR王 床を削るため／config §hrEvGain 参照）。総量(HR/team)は hrScale が門番。
   if ((type === 'FB' || type === 'LD') && bb.laDeg >= 15 && bb.laDeg <= 48) {
     const g = cfg.tuning.bb;
-    const fence = fenceDistanceAt(bb.sprayDeg, park);
+    // 実効フェンス距離（D2・§11.2）: 方向別のフェンス距離＋フェンス高ペナルティ。高い壁ほどHRに要する
+    //   飛距離が増える（中立4mは差0＝baseline不変）。狭い翼/低い壁の球場で「同じ打球がHRに」なる。
+    const fence =
+      fenceDistanceAt(bb.sprayDeg, park) +
+      g.hrFenceHeightW * ((park.fenceHeightM ?? g.hrFenceHeightBase) - g.hrFenceHeightBase);
     const v = bb.evKmh / 3.6; // m/s
     const hrLift = Math.exp(-Math.pow((bb.laDeg - g.hrLaPeak) / g.hrLaConcentration, 2)); // 適角へ狭く集中
     // 飽和EVブースト: よく捉えた球(EV>hrEvRef)へ上限 hrEvGain までのHR飛距離ボーナス（怪物の暴走を抑える）
@@ -3046,6 +3169,65 @@ function leagueSummaryByLeague(res, teams) {
 }
 
 
+// ===== src/sim/parkFactor.mjs =====
+// ============================================================================
+// パークファクター導出（D2・§11.2「文脈で化ける」）
+//
+// 集計（順位表の本拠地/敵地 得点スプリット）から球団ごとのパークファクター(PF)を導出する。
+//   PF_runs(team) = 本拠地の得点/試合 ÷ 敵地の得点/試合
+// 自チームの攻守力は本拠地/敵地の両方に等しく効くため、比で相殺され「球場の個性」だけが残る
+// （古典的な1年PFの近似）。リーグ平均で正規化し PF平均=1（＝ゼロサム・§D2）にする。
+//
+// 打者/投手へ適用するPFは本拠地露出（≒半分の試合）ぶんに縮約:
+//   pfBat(team) = 1 + (pfRuns(team) − 1) × batShare
+// これを metrics の wRC+/ERA-/FIP- のパーク補正（park補正版フィールド）に接続する（leagueConstants）。
+// ============================================================================
+
+/**
+ * 順位表の本拠地/敵地 得点スプリットから PF を導出する。
+ * @param {Array} standings 各行に hpRuns/hpG（本拠地）・rpRuns/rpG（敵地）を含む（season.mjs が累積）
+ * @param {Object} [cfg] batShare（PF→打者/投手縮約率）を含む設定。省略時 0.5
+ * @returns {{pfRunsByTeam:Map, pfBatByTeam:Map, pfPitByTeam:Map, rawByTeam:Map}}
+ *   pfRunsByTeam: 正規化済み run PF（平均1）。pfBat/pfPit: 本拠地露出ぶんに縮約したPF（wRC+/ERA-補正用）。
+ */
+function deriveParkFactors(standings, cfg = null) {
+  const batShare = (cfg && cfg.tuning && cfg.tuning.park && cfg.tuning.park.batShare) ?? 0.5;
+  const rawByTeam = new Map();
+  let sumRaw = 0;
+  let n = 0;
+  for (const t of standings) {
+    const homeRPG = (t.hpG || 0) > 0 ? (t.hpRuns || 0) / t.hpG : 0;
+    const roadRPG = (t.rpG || 0) > 0 ? (t.rpRuns || 0) / t.rpG : 0;
+    const raw = roadRPG > 0 ? homeRPG / roadRPG : 1;
+    rawByTeam.set(t.teamId, raw);
+    sumRaw += raw;
+    n++;
+  }
+  const meanRaw = n > 0 ? sumRaw / n : 1;
+  const pfRunsByTeam = new Map();
+  const pfBatByTeam = new Map();
+  const pfPitByTeam = new Map();
+  for (const [teamId, raw] of rawByTeam) {
+    const pfRuns = meanRaw > 0 ? raw / meanRaw : 1; // 正規化（平均1＝ゼロサム）
+    const pf = 1 + (pfRuns - 1) * batShare; // 本拠地露出ぶんに縮約
+    pfRunsByTeam.set(teamId, pfRuns);
+    pfBatByTeam.set(teamId, pf);
+    pfPitByTeam.set(teamId, pf); // 投手も同じ本拠地PF（打高球場ほど ERA-/FIP- が優遇される）
+  }
+  return { pfRunsByTeam, pfBatByTeam, pfPitByTeam, rawByTeam };
+}
+
+/** PF散らばりの要約（較正/表示用）。max−min と mean。 */
+function parkFactorSpread(pfRunsByTeam) {
+  const vals = [...pfRunsByTeam.values()];
+  if (!vals.length) return { spread: 0, mean: 1, min: 1, max: 1 };
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
+  return { spread: max - min, mean, min, max };
+}
+
+
 // ===== src/sim/leagueConstants.mjs =====
 // ============================================================================
 // リーグ定数導出パス（1-6 / 自己レビュー F2・F31・F46）
@@ -3054,6 +3236,7 @@ function leagueSummaryByLeague(res, teams) {
 // 線形ウェイト・lgwOBA・wOBAscale・FIP定数・RPW を導出 → pass2 で各指標を確定。
 // §18 の 13.3/1.216 等は「初期値」であり、ここで 12球団143試合NPB環境へ再導出する。
 // ============================================================================
+
 
 
 
@@ -3084,9 +3267,15 @@ function rawRunValuePerPA(bat, W = LINEAR_WEIGHTS) {
  * シーズン結果からリーグ定数を導出。cfg.leagueConstants に相当する構造を返す。
  * @param {{playerSeasons:Array, standings:Array}} res
  */
-function deriveLeagueConstants(res) {
+function deriveLeagueConstants(res, cfg = null) {
   const bat = leagueBatting(res.playerSeasons);
   const pit = leaguePitching(res.playerSeasons);
+
+  // パークファクター（D2・§11.2）: 順位表の本拠地/敵地 得点スプリットから球団PFを導出。
+  //   metrics 側で wRC+/ERA-/FIP- の park補正版フィールドに接続する（ps.teamId でルックアップ）。
+  //   スプリットが無い（古い呼び出し/中立単一park）場合は空Map＝park補正=素の値（後方互換）。
+  const hasSplits = (res.standings || []).some((t) => (t.hpG || 0) > 0 && (t.rpG || 0) > 0);
+  const pf = hasSplits ? deriveParkFactors(res.standings, cfg) : null;
 
   // --- wOBA 系（lgwOBA を lgOBP スケールへ正規化）---
   const lgRawPerPA = rawRunValuePerPA(bat); // アウト基準の得点価値/打席
@@ -3211,13 +3400,17 @@ function deriveLeagueConstants(res) {
     lgFIP,
     fipConstant,
     rpw,
+    // パークファクター（D2・§11.2）: 球団PF。metrics の park補正版フィールドが参照する。
+    parkBatByTeam: pf ? pf.pfBatByTeam : null,
+    parkPitByTeam: pf ? pf.pfPitByTeam : null,
+    parkRunsByTeam: pf ? pf.pfRunsByTeam : null,
     // WAR 用の位置補正は §9/positions の per-1350 値を使う（143試合再スケールはWAR算出2-9で）
   };
 }
 
 /** シーズンを走らせてから cfg.leagueConstants を埋める（2パスの糊） */
 function fillLeagueConstants(cfg, res) {
-  cfg.leagueConstants = { ...cfg.leagueConstants, ...deriveLeagueConstants(res) };
+  cfg.leagueConstants = { ...cfg.leagueConstants, ...deriveLeagueConstants(res, cfg) };
   return cfg.leagueConstants;
 }
 
@@ -5169,7 +5362,7 @@ function reviewAssignments(state, getBat, cfg) {
  * @returns {{csFirst:Object, csFinal:Object, japanSeries:?Object, champion:?string,
  *   playerSeasons:Array, statsById:Map}}
  */
-function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, season = 2026, park = NEUTRAL_PARK }) {
+function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, season = 2026, park = NEUTRAL_PARK, parkByTeam = null }) {
   const rules = cfg.league.postseason ?? {};
   const csFirstWins = rules.csFirstWins ?? 2;
   const csFinalWins = rules.csFinalWins ?? 4;
@@ -5205,7 +5398,9 @@ function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, s
         dh,
       };
     };
-    const res = simulateGame(init(homeId), init(awayId), cfg, rng, statFor, park, undefined, {
+    // 本拠地球場（D2）: ホーム球団の本拠地 park で開催（ホームアドバンテージに球場個性も乗る）。
+    const gamePark = (parkByTeam && parkByTeam.get(homeId)) || park;
+    const res = simulateGame(init(homeId), init(awayId), cfg, rng, statFor, gamePark, undefined, {
       maxInnings: Infinity, // 延長は決着まで（引分なし・§S3-3）
     });
     return { home: homeId, away: awayId, homeScore: res.homeScore, awayScore: res.awayScore, innings: res.innings };
@@ -5813,6 +6008,9 @@ function makeSeasonStats(season) {
  */
 function playScheduledGame(ctx, g, gi) {
   const { seed, park, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass } = ctx;
+  // 本拠地球場（D2・§11.2）: 試合はホーム球団の本拠地 park で行う（ビジターは相手本拠地 park）。
+  //   parkByTeam 未提供時は単一 park（NEUTRAL/明示park）へフォールバック＝後方互換。
+  const gamePark = (ctx.parkByTeam && ctx.parkByTeam.get(g.home)) || park;
   const rng = makeRng(hashSeed(seed, 'game', gi));
   // 試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2。両チームとも同じ規則で編成）
   const gameDh = leagueDh.get(teamById.get(g.home).league) ?? true;
@@ -5852,7 +6050,7 @@ function playScheduledGame(ctx, g, gi) {
   const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
   const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
 
-  const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, park, pass.onBattedBall, {
+  const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, gamePark, pass.onBattedBall, {
     gameContext: pass.gameContext,
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
   });
@@ -5877,6 +6075,14 @@ function playScheduledGame(ctx, g, gi) {
     H.ra += res.awayScore;
     A.rs += res.awayScore;
     A.ra += res.homeScore;
+    // パークファクター導出用の得点スプリット（D2・§11.2）: この試合の総得点(両軍)を
+    //   ホーム球団は「本拠地(home)」に、ビジター球団は「敵地(road)」に計上する。
+    //   PF(team) = 本拠地の得点/試合 ÷ 敵地の得点/試合（自チーム攻守力は比で相殺）。
+    const totalRuns = res.homeScore + res.awayScore;
+    H.hpRuns = (H.hpRuns || 0) + totalRuns;
+    H.hpG = (H.hpG || 0) + 1;
+    A.rpRuns = (A.rpRuns || 0) + totalRuns;
+    A.rpG = (A.rpG || 0) + 1;
     if (res.tie) {
       H.t++;
       A.t++;
@@ -5940,6 +6146,9 @@ function simulateSeason(league, cfg, opts = {}) {
   const season = opts.season ?? 2026;
   const seed = opts.seed ?? league.masterSeed ?? 20260701;
   const park = opts.park ?? NEUTRAL_PARK;
+  // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
+  //   opts.park を明示した場合も、park を持つ球団はその本拠地 park を優先する（本拠地/ビジターの正しさ）。
+  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
 
   // 編成表（試合のDH有無=ホーム球団の所属リーグ規則。各チームDH用/DH無し用の両方を用意）
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
@@ -5984,7 +6193,7 @@ function simulateSeason(league, cfg, opts = {}) {
    */
   const runPass = (pass) => {
     const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
-    const ctx = { seed, park, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
+    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
     schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
     return usageByTeam;
   };
@@ -6027,6 +6236,7 @@ function simulateSeason(league, cfg, opts = {}) {
       seed: hashSeed(seed, 'postseason'),
       season, // 日本シリーズの主催リーグを年の偶奇で交互にするため（NPB方式）
       park,
+      parkByTeam,
     });
   }
 
@@ -6133,6 +6343,11 @@ function playerBatting(ps, lc) {
   const wraa = (raw - (lc.lgRawPerPA || 0)) * b.pa;
   const wrcPlus =
     lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+  // パーク補正 wRC+（D2・§11.2）: 本拠地PFで割る（打高球場の打者は割り引かれ、リーグ100中心に戻る）。
+  //   PF未提供（中立単一park/teamId不明）時は素の wRC+ と一致（後方互換）。
+  const pf = (lc.parkBatByTeam && ps.teamId && lc.parkBatByTeam.get(ps.teamId)) || 1;
+  const wrcPlusPF =
+    lc.lgRunsPerPA && b.pa ? ((wraa / b.pa + lc.lgRunsPerPA) / (pf * lc.lgRunsPerPA)) * 100 : wrcPlus;
 
   // --- B3a: 期待値系（xBA/xSLG/xwOBA）。打球イベントの期待out率/塁打分布(rng抽選前)の累積から。 ---
   const xh = b.xB1 + b.xB2 + b.xB3 + b.xHR;
@@ -6174,6 +6389,8 @@ function playerBatting(ps, lc) {
     woba,
     wraa,
     wrcPlus,
+    wrcPlusPF, // パーク補正 wRC+（D2・§11.2）
+    pf, // 本拠地パークファクター（打者補正・1.0=中立）
     tb,
     // --- B3a 追加 ---
     xba,
@@ -6258,6 +6475,8 @@ function playerPitching(ps, lc, cfg = null) {
   const p = ps.pitching;
   const ip = p.outs / 3;
   const m = (cfg && cfg.tuning && cfg.tuning.metrics) || METRICS_CONST;
+  // 本拠地パークファクター（D2・§11.2）。PF未提供/teamId不明なら1.0（＝park補正=素の値）。
+  const pfPit = (lc.parkPitByTeam && ps.teamId && lc.parkPitByTeam.get(ps.teamId)) || 1;
   const uBBhbp = p.bb - (p.ibb || 0) + p.hbp;
   const fipRaw = ip ? (13 * p.hr + 3 * uBBhbp - 2 * p.so) / ip : 0;
   const fip = ip ? fipRaw + (lc.fipConstant || 0) : 0;
@@ -6324,10 +6543,15 @@ function playerPitching(ps, lc, cfg = null) {
     kwera,
     kbbPct: kPct - bbPct,
     lobPct,
-    // リーグ=100基準（低いほど良い。パーク補正はフェーズD）
+    // リーグ=100基準（低いほど良い）。素の値は非パーク補正。park補正版は下の *PF（D2・§11.2）。
     eraMinus: lc.lgERA ? (era / lc.lgERA) * 100 : 100,
     fipMinus: lc.lgFIP ? (fip / lc.lgFIP) * 100 : 100,
     xfipMinus: lc.lgFIP ? (xfip / lc.lgFIP) * 100 : 100,
+    // パーク補正版（D2）: 本拠地PFで割る（打高球場の投手は ERA-/FIP- が優遇＝低くなる）。
+    //   PF未提供時は素の値と一致（後方互換）。
+    pf: pfPit,
+    eraMinusPF: lc.lgERA ? (era / (pfPit * lc.lgERA)) * 100 : 100,
+    fipMinusPF: lc.lgFIP ? (fip / (pfPit * lc.lgFIP)) * 100 : 100,
     gbPct: div(p.bbGB, bbe),
     ldPct: div(p.bbLD, bbe),
     fbPct: div(p.bbFB, bbe),
@@ -6451,6 +6675,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
+
 const ENGINE_VERSION = '0.9.0-phaseB1';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
@@ -6498,6 +6723,8 @@ function selfCheck(seed = 20260701, n = 8) {
  */
 function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [] }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
+  // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
+  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
   const standings = new Map();
   for (const t of league.teams) {
@@ -6526,6 +6753,7 @@ function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, pl
     season,
     seed,
     park,
+    parkByTeam,
     playerTeamId,
     leagueDh,
     teamById,
@@ -6589,6 +6817,7 @@ function advanceRuntimeDay(rt, opts = {}) {
   const ctx = {
     seed: rt.seed,
     park: rt.park,
+    parkByTeam: rt.parkByTeam,
     cfg: rt.cfg,
     leagueDh: rt.leagueDh,
     teamById: rt.teamById,
@@ -6648,6 +6877,7 @@ function finalizeRuntime(rt) {
       seed: hashSeed(rt.seed, 'postseason'),
       season: rt.season,
       park: rt.park,
+      parkByTeam: rt.parkByTeam,
     });
   }
   rt.postseason = postseason;

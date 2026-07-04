@@ -128,7 +128,11 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
   // out-of-sample の HR王 床を削るため／config §hrEvGain 参照）。総量(HR/team)は hrScale が門番。
   if ((type === 'FB' || type === 'LD') && bb.laDeg >= 15 && bb.laDeg <= 48) {
     const g = cfg.tuning.bb;
-    const fence = fenceDistanceAt(bb.sprayDeg, park);
+    // 実効フェンス距離（D2・§11.2）: 方向別のフェンス距離＋フェンス高ペナルティ。高い壁ほどHRに要する
+    //   飛距離が増える（中立4mは差0＝baseline不変）。狭い翼/低い壁の球場で「同じ打球がHRに」なる。
+    const fence =
+      fenceDistanceAt(bb.sprayDeg, park) +
+      g.hrFenceHeightW * ((park.fenceHeightM ?? g.hrFenceHeightBase) - g.hrFenceHeightBase);
     const v = bb.evKmh / 3.6; // m/s
     const hrLift = Math.exp(-Math.pow((bb.laDeg - g.hrLaPeak) / g.hrLaConcentration, 2)); // 適角へ狭く集中
     // 飽和EVブースト: よく捉えた球(EV>hrEvRef)へ上限 hrEvGain までのHR飛距離ボーナス（怪物の暴走を抑える）

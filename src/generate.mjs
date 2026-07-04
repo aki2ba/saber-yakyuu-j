@@ -13,6 +13,7 @@ import { makeRng, hashSeed } from './rng.mjs';
 import { createPlayer, createTrueAbility, createPitch } from './model/player.mjs';
 import { FIELD_POSITIONS, PITCH_TYPES } from './model/positions.mjs';
 import { clamp, clampRating } from './model/util.mjs';
+import { createBallpark } from './model/battedball.mjs';
 import { hitScore } from './sim/team.mjs';
 
 // --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
@@ -241,6 +242,50 @@ export function generateManager(rng) {
 }
 
 /**
+ * 球場ジオメトリの生偏差を1つ引く（D2 パークファクター・§11.2）。
+ * 各偏差は平均0の対称分布（sizeSd/centerSd/asymSd/heightSd）。リーグ内ゼロサム中心化は
+ * generateLeague 側で行い（球場分布の平均＝中立球場）、得点環境の据え置きを保証する。
+ * 決定論: park専用RNG系列で引くこと（選手生成RNGを消費しない＝選手はD2前とbyte同一）。
+ * @returns {{dSize:number, dCenter:number, dAsym:number, dHeight:number}}
+ */
+export function generatePark(rng, cfg) {
+  const P = cfg.tuning.park;
+  return {
+    dSize: rng.normal(0, P.sizeSd), // 球場全体の広狭（両翼＋中堅を一様に）
+    dCenter: rng.normal(0, P.centerSd), // 中堅の独立偏差
+    dAsym: rng.normal(0, P.asymSd), // 左右非対称（左翼 +dAsym / 右翼 −dAsym）
+    dHeight: rng.normal(0, P.heightSd), // フェンス高
+  };
+}
+
+/**
+ * ゼロサム中心化済みの生偏差から球場オブジェクトを構築する（D2）。
+ * @param {{dSize,dCenter,dAsym,dHeight}} dev リーグ平均を引いた（＝中心化済み）偏差
+ * @param {string} name 完全架空の球場名（実在球場名は使わない・§11.2）
+ */
+export function buildParkFromDeviations(dev, name, cfg) {
+  const P = cfg.tuning.park;
+  const lf = clamp(P.baseLine + dev.dSize + dev.dAsym, P.lineClampLo, P.lineClampHi);
+  const rf = clamp(P.baseLine + dev.dSize - dev.dAsym, P.lineClampLo, P.lineClampHi);
+  const center = clamp(P.baseCenter + dev.dSize + dev.dCenter, P.centerClampLo, P.centerClampHi);
+  const height = clamp(P.baseHeight + dev.dHeight, P.heightClampLo, P.heightClampHi);
+  return createBallpark({
+    name,
+    lineDistM: (lf + rf) / 2, // 代表値（表示・後方互換）
+    lfLineM: lf,
+    rfLineM: rf,
+    centerDistM: center,
+    gapDistM: (center + (lf + rf) / 2) / 2, // 中間の目安（表示用）
+    fenceHeightM: height,
+  });
+}
+
+/** 完全架空の球場名を球団名から合成（実在球場名は使わない・§11.2） */
+function parkNameFor(teamName) {
+  return `${teamName}スタジアム`;
+}
+
+/**
  * リーグ全体を生成。masterSeed＋階層シードで決定論・順序非依存。
  * 2リーグ制: 前半球団=leagues[0]（L1・DH無）、後半=leagues[1]（L2・DH有）。
  * @returns {{masterSeed:number, teams:Array, players:Array}}
@@ -258,9 +303,26 @@ export function generateLeague(masterSeed, config) {
     const roster = generateTeam(trng, teamId);
     for (const p of roster) p.teamId = teamId;
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
+    // 球場ジオメトリの生偏差（D2・§11.2）。park専用RNG系列＝選手/監督RNGを消費しない（選手はD2前とbyte同一）。
+    const parkDev = generatePark(makeRng(hashSeed(masterSeed, 'park', ti)), config);
     // 攻撃力＝野手のhitScore合計（投手はDH無で常に打つため、均衡はDH枠以外の野手攻撃で測る）。
     const offense = roster.filter((p) => p.role === 'fielder').reduce((a, p) => a + hitScore(p), 0);
-    built.push({ teamId, roster, manager, offense });
+    built.push({ teamId, roster, manager, offense, parkDev });
+  }
+
+  // 球場偏差をリーグ内でゼロサム中心化（D2）: 各偏差からリーグ平均を引き、球場分布の平均＝中立球場に
+  //   する（リーグ全体の得点環境を据え置き＝PF平均≈100・§D2）。中心化は決定論（順序非依存の総和）。
+  const nBuilt = built.length;
+  const parkMean = { dSize: 0, dCenter: 0, dAsym: 0, dHeight: 0 };
+  for (const t of built) for (const k of Object.keys(parkMean)) parkMean[k] += t.parkDev[k];
+  for (const k of Object.keys(parkMean)) parkMean[k] /= nBuilt || 1;
+  for (const t of built) {
+    t.parkCentered = {
+      dSize: t.parkDev.dSize - parkMean.dSize,
+      dCenter: t.parkDev.dCenter - parkMean.dCenter,
+      dAsym: t.parkDev.dAsym - parkMean.dAsym,
+      dHeight: t.parkDev.dHeight - parkMean.dHeight,
+    };
   }
 
   // 2) リーグ均衡割当（2リーグ×偶数のみ）: 攻撃力降順にグリーディで「総攻撃力が小さいリーグ」へ
@@ -294,11 +356,14 @@ export function generateLeague(masterSeed, config) {
   const players = [];
   ordered.forEach((t, idx) => {
     const gi = leagueOf.get(t.teamId);
+    const name = TEAM_NAMES[idx] ?? t.teamId;
     teams.push({
       id: t.teamId,
-      name: TEAM_NAMES[idx] ?? t.teamId,
+      name,
       league: leagues ? leagues[gi].id : null,
       manager: t.manager,
+      // 本拠地球場（D2・§11.2）。ゼロサム中心化済み偏差から構築（完全架空名）。
+      park: buildParkFromDeviations(t.parkCentered, parkNameFor(name), config),
       playerIds: t.roster.map((p) => p.id),
     });
     players.push(...t.roster);

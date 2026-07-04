@@ -27,7 +27,7 @@ import { simulateGame } from './game.mjs';
  * @returns {{csFirst:Object, csFinal:Object, japanSeries:?Object, champion:?string,
  *   playerSeasons:Array, statsById:Map}}
  */
-export function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, season = 2026, park = NEUTRAL_PARK }) {
+export function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh, cfg, seed, season = 2026, park = NEUTRAL_PARK, parkByTeam = null }) {
   const rules = cfg.league.postseason ?? {};
   const csFirstWins = rules.csFirstWins ?? 2;
   const csFinalWins = rules.csFinalWins ?? 4;
@@ -63,7 +63,9 @@ export function simulatePostseason({ rankings, chartsByTeam, teamById, leagueDh,
         dh,
       };
     };
-    const res = simulateGame(init(homeId), init(awayId), cfg, rng, statFor, park, undefined, {
+    // 本拠地球場（D2）: ホーム球団の本拠地 park で開催（ホームアドバンテージに球場個性も乗る）。
+    const gamePark = (parkByTeam && parkByTeam.get(homeId)) || park;
+    const res = simulateGame(init(homeId), init(awayId), cfg, rng, statFor, gamePark, undefined, {
       maxInnings: Infinity, // 延長は決着まで（引分なし・§S3-3）
     });
     return { home: homeId, away: awayId, homeScore: res.homeScore, awayScore: res.awayScore, innings: res.innings };

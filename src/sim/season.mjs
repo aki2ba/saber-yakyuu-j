@@ -192,6 +192,9 @@ export function makeSeasonStats(season) {
  */
 export function playScheduledGame(ctx, g, gi) {
   const { seed, park, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass } = ctx;
+  // 本拠地球場（D2・§11.2）: 試合はホーム球団の本拠地 park で行う（ビジターは相手本拠地 park）。
+  //   parkByTeam 未提供時は単一 park（NEUTRAL/明示park）へフォールバック＝後方互換。
+  const gamePark = (ctx.parkByTeam && ctx.parkByTeam.get(g.home)) || park;
   const rng = makeRng(hashSeed(seed, 'game', gi));
   // 試合のDH有無 = ホーム球団の所属リーグ規則（§S2-2。両チームとも同じ規則で編成）
   const gameDh = leagueDh.get(teamById.get(g.home).league) ?? true;
@@ -231,7 +234,7 @@ export function playScheduledGame(ctx, g, gi) {
   const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
   const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
 
-  const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, park, pass.onBattedBall, {
+  const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, gamePark, pass.onBattedBall, {
     gameContext: pass.gameContext,
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
   });
@@ -256,6 +259,14 @@ export function playScheduledGame(ctx, g, gi) {
     H.ra += res.awayScore;
     A.rs += res.awayScore;
     A.ra += res.homeScore;
+    // パークファクター導出用の得点スプリット（D2・§11.2）: この試合の総得点(両軍)を
+    //   ホーム球団は「本拠地(home)」に、ビジター球団は「敵地(road)」に計上する。
+    //   PF(team) = 本拠地の得点/試合 ÷ 敵地の得点/試合（自チーム攻守力は比で相殺）。
+    const totalRuns = res.homeScore + res.awayScore;
+    H.hpRuns = (H.hpRuns || 0) + totalRuns;
+    H.hpG = (H.hpG || 0) + 1;
+    A.rpRuns = (A.rpRuns || 0) + totalRuns;
+    A.rpG = (A.rpG || 0) + 1;
     if (res.tie) {
       H.t++;
       A.t++;
@@ -319,6 +330,9 @@ export function simulateSeason(league, cfg, opts = {}) {
   const season = opts.season ?? 2026;
   const seed = opts.seed ?? league.masterSeed ?? 20260701;
   const park = opts.park ?? NEUTRAL_PARK;
+  // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
+  //   opts.park を明示した場合も、park を持つ球団はその本拠地 park を優先する（本拠地/ビジターの正しさ）。
+  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
 
   // 編成表（試合のDH有無=ホーム球団の所属リーグ規則。各チームDH用/DH無し用の両方を用意）
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
@@ -363,7 +377,7 @@ export function simulateSeason(league, cfg, opts = {}) {
    */
   const runPass = (pass) => {
     const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
-    const ctx = { seed, park, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
+    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
     schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
     return usageByTeam;
   };
@@ -406,6 +420,7 @@ export function simulateSeason(league, cfg, opts = {}) {
       seed: hashSeed(seed, 'postseason'),
       season, // 日本シリーズの主催リーグを年の偶奇で交互にするため（NPB方式）
       park,
+      parkByTeam,
     });
   }
 

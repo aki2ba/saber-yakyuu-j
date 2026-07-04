@@ -15,6 +15,7 @@ import {
   choosePinchRunner,
   chooseDefensiveSub,
   chooseReliever,
+  leverageProxy,
   starterPitchLimit,
 } from '../src/sim/manager.mjs';
 
@@ -215,4 +216,46 @@ test('chooseReliever: 状況→役割（9回セーブ=closer/8回=setup8/7回=se
   const onlyC = { ...side, usedPitchers: new Set(['s8', 's7', 'm1', 'm2', 'lg']) };
   assert.equal(chooseReliever(onlyC, statFor, 5, 0, cfg), null);
   assert.equal(chooseReliever(onlyC, statFor, 9, 2, cfg), 'c', 'セーブ機会ならcloserを出す');
+});
+
+// --- D4 レバレッジ駆動継投（§8.3の完成） ---------------------------------------
+
+test('leverageProxy: 終盤×接戦×走者ありで上昇・大差/序盤で低下（状態の純関数＝決定論）', () => {
+  const pen = cfg.tuning.pen;
+  const lp = (inn, lead, bb, outs) => leverageProxy(inn, lead, bb, outs, pen);
+  // 回が進むほど上昇（同点・走者なし）
+  assert.ok(lp(9, 0, 0, 0) > lp(8, 0, 0, 0) && lp(8, 0, 0, 0) > lp(7, 0, 0, 0), '終盤ほど高い');
+  // 点差が開くほど低下
+  assert.ok(lp(9, 0, 0, 0) > lp(9, 3, 0, 0) && lp(9, 3, 0, 0) > lp(9, 6, 0, 0), '接戦ほど高い');
+  // 走者（得点圏）で上昇、アウトで低下
+  assert.ok(lp(8, 0, 6, 0) > lp(8, 0, 0, 0), '得点圏で上昇');
+  assert.ok(lp(8, 0, 7, 0) > lp(8, 0, 7, 2), 'アウトが少ないほど高い');
+  // 決定論: 同一入力は同一出力
+  assert.equal(lp(9, 1, 2, 1), lp(9, 1, 2, 1));
+});
+
+test('chooseReliever(D4): 高レバレッジ局面では最良セットアッパーが出る／低レバレッジは middle 温存（§8.3）', () => {
+  const side = {
+    teamId: 'T',
+    bullpen: ['c', 's8', 's7', 'm1', 'm2', 'lg'], // relieverScore降順
+    usedPitchers: new Set(),
+    retired: new Set(),
+    roles: { closer: 'c', setup8: 's8', setup7: 's7', middle: ['m1', 'm2'], long: 'lg' },
+  };
+  const statFor = (pid) => ({ pitching: { g: 0, outs: 0 } });
+  // 同点9回（回頭・走者なし）は高レバレッジ → 最良セットアッパー s8（closerは温存）
+  assert.equal(chooseReliever(side, statFor, 9, 0, cfg), 's8', '同点終盤の高LIは最良setup（closer温存）');
+  // s8 使用済みなら次善 s7
+  const usedS8 = { ...side, usedPitchers: new Set(['s8']) };
+  assert.equal(chooseReliever(usedS8, statFor, 9, 0, cfg), 's7', '最良払底時は次善setup');
+  // セットアッパー払底 → middle(B級)へフォールスルー（薄いブルペンが高LIにB級を晒す構造）
+  const noSetup = { ...side, usedPitchers: new Set(['s8', 's7']) };
+  assert.ok(['m1', 'm2'].includes(chooseReliever(noSetup, statFor, 9, 0, cfg)), 'setup払底で middle(B級)に晒す');
+  // 同点8回に走者を背負った火消し（得点圏2走者1死＝高LI）は middle でなく最良s8を投入（LI駆動）
+  const jam = { baseBits: 6, outs: 1 };
+  assert.equal(chooseReliever(side, statFor, 8, 0, cfg, jam), 's8', '高LI火消しは最良setup（LI駆動）');
+  // 走者なしの通常7回セーブ機会（回頭）は回固定 setup7（HLD分布維持）
+  assert.equal(chooseReliever(side, statFor, 7, 1, cfg, { baseBits: 0, outs: 0 }), 's7', '通常セーブ機会は回固定');
+  // 中盤同点（7回・走者なし＝低LI）は従来通り middle 負荷分散（setup温存）
+  assert.ok(['m1', 'm2'].includes(chooseReliever(side, statFor, 7, 0, cfg)), '低LI同点は middle');
 });

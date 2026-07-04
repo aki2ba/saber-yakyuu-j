@@ -1182,6 +1182,16 @@ const TUNING_DEFAULT = {
     relieverMaxRuns: 3, // 救援の失点降板ライン
     longOuts: 8, // 敗戦処理ロングは2-3回を投げる
     bigBehind: 5, // これ以上のビハインド=敗戦処理（longへ）
+    // D4 レバレッジ駆動継投（§8.3の完成）: 接戦度(LI代理=回×点差×走者/アウト)で最良救援を高LI場面へ。
+    //   代理LIは状態の純関数＝pass1/pass2で不変（決定論・WPA telescoping を壊さない）。
+    levInningPivot: 7, // レバレッジ回重みの起点（7回=1.0）
+    levInningSlope: 0.3, // 1回ごとの重み増（8回1.3 / 9回1.6 / 延長…）
+    levInningCap: 12, // 回重みの頭打ち（延長の暴走防止）
+    levCloseScale: 2.5, // 点差の減衰スケール（同点=1.0・離れるほど指数減衰）
+    levRunnerW: 0.35, // 走者1人あたりの重み
+    levRispW: 0.25, // 得点圏（2B/3B）加点
+    levOutW: 0.15, // アウト1つあたりの減衰
+    highLevThreshold: 1.6, // 高レバレッジ判定閾値（この上で最良セットアッパーを投入・S5較正で調整）
   },
 
   // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
@@ -3718,31 +3728,70 @@ function starterPitchLimit(manager, pitcher, cfg) {
 }
 
 /**
- * 状況→役割ベースの救援選択（§S2-7）。可用リスト（連投制限等でフィルタ済み・S3）のみ使用。
- *   9回以降セーブ機会 = closer / 8回 = setup8 / 7回 = setup7 /
- *   大差ビハインド = long（敗戦処理・長め） / その他 = middle をシーズン負荷最少で。
- * closer はセーブ機会（9回以降）にのみ登板させ、僅差以外では温存する。
+ * レバレッジ代理（LI近似・§8.3 D4）。回・点差・走者/アウトから接戦度を合成した状態の純関数。
+ *   pass1（LI表導出前）と pass2（加算）で同値＝救援選択が両パスで一致＝WPA telescoping を壊さない
+ *   （経験的LI表は pass1 に存在しないため使えない。代理LIは状態のみから算出＝決定論）。
+ *   概ねリーグ平均≈1.0・終盤×接戦×走者ありで上昇。高レバレッジ閾値は pen.highLevThreshold。
+ * @param {number} inning 回 / @param {number} lead 投手側リード（負=ビハインド）
+ * @param {number} baseBits 走者ビット（1=1B,2=2B,4=3B） / @param {number} outs アウト数
+ */
+function leverageProxy(inning, lead, baseBits, outs, pen) {
+  const inn = Math.min(inning, pen.levInningCap);
+  const inningW = 1 + Math.max(0, inn - pen.levInningPivot) * pen.levInningSlope;
+  const closeW = Math.exp(-Math.abs(lead) / pen.levCloseScale); // 同点=1.0・離れるほど指数減衰
+  const onBase = (baseBits & 1 ? 1 : 0) + (baseBits & 2 ? 1 : 0) + (baseBits & 4 ? 1 : 0);
+  const risp = baseBits & 6 ? 1 : 0;
+  const baseOutW = Math.max(0, 1 + pen.levRunnerW * onBase + pen.levRispW * risp - pen.levOutW * outs);
+  return inningW * closeW * baseOutW;
+}
+
+/**
+ * 状況→レバレッジ駆動の救援選択（§S2-7＋§8.3 D4）。可用リスト（連投制限等でフィルタ済み・S3）のみ使用。
+ *   セーブ機会（9回以降=closer / 8回=setup8 / 7回=setup7）は従来の役割固定を基本とし、SV/HLD分布を維持。
+ *   ただし走者を背負った火消し等の高レバレッジ局面では最良のセットアッパーを投入（LI駆動＝§8.3の完成）。
+ *   同点・僅差ビハインドの高レバレッジ終盤も middle でなく勝ちパターン救援へ（好救援が高LIに集まり
+ *   gmLI/WPA が質と相関＝「WARは平凡だがWPA抜群のセットアッパー」）。払底時は middle(B級)へフォールスルー
+ *   （＝薄いブルペンが接戦でB級を高LIに晒す・WAR予測を下回る構造）。closer は温存し SV を守る。
+ * @param {{baseBits?:number, outs?:number}} [situ] 現局面の走者/アウト（省略時=走者なし0死＝回頭）。
  * @returns {?string} 登板させる投手id（適任なし=現投手続投なら null）
  */
-function chooseReliever(side, statFor, inning, lead, cfg) {
+function chooseReliever(side, statFor, inning, lead, cfg, situ) {
   const pen = cfg.tuning.pen;
   const avail = availableRelievers(side);
   if (!avail.length) return null;
   const r = side.roles;
   const has = (pid) => pid != null && avail.includes(pid);
   const saveSitu = lead >= 1 && lead <= pen.saveLeadMax;
+  const lev = leverageProxy(inning, lead, situ?.baseBits ?? 0, situ?.outs ?? 0, pen);
+  const highLev = lev >= pen.highLevThreshold;
+  // 勝ちパターン序列を質順（bullpen配列=relieverScore降順）で best-first に返す（最良救援の投入）。
+  const bestCorps = (ids) => {
+    for (const pid of side.bullpen) if (ids.includes(pid) && has(pid)) return pid;
+    return null;
+  };
 
   if (saveSitu && inning >= 9) {
     if (has(r.closer)) return r.closer;
     return avail[0]; // 抑え不在: 序列最上位（bullpenはrelieverScore順）
   }
-  if (saveSitu && inning === 8) {
-    if (has(r.setup8)) return r.setup8;
-    return avail.find((pid) => pid !== r.closer) ?? null; // closerは9回のセーブ機会に温存
-  }
-  if (saveSitu && inning === 7) {
+  if (saveSitu && (inning === 8 || inning === 7)) {
+    // 高レバレッジのセーブ機会（走者を背負った火消し）は最良のセットアッパーを投入（LI駆動・§8.3）。
+    // 回頭（走者なし）の通常セーブ機会は回固定（8→setup8 / 7→setup7）＝HLD分布を維持。
+    if (highLev) {
+      const best = bestCorps([r.setup8, r.setup7]);
+      if (best) return best;
+    }
+    if (inning === 8) {
+      if (has(r.setup8)) return r.setup8;
+      return avail.find((pid) => pid !== r.closer) ?? null; // closerは9回のセーブ機会に温存
+    }
     if (has(r.setup7)) return r.setup7;
     return avail.find((pid) => pid !== r.closer && pid !== r.setup8) ?? avail.find((pid) => pid !== r.closer) ?? null;
+  }
+  // 高レバレッジの非セーブ終盤（同点・僅差ビハインド）: middle でなく勝ちパターン救援へ（§8.3 D4）。
+  if (!saveSitu && highLev && inning >= pen.leverageMinInning && lead > -pen.bigBehind) {
+    const best = bestCorps([r.setup8, r.setup7]);
+    if (best) return best;
   }
   if (lead <= -pen.bigBehind && has(r.long)) return r.long; // 敗戦処理
 
@@ -4294,7 +4343,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           fldScore: fielding.score,
         });
         maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
-        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg);
+        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
         continue;
       }
     }
@@ -4546,7 +4595,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
     // 継投（球数/失点による途中降板。回頭の交代は halfStartPitching が担う）
-    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg);
+    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
 
     if (walkoff && batting.score > fielding.score) break; // サヨナラ
   }
@@ -4857,8 +4906,9 @@ function relieverMaxOutsFor(fielding, pid, pen) {
   return pen.middleMaxOuts;
 }
 
-/** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。 */
-function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
+/** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。
+ *  bases/outs を継投判断（レバレッジ駆動・§8.3 D4）へ渡す＝走者を背負った火消しで最良救援を投入。 */
+function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs) {
   const pen = cfg.tuning.pen;
   const c = fielding.cur;
   if (c.pid == null) return;
@@ -4874,7 +4924,7 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
   if (!remove) return;
 
   const lead = fielding.score - oppScore;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  const next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);

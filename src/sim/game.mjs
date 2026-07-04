@@ -462,7 +462,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           fldScore: fielding.score,
         });
         maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
-        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg);
+        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
         continue;
       }
     }
@@ -714,7 +714,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
     // 継投（球数/失点による途中降板。回頭の交代は halfStartPitching が担う）
-    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg);
+    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
 
     if (walkoff && batting.score > fielding.score) break; // サヨナラ
   }
@@ -1025,8 +1025,9 @@ function relieverMaxOutsFor(fielding, pid, pen) {
   return pen.middleMaxOuts;
 }
 
-/** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。 */
-function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
+/** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。
+ *  bases/outs を継投判断（レバレッジ駆動・§8.3 D4）へ渡す＝走者を背負った火消しで最良救援を投入。 */
+function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs) {
   const pen = cfg.tuning.pen;
   const c = fielding.cur;
   if (c.pid == null) return;
@@ -1042,7 +1043,7 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg) {
   if (!remove) return;
 
   const lead = fielding.score - oppScore;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  const next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);

@@ -347,6 +347,16 @@ export const TUNING_DEFAULT = {
     relieverMaxRuns: 3, // 救援の失点降板ライン
     longOuts: 8, // 敗戦処理ロングは2-3回を投げる
     bigBehind: 5, // これ以上のビハインド=敗戦処理（longへ）
+    // D4 レバレッジ駆動継投（§8.3の完成）: 接戦度(LI代理=回×点差×走者/アウト)で最良救援を高LI場面へ。
+    //   代理LIは状態の純関数＝pass1/pass2で不変（決定論・WPA telescoping を壊さない）。
+    levInningPivot: 7, // レバレッジ回重みの起点（7回=1.0）
+    levInningSlope: 0.3, // 1回ごとの重み増（8回1.3 / 9回1.6 / 延長…）
+    levInningCap: 12, // 回重みの頭打ち（延長の暴走防止）
+    levCloseScale: 2.5, // 点差の減衰スケール（同点=1.0・離れるほど指数減衰）
+    levRunnerW: 0.35, // 走者1人あたりの重み
+    levRispW: 0.25, // 得点圏（2B/3B）加点
+    levOutW: 0.15, // アウト1つあたりの減衰
+    highLevThreshold: 1.6, // 高レバレッジ判定閾値（この上で最良セットアッパーを投入・S5較正で調整）
   },
 
   // 休養（S3 日次スタメンAI。正捕手100-135試合へ）

@@ -196,11 +196,13 @@ test('C3b: save-load で市場介入（トレード起案）が再現される',
 
 test('C3b: 多年でリーグ人口・ロスター構成が恒常（全移動が同型1:1スワップ/循環）', () => {
   const P = RUN.st.league.players;
-  assert.equal(P.length, cfg.league.numTeams * 33, '支配下人口は恒常');
+  const R = cfg.tuning.roster;
+  assert.equal(P.length, cfg.league.numTeams * R.controlledPerTeam, '支配下人口は恒常');
   for (const t of RUN.st.league.teams) {
     const roster = P.filter((p) => p.teamId === t.id);
-    assert.equal(roster.filter((p) => p.role === 'pitcher').length, 13, `${t.id} は投手13`);
-    assert.equal(roster.filter((p) => p.role === 'fielder').length, 20, `${t.id} は野手20`);
+    const nPit = roster.filter((p) => p.role === 'pitcher').length;
+    assert.equal(roster.length, R.controlledPerTeam, `${t.id} は支配下70人`);
+    assert.ok(nPit >= R.pitchersMin && nPit <= R.pitchersMax, `${t.id} は投手33-36（${nPit}）`);
   }
   // FA/トレード/拾い上げを経ても育成 minor は支配下に混ざらない。
   assert.ok(P.every((p) => p.rosterStatus === 'active'), '支配下は全員 active');
@@ -212,5 +214,5 @@ test('C3b: 1年目（既存50較正相当）はオフシーズン前＝市場ゼ
   assert.equal(st.yearIndex, 0, '1年目のまま（advanceYear 前は市場なし）');
   assert.equal(st.marketInterventions.length, 0, '市場介入ゼロ');
   // 1年目終了時点で FA/トレード/戦力外は一切走っていない（オフシーズン遷移が未実行）。
-  assert.equal(st.league.players.length, cfg.league.numTeams * 33, '1年目ロスターは生成時のまま');
+  assert.equal(st.league.players.length, cfg.league.numTeams * cfg.tuning.roster.controlledPerTeam, '1年目ロスターは生成時のまま');
 });

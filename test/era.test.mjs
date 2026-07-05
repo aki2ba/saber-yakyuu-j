@@ -139,13 +139,15 @@ test('D3: 王朝が数年で崩れる — 20年で単一球団が全制覇せず
   assert.ok(champs.size >= 5, `優勝が複数球団に散る（${champs.size} 球団）`);
 });
 
-test('D3: 20年でリーグ人口が恒常（各球団 投手13/野手20）', () => {
+test('D3: 20年でリーグ人口が恒常（各球団 支配下70人・投手33-36）', () => {
+  const R = cfg.tuning.roster;
   for (const t of RUN.st.league.teams) {
     const roster = RUN.st.league.players.filter((p) => p.teamId === t.id);
-    assert.equal(roster.filter((p) => p.role === 'pitcher').length, 13, `${t.id} は投手13`);
-    assert.equal(roster.filter((p) => p.role === 'fielder').length, 20, `${t.id} は野手20`);
+    const nPit = roster.filter((p) => p.role === 'pitcher').length;
+    assert.equal(roster.length, R.controlledPerTeam, `${t.id} は支配下70人`);
+    assert.ok(nPit >= R.pitchersMin && nPit <= R.pitchersMax, `${t.id} は投手33-36（${nPit}）`);
   }
-  assert.equal(RUN.st.league.players.length, cfg.league.numTeams * 33, 'リーグ人口=12×33で恒常');
+  assert.equal(RUN.st.league.players.length, cfg.league.numTeams * R.controlledPerTeam, 'リーグ人口=12×70で恒常');
 });
 
 test('D3: 決定論 — computeEra は純関数／多年運用が2回で一致', () => {

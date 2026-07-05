@@ -160,11 +160,13 @@ test('C3a: 育成/支配下 二層 — 育成枠が populate され、昇格が 
 
 test('C3a: 多年でリーグ人口・ロスター構成が恒常（引退枠を市場が過不足なく埋める）', () => {
   const P = RUN.st.league.players;
-  assert.equal(P.length, cfg.league.numTeams * 33, '支配下人口は恒常（引退枠 = 昇格+ドラフト）');
+  const R = cfg.tuning.roster;
+  assert.equal(P.length, cfg.league.numTeams * R.controlledPerTeam, '支配下人口は恒常（引退枠 = 昇格+ドラフト）');
   for (const t of RUN.st.league.teams) {
     const roster = P.filter((p) => p.teamId === t.id);
-    assert.equal(roster.filter((p) => p.role === 'pitcher').length, 13, `${t.id} は投手13`);
-    assert.equal(roster.filter((p) => p.role === 'fielder').length, 20, `${t.id} は野手20`);
+    const nPit = roster.filter((p) => p.role === 'pitcher').length;
+    assert.equal(roster.length, R.controlledPerTeam, `${t.id} は支配下70人`);
+    assert.ok(nPit >= R.pitchersMin && nPit <= R.pitchersMax, `${t.id} は投手33-36（${nPit}）`);
   }
   // 育成枠は有限（球団あたり上限 perTeamMax）。
   const farmMax = cfg.tuning.market.farm.perTeamMax;
@@ -182,11 +184,17 @@ test('C3a: 決定論 — 同一シードの20年市場が bit 一致／別シー
   assert.notEqual(rosterSig(b.st), rosterSig(RUN.st), '別シードは別の運命');
 });
 
-test('C3a: 1年目（既存50較正相当）はオフシーズン前＝市場ゼロ（エンジン不変の担保）', () => {
+test('C3a: 1年目はオフシーズン前＝市場ゼロ（育成枠は初期生成分のみ・F2-1）', () => {
   const st = newGame(SEED, 'T1', { cfg });
   advanceTo(st, 'seasonEnd');
-  // 1年目レギュラーシーズン完了時点で育成枠は空・年インデックスは0のまま＝市場は一切走っていない。
-  assert.equal(st.league.farm.length, 0, '1年目は育成枠ゼロ（市場は2年目以降のみ）');
+  // 1年目レギュラーシーズン完了時点で年インデックスは0のまま＝市場は一切走っていない。
+  // F2-1: 育成枠は初期生成から埋まる（各球団 devCountMin-Max・全員minor）。市場由来の増減はない。
+  const R = cfg.tuning.roster;
+  for (const t of st.league.teams) {
+    const n = st.league.farm.filter((d) => d.teamId === t.id).length;
+    assert.ok(n >= R.devCountMin && n <= R.devCountMax, `${t.id} の育成 ${n} は初期生成の帯内（10-40）`);
+  }
+  assert.ok(st.league.farm.every((d) => d.rosterStatus === 'minor'), '育成は全員 minor');
   assert.equal(st.yearIndex, 0, '1年目のまま（advanceYear 前は世代交代なし）');
-  assert.equal(st.league.players.length, cfg.league.numTeams * 33, '1年目ロスターは生成時のまま');
+  assert.equal(st.league.players.length, cfg.league.numTeams * R.controlledPerTeam, '1年目ロスターは生成時のまま');
 });

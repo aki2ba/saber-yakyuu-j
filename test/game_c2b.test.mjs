@@ -65,12 +65,14 @@ test('C2b: 20年運用が例外なく回り、リーグ人口とロスター構�
   const P = st.league.players;
   assert.equal(st.yearIndex, YEARS);
   assert.equal(st.year, cfg.game.firstSeason + YEARS);
-  assert.equal(P.length, cfg.league.numTeams * 33, 'リーグ人口は恒常（引退＝1:1補充）');
+  const R = cfg.tuning.roster;
+  assert.equal(P.length, cfg.league.numTeams * R.controlledPerTeam, 'リーグ人口は恒常（引退＝1:1補充）');
   for (const t of st.league.teams) {
     const roster = P.filter((p) => p.teamId === t.id);
-    assert.equal(roster.filter((p) => p.role === 'pitcher').length, 13, `${t.id} は投手13`);
-    assert.equal(roster.filter((p) => p.role === 'fielder').length, 20, `${t.id} は野手20`);
-    assert.equal(t.playerIds.length, 33, `${t.id}.playerIds は33`);
+    const nPit = roster.filter((p) => p.role === 'pitcher').length;
+    assert.equal(roster.length, R.controlledPerTeam, `${t.id} は支配下70人`);
+    assert.ok(nPit >= R.pitchersMin && nPit <= R.pitchersMax, `${t.id} は投手33-36（${nPit}）`);
+    assert.equal(t.playerIds.length, R.controlledPerTeam, `${t.id}.playerIds は70`);
   }
 });
 
@@ -110,7 +112,7 @@ test('C2b: 故障歴があると再発リスク（ハザード）が上がる／
 
 test('C2b: ブレイクが上下両方 "稀に" 出る（§10.4/§11.1）', () => {
   const { agg } = RUN;
-  const playerYears = cfg.league.numTeams * 33 * YEARS;
+  const playerYears = cfg.league.numTeams * cfg.tuning.roster.controlledPerTeam * YEARS;
   assert.ok(agg.up > 0, '上方ブレイクが出る');
   assert.ok(agg.down > 0, '下方ブレイクが出る');
   assert.ok(agg.down >= agg.up, '下方≧上方（インフレ抑止・§11.1）');

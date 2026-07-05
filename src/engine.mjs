@@ -20,7 +20,7 @@ import {
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
 } from './config.mjs';
-import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations } from './generate.mjs';
+import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations, generateFarmPlayers, devCountFor } from './generate.mjs';
 import { logit, expit, ratingDelta, log5 } from './sim/rates.mjs';
 import { PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance } from './sim/plateAppearance.mjs';
 import { generateBattedBall } from './sim/battedBall.mjs';
@@ -59,7 +59,7 @@ export {
   createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine,
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
-  generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations,
+  generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations, generateFarmPlayers, devCountFor,
   logit, expit, ratingDelta, log5,
   PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,

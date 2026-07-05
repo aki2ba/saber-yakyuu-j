@@ -166,7 +166,7 @@ function captureBaseManager(state) {
 export function newGame(masterSeed, playerTeamId, options = {}) {
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(masterSeed, cfg);
-  league.farm = []; // 育成枠（C3a・支配下396とは別枠）。1年目は空＝既存50較正に無影響
+  // 育成枠（C3a・§12.1）: F2-1 から初期生成で埋まる（generateLeague が league.farm を返す・支配下840とは別枠）
   if (!league.teams.some((t) => t.id === playerTeamId)) {
     throw new Error(`playerTeamId ${playerTeamId} がリーグに存在しない`);
   }
@@ -456,7 +456,8 @@ export function load(blob, options = {}) {
   }
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(data.masterSeed >>> 0, cfg);
-  league.farm = []; // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）
+  // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）。F2-1: 初期分は generateLeague が
+  // masterSeed から決定論再生成し、過去オフの増減は下の offseasonTransition replay が再現する。
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,

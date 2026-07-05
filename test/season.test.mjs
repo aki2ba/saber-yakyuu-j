@@ -23,18 +23,19 @@ test('buildDepthChart v2: 打順9・守備8ポジ充足・ローテ6・ブルペ
   // 投手は打順に入らない（DH有の既定編成）
   const lineupIds = new Set(d.lineup.map((s) => s.playerId));
   for (const pid of d.rotation) assert.ok(!lineupIds.has(pid), '投手が打順に不在');
-  // ベンチ: スタメン外の野手全員（20 − 守備8 − DH1 = 11人）・hitScore降順
-  assert.equal(d.bench.length, 20 - 8 - 1);
+  // ベンチ: スタメン外の野手全員（野手 − 守備8 − DH1）・hitScore降順（F2-1: 野手34-37人へ拡大）
+  const nF = roster.filter((p) => p.role === 'fielder').length;
+  assert.equal(d.bench.length, nF - 8 - 1);
   for (const pid of d.bench) assert.ok(!lineupIds.has(pid), 'ベンチはスタメン外');
   for (let i = 1; i < d.bench.length; i++) {
     assert.ok(hitScore(d.byId.get(d.bench[i - 1])) >= hitScore(d.byId.get(d.bench[i])), 'ベンチはhitScore降順');
   }
   // positionRank: 各ポジションに全野手のランキング
   for (const pos of FIELD_POSITIONS) {
-    assert.equal(d.positionRank[pos].length, 20, `${pos} の候補ランキング`);
+    assert.equal(d.positionRank[pos].length, nF, `${pos} の候補ランキング`);
     assert.ok(d.positionRank[pos].includes(d.defense[pos]), `${pos} のスタメンは候補内`);
   }
-  // ブルペン役割: closer/setup8/setup7/middle[]/long（13投手−ローテ6=7人を全割当）
+  // ブルペン役割: closer/setup8/setup7/middle[]/long（投手33-36−ローテ6を全割当）
   const r = d.bullpenRoles;
   assert.ok(r.closer && r.setup8 && r.setup7 && r.long, '主要役割が埋まる');
   assert.equal(r.closer, d.bullpen[0], 'closerはrelieverScore最上位');
@@ -74,8 +75,9 @@ test('buildDepthChart v2: DH無し編成は9番=投手プレースホルダ（S2
   // 野手8人は守備位置と整合
   const posSet = new Set(d.lineup.slice(0, 8).map((s) => s.pos));
   assert.equal(posSet.size, 8);
-  // ベンチはDH非選抜のぶん1人多い（20 − 8 = 12人）
-  assert.equal(d.bench.length, 12);
+  // ベンチはDH非選抜のぶん1人多い（野手 − 守備8。F2-1: 野手34-37人へ拡大）
+  const nF = roster.filter((p) => p.role === 'fielder').length;
+  assert.equal(d.bench.length, nF - 8);
 });
 
 test('advanceRunners: 本塁打は全走者＋打者が生還', () => {

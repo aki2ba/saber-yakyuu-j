@@ -26,18 +26,106 @@ test('別masterSeedは別リーグ', () => {
   assert.notEqual(a.players[0].name + a.players[10].name, b.players[0].name + b.players[10].name);
 });
 
-test('リーグ規模どおりの球団数・各33人（投手13＋野手20）', () => {
+test('リーグ規模どおりの球団数・支配下70人/球団（投手33-36＋野手34-37）（F2-1）', () => {
   const lg = generateLeague(7, cfg);
+  const R = cfg.tuning.roster;
   assert.equal(lg.teams.length, cfg.league.numTeams);
-  assert.equal(lg.players.length, cfg.league.numTeams * 33);
+  assert.equal(lg.players.length, cfg.league.numTeams * R.controlledPerTeam);
+  const pitCounts = new Set();
   for (const t of lg.teams) {
-    assert.equal(t.playerIds.length, 33);
+    assert.equal(t.playerIds.length, R.controlledPerTeam);
     const roster = lg.players.filter((p) => p.teamId === t.id);
     const pitchers = roster.filter((p) => p.role === 'pitcher');
     const fielders = roster.filter((p) => p.role === 'fielder');
-    assert.equal(pitchers.length, 13);
-    assert.equal(fielders.length, 20);
+    assert.equal(roster.length, R.controlledPerTeam, `${t.id} 支配下70人`);
+    assert.ok(pitchers.length >= R.pitchersMin && pitchers.length <= R.pitchersMax, `${t.id} 投手 ${pitchers.length} は 33-36`);
+    assert.equal(fielders.length, R.controlledPerTeam - pitchers.length, `${t.id} 野手=残り（34-37）`);
+    pitCounts.add(pitchers.length);
   }
+  assert.ok(pitCounts.size > 1, '投手数に球団差がある（33-36で散る）');
+});
+
+test('各守備位置に主ポジ野手が最低3人（一軍・二軍の同時編成が成立する充足・F2-1）', () => {
+  const lg = generateLeague(7, cfg);
+  for (const t of lg.teams) {
+    const fielders = lg.players.filter((p) => p.teamId === t.id && p.role === 'fielder');
+    for (const pos of FIELD_POSITIONS) {
+      const n = fielders.filter((p) => p.primaryPos === pos).length;
+      assert.ok(n >= 3, `${t.id} の ${pos} は主ポジ${n}人（最低3人必要）`);
+    }
+  }
+});
+
+test('育成選手 10-40人/球団・全員minor・球団の育成方針で人数差（F2-1・§12.1）', () => {
+  const lg = generateLeague(7, cfg);
+  const R = cfg.tuning.roster;
+  assert.ok(Array.isArray(lg.farm), 'generateLeague が farm を返す');
+  assert.ok(lg.farm.every((d) => d.rosterStatus === 'minor'), '育成は全員 rosterStatus=minor');
+  assert.ok(lg.players.every((p) => p.rosterStatus === 'active'), '支配下に minor は混じらない');
+  const counts = [];
+  for (const t of lg.teams) {
+    const farm = lg.farm.filter((d) => d.teamId === t.id);
+    assert.ok(farm.length >= R.devCountMin && farm.length <= R.devCountMax, `${t.id} 育成 ${farm.length} は 10-40`);
+    // 合計 80-110人/球団（支配下70＋育成10-40）
+    const total = R.controlledPerTeam + farm.length;
+    assert.ok(total >= 80 && total <= 110, `${t.id} 総保有 ${total} は 80-110`);
+    counts.push(farm.length);
+  }
+  assert.ok(new Set(counts).size > 1, '育成人数に球団差がある（育成方針devFocusの発現）');
+  // リーグ総人口 ~1,000-1,300人
+  const totalPop = lg.players.length + lg.farm.length;
+  assert.ok(totalPop >= 1000 && totalPop <= 1300, `リーグ総人口 ${totalPop} は 1000-1300`);
+  // 育成人数は監督/フロントの devFocus と単調（写像 devCountFor の発現）
+  const sorted = lg.teams.slice().sort((a, b) => a.manager.devFocus - b.manager.devFocus);
+  const farmOf = (tid) => lg.farm.filter((d) => d.teamId === tid).length;
+  assert.ok(farmOf(sorted[0].id) <= farmOf(sorted[sorted.length - 1].id), 'devFocus 最小球団 ≤ 最大球団の育成人数');
+});
+
+test('育成・下位支配下は若手が厚い（18-24中心・F2-1）', () => {
+  const lg = generateLeague(7, cfg);
+  const R = cfg.tuning.roster;
+  const avg = (arr) => arr.reduce((a, p) => a + p.age, 0) / arr.length;
+  // 育成は年齢帯 18-24 に収まり、平均は支配下より若い
+  assert.ok(lg.farm.every((d) => d.age >= R.devAgeMin && d.age <= R.devAgeMax), '育成は 18-24');
+  assert.ok(avg(lg.farm) < avg(lg.players), '育成の平均年齢 < 支配下');
+  // 下位支配下（コア超過分）も若手帯: チームの野手 F21以降 / 投手 P14以降 は youngAgeMax 以下
+  for (const t of lg.teams.slice(0, 3)) {
+    const roster = lg.players.filter((p) => p.teamId === t.id);
+    for (const p of roster) {
+      const m = p.id.match(/^T\d+([PF])(\d+)$/);
+      const idx = Number(m[2]);
+      const isDepth = (m[1] === 'P' && idx > R.corePitchers) || (m[1] === 'F' && idx > R.coreFielders);
+      if (isDepth) assert.ok(p.age >= R.youngAgeMin && p.age <= R.youngAgeMax, `${p.id} age=${p.age} は若手帯`);
+    }
+  }
+});
+
+test('育成選手も validatePlayer を通過し三層の器を持つ（F2-1）', () => {
+  const lg = generateLeague(3, cfg);
+  for (const d of lg.farm) {
+    assert.equal(validatePlayer(d).length, 0, `invalid: ${d.id}`);
+    assert.equal(typeof d.scoutSeed, 'number');
+    assert.ok(/^T\d+D\d+$/.test(d.id), '育成IDは TxDn 形式（支配下と衝突しない）');
+  }
+});
+
+test('育成込みの生成も決定論（同一masterSeedで farm まで一致）（F2-1）', () => {
+  const a = generateLeague(2026, cfg);
+  const b = generateLeague(2026, cfg);
+  assert.equal(a.farm.length, b.farm.length);
+  for (let i = 0; i < a.farm.length; i++) {
+    assert.equal(a.farm[i].id, b.farm[i].id);
+    assert.equal(a.farm[i].name, b.farm[i].name);
+    assert.equal(a.farm[i].age, b.farm[i].age);
+    assert.equal(a.farm[i].trueAbility.common.speed, b.farm[i].trueAbility.common.speed);
+  }
+});
+
+test('名前プール拡張で衝突率が低い（同姓同名は少数派・F2-1）', () => {
+  const lg = generateLeague(7, cfg);
+  const names = lg.players.concat(lg.farm).map((p) => p.name);
+  const uniq = new Set(names).size;
+  assert.ok(uniq / names.length >= 0.8, `同姓同名は2割未満（unique ${uniq}/${names.length}）`);
 });
 
 test('全選手が validatePlayer を通過し、名前は非空・架空（実名でない体裁）', () => {

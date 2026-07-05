@@ -111,7 +111,7 @@ function renderSetup() {
   const playBtn = el('button', { class: 'primary', onclick: () => renderTitle() }, '🎮 ゲームを始める（キャリア）');
   return el('div', { class: 'setup' }, [
     el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
-    el('p', { class: 'muted' }, 'リーグシードごとに架空選手396人（12球団×33人）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
+    el('p', { class: 'muted' }, 'リーグシードごとに架空選手840人（12球団×支配下70人・ほかに育成選手）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
     el('div', { class: 'row' }, [el('label', {}, 'リーグシード: '), seedInput, btn]),
     el('div', { id: 'status', class: 'muted' }, ''),
     el('hr', { style: 'border:none;border-top:1px solid var(--line);margin:14px 0' }),

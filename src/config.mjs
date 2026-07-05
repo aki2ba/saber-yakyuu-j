@@ -438,6 +438,27 @@ export const TUNING_DEFAULT = {
     maxTeamConsecDays: 6, // 連続試合日はこの日数まで（超えたら休日を挟む＝NPBの週1休の近似）
   },
 
+  // ロスター生成の規模（F2-1・§12.1/§15）: 支配下70人＋育成10-40人/球団（NPB準拠）。
+  //   一軍はこの母集団から上澄み選抜（デプスチャート）＝二軍は自然に「一軍に及ばない選手＋若手」になる。
+  //   能力の生成分布そのものは従来を維持（generatePitcher/generateFielder のノブは不変）。
+  roster: {
+    controlledPerTeam: 70, // 支配下人数/球団（NPB=70人）
+    pitchersMin: 33, // 投手数の下限（球団差 33-36。残り＝野手 34-37）
+    pitchersMax: 36, // 投手数の上限
+    corePitchers: 13, // 年齢を従来一様帯(18-37)で引く「主力層」投手数（超過分は若手厚めの年齢帯）
+    coreFielders: 20, // 同・野手数（従来 FIELDER_PLAN 相当＝各ポジの一軍層）
+    youngAgeMin: 18, // 下位支配下（コア超過分）の年齢帯: min + floor((max-min+1)·u^skew)
+    youngAgeMax: 27,
+    youngAgeSkew: 2.0, // skew>1 で若年側へ歪む（18-24中心＝成長曲線途中の若手を厚く）
+    devCountMin: 10, // 育成選手数の下限（球団の育成方針 devFocus で 10-40 に散る）
+    devCountMax: 40, // 育成選手数の上限
+    devAgeMin: 18, // 育成の年齢帯（18-24中心・若手最厚）
+    devAgeMax: 24,
+    devAgeSkew: 1.5,
+    devPitcherShare: 0.55, // 育成に占める投手の割合（NPB育成は投手偏重の近似）
+    offenseTopN: 12, // リーグ攻撃力均衡化で測る「一軍級の上位野手」数（全員合計だと育成/控えの人数差で歪む）
+  },
+
   // 編成・打順（S1 buildDepthChart v2。§S1-3）
   depth: {
     posToolW: 0.4, // positionRank: 守備素材(Range,50中心)の重み（習熟=1基準）
@@ -823,7 +844,7 @@ export const TUNING_DEFAULT = {
     //   昇格判定＝育成の観測成績が閾値超で支配下登録（＝這い上がり）。「稀に」起きるよう閾値を高く。
     farm: {
       perTeamSignsPerYear: 2, // 毎オフに各球団が獲る育成選手数（ドラフト漏れ＝過小評価された surplus から）
-      perTeamMax: 8, // 育成枠の上限（超過は観測下位を解雇）
+      perTeamMax: 45, // 育成枠の上限（超過は観測下位を解雇）。F2-1: 初期生成の育成10-40人を収容できる幅へ拡大
       maxAge: 26, // これを超えた育成選手は解雇（大成せず箱を空ける）
       promoteThreshold: 57, // 育成の「観測成績」がこれ超で支配下登録（稀）
       promoteObsNoiseSd: 6, // 昇格判定の観測ノイズSD（球場が薄い＝観測が荒い）

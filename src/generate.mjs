@@ -17,15 +17,24 @@ import { createBallpark } from './model/battedball.mjs';
 import { hitScore } from './sim/team.mjs';
 
 // --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
+// F2-1: リーグ総人口 ~1,000-1,300人へ拡大したため姓・名を各56へ増強（組合せ3,136＝衝突率を抑制）。
 const SURNAMES = [
   '青柳', '石垣', '大空', '海堂', '桐生', '黒瀬', '小鳥遊', '相良',
   '志摩', '瀬川', '立花', '茅野', '鶴見', '灯野', '成瀬', '羽鳥',
   '氷室', '深沢', '真壁', '御影', '柳沢', '結城', '芳賀', '鷲尾',
+  '綾瀬', '一之瀬', '宇津木', '恵那', '奥寺', '篝', '如月', '九条',
+  '燕堂', '西園寺', '汐見', '菫原', '瀬能', '空木', '橘田', '悠木',
+  '燈台', '波岡', '仁科', '布瀬', '帆村', '真鍋原', '三日月', '椋本',
+  '芽室', '八雲', '夕凪', '嵐田', '凛堂', '若栗', '澪標', '菖蒲谷',
 ];
 const GIVEN = [
   '陽', '駿', '空良', '樹', '奏太', '海斗', '大河', '蒼真',
   '悠人', '玲', '湊', '一颯', '隼', '楓', '直', '和',
   '琉生', '碧', '慶', '拓実', '真澄', '航', '創', '燿',
+  '旭', '郁弥', '詠太', '凱', '海里', '馨', '橙也', '恭吾',
+  '澄人', '奏楽', '汰一', '瑞樹', '天翔', '透吾', '那由', '虹郎',
+  '暖', '晴凪', '柊真', '楓雅', '穂高', '真昼', '深青', '結人',
+  '遥斗', '洛', '凌雅', '瑠海', '蓮司', '禄', '航琉', '皐',
 ];
 
 // --- 架空チーム名（実在NPB球団名を避けた造語） -------------------------------
@@ -236,8 +245,10 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
   return p;
 }
 
-// 1チームの守備位置配分（合計20野手＋13投手＝33人）
-const FIELDER_PLAN = [
+// 1チームの守備位置配分（F2-1: 支配下70人＝投手33-36＋野手34-37）。
+//   CORE=従来の一軍層20人（年齢は従来一様帯）／DEPTH=二軍層14人（若手厚め）／EXTRA=35-37人目の追加先。
+//   合計で各ポジション最低4人（C4 1B4 2B4-5 3B4 SS5 LF4 CF5 RF4-5）＝一軍・二軍の両編成が同時に成立する。
+const CORE_FIELDER_PLAN = [
   'C', 'C', 'C',
   '1B', '1B',
   '2B', '2B', '2B',
@@ -247,18 +258,84 @@ const FIELDER_PLAN = [
   'CF', 'CF', 'CF',
   'RF', 'RF',
 ];
-const PITCHERS_PER_TEAM = 13;
+const DEPTH_FIELDER_PLAN = [
+  'C',
+  '1B', '1B',
+  '2B',
+  '3B', '3B',
+  'SS', 'SS',
+  'LF', 'LF',
+  'CF', 'CF',
+  'RF', 'RF',
+];
+const EXTRA_FIELDER_POS = ['C', '2B', 'RF']; // 野手35-37人目の追加ポジション（投手数の球団差ぶん）
 
-/** 1チームのロスターを生成 */
-export function generateTeam(rng, teamId) {
-  const roster = [];
-  for (let i = 0; i < PITCHERS_PER_TEAM; i++) {
-    roster.push(generatePitcher(rng, `${teamId}P${i + 1}`));
+/**
+ * 若手厚めの年齢を1つ引く（F2-1）: min + floor((max-min+1)·u^skew)。skew>1 で若年側へ歪む。
+ * 下位支配下（コア超過分）と育成選手の年齢帯に使う（18-24中心＝成長曲線途中の若手）。
+ */
+function drawYoungAge(rng, min, max, skew) {
+  return min + Math.floor((max - min + 1) * Math.pow(rng.next(), skew));
+}
+
+/**
+ * 1チームの支配下ロスターを生成（F2-1: 70人＝投手33-36＋野手34-37）。
+ * 投手数は rng で球団ごとに散らし、残りを野手に充てる（合計は cfg.tuning.roster.controlledPerTeam で恒常）。
+ * コア（従来33人相当）は年齢一様帯 18-37、コア超過の下位支配下は若手厚め（youngAge* ノブ）。
+ */
+export function generateTeam(rng, teamId, cfg) {
+  const R = cfg.tuning.roster;
+  const nPitchers = R.pitchersMin + rng.int(R.pitchersMax - R.pitchersMin + 1);
+  const nFielders = R.controlledPerTeam - nPitchers;
+  const plan = CORE_FIELDER_PLAN.concat(DEPTH_FIELDER_PLAN);
+  for (let i = plan.length; i < nFielders; i++) {
+    plan.push(EXTRA_FIELDER_POS[(i - CORE_FIELDER_PLAN.length - DEPTH_FIELDER_PLAN.length) % EXTRA_FIELDER_POS.length]);
   }
-  FIELDER_PLAN.forEach((pos, i) => {
-    roster.push(generateFielder(rng, `${teamId}F${i + 1}`, pos));
-  });
+  const roster = [];
+  for (let i = 0; i < nPitchers; i++) {
+    const p = generatePitcher(rng, `${teamId}P${i + 1}`);
+    // 下位支配下投手（コア13人超過分）は若手を厚く＝二軍は「成長曲線途中の若手」の置き場になる
+    if (i >= R.corePitchers) p.age = drawYoungAge(rng, R.youngAgeMin, R.youngAgeMax, R.youngAgeSkew);
+    roster.push(p);
+  }
+  for (let i = 0; i < nFielders; i++) {
+    const p = generateFielder(rng, `${teamId}F${i + 1}`, plan[i]);
+    if (i >= R.coreFielders) p.age = drawYoungAge(rng, R.youngAgeMin, R.youngAgeMax, R.youngAgeSkew);
+    roster.push(p);
+  }
   return roster;
+}
+
+/**
+ * 球団の育成方針（devFocus 20-80）から育成選手の保有数を決める（F2-1・決定論の純関数）。
+ * devCountMin..Max へ線形写像＝育成に厚い球団(ソフトバンク型)と薄い球団の個性が人数に出る。
+ */
+export function devCountFor(devFocus, cfg) {
+  const R = cfg.tuning.roster;
+  const t = clamp((devFocus - 20) / 60, 0, 1);
+  return Math.round(R.devCountMin + (R.devCountMax - R.devCountMin) * t);
+}
+
+/**
+ * 1球団分の育成選手を生成する（F2-1・§12.1）。rosterStatus='minor' で league.farm に入る別枠。
+ * 能力の生成分布は支配下と同一（観測が薄い・ノイズ大なのは既存 §12.1 の farm 観測枠組みが担う）。
+ * 年齢は 18-24 中心（若手最厚）。id は `${teamId}D{n}`＝支配下(P/F)と衝突しない。
+ */
+export function generateFarmPlayers(rng, teamId, count, cfg) {
+  const R = cfg.tuning.roster;
+  const list = [];
+  for (let i = 0; i < count; i++) {
+    const id = `${teamId}D${i + 1}`;
+    const isPitcher = rng.chance(R.devPitcherShare);
+    const p = isPitcher
+      ? generatePitcher(rng, id)
+      : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
+    p.age = drawYoungAge(rng, R.devAgeMin, R.devAgeMax, R.devAgeSkew);
+    p.rosterStatus = 'minor';
+    p.teamId = teamId;
+    list.push(p);
+  }
+  return list;
 }
 
 /**
@@ -271,6 +348,7 @@ export function generateManager(rng) {
     stealTend: draw(rng, 50, 12), // 盗塁の積極性
     ibbTend: draw(rng, 50, 12), // 敬遠の使い方
     quickHook: draw(rng, 50, 12), // 継投の早さ（高いほど早く投手を代える）
+    devFocus: draw(rng, 50, 14), // 育成方針（F2-1・フロントの個性）: 高いほど育成選手を多く抱える（10-40人へ写像）
   };
 }
 
@@ -333,14 +411,28 @@ export function generateLeague(masterSeed, config) {
   for (let ti = 0; ti < numTeams; ti++) {
     const teamId = `T${ti + 1}`;
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
-    const roster = generateTeam(trng, teamId);
+    const roster = generateTeam(trng, teamId, config);
     for (const p of roster) p.teamId = teamId;
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
     // 球場ジオメトリの生偏差（D2・§11.2）。park専用RNG系列＝選手/監督RNGを消費しない（選手はD2前とbyte同一）。
     const parkDev = generatePark(makeRng(hashSeed(masterSeed, 'park', ti)), config);
-    // 攻撃力＝野手のhitScore合計（投手はDH無で常に打つため、均衡はDH枠以外の野手攻撃で測る）。
-    const offense = roster.filter((p) => p.role === 'fielder').reduce((a, p) => a + hitScore(p), 0);
-    built.push({ teamId, roster, manager, offense, parkDev });
+    // 育成選手（F2-1・§12.1）: 球団の育成方針(devFocus)で人数に差（10-40人）。専用RNG系列＝支配下と独立。
+    const farm = generateFarmPlayers(
+      makeRng(hashSeed(masterSeed, 'devroster', ti)),
+      teamId,
+      devCountFor(manager.devFocus, config),
+      config,
+    );
+    // 攻撃力＝「一軍級の上位野手」のhitScore合計（F2-1: 全野手合計だと二軍層/育成の人数差で歪むため
+    //   デプスチャートに乗る上位 offenseTopN 人で測る＝リーグ間の一軍攻撃力を均衡させる本来の目的に整合）。
+    const topN = config.tuning.roster.offenseTopN;
+    const offense = roster
+      .filter((p) => p.role === 'fielder')
+      .map((p) => hitScore(p))
+      .sort((a, b) => b - a)
+      .slice(0, topN)
+      .reduce((a, v) => a + v, 0);
+    built.push({ teamId, roster, farm, manager, offense, parkDev });
   }
 
   // 球場偏差をリーグ内でゼロサム中心化（D2）: 各偏差からリーグ平均を引き、球場分布の平均＝中立球場に
@@ -387,6 +479,7 @@ export function generateLeague(masterSeed, config) {
     : built;
   const teams = [];
   const players = [];
+  const farm = [];
   ordered.forEach((t, idx) => {
     const gi = leagueOf.get(t.teamId);
     const name = TEAM_NAMES[idx] ?? t.teamId;
@@ -400,8 +493,10 @@ export function generateLeague(masterSeed, config) {
       playerIds: t.roster.map((p) => p.id),
     });
     players.push(...t.roster);
+    // 育成選手（F2-1）: league.players/team.playerIds と別枠の league.farm へ（既存 §12.1 farm 枠組み）。
+    farm.push(...t.farm);
   });
-  return { masterSeed, teams, players };
+  return { masterSeed, teams, players, farm };
 }
 
 /** Fisher–Yates（rng使用・決定論） */

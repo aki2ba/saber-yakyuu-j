@@ -240,10 +240,12 @@ test('C4: advanceYear が off.awards / off.milestones を決定論で返す（2�
 test('C4: 引退選手が通算記録・受賞履歴から脱落しない（allPlayersById・検証修正の回帰）', () => {
   // 複数年運用して引退選手を出し、記録/受賞履歴が「現役のみ」byId では脱落するが
   // allPlayersById（現役＋引退者サマリ）では保持されることを不変量として検証。
+  // F2-1: 人口が840人へ拡大し、6年では引退者が記録リーダーへ入りにくくなったため8年へ延長
+  //  （記録の上位N争いが厚くなった＝環境依存。検証する不変量そのものは不変）。
   const st = newGame(SEED, 'T1', { cfg });
-  for (let y = 0; y < 6; y++) {
+  for (let y = 0; y < 8; y++) {
     advanceTo(st, 'seasonEnd');
-    if (y < 5) advanceYear(st);
+    if (y < 7) advanceYear(st);
   }
   assert.ok(st.retiredPlayers.length > 0, `引退選手が発生している（${st.retiredPlayers.length}）`);
 

@@ -190,10 +190,15 @@ const html = `<!DOCTYPE html>
   .resfill { display:block; height:100%; background:var(--gold); }
   .pbp { border:1px solid var(--line); border-radius:8px; padding:8px 12px; max-height:320px; overflow-y:auto; font-size:13px; }
   .pbpline { padding:2px 0; border-bottom:1px solid #163d2c; }
-  .pbpline.ev-hr { color:var(--gold); font-weight:700; }
   .pbpline.ev-run { color:#7bc47f; }
   .pbpline.ev-sub { color:#7fb0e0; }
   .pbpline.ev-start { color:var(--clay); font-weight:600; }
+  /* E2改: 結果行の色分け（安打=青系/HR・得点=赤系強調/三振=グレー/四死球=緑系/失策・盗塁死=橙系） */
+  .pbpline.ev-hit, .curabresult.ev-hit { color:#8fc7ff; }
+  .pbpline.ev-bb, .curabresult.ev-bb { color:#7bc47f; }
+  .pbpline.ev-k, .curabresult.ev-k { color:var(--muted); }
+  .pbpline.ev-err, .curabresult.ev-err { color:#e8b84b; }
+  .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr { color:#ff8a76; font-weight:700; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
@@ -244,6 +249,16 @@ const html = `<!DOCTYPE html>
   .mutoday { color:var(--chalk); }
   .pbpline.ev-ab { color:var(--chalk); font-weight:600; }
   .pbpline.ev-pitch { color:var(--muted); }
+  /* E2改: 対戦カード直下の「現在の打席」ボックス（正順の投球列＋決着結果の強調）＋履歴チップ＋実況ヘッダ */
+  .mucol { flex:1; min-width:250px; display:flex; flex-direction:column; gap:10px; }
+  .mucol .matchup { flex:none; min-width:0; }
+  .curab { border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--panel); }
+  .curabhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:4px; }
+  .curabpitch { font-size:13px; padding:1px 0; color:var(--chalk); }
+  .curabresult { margin-top:6px; padding:6px 10px; border-radius:6px; background:#0c3122; font-size:15px; font-weight:700; }
+  .reschips { display:inline-flex; gap:3px; flex-wrap:wrap; }
+  .reschip { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+  .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
   .lineupbox { border:1px solid var(--line); border-radius:8px; padding:6px 10px; margin-top:10px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
   .lineupbody.collapsed { display:none; }

@@ -95,10 +95,15 @@
   .resfill { display:block; height:100%; background:var(--gold); }
   .pbp { border:1px solid var(--line); border-radius:8px; padding:8px 12px; max-height:320px; overflow-y:auto; font-size:13px; }
   .pbpline { padding:2px 0; border-bottom:1px solid #163d2c; }
-  .pbpline.ev-hr { color:var(--gold); font-weight:700; }
   .pbpline.ev-run { color:#7bc47f; }
   .pbpline.ev-sub { color:#7fb0e0; }
   .pbpline.ev-start { color:var(--clay); font-weight:600; }
+  /* E2改: 結果行の色分け（安打=青系/HR・得点=赤系強調/三振=グレー/四死球=緑系/失策・盗塁死=橙系） */
+  .pbpline.ev-hit, .curabresult.ev-hit { color:#8fc7ff; }
+  .pbpline.ev-bb, .curabresult.ev-bb { color:#7bc47f; }
+  .pbpline.ev-k, .curabresult.ev-k { color:var(--muted); }
+  .pbpline.ev-err, .curabresult.ev-err { color:#e8b84b; }
+  .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr { color:#ff8a76; font-weight:700; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
@@ -149,6 +154,16 @@
   .mutoday { color:var(--chalk); }
   .pbpline.ev-ab { color:var(--chalk); font-weight:600; }
   .pbpline.ev-pitch { color:var(--muted); }
+  /* E2改: 対戦カード直下の「現在の打席」ボックス（正順の投球列＋決着結果の強調）＋履歴チップ＋実況ヘッダ */
+  .mucol { flex:1; min-width:250px; display:flex; flex-direction:column; gap:10px; }
+  .mucol .matchup { flex:none; min-width:0; }
+  .curab { border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--panel); }
+  .curabhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:4px; }
+  .curabpitch { font-size:13px; padding:1px 0; color:var(--chalk); }
+  .curabresult { margin-top:6px; padding:6px 10px; border-radius:6px; background:#0c3122; font-size:15px; font-weight:700; }
+  .reschips { display:inline-flex; gap:3px; flex-wrap:wrap; }
+  .reschip { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+  .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
   .lineupbox { border:1px solid var(--line); border-radius:8px; padding:6px 10px; margin-top:10px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
   .lineupbody.collapsed { display:none; }
@@ -10862,6 +10877,14 @@ function teamRosterTable(data, cols, sort, u) {
 // フェーズE2: 試合観戦のスポナビ風刷新（ラインスコア・フィールド盤面・対戦カード・一球速報）
 //
 // ユーザーフィードバック（phaseE_spec）「試合は見れたものではない。スポナビの野球速報みたいなのがいい」対応。
+// E2改: レビュー「試合がかなり見づらい」対応のスポナビ速報式再設計:
+//   - 「現在の打席」ボックス（対戦カード直下）: 現打席の投球を1球目→N球目の正順で表示。
+//     全投球にカウント(B-S)を統一表記。打席決着で結果を大きく表示（次打席で更新）。
+//   - 実況フィードは既定で打席結果のみの1行（[N回表/裏] 打者: 結果）に畳む。
+//     「全球表示」トグル（w.allPitches・UIのみ）で一球行込み表示へ切替。
+//   - 結果行の色分け: 安打=ev-hit / 本塁打・得点=ev-hr,ev-score / 三振=ev-k /
+//     四死球=ev-bb / 失策・盗塁死=ev-err。得点行の行末に現在スコアを付記。
+//   - 対戦カードの打者行: 「今日 X打数Y安打」＋当日打席履歴チップ（三ゴロ・左安…の略記列）。
 // 設計原則:
 //   - エンジンとUIの分離: 描画は onEvent の構造化イベント列
 //     （start/atbat/pitch/pa/bunt/steal/sub/end・すべて乱数非消費）の純再生（watchReconstruct）。
@@ -10887,6 +10910,14 @@ function watchDirName(deg) {
 function watchDirChar(deg) {
   return deg < -12 ? '左' : deg > 12 ? '右' : '中';
 }
+/** イニングハーフの和名（'bottom'→裏）。 */
+function watchHalfJP(half) {
+  return half === 'bottom' ? '裏' : '表';
+}
+/** 得点イベント行末に付ける現在スコア「（先攻 X-Y 後攻）」。 */
+function watchScoreTxt(v, tname) {
+  return `（${tname(v.away)} ${v.scoreA}-${v.scoreH} ${tname(v.home)}）`;
+}
 /** 内野打球（ゴロ/小フライ）の守備位置の呼び名（スプレー角→三遊二一）。 */
 function watchInfieldName(deg) {
   return deg < -20 ? 'サード' : deg < 0 ? 'ショート' : deg < 20 ? 'セカンド' : 'ファースト';
@@ -10911,13 +10942,21 @@ function renderWatchScreen(u) {
   ]));
   // 上部: ラインスコア（イニング別得点＋R/H/E）
   root.append(watchLineScore(v, u));
-  // 中央: フィールド盤面（走者名/アウト）＋対戦カード（B-S-Oランプ/今日の結果/シーズン成績）
-  root.append(el('div', { class: 'watchgrid' }, [watchDiamond(v, u), watchMatchup(v, u)]));
+  // 中央: フィールド盤面（走者名/アウト）＋対戦カード＋「現在の打席」ボックス（対戦カード直下）
+  root.append(el('div', { class: 'watchgrid' }, [
+    watchDiamond(v, u),
+    el('div', { class: 'mucol' }, [watchMatchup(v, u), watchCurrentAb(v, u)]),
+  ]));
   // 進行コントロール（1球/1打席/1イニング/自動再生/最後まで）
   root.append(watchControls(v, u, done));
-  // 下部: 一球速報フィード（新しい行が上）。ダイジェスト表示（progressive=false）は結果行のみに間引く。
-  let lines = w.progressive ? v.lines : v.lines.filter((ln) => ln.kind !== 'pitch' && ln.kind !== 'ab');
+  // 下部: 実況フィード（新しい行が上）。既定は打席結果のみの1行に畳み、
+  // 「全球表示」トグル（UIのみ・状態不変）で一球行・◇打席開始行込みの表示へ切替。
+  let lines = w.allPitches ? v.lines : v.lines.filter((ln) => ln.kind !== 'pitch' && ln.kind !== 'ab');
   lines = lines.slice(-160).reverse();
+  root.append(el('div', { class: 'pbphead' }, [
+    el('span', { class: 'muted' }, '実況（新しい順）'),
+    el('button', { class: 'link', onclick: () => { w.allPitches = !w.allPitches; renderWatchScreen(u); } }, `${w.allPitches ? '☑' : '☐'} 全球表示`),
+  ]));
   root.append(el('div', { class: 'pbp' }, lines.map((ln) => el('div', { class: 'pbpline ' + (ln.cls || '') }, ln.parts || ln.text))));
   // 折りたたみ: 両軍スタメン表（当日成績）＋ベンチ/ブルペン残量（既存表示を統合）
   root.append(watchLineupPanel(v, u));
@@ -10980,6 +11019,7 @@ function watchReconstruct(events, idx, u) {
     bull: { home: 0, away: 0 }, bullMax: { home: 0, away: 0 },
     bench: { home: 0, away: 0 }, benchMax: { home: 0, away: 0 },
     daily: new Map(), // batterId → {ab, h, res:[]}（当日成績）
+    curAb: null, // 現在の打席 { batterId, pitcherId, pitches:[{n,pitchType,call,balls,strikes,wild}], result:{cls,parts}|null }
     line: [], // [{inning, top, bottom}] イニング別得点
     halfStarted: new Set(), // '3/top' 等（ラインスコアの 0 と空欄の区別）
     lines: [], // 実況行 [{text|parts, cls, kind}]
@@ -11029,15 +11069,16 @@ function watchReconstruct(events, idx, u) {
         v.lines.push({ kind: 'inning', cls: 'ev-start', text: `━ ${e.inning}回${e.half === 'bottom' ? '裏' : '表'} ${tname(e.batTeam)}の攻撃 ━` });
       }
       const d = dailyOf(e.batterId);
-      v.lines.push({ kind: 'ab', cls: 'ev-ab', parts: ['◇ ', u.playerLink(e.batterId), `（今日 ${d.h}-${d.ab}）`, ' 対 ', u.playerLink(e.pitcherId), `（${e.pitcherPitches}球）`] });
+      v.curAb = { batterId: e.batterId, pitcherId: e.pitcherId, pitches: [], result: null };
+      v.lines.push({ kind: 'ab', cls: 'ev-ab', parts: ['◇ ', u.playerLink(e.batterId), `（今日 ${d.ab}打数${d.h}安打）`, ' 対 ', u.playerLink(e.pitcherId), `（${e.pitcherPitches}球）`] });
     } else if (e.type === 'pitch') {
       v.balls = e.balls; v.strikes = e.strikes; v.lastCall = e.call;
       v.curPitchCount++;
-      // 決着球（3ストライク/4ボール/インプレー/死球）はカウント表記を省略（結果行が続く）
-      const decided = e.strikes >= 3 || e.balls >= 4 || e.call === 'inplay' || e.call === 'hbp';
-      const cnt = decided ? '' : ` (${e.balls}-${e.strikes})`;
+      // 全投球にカウント(B-S)を統一表記（最終球も省略しない）
       const wild = e.wild ? '　→ 捕手が後逸！走者進塁' : '';
-      v.lines.push({ kind: 'pitch', cls: 'ev-pitch', text: `　${e.n}球目 ${WATCH_PITCH_JP[e.pitchType] || e.pitchType} ${WATCH_CALL_JP[e.call] || e.call}${cnt}${wild}` });
+      const ptxt = `${e.n}球目 ${WATCH_PITCH_JP[e.pitchType] || e.pitchType} ${WATCH_CALL_JP[e.call] || e.call} ${e.balls}-${e.strikes}${wild}`;
+      if (v.curAb) v.curAb.pitches.push({ n: e.n, text: ptxt });
+      v.lines.push({ kind: 'pitch', cls: 'ev-pitch', text: '　' + ptxt });
     } else if (e.type === 'pa') {
       v.inning = e.inning; v.half = e.half; v.outs = e.outsAfter;
       if (e.basesPids) v.basesPids = e.basesPids.slice();
@@ -11050,26 +11091,39 @@ function watchReconstruct(events, idx, u) {
       if (!(e.outcome === 'BB' || e.outcome === 'HBP' || sacFly)) d.ab++;
       if (WATCH_HITS.has(e.result)) d.h++;
       d.res.push(watchResShort(e));
-      v.lines.push(watchPaLine(e, v.lastCall, u));
+      // 実況（畳み表示の1行）: [N回表/裏] 打者: 結果（＋得点行は現在スコア付記）
+      const r = watchPaBody(e, v.lastCall);
+      const pts = e.runsOnPlay && e.result !== 'HR' ? `（${e.runsOnPlay}点）` : '';
+      const cls = (r.cls + (e.runsOnPlay > 0 ? ' ev-score' : '')).trim();
+      const tail = `: ${r.body}${pts}${e.runsOnPlay > 0 ? watchScoreTxt(v, tname) : ''}`;
+      v.lines.push({ kind: 'pa', cls, parts: [`[${e.inning}回${watchHalfJP(e.half)}] `, u.playerLink(e.batterId), tail] });
+      if (v.curAb) v.curAb.result = { cls, parts: [u.playerLink(e.batterId), tail] };
       v.balls = 0; v.strikes = 0;
     } else if (e.type === 'bunt') {
+      const beforeBat = e.batTeam === v.home ? v.scoreH : v.scoreA;
       v.inning = e.inning; v.half = e.half; v.outs = e.outsAfter;
       v.basesPids = e.basesPids.slice();
       setScores(e);
+      const runs = (e.batTeam === v.home ? v.scoreH : v.scoreA) - beforeBat; // スクイズ等の得点
       const d = dailyOf(e.batterId);
-      let txt;
-      if (e.outcome === 'success') { d.res.push('犠打'); txt = '送りバント成功'; }
+      let txt; let cls;
+      if (e.outcome === 'success') { d.res.push('犠打'); txt = '送りバント成功'; cls = ''; }
       else if (e.outcome === 'hit') {
         d.ab++; d.h++; d.res.push('バント安打');
         v[e.batTeam === v.home ? 'hitsH' : 'hitsA']++;
-        txt = 'セーフティバントが内野安打に！';
-      } else { d.ab++; d.res.push('バント失敗'); txt = 'バント失敗（先行走者が封殺）'; }
-      v.lines.push({ kind: 'pa', cls: e.outcome === 'hit' ? 'ev-run' : '', parts: [u.playerLink(e.batterId), `: ${txt}`] });
+        txt = 'セーフティバントが内野安打に！'; cls = 'ev-hit';
+      } else { d.ab++; d.res.push('バント失敗'); txt = 'バント失敗（先行走者が封殺）'; cls = ''; }
+      if (runs > 0) cls = (cls + ' ev-score').trim();
+      const tail = `: ${txt}${runs > 0 ? `（${runs}点）${watchScoreTxt(v, tname)}` : ''}`;
+      v.lines.push({ kind: 'pa', cls, parts: [`[${e.inning}回${watchHalfJP(e.half)}] `, u.playerLink(e.batterId), tail] });
+      if (v.curAb) v.curAb.result = { cls, parts: [u.playerLink(e.batterId), tail] };
       v.balls = 0; v.strikes = 0;
     } else if (e.type === 'steal') {
       if (e.basesPids) v.basesPids = e.basesPids.slice();
       if (e.outsAfter != null) v.outs = e.outsAfter;
-      v.lines.push({ kind: 'steal', cls: e.success ? 'ev-run' : '', parts: ['　', u.playerLink(e.runnerId), e.success ? ' が盗塁成功！（二塁へ）' : ' が盗塁失敗（盗塁死）'] });
+      const inn = e.inning != null ? e.inning : v.inning;
+      const hf = e.half || v.half;
+      v.lines.push({ kind: 'steal', cls: e.success ? 'ev-run' : 'ev-err', parts: [`[${inn}回${watchHalfJP(hf)}] `, u.playerLink(e.runnerId), e.success ? ': 盗塁成功！（二塁へ）' : ': 盗塁失敗（盗塁死）'] });
     } else if (e.type === 'sub') {
       const side = sideOf(e.team);
       const lu = v.lineups[side];
@@ -11117,34 +11171,49 @@ function watchResShort(e) {
   return d + (e.battedType === 'LD' ? '直' : '飛');
 }
 
-/** 打席結果の実況行（スポナビ風の言語化・「レフトへのタイムリーツーベース！」等）。 */
-function watchPaLine(e, lastCall, u) {
+/**
+ * 打席結果の言語化＋色分けクラス（スポナビ風・「レフトへのタイムリーツーベース！」等）。
+ * cls: 安打=ev-hit / 本塁打=ev-hr / 三振=ev-k / 四死球=ev-bb / 失策=ev-err / 凡退=''。
+ * 得点(ev-score)は呼び出し側で runsOnPlay から付与する。
+ */
+function watchPaBody(e, lastCall) {
   const dir = e.bb ? watchDirName(e.bb.sprayDeg) : '';
-  let cls = e.runsOnPlay ? 'ev-run' : '';
-  let body;
-  if (e.outcome === 'K') body = lastCall === 'called' ? '見逃し三振' : '空振り三振';
-  else if (e.outcome === 'BB') body = e.isIBB ? '申告敬遠で歩かされる' : '四球を選んで出塁';
-  else if (e.outcome === 'HBP') body = '死球';
-  else if (e.result === 'E') body = `${dir}のエラーで出塁`;
-  else if (e.result === 'HR') {
-    cls = 'ev-hr';
+  if (e.outcome === 'K') return { cls: 'ev-k', body: lastCall === 'called' ? '見逃し三振' : '空振り三振' };
+  if (e.outcome === 'BB') return { cls: 'ev-bb', body: e.isIBB ? '申告敬遠で歩かされる' : '四球を選んで出塁' };
+  if (e.outcome === 'HBP') return { cls: 'ev-bb', body: '死球' };
+  if (e.result === 'E') return { cls: 'ev-err', body: `${dir}のエラーで出塁` };
+  if (e.result === 'HR') {
     const n = e.runsOnPlay;
-    body = `${dir}スタンドへ${n >= 2 ? `の${n}ラン` : 'ソロ'}ホームラン！！${e.bb ? `（EV${Math.round(e.bb.evKmh)}km/h 飛距離${Math.round(e.bb.distanceM)}m）` : ''}`;
-  } else if (e.result === '3B') body = `${dir}への${e.runsOnPlay ? 'タイムリー' : ''}スリーベース！`;
-  else if (e.result === '2B') body = `${dir}への${e.runsOnPlay ? 'タイムリー' : ''}ツーベース！`;
-  else if (e.result === '1B') body = `${dir}前へ${e.runsOnPlay ? 'タイムリーヒット！' : 'ヒット'}`;
-  else if (!e.battedType) body = '凡退';
-  else {
-    const dp = e.outsAfter - e.outsBefore >= 2;
-    const sf = e.runsOnPlay > 0 && e.battedType !== 'GB';
-    // ゴロ/小フライは内野の守備位置名（ショートゴロ等）、ライナー/フライは外野方向で言語化
-    const spot = e.battedType === 'GB' || e.battedType === 'PU' ? (e.bb ? watchInfieldName(e.bb.sprayDeg) : '内野') : dir;
-    body = sf ? `${dir}へ犠牲フライ`
-      : dp ? `${spot}ゴロで併殺（ダブルプレー）`
-      : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
+    return { cls: 'ev-hr', body: `${dir}スタンドへ${n >= 2 ? `の${n}ラン` : 'ソロ'}ホームラン！！${e.bb ? `（EV${Math.round(e.bb.evKmh)}km/h 飛距離${Math.round(e.bb.distanceM)}m）` : ''}` };
   }
-  const pts = e.runsOnPlay && e.result !== 'HR' ? `（${e.runsOnPlay}点）` : '';
-  return { kind: 'pa', cls, parts: [u.playerLink(e.batterId), `: ${body}${pts}`] };
+  if (e.result === '3B') return { cls: 'ev-hit', body: `${dir}への${e.runsOnPlay ? 'タイムリー' : ''}スリーベース！` };
+  if (e.result === '2B') return { cls: 'ev-hit', body: `${dir}への${e.runsOnPlay ? 'タイムリー' : ''}ツーベース！` };
+  if (e.result === '1B') return { cls: 'ev-hit', body: `${dir}前へ${e.runsOnPlay ? 'タイムリーヒット！' : 'ヒット'}` };
+  if (!e.battedType) return { cls: '', body: '凡退' };
+  const dp = e.outsAfter - e.outsBefore >= 2;
+  const sf = e.runsOnPlay > 0 && e.battedType !== 'GB';
+  // ゴロ/小フライは内野の守備位置名（ショートゴロ等）、ライナー/フライは外野方向で言語化
+  const spot = e.battedType === 'GB' || e.battedType === 'PU' ? (e.bb ? watchInfieldName(e.bb.sprayDeg) : '内野') : dir;
+  const body = sf ? `${dir}へ犠牲フライ`
+    : dp ? `${spot}ゴロで併殺（ダブルプレー）`
+    : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
+  return { cls: '', body };
+}
+
+/**
+ * 「現在の打席」ボックス（対戦カード直下・E2改）: 現打席の投球を1球目→N球目の正順で表示。
+ * 打席が決着したら結果を大きく表示（次の打席開始で更新）。
+ */
+function watchCurrentAb(v, u) {
+  const { el } = u;
+  const box = el('div', { class: 'curab' });
+  box.append(el('div', { class: 'curabhead' }, v.ended ? '最終打席' : '現在の打席'));
+  const ab = v.curAb;
+  if (!ab) { box.append(el('div', { class: 'muted' }, '— 試合開始前 —')); return box; }
+  if (!ab.pitches.length && !ab.result) box.append(el('div', { class: 'curabpitch muted' }, '打席開始（第1球を待つ）'));
+  for (const p of ab.pitches) box.append(el('div', { class: 'curabpitch' }, p.text));
+  if (ab.result) box.append(el('div', { class: 'curabresult ' + (ab.result.cls || '') }, ab.result.parts));
+  return box;
 }
 
 /** 上部ラインスコア（イニング別得点＋R/H/E）。 */
@@ -11214,15 +11283,17 @@ function watchMatchup(v, u) {
     lampRow('S', Math.min(v.strikes, 2), 2, 'ls'),
     lampRow('O', Math.min(v.outs, 2), 2, 'lo'),
   ]));
-  // 打者（今日の打席結果＋シーズンAVG/HR/OPS）
+  // 打者（今日 X打数Y安打＋当日打席履歴チップ＋シーズンAVG/HR/OPS）
   const bid = v.batterId;
   const bs = bid && state.res && state.res.statsById ? state.res.statsById.get(bid) : null;
   const bm = bs && bs.batting.pa > 0 ? playerBatting(bs, state.lc) : null;
   const d = bid ? v.daily.get(bid) : null;
+  const hasToday = d && (d.ab > 0 || d.res.length > 0);
   box.append(el('div', { class: 'murow' }, [
     el('span', { class: 'mulabel' }, '打者'),
     el('span', { class: 'muname' }, bid ? [playerLink(bid)] : '—'),
-    el('span', { class: 'mutoday' }, d && (d.ab > 0 || d.res.length > 0) ? `今日 ${d.h}-${d.ab}${d.res.length ? `（${d.res.join('・')}）` : ''}` : '今日 第1打席'),
+    el('span', { class: 'mutoday' }, hasToday ? `今日 ${d.ab}打数${d.h}安打` : '今日 第1打席'),
+    ...(hasToday && d.res.length ? [el('span', { class: 'reschips' }, d.res.map((r) => el('span', { class: 'reschip' }, r)))] : []),
     el('span', { class: 'muted' }, bm ? `AVG ${fmt3(bm.avg)} / ${bm.hr}本 / OPS ${fmt3(bm.ops)}` : '今季成績なし'),
   ]));
   // 投手（球数＋シーズンERA/K）
@@ -11279,7 +11350,7 @@ function watchLineupPanel(v, u) {
       return el('tr', {}, [
         td(i + 1), td(posJP(s.pos), 'left'),
         el('td', { class: 'left' }, [u.playerLink(s.playerId)]),
-        el('td', { class: 'left' }, d ? `${d.h}-${d.ab}${d.res.length ? `（${d.res.join('・')}）` : ''}` : '0-0'),
+        el('td', { class: 'left' }, d ? `${d.ab}打数${d.h}安打${d.res.length ? `（${d.res.join('・')}）` : ''}` : '—'),
       ]);
     });
     col.append(el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [

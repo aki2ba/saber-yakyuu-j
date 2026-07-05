@@ -286,17 +286,38 @@ assert.ok(walk(muBox).filter((n) => (n.className || '').includes('lamp')).length
 for (const b of ['1球', '1打席', '1イニング', '自動再生']) {
   assert.ok(btnByText(b), `進行コントロールに「${b}」`);
 }
-btnByText('1球')._onclick();
-btnByText('1球')._onclick();
-btnByText('1球')._onclick();
-const pitchLines = allClass('pbpline').map(textOf);
-assert.ok(pitchLines.some((t) => t.includes('球目')), `一球速報行「n球目 球種 判定」が出る (${pitchLines.slice(0, 6).join(' | ')})`);
-assert.ok(pitchLines.some((t) => t.includes('◇')), '打席開始行「◇ 打者 対 投手」が出る');
-assert.ok(walk(hasClass('pbp')).some((n) => (n.className || '').includes('plink')), '実況の選手名がリンク化（playerLink）');
+// 「現在の打席」に投球行が出るまで1球ずつ進める（打席開始直後は投球0球のため）
+for (let k = 0; k < 12 && !allClass('curabpitch').map(textOf).some((t) => t.includes('球目')); k++) {
+  btnByText('1球')._onclick();
+}
+// E2改a) 「現在の打席」ボックス: 投球が1球目→N球目の正順・全球にカウントB-S統一表記
+assert.ok(hasClass('curab'), '「現在の打席」ボックスが対戦カード直下に描かれる');
+{
+  const abPitches = allClass('curabpitch').map(textOf).filter((t) => t.includes('球目'));
+  assert.ok(abPitches.length >= 1, `現打席の投球行が出る (${abPitches.join(' | ')})`);
+  assert.ok(abPitches[0].startsWith('1球目'), `投球は1球目からの正順 (${abPitches[0]})`);
+  assert.ok(abPitches.every((t) => /\d-\d/.test(t)), `全投球行にカウントB-S表記 (${abPitches.join(' | ')})`);
+}
+// E2改b) 実況フィードは既定で一球行/◇打席行を畳む → 「全球表示」トグルで出す
+assert.ok(!allClass('pbpline').map(textOf).some((t) => t.includes('球目')), '既定の実況に一球行が出ない（打席結果のみに畳み）');
+btnByText('全球表示')._onclick();
+{
+  const pitchLines = allClass('pbpline').map(textOf);
+  assert.ok(pitchLines.some((t) => t.includes('球目')), `全球表示で一球速報行「n球目 球種 判定」 (${pitchLines.slice(0, 6).join(' | ')})`);
+  assert.ok(pitchLines.some((t) => t.includes('◇')), '全球表示で打席開始行「◇ 打者 対 投手」');
+}
+btnByText('全球表示')._onclick(); // 既定（畳み）へ戻す
 btnByText('1打席')._onclick();
 assert.ok(hasClass('matchup'), '1打席進行後も観戦画面が再描画される');
 btnByText('1イニング')._onclick();
 assert.ok(hasClass('matchup'), '1イニング進行後も観戦画面が再描画される');
+// E2改c) 畳み表示の結果行: [N回表/裏] プレフィックス＋選手名リンク
+{
+  const paLines = allClass('pbpline').map(textOf);
+  assert.ok(paLines.some((t) => /^\[\d+回[表裏]\]/.test(t)), `結果行に[N回表/裏]プレフィックス (${paLines.slice(0, 4).join(' | ')})`);
+  const pbpBox = walk(appDiv).find((n) => (n.className || '') === 'pbp'); // 'pbphead' との前方一致を避ける
+  assert.ok(walk(pbpBox).some((n) => (n.className || '').includes('plink')), '実況の選手名がリンク化（playerLink）');
+}
 // 自動再生トグル: ON→タイマー予約→OFF（UIのみ・状態不変）
 btnByText('自動再生')._onclick();
 assert.ok(btnByText('止める'), '自動再生ONで停止ボタンに変わる');
@@ -313,6 +334,23 @@ btnByText('最後まで')._onclick();
 assert.ok(hasClass('finalscore'), '最後まで進めると最終スコアが出る');
 const finalTxt = textOf(hasClass('finalscore'));
 assert.ok(finalTxt.includes('試合終了'), `観戦の最終スコア表示 (${finalTxt})`);
+// E2改d) 結果行の色分けクラス＋得点行の現在スコア付記（1試合分の実況が出そろった時点で検証）
+{
+  const pls = allClass('pbpline');
+  const withCls = (c) => pls.filter((n) => (n.className || '').includes(c));
+  assert.ok(withCls('ev-k').length >= 1, '三振行に ev-k クラス');
+  assert.ok(withCls('ev-hit').length + withCls('ev-hr').length >= 1, '安打/本塁打行に ev-hit / ev-hr クラス');
+  const scoreLines = withCls('ev-score');
+  if (scoreLines.length) {
+    assert.ok(scoreLines.every((n) => /（.+ \d+-\d+ .+）/.test(textOf(n))), `得点行の行末に現在スコア（チーム X-Y チーム） (${textOf(scoreLines[0])})`);
+  }
+}
+// E2改e) 対戦カード: 「今日 X打数Y安打」表記＋当日打席履歴チップ（試合終了時点の最終打者で検証）
+{
+  const muEnd = textOf(hasClass('matchup'));
+  assert.ok(muEnd.includes('打数') && muEnd.includes('安打'), `対戦カードが「今日 X打数Y安打」表記 (${muEnd.slice(0, 80)})`);
+  assert.ok(allClass('reschip').length >= 1, '対戦カードに当日打席履歴チップ（三ゴロ・左安…）');
+}
 btnByText('ホームへ戻る')._onclick(); // E4: 戻る導線の一貫（ハブ→ホーム改称）
 assert.ok(allClass('recentrow').length >= 1, 'ハブの直近結果に観戦した試合が反映される');
 
@@ -537,5 +575,5 @@ console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP
 
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
 console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');
-console.log('UI smoke OK (E2観戦): ラインスコア(9回+R/H/E)→対戦カード(打者/投手/球数/B-S-Oランプ/playerLink)→一球速報(n球目/◇打席行)→進行切替(1球/1打席/1イニング/自動再生)→スタメン折りたたみ(打順/今日)、例外なし');
+console.log('UI smoke OK (E2観戦・スポナビ式): ラインスコア(9回+R/H/E)→対戦カード(打者/投手/今日X打数Y安打/履歴チップ/B-S-Oランプ)→現在の打席ボックス(正順1球目→N球目/カウントB-S統一)→実況畳み(結果1行+[N回表裏]+色分けev-hit/hr/score/k/bb/err+得点行スコア付記)→全球表示トグル→進行切替(1球/1打席/1イニング/自動再生)→スタメン折りたたみ、例外なし');
 console.log('UI smoke OK (E4動線): タブ整理(ホーム/チーム/日程・結果/順位/成績サブタブ/ニュース/記録)→日程・結果(月別/勝敗/先発link)→試合クリック→簡易ボックススコア(ラインスコアR/H/E+両軍打者/投手ライン)→ニュースタブ(選手の活躍→playerLink→モーダル)、例外なし');

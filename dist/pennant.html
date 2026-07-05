@@ -160,6 +160,22 @@
   .recrank { color:var(--muted); min-width:18px; }
   .recname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .recval { color:var(--gold); }
+  /* E4: 日程・結果タブ＋簡易ボックススコア */
+  .schedfuture td { color:var(--muted); }
+  .modal.boxmodal { max-width:760px; }
+  /* E4: 狭幅（スマホ想定）の縦積みレイアウト。表は .tablewrap が横スクロールを受け持つ */
+  @media (max-width: 640px) {
+    body { padding:8px; }
+    .header { flex-direction:column; align-items:flex-start; gap:6px; }
+    .kvgrid { grid-template-columns:repeat(3,1fr); }
+    .abilities { grid-template-columns:1fr; }
+    .watchgrid, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
+    .watchgrid svg.diamond { width:100%; }
+    .reccols { flex-direction:column; }
+    .overlay { padding:8px; }
+    .modal { padding:12px; }
+    .pslabel { min-width:0; }
+  }
 </style>
 </head>
 <body>
@@ -6984,6 +7000,181 @@ function selfCheck(seed = 20260701, n = 8) {
 }
 
 
+// ===== src/game/boxscore.mjs =====
+// ============================================================================
+// フェーズE4: 簡易ボックススコア（観戦イベント列 → 両軍打者/投手の当日集計行）
+//
+//   buildBoxScore(events) … simulateGame の onEvent 構造化イベント列
+//     （start/atbat/pitch/pa/bunt/steal/sub/end・すべて乱数非消費）から、
+//     日程・結果タブの「簡易ボックススコア」に必要な当日集計だけを組む純関数。
+//
+// 設計原則:
+//   - §17（生イベント非永続）: 生イベント列はこの集計を作ったら捨てる。playerGameLog には
+//     この「集計行のみ」が rec.box として残る（save の seasonState.playerGameLog も集計値のみ）。
+//   - 決定論: 入力イベント列の純関数・乱数非使用。load の replay（advanceRuntimeDay 再走）でも
+//     同一イベント列から同一の box が再構築される（セーブ→ロード→リプレイで bit 一致）。
+//   - 簡易であること: 公式記録の細部（継承走者の失点帰属・暴投得点の打点除外等）は
+//     「現在の投手/打者へ帰属」の近似で足りる（UI の当日ライン表示用。シーズン公式集計は
+//     statline が正・本集計はそれに影響しない）。
+// ============================================================================
+
+/** 安打として数える打席結果。 */
+const BOX_HIT_SET = new Set(['1B', '2B', '3B', 'HR']);
+
+/**
+ * 観戦イベント列から簡易ボックススコアを組む。
+ * @param {Array} events simulateGame onEvent の構造化イベント列（1試合ぶん）
+ * @returns {Object} {
+ *   home, away, starters:{home,away},
+ *   line:[{i,t,b}] イニング別得点（t=表/b=裏・null=未実施（サヨナラX等））,
+ *   hits:{home,away}, errs:{home,away}, innings,
+ *   batters:{home:[{pid,ord,pos,ab,h,hr,rbi,bb,k}],away:[...]}（出場順・bbは四死球）,
+ *   pitchers:{home:[{pid,outs,np,h,r,bb,k,hr}],away:[...]}（登板順・rは在板中の失点）
+ * }
+ */
+function buildBoxScore(events) {
+  const box = {
+    home: null,
+    away: null,
+    starters: { home: null, away: null },
+    line: [],
+    hits: { home: 0, away: 0 },
+    errs: { home: 0, away: 0 },
+    innings: 9,
+    batters: { home: [], away: [] },
+    pitchers: { home: [], away: [] },
+  };
+  const batBy = new Map(); // pid → 打者集計行
+  const pitBy = new Map(); // pid → 投手集計行
+  const slots = { home: [], away: [] }; // 打順スロット（交代を追跡・pid列）
+  const scores = { home: 0, away: 0 }; // イベント時点のスコア（batScore 同期＝暴投得点も拾う）
+  const curPit = { home: null, away: null }; // 現在の投手（集計行参照）
+  let curOuts = 0; // 現ハーフのアウト（盗塁死/犠打のアウト帰属用）
+  let lastBatSide = 'away'; // pitch イベントの帰属（atbat が先行するため常に正しい）
+
+  const sideOf = (teamId) => (teamId === box.home ? 'home' : 'away');
+  const lineOf = (inning) => {
+    let c = box.line.find((x) => x.i === inning);
+    if (!c) { c = { i: inning, t: null, b: null }; box.line.push(c); }
+    return c;
+  };
+  const startHalf = (inning, half) => {
+    const c = lineOf(inning);
+    const k = half === 'bottom' ? 'b' : 't';
+    if (c[k] == null) c[k] = 0;
+  };
+  const batterOf = (pid, side, ord, pos) => {
+    let b = batBy.get(pid);
+    if (!b) { b = { pid, ord, pos, ab: 0, h: 0, hr: 0, rbi: 0, bb: 0, k: 0 }; batBy.set(pid, b); box.batters[side].push(b); }
+    return b;
+  };
+  const pitcherOf = (pid, side) => {
+    let p = pitBy.get(pid);
+    if (!p) { p = { pid, outs: 0, np: 0, h: 0, r: 0, bb: 0, k: 0, hr: 0 }; pitBy.set(pid, p); box.pitchers[side].push(p); }
+    return p;
+  };
+  /** batScore の増分をイニング得点と現投手の失点へ配る（暴投/捕逸の得点も batScore に含まれる）。 */
+  const syncScore = (batSide, batScore, inning, half) => {
+    const d = batScore - scores[batSide];
+    if (d > 0) {
+      const c = lineOf(inning);
+      const k = half === 'bottom' ? 'b' : 't';
+      c[k] = (c[k] ?? 0) + d;
+      const fld = batSide === 'home' ? 'away' : 'home';
+      if (curPit[fld]) curPit[fld].r += d;
+      scores[batSide] = batScore;
+    }
+  };
+
+  for (const e of events) {
+    if (e.type === 'start') {
+      box.home = e.home;
+      box.away = e.away;
+      box.starters.home = e.homeStarter;
+      box.starters.away = e.awayStarter;
+      curPit.home = pitcherOf(e.homeStarter, 'home');
+      curPit.away = pitcherOf(e.awayStarter, 'away');
+      for (const [side, lu] of [['home', e.homeLineup], ['away', e.awayLineup]]) {
+        slots[side] = lu.map((s) => s.playerId);
+        lu.forEach((s, i) => batterOf(s.playerId, side, i + 1, s.pos));
+      }
+    } else if (e.type === 'atbat') {
+      const bSide = sideOf(e.batTeam);
+      const fSide = bSide === 'home' ? 'away' : 'home';
+      lastBatSide = bSide;
+      startHalf(e.inning, e.half);
+      curOuts = e.outs;
+      // 現投手を権威値（atbat.pitcherId）で同期＋球数を登板累計（pitcherPitches）で補正
+      curPit[fSide] = pitcherOf(e.pitcherId, fSide);
+      if (e.pitcherPitches > curPit[fSide].np) curPit[fSide].np = e.pitcherPitches;
+    } else if (e.type === 'pitch') {
+      const fld = lastBatSide === 'home' ? 'away' : 'home';
+      if (curPit[fld]) curPit[fld].np++;
+    } else if (e.type === 'pa') {
+      const bSide = sideOf(e.batTeam);
+      const fSide = bSide === 'home' ? 'away' : 'home';
+      const b = batterOf(e.batterId, bSide, null, '');
+      const p = pitcherOf(e.pitcherId, fSide);
+      const isHit = BOX_HIT_SET.has(e.result);
+      // 打者ライン: 打数（四死球/犠飛を除く）・安打・本・打点・四死球・三振
+      const sacFly = e.result === 'out' && e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB';
+      if (!(e.outcome === 'BB' || e.outcome === 'HBP' || sacFly)) b.ab++;
+      if (isHit) { b.h++; box.hits[bSide]++; }
+      if (e.result === 'HR') b.hr++;
+      if (e.outcome === 'BB' || e.outcome === 'HBP') b.bb++;
+      if (e.outcome === 'K') b.k++;
+      // 打点（簡易）: 失策と併殺ゴロ間の得点は打点なし（公式準拠・暴投分は近似で含む）
+      const gbDp = e.result === 'out' && e.battedType === 'GB' && e.outsAfter - e.outsBefore >= 2;
+      if (e.result !== 'E' && !gbDp) b.rbi += e.runsOnPlay;
+      // 投手ライン: アウト・被安/被本・四死球・奪三振（失点は syncScore が現投手へ配る）
+      p.outs += e.outsAfter - e.outsBefore;
+      if (isHit) p.h++;
+      if (e.result === 'HR') p.hr++;
+      if (e.outcome === 'BB' || e.outcome === 'HBP') p.bb++;
+      if (e.outcome === 'K') p.k++;
+      if (e.result === 'E') box.errs[fSide]++;
+      curOuts = e.outsAfter;
+      syncScore(bSide, e.batScore, e.inning, e.half);
+    } else if (e.type === 'bunt') {
+      const bSide = sideOf(e.batTeam);
+      const fSide = bSide === 'home' ? 'away' : 'home';
+      const b = batterOf(e.batterId, bSide, null, '');
+      const p = curPit[fSide];
+      if (e.outcome === 'hit') { b.ab++; b.h++; box.hits[bSide]++; if (p) p.h++; }
+      else if (e.outcome === 'fail') b.ab++;
+      if (p) p.outs += Math.max(0, e.outsAfter - curOuts);
+      curOuts = e.outsAfter;
+      syncScore(bSide, e.batScore, e.inning, e.half);
+    } else if (e.type === 'steal') {
+      // 盗塁死は現投手のアウトに数える（在板中のアウト＝投球回の整合）
+      if (e.outsAfter != null) {
+        const fld = sideOf(e.batTeam) === 'home' ? 'away' : 'home';
+        if (curPit[fld]) curPit[fld].outs += Math.max(0, e.outsAfter - curOuts);
+        curOuts = e.outsAfter;
+      }
+    } else if (e.type === 'sub') {
+      const side = sideOf(e.team);
+      if (e.kind === 'RP') {
+        curPit[side] = pitcherOf(e.inPid, side);
+      }
+      // 打順スロットの追跡（PH/PR/DEF＋DH無しリーグの投手交代も打順に入る）
+      const idx = slots[side].indexOf(e.outPid);
+      if (idx >= 0) {
+        slots[side][idx] = e.inPid;
+        const pos = e.kind === 'PH' ? '打' : e.kind === 'PR' ? '走' : e.kind === 'RP' ? 'P' : (e.pos || '守');
+        batterOf(e.inPid, side, idx + 1, pos);
+      }
+    } else if (e.type === 'end') {
+      box.innings = e.innings;
+      syncScore('home', e.homeScore, e.innings, 'bottom');
+      syncScore('away', e.awayScore, e.innings, 'top');
+    }
+  }
+  box.line.sort((a, b) => a.i - b.i);
+  return box;
+}
+
+
 // ===== src/game/season_runtime.mjs =====
 // ============================================================================
 // フェーズC1a: 1シーズンの「日次進行ランタイム」（ヘッドレス・UI非依存）
@@ -6997,6 +7188,7 @@ function selfCheck(seed = 20260701, n = 8) {
 //   セーブ/ロードは save.mjs が「開幕状態から cursor まで再走（replay）」で復元する
 //   （seed と cursor が RNG カーソルに相当する。usage/集計はこの再走で厳密に再現される）。
 // ============================================================================
+
 
 
 
@@ -7126,9 +7318,11 @@ function advanceRuntimeDay(rt, opts = {}) {
   while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
     const g = rt.schedule[rt.cursor];
     const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
-    // 観戦実況: 自チーム試合のみイベント収集（onEvent は乱数非消費＝観戦/スキップで結果不変）。
+    // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
+    // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
+    // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
     let events = null;
-    pass.onEvent = isPlayer && opts.collectPlayerEvents ? (e) => events.push(e) : undefined;
+    pass.onEvent = isPlayer ? (e) => events.push(e) : undefined;
     if (pass.onEvent) events = [];
     const res = playScheduledGame(ctx, g, rt.cursor);
     const rec = {
@@ -7140,11 +7334,16 @@ function advanceRuntimeDay(rt, opts = {}) {
       tie: res.tie,
       innings: res.innings,
     };
+    if (isPlayer && events) {
+      // E4: 日程・結果タブの簡易ボックススコア（両軍打者/投手の当日ライン・集計行のみ）。
+      // live も load の replay も同一イベント列から再構築される（決定論・save は集計値のみ）。
+      rec.box = buildBoxScore(events);
+    }
     games.push(rec);
     if (isPlayer) {
       rt.playerGameLog.push(rec); // 集計値のみ（イベントは積まない・§17）
       playerGames.push(rec);
-      if (events) playerEvents = events;
+      if (opts.collectPlayerEvents && events) playerEvents = events;
     }
     rt.cursor++;
   }
@@ -9684,6 +9883,244 @@ function allPlayersById(state) {
 
 </script>
 <script>
+// ===== src/ui/schedule.mjs =====
+// ============================================================================
+// フェーズE4: ハブ「日程・結果」タブ — 自チーム全日程（月別区切り・スコア・勝敗・先発）
+//              ＋試合クリックで簡易ボックススコア（両軍打者/投手の当日ライン）
+//
+// ユーザーフィードバック（phaseE_spec）「日程が見えない・過去の試合を振り返れない」への対応。
+// 設計原則:
+//   - 表示のみ: rt.schedule（全日程）と rt.playerGameLog（結果＋rec.box=当日集計行）を読むだけで
+//     一切書かない（決定論・セーブ再現に無関係）。box は season_runtime が §17 準拠で集計済み。
+//   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同一<script>へ前置concat。ui.mjs のヘルパーは
+//     deps オブジェクト u（ui.mjs の scheduleDeps()）で受け取る（トップレベル名は sched プレフィクス）。
+// ============================================================================
+
+// 月ラベル（NPB風: 開幕3月末〜10月・daysPerMonth=26 で約6分割）。
+const SCHED_MONTHS = ['3・4月', '5月', '6月', '7月', '8月', '9月', '10月'];
+
+function schedMonthLabel(m) {
+  return SCHED_MONTHS[Math.min(m, SCHED_MONTHS.length - 1)];
+}
+
+/** 投球回表示（アウト数→「6.1」形式）。 */
+function schedIp(outs) {
+  return `${Math.floor(outs / 3)}.${outs % 3}`;
+}
+
+/** 自チーム視点の勝敗（'w'|'l'|'t'）。 */
+function schedWl(rec, myId) {
+  if (rec.tie) return 't';
+  const my = rec.home === myId ? rec.homeScore : rec.awayScore;
+  const opp = rec.home === myId ? rec.awayScore : rec.homeScore;
+  return my > opp ? 'w' : 'l';
+}
+
+/** 「日程・結果」タブ本体。c=コンテンツ要素、u=ui.mjs の共有ヘルパー束（scheduleDeps()）。 */
+function renderScheduleTab(c, u) {
+  const { el, td, game, tname } = u;
+  const gs = game.gs;
+  const rt = gs.rt;
+  const myId = gs.playerTeamId;
+  const dpm = gs.cfg.game.daysPerMonth ?? 26;
+  // 自チーム全日程: schedule 順に走査し、消化済み（gi < cursor）は playerGameLog の対応行を引く
+  // （playerGameLog は自チーム試合の消化順＝schedule 内の自チーム試合と 1:1 対応）。
+  const rows = [];
+  let k = 0;
+  for (let gi = 0; gi < rt.schedule.length; gi++) {
+    const g = rt.schedule[gi];
+    if (g.home !== myId && g.away !== myId) continue;
+    const rec = gi < rt.cursor ? rt.playerGameLog[k++] : null;
+    rows.push({ g, rec });
+  }
+  // 通算
+  let W = 0; let L = 0; let T = 0;
+  for (const r of rows) {
+    if (!r.rec) continue;
+    const wl = schedWl(r.rec, myId);
+    if (wl === 'w') W++; else if (wl === 'l') L++; else T++;
+  }
+  c.append(el('div', { class: 'muted', style: 'margin:4px 0' },
+    `自チームの全${rows.length}試合（消化 ${W + L + T}試合: ${W}勝${L}敗${T}分）。試合行のクリックで簡易ボックススコア。`));
+  // 月別グループ
+  const months = new Map();
+  for (const r of rows) {
+    const m = Math.floor(r.g.day / dpm);
+    if (!months.has(m)) months.set(m, []);
+    months.get(m).push(r);
+  }
+  for (const [m, list] of months) {
+    let w = 0; let l = 0; let t = 0;
+    for (const r of list) {
+      if (!r.rec) continue;
+      const wl = schedWl(r.rec, myId);
+      if (wl === 'w') w++; else if (wl === 'l') l++; else t++;
+    }
+    const rec = w + l + t ? `　${w}勝${l}敗${t}分` : '';
+    c.append(el('h3', { class: 'leaguename' }, `${schedMonthLabel(m)}（${list.length}試合）${rec}`));
+    const trs = list.map((r) => schedGameRow(r, u, myId));
+    c.append(el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', {}, '節'), el('th', { class: 'left' }, '相手'), el('th', {}, 'スコア'),
+        el('th', {}, '勝敗'), el('th', { class: 'left' }, '先発'), el('th', { class: 'left' }, '相手先発'),
+      ])),
+      el('tbody', {}, trs),
+    ])]));
+  }
+}
+
+/** 日程1試合ぶんの行（過去=結果＋クリックでボックススコア／未来=予定）。 */
+function schedGameRow(r, u, myId) {
+  const { el, td, tname, playerLink } = u;
+  const { g, rec } = r;
+  const isHome = g.home === myId;
+  const oppId = isHome ? g.away : g.home;
+  const oppCell = `${isHome ? 'vs' : '@'} ${tname(oppId)}`;
+  if (!rec) {
+    return el('tr', { class: 'schedfuture' }, [
+      td(g.day + 1), td(oppCell, 'left'), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
+    ]);
+  }
+  const my = isHome ? rec.homeScore : rec.awayScore;
+  const opp = isHome ? rec.awayScore : rec.homeScore;
+  const wl = schedWl(rec, myId);
+  const mark = wl === 'w' ? '○' : wl === 'l' ? '●' : '△';
+  const ext = rec.innings > 9 ? `（延長${rec.innings}回）` : '';
+  const b = rec.box;
+  const mySt = b ? (isHome ? b.starters.home : b.starters.away) : null;
+  const oppSt = b ? (isHome ? b.starters.away : b.starters.home) : null;
+  return el('tr', { class: 'clickable', onclick: () => schedOpenBox(rec, u) }, [
+    td(g.day + 1),
+    td(oppCell, 'left'),
+    td(`${my}-${opp}${ext}`),
+    el('td', {}, [el('span', { class: 'wl wl' + wl }, mark)]),
+    el('td', { class: 'left' }, mySt ? [playerLink(mySt)] : '-'),
+    el('td', { class: 'left' }, oppSt ? [playerLink(oppSt)] : '-'),
+  ]);
+}
+
+/** 簡易ボックススコアのモーダル（ラインスコア＋両軍打者/投手の当日ライン）。 */
+function schedOpenBox(rec, u) {
+  const { el, tname } = u;
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const box = el('div', { class: 'modal boxmodal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' },
+      `第${rec.day + 1}節　${tname(rec.away)} ${rec.awayScore} - ${rec.homeScore} ${tname(rec.home)}${rec.innings > 9 ? `（延長${rec.innings}回）` : ''}`),
+    el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'),
+  ]));
+  const b = rec.box;
+  if (!b) {
+    box.append(el('div', { class: 'muted' }, 'この試合のボックススコアは記録されていません（旧セーブの試合）。'));
+  } else {
+    box.append(schedLineScore(rec, b, u));
+    for (const side of ['away', 'home']) {
+      const teamId = side === 'home' ? rec.home : rec.away;
+      box.append(el('h3', { class: 'leaguename' }, `${tname(teamId)}　打撃`));
+      box.append(schedBatterTable(b.batters[side], u));
+      box.append(el('h3', { class: 'leaguename' }, `${tname(teamId)}　投手`));
+      box.append(schedPitcherTable(b.pitchers[side], u));
+    }
+    box.append(el('div', { class: 'muted', style: 'margin-top:6px' },
+      '当日集計の簡易ボックススコア（失点は在板中の得点＝継承走者は現投手へ帰属する近似）。選手名クリックで詳細。'));
+  }
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
+}
+
+/** ボックススコアのラインスコア（イニング別＋R/H/E）。観戦のスコアボードと同配色。 */
+function schedLineScore(rec, b, u) {
+  const { el, td, tname, game } = u;
+  const innMax = Math.max(9, b.innings, b.line.reduce((a, x) => Math.max(a, x.i), 0));
+  const head = el('tr', {}, [
+    el('th', { class: 'left' }, ''),
+    ...Array.from({ length: innMax }, (_, i) => el('th', {}, String(i + 1))),
+    el('th', { class: 'rcol' }, 'R'), el('th', {}, 'H'), el('th', {}, 'E'),
+  ]);
+  const cell = (isHome, inn) => {
+    const c = b.line.find((x) => x.i === inn + 1);
+    const v = c ? (isHome ? c.b : c.t) : null;
+    if (v == null) return isHome && inn + 1 === b.innings ? 'X' : ''; // サヨナラ勝ち等で裏なし
+    return String(v);
+  };
+  const rowFor = (teamId, isHome, total, hits, errs) => el('tr', { class: teamId === game.gs.playerTeamId ? 'myteam' : '' }, [
+    el('td', { class: 'left' }, tname(teamId)),
+    ...Array.from({ length: innMax }, (_, i) => td(cell(isHome, i))),
+    el('td', { class: 'rcol' }, String(total)), td(hits), td(errs),
+  ]);
+  return el('div', { class: 'tablewrap' }, [el('table', { class: 'stat scoreboard' }, [
+    el('thead', {}, head),
+    el('tbody', {}, [
+      rowFor(rec.away, false, rec.awayScore, b.hits.away, b.errs.away),
+      rowFor(rec.home, true, rec.homeScore, b.hits.home, b.errs.home),
+    ]),
+  ])]);
+}
+
+/** 両軍打者の当日ライン表（打順/守/選手/打数/安打/本/打点/四死球/三振）。 */
+function schedBatterTable(batters, u) {
+  const { el, td, playerLink, posJP } = u;
+  const list = batters.slice().sort((a, b) => (a.ord ?? 99) - (b.ord ?? 99));
+  const trs = list.map((bt) => el('tr', {}, [
+    td(bt.ord ?? '-'),
+    td(bt.pos === '打' || bt.pos === '走' || bt.pos === '守' ? bt.pos : posJP(bt.pos || '-'), 'left'),
+    el('td', { class: 'left' }, [playerLink(bt.pid)]),
+    td(bt.ab), td(bt.h), td(bt.hr), td(bt.rbi), td(bt.bb), td(bt.k),
+  ]));
+  return el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
+    el('thead', {}, el('tr', {}, [
+      el('th', {}, '打順'), el('th', { class: 'left' }, '守'), el('th', { class: 'left' }, '選手'),
+      el('th', {}, '打数'), el('th', {}, '安打'), el('th', {}, '本'), el('th', {}, '打点'), el('th', {}, '四死球'), el('th', {}, '三振'),
+    ])),
+    el('tbody', {}, trs),
+  ])]);
+}
+
+/** 両軍投手の当日ライン表（選手/回/球数/被安/失点/四死球/奪三振）。 */
+function schedPitcherTable(pitchers, u) {
+  const { el, td, playerLink } = u;
+  const trs = pitchers.map((pt) => el('tr', {}, [
+    el('td', { class: 'left' }, [playerLink(pt.pid)]),
+    td(schedIp(pt.outs)), td(pt.np), td(pt.h), td(pt.r), td(pt.bb), td(pt.k),
+  ]));
+  return el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
+    el('thead', {}, el('tr', {}, [
+      el('th', { class: 'left' }, '選手'), el('th', {}, '回'), el('th', {}, '球数'),
+      el('th', {}, '被安'), el('th', {}, '失点'), el('th', {}, '四死球'), el('th', {}, '奪三振'),
+    ])),
+    el('tbody', {}, trs),
+  ])]);
+}
+
+/**
+ * E4: ニュース用「選手の活躍」見出し（直近試合のボックススコア集計から・自チーム選手のみ）。
+ * 見出しの選手名は playerLink で詳細モーダルへ（「ニュースから該当選手へ」の導線）。
+ * 集計行（rec.box）の純関数＝決定論・状態を変えない。
+ */
+function schedPlayerHeadlines(rt, u, limit = 8) {
+  const { playerLink, tname } = u;
+  const myId = rt.playerTeamId;
+  const out = [];
+  for (const rec of rt.playerGameLog.slice(-12).reverse()) {
+    const b = rec.box;
+    if (!b) continue;
+    const side = rec.home === myId ? 'home' : 'away';
+    const oppId = rec.home === myId ? rec.away : rec.home;
+    const at = `（第${rec.day + 1}節 対${tname(oppId)}）`;
+    for (const bt of b.batters[side]) {
+      if (bt.hr >= 2) out.push({ parts: [playerLink(bt.pid), ` が1試合${bt.hr}本塁打の固め打ち${at}`], cls: 'good' });
+      else if (bt.h >= 3) out.push({ parts: [playerLink(bt.pid), ` が猛打賞（${bt.h}安打）${at}`], cls: 'good' });
+    }
+    for (const pt of b.pitchers[side]) {
+      if (pt.k >= 10) out.push({ parts: [playerLink(pt.pid), ` が${pt.k}奪三振の快投${at}`], cls: 'good' });
+      else if (pt.outs >= 21 && pt.r === 0) out.push({ parts: [playerLink(pt.pid), ` が${Math.floor(pt.outs / 3)}回無失点の好投${at}`], cls: 'good' });
+    }
+    if (out.length >= limit) break;
+  }
+  return out.slice(0, limit);
+}
+
+
 // ===== src/ui/stove.mjs =====
 // ============================================================================
 // フェーズE3: ストーブリーグ画面（FA市場・トレード・育成⇔支配下）＋オフシーズンダイジェスト
@@ -10165,7 +10602,7 @@ function renderOffseasonDigestScreen(off, u) {
   }
   const myFarm = (gs.league.farm ?? []).filter((p) => p.teamId === my);
   if (myFarm.length) {
-    root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ハブの「チーム」タブ→二軍で確認できます。`));
+    root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ホームの「チーム」タブ→二軍で確認できます。`));
   }
 
   // --- リーグ全体 ------------------------------------------------------------
@@ -10469,7 +10906,7 @@ function renderWatchScreen(u) {
   root.innerHTML = '';
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, ['観戦　', el('span', { class: 'muted' }, `${tname(v.away)} vs ${tname(v.home)}`)]),
-    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ハブへ戻る')]),
+    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る')]),
   ]));
   // 上部: ラインスコア（イニング別得点＋R/H/E）
   root.append(watchLineScore(v, u));
@@ -10820,7 +11257,7 @@ function watchControls(v, u, done) {
       const head = notableHeadline(n, (id) => u.pname(id), (id) => tname(id));
       if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
     }
-    ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ハブへ戻る'));
+    ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ホームへ戻る'));
   }
   return ctrl;
 }
@@ -10882,6 +11319,8 @@ function watchLineupPanel(v, u) {
 // フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
 
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
+
+// フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
 
 
 const state = {
@@ -11871,11 +12310,17 @@ function startNewGame(seed, teamId) {
 }
 
 // --- シーズンハブ -----------------------------------------------------------
-// E1: 「チーム」タブ（自チーム選手一覧・一軍/二軍）を新設。従来のリーグ12球団集計は「球団比較」へ改名。
+// E4: タブ整理（phaseE_spec E4）: ホーム / チーム(E1) / 日程・結果 / 順位 / 成績（打・投・守・
+// WAR・球団比較のサブタブ） / ニュース / 記録。現在地はタブの active 表示で常に分かる。
 const HUB_TABS = [
-  ['hub', 'ハブ'], ['team', 'チーム'], ['standings', '順位表'], ['war', 'WAR'],
-  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', '球団比較'], ['records', '記録'],
+  ['hub', 'ホーム'], ['team', 'チーム'], ['schedule', '日程・結果'], ['standings', '順位'],
+  ['stats', '成績'], ['news', 'ニュース'], ['records', '記録'],
 ];
+// 成績タブのサブタブ（E4: 打・投・守・WAR＋球団比較を1タブへ集約）。ビュー状態はUIローカル。
+const HUB_STAT_SUBTABS = [
+  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['war', 'WAR'], ['teams', '球団比較'],
+];
+let hubStatsSub = 'batting';
 
 function renderHub(tab = 'hub') {
   const gs = game.gs;
@@ -11897,15 +12342,36 @@ function renderHub(tab = 'hub') {
   if (tab === 'hub') renderHubHome(content);
   else if (tab === 'records') renderRecords(content);
   else if (tab === 'team') { refreshRes(); renderTeamTab(content, teamTabDeps()); } // E1: 自チーム選手一覧
-  else {
-    refreshRes();
-    if (tab === 'standings') renderStandings(content);
-    else if (tab === 'war') renderWAR(content);
-    else if (tab === 'batting') renderBatting(content);
-    else if (tab === 'pitching') renderPitching(content);
-    else if (tab === 'fielding') renderFielding(content);
-    else if (tab === 'teams') renderTeams(content);
-  }
+  else if (tab === 'schedule') { refreshRes(); renderScheduleTab(content, scheduleDeps()); } // E4: 日程・結果
+  else if (tab === 'news') { refreshRes(); renderNewsTab(content); } // E4: ニュース
+  else if (tab === 'standings') { refreshRes(); renderStandings(content); }
+  else if (tab === 'stats') { refreshRes(); renderStatsTab(content); } // E4: 成績（サブタブ集約）
+}
+
+/** E4: 成績タブ（打・投・守・WAR・球団比較のサブタブ。既存の描画関数を再利用）。 */
+function renderStatsTab(c) {
+  c.append(el('div', { class: 'subtabs' }, HUB_STAT_SUBTABS.map(([k, label]) =>
+    el('button', {
+      class: 'subtab' + (hubStatsSub === k ? ' active' : ''),
+      onclick: () => { hubStatsSub = k; renderHub('stats'); },
+    }, label))));
+  const body = el('div');
+  c.append(body);
+  if (hubStatsSub === 'war') renderWAR(body);
+  else if (hubStatsSub === 'pitching') renderPitching(body);
+  else if (hubStatsSub === 'fielding') renderFielding(body);
+  else if (hubStatsSub === 'teams') renderTeams(body);
+  else renderBatting(body);
+}
+
+/**
+ * E4: src/ui/schedule.mjs（日程・結果タブ）へ渡すUI共有ヘルパー束（他の deps と同じ流儀）。
+ */
+function scheduleDeps() {
+  return {
+    el, td, state, game, tname, pname, playerLink, posJP, fmt3,
+    renderHub: () => renderHub('schedule'),
+  };
 }
 
 /**
@@ -12030,12 +12496,52 @@ function renderNewsFeed(c) {
   const star = teamSeasonStar(rt, gs.playerTeamId);
   // E1: 選手名は playerLink でモーダルへ（見出しは parts=要素列 or text=文字列のどちらでも描ける）。
   if (star) heads.unshift({ parts: [`${tname(gs.playerTeamId)}の今季の顔は `, playerLink(star.id), `（WAR ${star.war.toFixed(1)}・「${star.nick}」）`], cls: 'info' });
-  c.append(el('h3', { class: 'leaguename' }, '📰 ニュース'));
+  // E4: 選手の活躍見出し（直近のボックススコア集計から・playerLink 付き）を上位2件だけホームにも出す。
+  heads.push(...schedPlayerHeadlines(rt, scheduleDeps(), 2));
+  c.append(el('h3', { class: 'leaguename' }, ['📰 ニュース　', el('button', { class: 'link', onclick: () => renderHub('news') }, '一覧へ →')]));
   if (!heads.length) {
     c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
     return;
   }
   c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))));
+}
+
+/**
+ * E4: ニュースタブ本体。チームの週次ダイジェスト＋選手の活躍（直近試合のボックススコア集計）。
+ * 見出しの選手名はすべて playerLink（→選手詳細モーダル）＝「ニュースから該当選手へ」の導線。
+ */
+function renderNewsTab(c) {
+  const gs = game.gs;
+  const rt = gs.rt;
+  // チームニュース（週次ダイジェスト＋今季の顔）
+  const heads = weeklyDigest({
+    gameLog: rt.playerGameLog,
+    standings: currentStandings(rt),
+    teamId: gs.playerTeamId,
+    nameOf: (id) => tname(id),
+  });
+  const star = teamSeasonStar(rt, gs.playerTeamId);
+  if (star) heads.unshift({ parts: [`${tname(gs.playerTeamId)}の今季の顔は `, playerLink(star.id), `（WAR ${star.war.toFixed(1)}・「${star.nick}」）`], cls: 'info' });
+  c.append(el('h3', { class: 'leaguename' }, '📰 チームニュース'));
+  c.append(el('div', { class: 'newsfeed' }, heads.length
+    ? heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))
+    : [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
+  // 選手の活躍（直近試合の当日ライン＝rec.box 集計から。選手名クリックで詳細モーダル）
+  const perf = schedPlayerHeadlines(rt, scheduleDeps(), 10);
+  c.append(el('h3', { class: 'leaguename' }, '⚾ 選手の活躍（直近の試合から）'));
+  c.append(el('div', { class: 'newsfeed' }, perf.length
+    ? perf.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.parts || h.text))
+    : [el('div', { class: 'newsrow info' }, '直近の試合に目立った活躍はまだありません。')]));
+  // 故障者情報もニュースとして再掲（ホームと同じ判定・playerLink 付き）
+  const curDay = pendingDayOf(rt) - 1;
+  const injured = (rt.seasonInjuries ?? [])
+    .filter((e) => e.teamId === gs.playerTeamId && e.gamesLost > curDay)
+    .sort((a, b) => b.gamesLost - a.gamesLost);
+  if (injured.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🏥 故障者情報'));
+    c.append(el('div', { class: 'newsfeed' }, injured.map((e) => el('div', { class: 'newsrow bad' },
+      [playerLink(e.id), `（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）が離脱中 — 復帰まで約${e.gamesLost - curDay}試合`]))));
+  }
 }
 
 /** 自チームの今季最高WAR選手（観測ベース）と二つ名。データが薄い序盤は null。 */

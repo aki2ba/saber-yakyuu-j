@@ -255,6 +255,22 @@ const html = `<!DOCTYPE html>
   .recrank { color:var(--muted); min-width:18px; }
   .recname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .recval { color:var(--gold); }
+  /* E4: 日程・結果タブ＋簡易ボックススコア */
+  .schedfuture td { color:var(--muted); }
+  .modal.boxmodal { max-width:760px; }
+  /* E4: 狭幅（スマホ想定）の縦積みレイアウト。表は .tablewrap が横スクロールを受け持つ */
+  @media (max-width: 640px) {
+    body { padding:8px; }
+    .header { flex-direction:column; align-items:flex-start; gap:6px; }
+    .kvgrid { grid-template-columns:repeat(3,1fr); }
+    .abilities { grid-template-columns:1fr; }
+    .watchgrid, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
+    .watchgrid svg.diamond { width:100%; }
+    .reccols { flex-direction:column; }
+    .overlay { padding:8px; }
+    .modal { padding:12px; }
+    .pslabel { min-width:0; }
+  }
 </style>
 </head>
 <body>

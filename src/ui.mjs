@@ -31,6 +31,8 @@ import { renderTeamTab } from './ui/team.mjs';
 import { renderWatchScreen } from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
 import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
+// フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
+import { renderScheduleTab, schedPlayerHeadlines } from './ui/schedule.mjs';
 
 const state = {
   league: null,
@@ -1019,11 +1021,17 @@ function startNewGame(seed, teamId) {
 }
 
 // --- シーズンハブ -----------------------------------------------------------
-// E1: 「チーム」タブ（自チーム選手一覧・一軍/二軍）を新設。従来のリーグ12球団集計は「球団比較」へ改名。
+// E4: タブ整理（phaseE_spec E4）: ホーム / チーム(E1) / 日程・結果 / 順位 / 成績（打・投・守・
+// WAR・球団比較のサブタブ） / ニュース / 記録。現在地はタブの active 表示で常に分かる。
 const HUB_TABS = [
-  ['hub', 'ハブ'], ['team', 'チーム'], ['standings', '順位表'], ['war', 'WAR'],
-  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', '球団比較'], ['records', '記録'],
+  ['hub', 'ホーム'], ['team', 'チーム'], ['schedule', '日程・結果'], ['standings', '順位'],
+  ['stats', '成績'], ['news', 'ニュース'], ['records', '記録'],
 ];
+// 成績タブのサブタブ（E4: 打・投・守・WAR＋球団比較を1タブへ集約）。ビュー状態はUIローカル。
+const HUB_STAT_SUBTABS = [
+  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['war', 'WAR'], ['teams', '球団比較'],
+];
+let hubStatsSub = 'batting';
 
 function renderHub(tab = 'hub') {
   const gs = game.gs;
@@ -1045,15 +1053,36 @@ function renderHub(tab = 'hub') {
   if (tab === 'hub') renderHubHome(content);
   else if (tab === 'records') renderRecords(content);
   else if (tab === 'team') { refreshRes(); renderTeamTab(content, teamTabDeps()); } // E1: 自チーム選手一覧
-  else {
-    refreshRes();
-    if (tab === 'standings') renderStandings(content);
-    else if (tab === 'war') renderWAR(content);
-    else if (tab === 'batting') renderBatting(content);
-    else if (tab === 'pitching') renderPitching(content);
-    else if (tab === 'fielding') renderFielding(content);
-    else if (tab === 'teams') renderTeams(content);
-  }
+  else if (tab === 'schedule') { refreshRes(); renderScheduleTab(content, scheduleDeps()); } // E4: 日程・結果
+  else if (tab === 'news') { refreshRes(); renderNewsTab(content); } // E4: ニュース
+  else if (tab === 'standings') { refreshRes(); renderStandings(content); }
+  else if (tab === 'stats') { refreshRes(); renderStatsTab(content); } // E4: 成績（サブタブ集約）
+}
+
+/** E4: 成績タブ（打・投・守・WAR・球団比較のサブタブ。既存の描画関数を再利用）。 */
+function renderStatsTab(c) {
+  c.append(el('div', { class: 'subtabs' }, HUB_STAT_SUBTABS.map(([k, label]) =>
+    el('button', {
+      class: 'subtab' + (hubStatsSub === k ? ' active' : ''),
+      onclick: () => { hubStatsSub = k; renderHub('stats'); },
+    }, label))));
+  const body = el('div');
+  c.append(body);
+  if (hubStatsSub === 'war') renderWAR(body);
+  else if (hubStatsSub === 'pitching') renderPitching(body);
+  else if (hubStatsSub === 'fielding') renderFielding(body);
+  else if (hubStatsSub === 'teams') renderTeams(body);
+  else renderBatting(body);
+}
+
+/**
+ * E4: src/ui/schedule.mjs（日程・結果タブ）へ渡すUI共有ヘルパー束（他の deps と同じ流儀）。
+ */
+function scheduleDeps() {
+  return {
+    el, td, state, game, tname, pname, playerLink, posJP, fmt3,
+    renderHub: () => renderHub('schedule'),
+  };
 }
 
 /**
@@ -1178,12 +1207,52 @@ function renderNewsFeed(c) {
   const star = teamSeasonStar(rt, gs.playerTeamId);
   // E1: 選手名は playerLink でモーダルへ（見出しは parts=要素列 or text=文字列のどちらでも描ける）。
   if (star) heads.unshift({ parts: [`${tname(gs.playerTeamId)}の今季の顔は `, playerLink(star.id), `（WAR ${star.war.toFixed(1)}・「${star.nick}」）`], cls: 'info' });
-  c.append(el('h3', { class: 'leaguename' }, '📰 ニュース'));
+  // E4: 選手の活躍見出し（直近のボックススコア集計から・playerLink 付き）を上位2件だけホームにも出す。
+  heads.push(...schedPlayerHeadlines(rt, scheduleDeps(), 2));
+  c.append(el('h3', { class: 'leaguename' }, ['📰 ニュース　', el('button', { class: 'link', onclick: () => renderHub('news') }, '一覧へ →')]));
   if (!heads.length) {
     c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
     return;
   }
   c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))));
+}
+
+/**
+ * E4: ニュースタブ本体。チームの週次ダイジェスト＋選手の活躍（直近試合のボックススコア集計）。
+ * 見出しの選手名はすべて playerLink（→選手詳細モーダル）＝「ニュースから該当選手へ」の導線。
+ */
+function renderNewsTab(c) {
+  const gs = game.gs;
+  const rt = gs.rt;
+  // チームニュース（週次ダイジェスト＋今季の顔）
+  const heads = weeklyDigest({
+    gameLog: rt.playerGameLog,
+    standings: currentStandings(rt),
+    teamId: gs.playerTeamId,
+    nameOf: (id) => tname(id),
+  });
+  const star = teamSeasonStar(rt, gs.playerTeamId);
+  if (star) heads.unshift({ parts: [`${tname(gs.playerTeamId)}の今季の顔は `, playerLink(star.id), `（WAR ${star.war.toFixed(1)}・「${star.nick}」）`], cls: 'info' });
+  c.append(el('h3', { class: 'leaguename' }, '📰 チームニュース'));
+  c.append(el('div', { class: 'newsfeed' }, heads.length
+    ? heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))
+    : [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
+  // 選手の活躍（直近試合の当日ライン＝rec.box 集計から。選手名クリックで詳細モーダル）
+  const perf = schedPlayerHeadlines(rt, scheduleDeps(), 10);
+  c.append(el('h3', { class: 'leaguename' }, '⚾ 選手の活躍（直近の試合から）'));
+  c.append(el('div', { class: 'newsfeed' }, perf.length
+    ? perf.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.parts || h.text))
+    : [el('div', { class: 'newsrow info' }, '直近の試合に目立った活躍はまだありません。')]));
+  // 故障者情報もニュースとして再掲（ホームと同じ判定・playerLink 付き）
+  const curDay = pendingDayOf(rt) - 1;
+  const injured = (rt.seasonInjuries ?? [])
+    .filter((e) => e.teamId === gs.playerTeamId && e.gamesLost > curDay)
+    .sort((a, b) => b.gamesLost - a.gamesLost);
+  if (injured.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🏥 故障者情報'));
+    c.append(el('div', { class: 'newsfeed' }, injured.map((e) => el('div', { class: 'newsrow bad' },
+      [playerLink(e.id), `（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）が離脱中 — 復帰まで約${e.gamesLost - curDay}試合`]))));
+  }
 }
 
 /** 自チームの今季最高WAR選手（観測ベース）と二つ名。データが薄い序盤は null。 */

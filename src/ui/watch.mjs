@@ -47,7 +47,7 @@ export function renderWatchScreen(u) {
   root.innerHTML = '';
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, ['観戦　', el('span', { class: 'muted' }, `${tname(v.away)} vs ${tname(v.home)}`)]),
-    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ハブへ戻る')]),
+    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る')]),
   ]));
   // 上部: ラインスコア（イニング別得点＋R/H/E）
   root.append(watchLineScore(v, u));
@@ -398,7 +398,7 @@ function watchControls(v, u, done) {
       const head = notableHeadline(n, (id) => u.pname(id), (id) => tname(id));
       if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
     }
-    ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ハブへ戻る'));
+    ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ホームへ戻る'));
   }
   return ctrl;
 }

@@ -478,7 +478,7 @@ export function renderOffseasonDigestScreen(off, u) {
   }
   const myFarm = (gs.league.farm ?? []).filter((p) => p.teamId === my);
   if (myFarm.length) {
-    root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ハブの「チーム」タブ→二軍で確認できます。`));
+    root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ホームの「チーム」タブ→二軍で確認できます。`));
   }
 
   // --- リーグ全体 ------------------------------------------------------------

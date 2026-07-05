@@ -22,6 +22,7 @@ import {
 } from '../sim/season.mjs';
 import { createUsageState } from '../sim/usage.mjs';
 import { simulatePostseason } from '../sim/postseason.mjs';
+import { buildBoxScore } from './boxscore.mjs';
 
 /**
  * 1シーズンの日次ランタイムを開幕状態で作る。
@@ -145,9 +146,11 @@ export function advanceRuntimeDay(rt, opts = {}) {
   while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
     const g = rt.schedule[rt.cursor];
     const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
-    // 観戦実況: 自チーム試合のみイベント収集（onEvent は乱数非消費＝観戦/スキップで結果不変）。
+    // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
+    // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
+    // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
     let events = null;
-    pass.onEvent = isPlayer && opts.collectPlayerEvents ? (e) => events.push(e) : undefined;
+    pass.onEvent = isPlayer ? (e) => events.push(e) : undefined;
     if (pass.onEvent) events = [];
     const res = playScheduledGame(ctx, g, rt.cursor);
     const rec = {
@@ -159,11 +162,16 @@ export function advanceRuntimeDay(rt, opts = {}) {
       tie: res.tie,
       innings: res.innings,
     };
+    if (isPlayer && events) {
+      // E4: 日程・結果タブの簡易ボックススコア（両軍打者/投手の当日ライン・集計行のみ）。
+      // live も load の replay も同一イベント列から再構築される（決定論・save は集計値のみ）。
+      rec.box = buildBoxScore(events);
+    }
     games.push(rec);
     if (isPlayer) {
       rt.playerGameLog.push(rec); // 集計値のみ（イベントは積まない・§17）
       playerGames.push(rec);
-      if (events) playerEvents = events;
+      if (opts.collectPlayerEvents && events) playerEvents = events;
     }
     rt.cursor++;
   }

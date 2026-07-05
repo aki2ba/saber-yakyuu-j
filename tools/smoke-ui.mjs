@@ -237,12 +237,20 @@ assert.ok(hubHead && textOf(hubHead).includes('2026年'), 'シーズンハブに
 // C4) ニュースフィードがハブに描画される（序盤は placeholder 行）
 assert.ok(hasClass('newsfeed'), 'ハブにニュースフィードが描画される');
 
-// G3) ハブの stat タブ（順位/WAR/打撃/投手/守備/チーム）が既存描画で開ける（例外なし）
-for (const tabName of ['順位表', 'WAR', '打撃', '投手', '守備', 'チーム', 'ハブ']) {
+// G3) ハブのタブ（E4整理: ホーム/チーム/日程・結果/順位/成績/ニュース/記録）が開ける（例外なし）
+for (const tabName of ['順位', '日程・結果', 'ニュース', 'チーム', '記録']) {
   const t = btnByText(tabName);
   assert.ok(t, `ハブに「${tabName}」タブがある`);
   t._onclick();
 }
+// E4) 成績タブはサブタブ集約（打撃/投手/守備/WAR/球団比較）
+btnByText('成績')._onclick();
+for (const sub of ['投手', '守備', 'WAR', '球団比較', '打撃']) {
+  const s = btnByText(sub);
+  assert.ok(s, `成績タブに「${sub}」サブタブがある`);
+  s._onclick();
+}
+btnByText('ホーム')._onclick();
 
 // G4) 采配介入（監督プロファイル差し替え）: おまかせトグル＋方針ボタン
 const tendBtns = allClass('tendbtn');
@@ -305,7 +313,7 @@ btnByText('最後まで')._onclick();
 assert.ok(hasClass('finalscore'), '最後まで進めると最終スコアが出る');
 const finalTxt = textOf(hasClass('finalscore'));
 assert.ok(finalTxt.includes('試合終了'), `観戦の最終スコア表示 (${finalTxt})`);
-btnByText('ハブへ戻る')._onclick();
+btnByText('ホームへ戻る')._onclick(); // E4: 戻る導線の一貫（ハブ→ホーム改称）
 assert.ok(allClass('recentrow').length >= 1, 'ハブの直近結果に観戦した試合が反映される');
 
 // G6) セーブ/ロード（セッションミラー経由・ロード後の描画継続）
@@ -355,7 +363,53 @@ assert.ok(recHeads.some((t) => t.includes('球団史')), '記録タブに球団�
 assert.ok(recHeads.some((t) => t.includes('リーグ記録')), '記録タブにリーグ記録がある');
 assert.ok(allClass('reccol').length >= 4, `リーグ記録が複数カテゴリのカラムで出る (got ${allClass('reccol').length})`);
 
+// ============================================================================
+// フェーズE4: 日程・結果タブ（月別区切り/勝敗/先発）→試合クリック→簡易ボックススコア／ニュースタブ
+// ============================================================================
+// E4a) 日程・結果タブ: 月別見出し・全日程・勝敗マーク・先発の選手リンク
+btnByText('日程・結果')._onclick();
+{
+  const schedHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(schedHeads.filter((t) => t.includes('月')).length >= 5, `月別区切りの見出しが並ぶ (${schedHeads.join('/')})`);
+  assert.ok(schedHeads.some((t) => /月（\d+試合）.*\d+勝\d+敗/.test(t)), `月見出しに月間成績 (${schedHeads[0]})`);
+  const schedRows = walk(appDiv).filter((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
+  assert.ok(schedRows.length >= 120, `シーズン全消化後は全試合がクリック可能 (got ${schedRows.length})`);
+  const schedTxt = textOf(appDiv);
+  assert.ok(schedTxt.includes('○') && schedTxt.includes('●'), '勝敗マーク（○/●）が出る');
+  const schedThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  for (const col of ['節', '相手', 'スコア', '勝敗', '先発']) {
+    assert.ok(schedThs.some((t) => t.startsWith(col)), `日程表に${col}列 (${schedThs.join(',')})`);
+  }
+  assert.ok(allClass('plink').length >= 10, '先発投手名がリンク化（playerLink）');
+  // E4b) 試合クリック → 簡易ボックススコア（ラインスコアR/H/E＋両軍打者/投手の当日ライン）
+  schedRows[0]._onclick();
+  const boxModal = allClass('boxmodal').pop();
+  assert.ok(boxModal, '試合クリックでボックススコアモーダルが開く');
+  const boxThs = walk(boxModal).filter((n) => n.tag === 'th').map(textOf);
+  for (const col of ['R', 'H', 'E', '打順', '打数', '安打', '打点', '四死球', '三振', '回', '球数', '失点', '奪三振']) {
+    assert.ok(boxThs.includes(col), `ボックススコアに${col}列 (${boxThs.join(',')})`);
+  }
+  assert.ok(walk(boxModal).some((n) => (n.className || '').includes('scoreboard')), 'ボックススコアにラインスコア');
+  const boxBatRows = walk(boxModal).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
+  assert.ok(boxBatRows.length >= 20, `両軍の打者/投手ラインが並ぶ (got ${boxBatRows.length})`);
+  assert.ok(walk(boxModal).filter((n) => (n.className || '').includes('plink')).length >= 18, 'ボックススコアの選手名がリンク化');
+}
+
+// E4c) ニュースタブ: チームニュース＋選手の活躍（playerLink 導線）
+btnByText('ニュース')._onclick();
+{
+  assert.ok(allClass('newsfeed').length >= 2, 'ニュースタブにチームニュース/選手の活躍の2セクション');
+  const newsHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(newsHeads.some((t) => t.includes('チームニュース')) && newsHeads.some((t) => t.includes('選手の活躍')),
+    `ニュースタブの見出し (${newsHeads.join('/')})`);
+  const newsLinks = allClass('newsfeed').flatMap((f) => walk(f).filter((n) => (n.className || '').includes('plink') && n._onclick));
+  assert.ok(newsLinks.length >= 1, `ニュース見出しの選手名がリンク化 (got ${newsLinks.length})`);
+  newsLinks[0]._onclick();
+  assert.ok(allClass('overlay').length >= 1, 'ニュースの選手リンクから詳細モーダルが開く');
+}
+
 // C4c) 選手モーダルの「経歴」タブ（二つ名＋年度別成績＋成長曲線SVG＋受賞履歴）
+btnByText('成績')._onclick();
 btnByText('打撃')._onclick();
 const cRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
 assert.ok(cRow, '打撃タブに選手行がある');
@@ -411,7 +465,7 @@ assert.ok(walk(appDiv).some((n) => textOf(n).includes('育成選手はまだい�
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）→年送り→ダイジェスト反映
 // ============================================================================
 // E3a) リザルト→ストーブリーグ画面（スキップ導線も残っていること）
-btnByText('ハブ')._onclick();
+btnByText('ホーム')._onclick();
 btnByText('シーズンリザルトへ')._onclick();
 assert.ok(allClass('plink').length >= 1, '表彰パネルの受賞者名がリンク化（playerLink）');
 assert.ok(btnByText('翌シーズンへ'), 'リザルトにスキップ年送りボタンが残る');
@@ -484,3 +538,4 @@ console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
 console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');
 console.log('UI smoke OK (E2観戦): ラインスコア(9回+R/H/E)→対戦カード(打者/投手/球数/B-S-Oランプ/playerLink)→一球速報(n球目/◇打席行)→進行切替(1球/1打席/1イニング/自動再生)→スタメン折りたたみ(打順/今日)、例外なし');
+console.log('UI smoke OK (E4動線): タブ整理(ホーム/チーム/日程・結果/順位/成績サブタブ/ニュース/記録)→日程・結果(月別/勝敗/先発link)→試合クリック→簡易ボックススコア(ラインスコアR/H/E+両軍打者/投手ライン)→ニュースタブ(選手の活躍→playerLink→モーダル)、例外なし');

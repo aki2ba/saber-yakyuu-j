@@ -11313,20 +11313,29 @@ const WATCH_ZP = { W: 160, H: 180, zx: 50, zy: 52, zw: 60, zh: 76 };
 /**
  * 現打席の一球座標（決定論・rng非消費）: 帯(band)は実データ、帯内の細かい位置は
  * hashSeed(試合識別子, 打席index, 球番号)で生成＝同じ試合は何度見ても同じ図。
- *  band0=ゾーン枠内 / band1=枠線±周辺 / band2=外周（明確ボール）。
+ *  band0=ゾーン枠内 / band1=枠線±周辺 / band2=枠の外（明確ボール）。
+ * リアリティの規律（ユーザーレビュー対応）:
+ *  - 明確ボールは「際からの距離減衰」で描く（現実の外し球の大半はゾーン至近。大外れは稀）
+ *  - スイングされた球（chase）は際のすぐ外に限定（届かない場所のファウルを描かない）
+ *  - 見逃しボールはやや低め方向へバイアス（低めに外す/ワンバウンド系が最頻という現実）
  */
-function watchPitchXY(rec, abIdx, n, band) {
+function watchPitchXY(rec, abIdx, n, band, swung = false) {
   const { W, H, zx, zy, zw, zh } = WATCH_ZP;
   const day = rec && rec.day != null ? rec.day : 0;
   const key1 = hashSeed(day, String(rec && rec.home || ''), String(rec && rec.away || ''), abIdx, n, 1) / 4294967296;
   const key2 = hashSeed(day, String(rec && rec.home || ''), String(rec && rec.away || ''), abIdx, n, 2) / 4294967296;
   if (band === 0) return [zx + 6 + key1 * (zw - 12), zy + 7 + key2 * (zh - 14)]; // ゾーン枠内
-  // 枠中心からの方位角でゾーン枠線上の点を取り、際は±ジッタ・明確ボールは外側へ押し出す
+  // 枠中心からの方位角でゾーン枠線上の点を取り、際は±ジッタ・明確ボールは外側へ減衰で押し出す
   const cx = zx + zw / 2; const cy = zy + zh / 2;
-  const th = key1 * Math.PI * 2;
+  // 見逃しの明確ボールは方位を低め寄りに（sinが正=下方向の確率を上げる）
+  let th = key1 * Math.PI * 2;
+  if (band === 2 && !swung && key1 < 0.5) th = Math.PI * (0.25 + key1); // 下半円へ寄せる（半数）
   const dx = Math.cos(th); const dy = Math.sin(th);
   const t = Math.min((zw / 2) / Math.max(Math.abs(dx), 1e-6), (zh / 2) / Math.max(Math.abs(dy), 1e-6));
-  const r = band === 1 ? t + (key2 - 0.5) * 9 : t + 8 + key2 * 20;
+  let r;
+  if (band === 1) r = t + (key2 - 0.5) * 9; // 際: 枠線を跨ぐ±ジッタ
+  else if (swung) r = t + 4 + key2 * key2 * 8; // chase: 際のすぐ外（+4〜12px・近距離加重）
+  else r = t + 5 + key2 * key2 * 22; // 見逃しボール: 距離減衰（大半は+5〜11px・大外れは稀）
   const x = Math.min(W - 12, Math.max(12, cx + dx * r));
   const y = Math.min(H - 12, Math.max(12, cy + dy * r));
   return [x, y];
@@ -11366,7 +11375,8 @@ function watchZonePlot(v, u, w) {
   const ab = v.curAb;
   if (ab) {
     for (const p of ab.pitches) {
-      const [x, y] = watchPitchXY(w.rec, ab.abIdx, p.n, p.band ?? 1);
+      const swung = p.call === 'whiff' || p.call === 'foul' || p.call === 'inplay';
+      const [x, y] = watchPitchXY(w.rec, ab.abIdx, p.n, p.band ?? 1, swung);
       svg.append(svgText({
         x, y: y + 4.5, class: 'pdot ' + watchCallCls(p.call),
         'font-size': '13', 'font-weight': '700', 'text-anchor': 'middle',

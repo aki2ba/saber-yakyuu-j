@@ -1192,6 +1192,23 @@ const TUNING_DEFAULT = {
     levRispW: 0.25, // 得点圏（2B/3B）加点
     levOutW: 0.15, // アウト1つあたりの減衰
     highLevThreshold: 1.6, // 高レバレッジ判定閾値（この上で最良セットアッパーを投入・S5較正で調整）
+    // 破綻救援ガード（多年運用・原則2「WAR-6の根絶」の投手版・捕手の壊滅ガードと同型）。
+    //   前年の観測失点率(RA9=r*27/outs)が破綻水準の"前歴"があり、かつ当年も観測で不振を確認できる
+    //   救援を、当日ブルペン可用リストから確率的に外す（連投蓄積を止め破綻救援のIP膨張＝投手WARの
+    //   単調悪化を防ぐ）。三層構造: 真値は見ず前年＋当年の観測RA9のみで判定。
+    //   ★1年目不変の保証: 判定には"前年の観測ライン"が必須で、1年目は前年が存在しない（priorPitch 空）
+    //     ため全員 前歴なし＝ガードは一切作動しない（較正53指標・SV/HLD/登板数王が byte 不変）。
+    //     ゆえに以下の閾値は1年目較正に無影響で、多年の健全性（6seed×60年で最悪救援WARを最小化しつつ
+    //     救援登板分布を保つ）だけで較正した。
+    //   ★間引き率の設計（実測知見）: 完全排除(prob=1)は逆効果＝空いたIPが最小登板の別の弱い救援へ集中し
+    //     "被害の付け替え"で最悪WARがかえって悪化（-6級）する。0.6 前後の"確率間引き"が最善で、
+    //     早めの検出(CurrBF小)とあわせて破綻救援のIP膨張を抑えつつ健全な救援へ負荷を薄く分散する。
+    //     6seed×60年で 最悪救援WAR -5.27→-4.34 / WAR<-4 の season 17→1（登板数王・SV/HLD分布は健全維持）。
+    relieverGuardPriorRA9: 5.5, // 前年の観測RA9がこれ以上＝救援として破綻の前歴（リーグ平均救援RA9≈4.2）
+    relieverGuardPriorBF: 100, // 前年の最低対戦打者数（少なければ前歴と見なさない＝一時起用/新人を守る）
+    relieverGuardCurrRA9: 6.0, // 当年の観測RA9がこれ以上（前歴＋当年不振の二段確認・当年持ち直しは対象外）
+    relieverGuardCurrBF: 45, // 当年これだけ投げてなお不振なら間引き開始（早期検出でIP膨張を抑制。序盤小標本は不作動）
+    relieverGuardExcludeProb: 0.6, // 該当救援を当日可用から外す確率（完全排除でなく間引き＝負荷を分散し登板分布を保つ）
   },
 
   // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
@@ -5085,7 +5102,7 @@ function assignDecisions(home, away, statFor, runLog) {
  * @param {{id:string}} team
  * @param {{dh:Object, noDh:Object}} charts buildDepthChart のDH有/無ペア（byId等は共通）
  */
-function createUsageState(team, charts, cfg) {
+function createUsageState(team, charts, cfg, priorPitch = null) {
   const u = cfg.tuning.usage;
   const chart = charts.dh; // byId / positionRank / rotation / bullpen は dh/noDh で共通
   // スカウト打撃評価（真値 + scoutSeed由来の決定論ノイズ。50中心rating相当）: ここで一度だけ固める
@@ -5142,7 +5159,34 @@ function createUsageState(team, charts, cfg) {
     //   1年目は空＝一切無影響（simulateSeason/1年目ゲームは既存50較正と bit 同一）。
     //   startSeasonRuntime が直前オフの故障(gamesLost)からシーズン開幕時に一度だけ埋める。
     injuredUntil: new Map(),
+    // 破綻救援ガード（多年運用・原則2「WAR-6の根絶」の投手版）の"前歴": pid → 前年の観測投手ライン。
+    //   前年に破綻水準(RA9)の失点を晒した救援を当年の観測不振とあわせて可用から間引く判定に使う。
+    //   1年目は空(null)＝ガード完全不作動＝較正53指標が byte 不変（startYear が2年目以降のみ埋める）。
+    priorPitch: priorPitch || null,
   };
+}
+
+/**
+ * 破綻救援ガード（§S3-2投手可用性・原則2）: 捕手の壊滅ガードと同型の投手版。
+ * 「前年の観測失点率(RA9)が破綻水準」という"前歴"があり、かつ「当年も観測で不振を確認」できる
+ * 救援を、当日ブルペン可用リストから確率的に外す（連投蓄積を止め、破綻救援のIP膨張＝
+ * 投手WARの単調悪化を防ぐ）。三層構造: 真値は一切見ず、前年＋当年の観測失点率のみで判定する。
+ * 1年目は priorPitch が空ゆえ全員 前歴なし＝一切作動しない（較正53指標・SV/HLD/登板数王が byte 不変）。
+ * 完全排除でなく確率間引きにしてリーグの救援登板分布（登板数王45-65・SV/HLD分布）を壊さない。
+ * @returns {boolean} true=当日は可用から外す
+ */
+function relieverGuardExcludes(state, pid, cfg, getPitch, penRng) {
+  const g = cfg.tuning.pen;
+  if (!state.priorPitch || !getPitch || !penRng) return false; // 前歴無/配線無（単体テスト等）は不作動
+  const prior = state.priorPitch.get(pid);
+  if (!prior || prior.bf < g.relieverGuardPriorBF) return false; // 前歴なし/僅少（新人・前年ほぼ未登板）
+  const priorRA9 = prior.outs > 0 ? (prior.r * 27) / prior.outs : 0;
+  if (priorRA9 < g.relieverGuardPriorRA9) return false; // 前年は破綻水準でない（実績ある救援は守る）
+  const cur = getPitch(pid);
+  if (!cur || cur.bf < g.relieverGuardCurrBF) return false; // 当年の標本不足＝序盤は干渉しない
+  const curRA9 = cur.outs > 0 ? (cur.r * 27) / cur.outs : 0;
+  if (curRA9 < g.relieverGuardCurrRA9) return false; // 当年は持ち直している→従来通り起用（バウンスバックを妨げない）
+  return penRng.next() < g.relieverGuardExcludeProb;
 }
 
 /** 故障離脱中か（day < 復帰日）。injuredUntil が空/未設定（1年目）なら常に false＝既存挙動と bit 同一。 */
@@ -5216,20 +5260,29 @@ function selectStarter(state, day, cfg) {
   return fallback; // 1日1試合×ローテ6なら理論上ここへは来ない（安全弁: 最も休めた投手）
 }
 
-/** 救援の可用リスト: 直近 maxConsecDays 日連続登板（=3連投になる）と前日30球以上を除外。§S3-2 */
-function bullpenAvailable(state, day, cfg) {
+/**
+ * 救援の可用リスト: 直近 maxConsecDays 日連続登板（=3連投になる）と前日30球以上を除外。§S3-2
+ * さらに多年運用では破綻救援ガード（前年＋当年の観測失点率が破綻水準の救援を確率間引き・原則2）を適用。
+ * @param {?Function} getPitch pid → 当年の観測投手ライン（読み取り専用・破綻ガード用）
+ * @param {?Object} penRng ガードの確率判定用RNG（試合×サイドで独立の階層シード・決定論）
+ */
+function bullpenAvailable(state, day, cfg, getPitch, penRng) {
   const f = cfg.tuning.fatigue;
   return state.charts.dh.bullpen.filter((pid) => {
     if (isInjured(state, pid, day)) return false; // 離脱中の救援は可用リストから外す（C2.4）
     const m = state.pitchedByDay.get(pid);
-    if (!m) return true;
-    if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
-    let consec = 0;
-    for (let d = 1; d <= f.maxConsecDays; d++) {
-      if ((m.get(day - d) ?? 0) > 0) consec++;
-      else break;
+    if (m) {
+      if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
+      let consec = 0;
+      for (let d = 1; d <= f.maxConsecDays; d++) {
+        if ((m.get(day - d) ?? 0) > 0) consec++;
+        else break;
+      }
+      if (consec >= f.maxConsecDays) return false; // 2連投まで（3連投禁止）
     }
-    return consec < f.maxConsecDays; // 2連投まで（3連投禁止）
+    // 破綻救援ガード（多年運用・原則2）: 前歴＋当年観測で破綻確認の救援を確率排除。1年目は不作動。
+    if (relieverGuardExcludes(state, pid, cfg, getPitch, penRng)) return false;
+    return true;
   });
 }
 
@@ -6104,6 +6157,7 @@ function buildTeamCharts(league, cfg) {
 function makeSeasonStats(season) {
   const stats = new Map();
   const emptyBat = createBattingLine();
+  const emptyPitch = createPitchingLine();
   const statFor = (pid, teamId) => {
     let s = stats.get(pid);
     if (!s) {
@@ -6117,7 +6171,12 @@ function makeSeasonStats(season) {
     const s = stats.get(pid);
     return s ? s.batting : emptyBat;
   };
-  return { stats, statFor, getBat };
+  // 当年の観測投手ライン（破綻救援ガード用・読み取り専用）。未出場は空ライン＝ガード非該当。
+  const getPitch = (pid) => {
+    const s = stats.get(pid);
+    return s ? s.pitching : emptyPitch;
+  };
+  return { stats, statFor, getBat, getPitch };
 }
 
 /**
@@ -6165,7 +6224,9 @@ function playScheduledGame(ctx, g, gi) {
       starterPid,
       lineup: sel.lineup,
       bench: sel.bench,
-      availableRelievers: bullpenAvailable(u, g.day, cfg),
+      // 破綻救援ガード（多年運用・原則2）: 当年観測(pass.getPitch)＋独立の階層シードRNGで確率間引き。
+      //   penGuard は既存ストリーム(game/lineup)と別座標＝1年目（前歴なしで不作動）は byte 不変。
+      availableRelievers: bullpenAvailable(u, g.day, cfg, pass.getPitch, makeRng(hashSeed(seed, 'penGuard', gi, sideIdx))),
       manager: teamById.get(teamId).manager,
       dh: gameDh,
     };
@@ -6328,7 +6389,7 @@ function simulateSeason(league, cfg, opts = {}) {
   if (opts.context) {
     const derive = makeStats();
     const dgc = makeDeriveContext(cfg);
-    runPass({ statFor: derive.statFor, getBat: derive.getBat, gameContext: dgc }); // pass1: 導出のみ（集計は破棄）
+    runPass({ statFor: derive.statFor, getBat: derive.getBat, getPitch: derive.getPitch, gameContext: dgc }); // pass1: 導出のみ（集計は破棄）
     contextTables = deriveTables(dgc, cfg);
     contextCheck = { wpaMaxErr: 0 };
   }
@@ -6337,6 +6398,7 @@ function simulateSeason(league, cfg, opts = {}) {
   const usageByTeam = runPass({
     statFor: main.statFor,
     getBat: main.getBat,
+    getPitch: main.getPitch,
     standings,
     runSplit,
     onBattedBall,
@@ -6844,7 +6906,7 @@ function selfCheck(seed = 20260701, n = 8) {
  *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
  * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
  */
-function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [] }) {
+function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
   // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
   const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
@@ -6854,7 +6916,9 @@ function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, pl
     standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
   }
   const stats = makeSeasonStats(season);
-  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
+  // priorPitch=前年の観測投手ライン(pid→line)。破綻救援ガード（多年運用・原則2）の"前歴"。
+  //   1年目は null（前年なし）＝ガード不作動＝較正53指標が byte 不変（startYear が2年目以降のみ渡す）。
+  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, priorPitch)]));
   // 開幕IL: 故障選手を所属チームの起用状態に「day < gamesLost の間は不可」として載せる。
   //   day は schedule の節index（1日≒1試合）＝gamesLost をそのまま離脱日数として扱う。
   //   これで selectLineup/selectStarter/bullpenAvailable が離脱中の選手を除外し、ベンチ/控えが
@@ -6934,6 +6998,7 @@ function advanceRuntimeDay(rt, opts = {}) {
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
+    getPitch: rt.stats.getPitch, // 破綻救援ガードの当年観測（多年運用・原則2）
     standings: rt.standings,
     runSplit: rt.runSplit,
   };
@@ -9099,10 +9164,20 @@ function startYear(state) {
   //   state.cfg を同一参照で返す＝1年目レギュラーシーズンは D3 前と byte 一致**（既存50較正不変）。
   state.era = computeEra(state.masterSeed, state.yearIndex, state.cfg);
   const seasonCfg = eraSeasonConfig(state.cfg, state.era);
+  // 破綻救援ガードの"前歴"（多年運用・原則2）: 前年(state.year-1)の観測投手ラインを pid→line で渡す。
+  //   careerStats は live/load とも同一（blob 復元済み）＝決定論。1年目は前年が無く空 Map ＝ガード不作動
+  //   （priorPitch が空なら createUsageState→bullpenAvailable のガードは全員 前歴なしで一切効かない）
+  //   ＝1年目レギュラーシーズンは byte 不変（較正53指標・SV/HLD/登板数王が不動）。
+  const prevYear = state.year - 1;
+  const priorPitch = new Map();
+  for (const s of state.careerStats) {
+    if (s.season === prevYear && s.pitching && s.pitching.g > 0) priorPitch.set(s.playerId, s.pitching);
+  }
   state.rt = startSeasonRuntime(state.league, seasonCfg, {
     season: state.year,
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
+    priorPitch,
     // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
     //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
     //   再構築されるため決定論（IL は真値でなく offseasonTransition の再計算で復元＝save に含めない）。

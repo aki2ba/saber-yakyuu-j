@@ -29,7 +29,7 @@ import { POSITION_DIFFICULTY } from '../model/positions.mjs';
  * @param {{id:string}} team
  * @param {{dh:Object, noDh:Object}} charts buildDepthChart のDH有/無ペア（byId等は共通）
  */
-export function createUsageState(team, charts, cfg) {
+export function createUsageState(team, charts, cfg, priorPitch = null) {
   const u = cfg.tuning.usage;
   const chart = charts.dh; // byId / positionRank / rotation / bullpen は dh/noDh で共通
   // スカウト打撃評価（真値 + scoutSeed由来の決定論ノイズ。50中心rating相当）: ここで一度だけ固める
@@ -86,7 +86,34 @@ export function createUsageState(team, charts, cfg) {
     //   1年目は空＝一切無影響（simulateSeason/1年目ゲームは既存50較正と bit 同一）。
     //   startSeasonRuntime が直前オフの故障(gamesLost)からシーズン開幕時に一度だけ埋める。
     injuredUntil: new Map(),
+    // 破綻救援ガード（多年運用・原則2「WAR-6の根絶」の投手版）の"前歴": pid → 前年の観測投手ライン。
+    //   前年に破綻水準(RA9)の失点を晒した救援を当年の観測不振とあわせて可用から間引く判定に使う。
+    //   1年目は空(null)＝ガード完全不作動＝較正53指標が byte 不変（startYear が2年目以降のみ埋める）。
+    priorPitch: priorPitch || null,
   };
+}
+
+/**
+ * 破綻救援ガード（§S3-2投手可用性・原則2）: 捕手の壊滅ガードと同型の投手版。
+ * 「前年の観測失点率(RA9)が破綻水準」という"前歴"があり、かつ「当年も観測で不振を確認」できる
+ * 救援を、当日ブルペン可用リストから確率的に外す（連投蓄積を止め、破綻救援のIP膨張＝
+ * 投手WARの単調悪化を防ぐ）。三層構造: 真値は一切見ず、前年＋当年の観測失点率のみで判定する。
+ * 1年目は priorPitch が空ゆえ全員 前歴なし＝一切作動しない（較正53指標・SV/HLD/登板数王が byte 不変）。
+ * 完全排除でなく確率間引きにしてリーグの救援登板分布（登板数王45-65・SV/HLD分布）を壊さない。
+ * @returns {boolean} true=当日は可用から外す
+ */
+function relieverGuardExcludes(state, pid, cfg, getPitch, penRng) {
+  const g = cfg.tuning.pen;
+  if (!state.priorPitch || !getPitch || !penRng) return false; // 前歴無/配線無（単体テスト等）は不作動
+  const prior = state.priorPitch.get(pid);
+  if (!prior || prior.bf < g.relieverGuardPriorBF) return false; // 前歴なし/僅少（新人・前年ほぼ未登板）
+  const priorRA9 = prior.outs > 0 ? (prior.r * 27) / prior.outs : 0;
+  if (priorRA9 < g.relieverGuardPriorRA9) return false; // 前年は破綻水準でない（実績ある救援は守る）
+  const cur = getPitch(pid);
+  if (!cur || cur.bf < g.relieverGuardCurrBF) return false; // 当年の標本不足＝序盤は干渉しない
+  const curRA9 = cur.outs > 0 ? (cur.r * 27) / cur.outs : 0;
+  if (curRA9 < g.relieverGuardCurrRA9) return false; // 当年は持ち直している→従来通り起用（バウンスバックを妨げない）
+  return penRng.next() < g.relieverGuardExcludeProb;
 }
 
 /** 故障離脱中か（day < 復帰日）。injuredUntil が空/未設定（1年目）なら常に false＝既存挙動と bit 同一。 */
@@ -160,20 +187,29 @@ export function selectStarter(state, day, cfg) {
   return fallback; // 1日1試合×ローテ6なら理論上ここへは来ない（安全弁: 最も休めた投手）
 }
 
-/** 救援の可用リスト: 直近 maxConsecDays 日連続登板（=3連投になる）と前日30球以上を除外。§S3-2 */
-export function bullpenAvailable(state, day, cfg) {
+/**
+ * 救援の可用リスト: 直近 maxConsecDays 日連続登板（=3連投になる）と前日30球以上を除外。§S3-2
+ * さらに多年運用では破綻救援ガード（前年＋当年の観測失点率が破綻水準の救援を確率間引き・原則2）を適用。
+ * @param {?Function} getPitch pid → 当年の観測投手ライン（読み取り専用・破綻ガード用）
+ * @param {?Object} penRng ガードの確率判定用RNG（試合×サイドで独立の階層シード・決定論）
+ */
+export function bullpenAvailable(state, day, cfg, getPitch, penRng) {
   const f = cfg.tuning.fatigue;
   return state.charts.dh.bullpen.filter((pid) => {
     if (isInjured(state, pid, day)) return false; // 離脱中の救援は可用リストから外す（C2.4）
     const m = state.pitchedByDay.get(pid);
-    if (!m) return true;
-    if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
-    let consec = 0;
-    for (let d = 1; d <= f.maxConsecDays; d++) {
-      if ((m.get(day - d) ?? 0) > 0) consec++;
-      else break;
+    if (m) {
+      if ((m.get(day - 1) ?? 0) >= f.prevDayPitchLimit) return false; // 前日30球以上は不可
+      let consec = 0;
+      for (let d = 1; d <= f.maxConsecDays; d++) {
+        if ((m.get(day - d) ?? 0) > 0) consec++;
+        else break;
+      }
+      if (consec >= f.maxConsecDays) return false; // 2連投まで（3連投禁止）
     }
-    return consec < f.maxConsecDays; // 2連投まで（3連投禁止）
+    // 破綻救援ガード（多年運用・原則2）: 前歴＋当年観測で破綻確認の救援を確率排除。1年目は不作動。
+    if (relieverGuardExcludes(state, pid, cfg, getPitch, penRng)) return false;
+    return true;
   });
 }
 

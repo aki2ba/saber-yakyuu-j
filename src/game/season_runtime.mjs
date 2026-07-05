@@ -32,7 +32,7 @@ import { simulatePostseason } from '../sim/postseason.mjs';
  *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
  * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
  */
-export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [] }) {
+export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
   // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
   const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
@@ -42,7 +42,9 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
   }
   const stats = makeSeasonStats(season);
-  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
+  // priorPitch=前年の観測投手ライン(pid→line)。破綻救援ガード（多年運用・原則2）の"前歴"。
+  //   1年目は null（前年なし）＝ガード不作動＝較正53指標が byte 不変（startYear が2年目以降のみ渡す）。
+  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, priorPitch)]));
   // 開幕IL: 故障選手を所属チームの起用状態に「day < gamesLost の間は不可」として載せる。
   //   day は schedule の節index（1日≒1試合）＝gamesLost をそのまま離脱日数として扱う。
   //   これで selectLineup/selectStarter/bullpenAvailable が離脱中の選手を除外し、ベンチ/控えが
@@ -122,6 +124,7 @@ export function advanceRuntimeDay(rt, opts = {}) {
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
+    getPitch: rt.stats.getPitch, // 破綻救援ガードの当年観測（多年運用・原則2）
     standings: rt.standings,
     runSplit: rt.runSplit,
   };

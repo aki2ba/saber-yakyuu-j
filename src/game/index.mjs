@@ -122,10 +122,20 @@ function startYear(state) {
   //   state.cfg を同一参照で返す＝1年目レギュラーシーズンは D3 前と byte 一致**（既存50較正不変）。
   state.era = computeEra(state.masterSeed, state.yearIndex, state.cfg);
   const seasonCfg = eraSeasonConfig(state.cfg, state.era);
+  // 破綻救援ガードの"前歴"（多年運用・原則2）: 前年(state.year-1)の観測投手ラインを pid→line で渡す。
+  //   careerStats は live/load とも同一（blob 復元済み）＝決定論。1年目は前年が無く空 Map ＝ガード不作動
+  //   （priorPitch が空なら createUsageState→bullpenAvailable のガードは全員 前歴なしで一切効かない）
+  //   ＝1年目レギュラーシーズンは byte 不変（較正53指標・SV/HLD/登板数王が不動）。
+  const prevYear = state.year - 1;
+  const priorPitch = new Map();
+  for (const s of state.careerStats) {
+    if (s.season === prevYear && s.pitching && s.pitching.g > 0) priorPitch.set(s.playerId, s.pitching);
+  }
   state.rt = startSeasonRuntime(state.league, seasonCfg, {
     season: state.year,
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
+    priorPitch,
     // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
     //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
     //   再構築されるため決定論（IL は真値でなく offseasonTransition の再計算で復元＝save に含めない）。

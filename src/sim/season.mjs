@@ -11,7 +11,7 @@
 // ポストシーズン（§S3-3・postseason.mjs）: CS→日本シリーズ。統計はレギュラーと分離集計。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
-import { createPlayerSeason, createTeamSeason, createBattingLine } from '../model/statline.mjs';
+import { createPlayerSeason, createTeamSeason, createBattingLine, createPitchingLine } from '../model/statline.mjs';
 import { NEUTRAL_PARK } from '../model/battedball.mjs';
 import { buildDepthChart } from './team.mjs';
 import { simulateGame } from './game.mjs';
@@ -165,6 +165,7 @@ export function buildTeamCharts(league, cfg) {
 export function makeSeasonStats(season) {
   const stats = new Map();
   const emptyBat = createBattingLine();
+  const emptyPitch = createPitchingLine();
   const statFor = (pid, teamId) => {
     let s = stats.get(pid);
     if (!s) {
@@ -178,7 +179,12 @@ export function makeSeasonStats(season) {
     const s = stats.get(pid);
     return s ? s.batting : emptyBat;
   };
-  return { stats, statFor, getBat };
+  // 当年の観測投手ライン（破綻救援ガード用・読み取り専用）。未出場は空ライン＝ガード非該当。
+  const getPitch = (pid) => {
+    const s = stats.get(pid);
+    return s ? s.pitching : emptyPitch;
+  };
+  return { stats, statFor, getBat, getPitch };
 }
 
 /**
@@ -226,7 +232,9 @@ export function playScheduledGame(ctx, g, gi) {
       starterPid,
       lineup: sel.lineup,
       bench: sel.bench,
-      availableRelievers: bullpenAvailable(u, g.day, cfg),
+      // 破綻救援ガード（多年運用・原則2）: 当年観測(pass.getPitch)＋独立の階層シードRNGで確率間引き。
+      //   penGuard は既存ストリーム(game/lineup)と別座標＝1年目（前歴なしで不作動）は byte 不変。
+      availableRelievers: bullpenAvailable(u, g.day, cfg, pass.getPitch, makeRng(hashSeed(seed, 'penGuard', gi, sideIdx))),
       manager: teamById.get(teamId).manager,
       dh: gameDh,
     };
@@ -389,7 +397,7 @@ export function simulateSeason(league, cfg, opts = {}) {
   if (opts.context) {
     const derive = makeStats();
     const dgc = makeDeriveContext(cfg);
-    runPass({ statFor: derive.statFor, getBat: derive.getBat, gameContext: dgc }); // pass1: 導出のみ（集計は破棄）
+    runPass({ statFor: derive.statFor, getBat: derive.getBat, getPitch: derive.getPitch, gameContext: dgc }); // pass1: 導出のみ（集計は破棄）
     contextTables = deriveTables(dgc, cfg);
     contextCheck = { wpaMaxErr: 0 };
   }
@@ -398,6 +406,7 @@ export function simulateSeason(league, cfg, opts = {}) {
   const usageByTeam = runPass({
     statFor: main.statFor,
     getBat: main.getBat,
+    getPitch: main.getPitch,
     standings,
     runSplit,
     onBattedBall,

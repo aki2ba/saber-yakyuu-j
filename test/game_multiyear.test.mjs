@@ -25,6 +25,8 @@ import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
 import { newGame, advanceTo, advanceYear } from '../src/game/index.mjs';
 import { leagueSummary } from '../src/sim/leagueStats.mjs';
+import { seasonLeagueConstants } from '../src/game/awards.mjs';
+import { pitcherWAR } from '../src/sim/war.mjs';
 
 const SEEDS = [1, 2, 3]; // 多seed平均で単seedの当たり年ノイズをならす（決定論）
 const YEARS = 20;
@@ -124,4 +126,118 @@ test('多年運用: 1年目（yearIndex0）は不変 — single simulateSeason �
   assert.equal(y0.batting.slg, bulkSum.batting.slg, '1年目 SLG が一括シムと一致');
   assert.equal(y0.pitching.era, bulkSum.pitching.era, '1年目 ERA が一括シムと一致');
   assert.equal(y0.batting.hr, bulkSum.batting.hr, '1年目 総HR が一括シムと一致');
+});
+
+// ============================================================================
+// Bug2 回帰: 破綻救援ガード（多年運用・原則2「WAR-6の根絶」の投手版）
+//
+// 監査で確認した重大欠陥: usage.mjs の不振ベンチ/壊滅ガードは打者・捕手専用で、破綻した救援を
+//   降格/回避するブルペン側の等価ロジックが無かった。chooseReliever は middle を「最小登板」で
+//   均すため、崩壊した救援でも均等に ~55登板/~80IP を消化し、多年で最悪救援WARが -5.27 まで沈む
+//   （60年×複数seed）。野手床(-2.86)より悪く原則2の精神に反する。
+//   → bullpenAvailable に捕手ガードと同型の破綻救援ガードを新設（前年＋当年の観測失点率のみで判定・
+//     真値非参照＝三層構造）。前年の観測が必須ゆえ1年目は前歴が無く一切作動しない（byte 不変）。
+//
+// 本テストの主張:
+//   A) 60年×複数seedで最悪救援WAR > -5（理想 > -4.5）。破綻救援は誰も WAR<-5 に達しない（原則2）。
+//   B) 救援登板分布が健全: 登板数王・SV王・HLD王が NPB 圏内（ガードの間引きで一部へ過集中しない）。
+//   C) 決定論: 同一 masterSeed の多年運用は最悪救援WARが再実行で bit 一致。
+//   D) 1年目不変: ガードは前歴（前年観測）が必須＝1年目は不作動。year0 の救援登板/SV/HLD の各王が
+//      single simulateSeason と byte 一致（ガードが1年目較正に無影響であることの直接検証）。
+// ============================================================================
+
+/** 1世界を years 年運用し、各年の救援(gs=0)について最悪WAR・登板/SV/HLD王を返す（決定論）。 */
+function runReliefYears(seed, years) {
+  const cfg = createConfig();
+  const league = generateLeague(seed, cfg);
+  const st = newGame(seed, league.teams[0].id, { cfg });
+  const perYear = [];
+  for (let y = 0; y < years; y++) {
+    advanceTo(st, 'seasonEnd');
+    const year = st.year;
+    const playerSeasons = st.careerStats.filter((s) => s.season === year);
+    const standings = st.teamHistory.find((h) => h.year === year).standings;
+    const lc = seasonLeagueConstants(playerSeasons, standings);
+    let worstWar = Infinity, appLead = 0, svLead = 0, hldLead = 0;
+    for (const s of playerSeasons) {
+      const p = s.pitching;
+      if (!p || p.gs !== 0 || p.g === 0) continue; // 純粋救援のみ（先発/スイングマンは対象外）
+      appLead = Math.max(appLead, p.g);
+      svLead = Math.max(svLead, p.sv);
+      hldLead = Math.max(hldLead, p.hld);
+      if (p.outs >= 30) worstWar = Math.min(worstWar, pitcherWAR(s, cfg, lc).war); // 30IP以上の救援でWAR床を見る
+    }
+    perYear.push({ worstWar, appLead, svLead, hldLead });
+    advanceYear(st);
+  }
+  return perYear;
+}
+
+const RELIEF_SEEDS = [2024, 2]; // Config Y 検証で seed2 が最悪(-4.34)＝ストレスケースを含める
+const RELIEF_YEARS = 60;
+const RELIEF = RELIEF_SEEDS.map((s) => runReliefYears(s, RELIEF_YEARS)); // 一度回して各主張で使い回す
+
+test('Bug2 破綻救援ガード: 60年×複数seedで最悪救援WAR > -5（原則2「WAR-6の根絶」の投手版）', () => {
+  let worst = Infinity;
+  for (const yrs of RELIEF) for (const r of yrs) worst = Math.min(worst, r.worstWar);
+  // 旧欠陥は -5.27（>-5 を破る）。再較正後は -4.34（Config Y 実測）。
+  //   ハード保証（要件の床）: 全 season で 誰も WAR ≤ -5 の救援を作らない。
+  assert.ok(worst > -5, `最悪救援WAR=${worst.toFixed(2)} が > -5（旧欠陥 -5.27 を弾く）`);
+  // 追加の締め（決定論ゆえ実測 -4.34 に余裕を持たせた回帰床）: 再び -4.6 を割ったら劣化。
+  assert.ok(worst > -4.6, `最悪救援WAR=${worst.toFixed(2)} が > -4.6（ガード劣化の検知）`);
+});
+
+test('Bug2 破綻救援ガード: 救援登板分布が健全（登板数王/SV王/HLD王が NPB 圏内・過集中しない）', () => {
+  let appMax = 0, svMax = 0, hldMax = 0;
+  const appLeads = [];
+  for (const yrs of RELIEF) for (const r of yrs) {
+    appMax = Math.max(appMax, r.appLead);
+    svMax = Math.max(svMax, r.svLead);
+    hldMax = Math.max(hldMax, r.hldLead);
+    appLeads.push(r.appLead);
+  }
+  // ガードの間引きで空いたIPが一部へ過集中すると登板数王が跳ねる（完全排除の実測は 90超）。
+  //   確率間引き(0.6)＋早期検出で健全な救援へ薄く分散＝登板数王は 85 以下に収まる（実測 ≤78）。
+  assert.ok(appMax <= 85, `救援登板数王(60年最大)=${appMax} ≤ 85（過集中していない）`);
+  // 典型（p90）の登板数王が NPB 圏内であること（外れ年の1本だけで判定しない）。
+  appLeads.sort((a, b) => a - b);
+  const p90 = appLeads[Math.floor(appLeads.length * 0.9)];
+  assert.ok(p90 <= 75, `救援登板数王のp90=${p90} ≤ 75（分布の胴体が健全）`);
+  assert.ok(svMax >= 30 && svMax <= 62, `SV王(60年最大)=${svMax} が [30,62]（抑え起用が健全）`);
+  assert.ok(hldMax >= 28 && hldMax <= 55, `HLD王(60年最大)=${hldMax} が [28,55]（セットアップ起用が健全）`);
+});
+
+test('Bug2 破綻救援ガード: 決定論 — 同一 masterSeed の運用は最悪救援WARが再実行で bit 一致', () => {
+  const a = runReliefYears(2024, 12);
+  const b = runReliefYears(2024, 12);
+  for (let y = 0; y < 12; y++) {
+    assert.equal(a[y].worstWar, b[y].worstWar, `yi${y} 最悪救援WAR が一致`);
+    assert.equal(a[y].appLead, b[y].appLead, `yi${y} 救援登板数王 が一致`);
+  }
+});
+
+test('Bug2 破綻救援ガード: 1年目不変 — year0 の救援登板/SV/HLD 王が single simulateSeason と byte 一致', () => {
+  const cfg = createConfig();
+  const SEED = 424242;
+  // ガードは前歴（前年観測）が必須＝year0 は priorPitch 空で一切作動しない。1年目の救援起用分布が
+  //   一括シムと byte 一致することを直接検証（登板数王/SV王/HLD王＝較正の該当指標の素）。
+  const league = generateLeague(SEED, cfg);
+  const bulk = simulateSeason(league, cfg, { season: cfg.game.firstSeason, seed: SEED });
+  const leadOf = (playerSeasons) => {
+    let app = 0, sv = 0, hld = 0;
+    for (const s of playerSeasons) {
+      const p = s.pitching;
+      if (!p || p.gs !== 0 || p.g === 0) continue;
+      app = Math.max(app, p.g); sv = Math.max(sv, p.sv); hld = Math.max(hld, p.hld);
+    }
+    return { app, sv, hld };
+  };
+  const bulkLead = leadOf(bulk.playerSeasons);
+  const st = newGame(SEED, league.teams[0].id, { cfg });
+  advanceTo(st, 'seasonEnd');
+  const y0 = st.careerStats.filter((s) => s.season === cfg.game.firstSeason);
+  const gameLead = leadOf(y0);
+  assert.equal(gameLead.app, bulkLead.app, '1年目 救援登板数王 が一括シムと一致（ガード不作動）');
+  assert.equal(gameLead.sv, bulkLead.sv, '1年目 SV王 が一括シムと一致');
+  assert.equal(gameLead.hld, bulkLead.hld, '1年目 HLD王 が一括シムと一致');
 });

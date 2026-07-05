@@ -29,6 +29,8 @@ import {
 import { renderTeamTab } from './ui/team.mjs';
 // フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
 import { renderWatchScreen } from './ui/watch.mjs';
+// フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
+import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
 
 const state = {
   league: null,
@@ -1504,8 +1506,9 @@ function renderSeasonResult() {
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, `${gs.year}年 シーズンリザルト`),
     el('div', { class: 'row' }, [
-      // E1最小の年送り（E3でこの手前に「ストーブリーグ」ステップが入る予定・phaseE_spec E3）。
-      el('button', { class: 'primary', onclick: () => advanceToNextYearUI() }, '▶ 翌シーズンへ（オフシーズン処理）'),
+      // E3: リザルト→年送りの間に「ストーブリーグ」ステップ（FA入札/トレード起案）。スキップも可。
+      el('button', { class: 'primary', onclick: () => renderStoveScreen(stoveDeps()) }, '▶ ストーブリーグへ（FA・トレード）'),
+      el('button', { onclick: () => advanceToNextYearUI() }, '翌シーズンへ（スキップ）'),
       el('button', { onclick: () => renderHub('standings') }, '成績を見る'),
       el('button', { class: 'link', onclick: () => renderTitle() }, 'タイトルへ'),
     ]),
@@ -1520,54 +1523,30 @@ function renderSeasonResult() {
   renderStandings(content); // 2リーグ順位表＋ポストシーズンパネル（既存描画を再利用）
 }
 
-// --- 年送り（E1最小版。E3で「ストーブリーグ」ステップに拡張予定） -----------------
-// 市場介入（bidFA/proposeTrade）は advanceYear の前に marketInterventions へ積む前提（E3のUI）。
-// ここではエンジン既存の advanceYear（決定論・セーブは careerStats/介入ログから replay 再現）を
-// 実行し、オフシーズン要約ダイジェストを表示するのみ＝UI都合の新たな乱数消費・状態変更はない。
+// --- 年送り（E3: ストーブリーグ→オフシーズン処理→ダイジェスト） -----------------
+// 市場介入（bidFA/proposeTrade）はストーブリーグ画面（src/ui/stove.mjs）が advanceYear の前に
+// marketInterventions へ積む。ここではエンジン既存の advanceYear（決定論・セーブは careerStats/
+// 介入ログから replay 再現）を実行し、オフシーズン要約ダイジェストを表示するのみ
+// ＝UI都合の新たな乱数消費・状態変更はない。
 function advanceToNextYearUI() {
   const off = advanceYear(game.gs);
   bindGameContext(game.gs); // 引退/新人/育成獲得で players/farm が変わる＝byId を張り直す
   autoSave();
-  renderOffseasonDigest(off);
+  renderOffseasonDigestScreen(off, stoveDeps()); // E3: 1画面ダイジェスト（実装は src/ui/stove.mjs）
 }
 
-/** オフシーズン要約ダイジェスト（E1最小。E3で引退/ドラフト/FA/トレードの詳細1画面に整理予定）。 */
-function renderOffseasonDigest(off) {
-  const gs = game.gs;
-  const root = document.getElementById('app');
-  root.innerHTML = '';
-  root.append(el('div', { class: 'header' }, [
-    el('h2', {}, `${gs.year - 1}年 オフシーズン`),
-    el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => renderHub() }, `▶ ${gs.year}年シーズン開幕へ`)]),
-  ]));
-  root.append(el('div', { class: 'pspanel' }, [
-    el('h3', { class: 'leaguename' }, 'ストーブリーグ要約（リーグ全体）'),
-    kv([
-      ['引退', `${(off.retirees ?? []).length}人`],
-      ['新人入団', `${(off.rookies ?? []).length}人`],
-      ['育成昇格', `${(off.promotions ?? []).length}人`],
-      ['FA移籍', `${(off.fa ?? []).length}件`],
-      ['トレード', `${(off.trades ?? []).length}件`],
-      ['拾い上げ', `${(off.pickups ?? []).length}件`],
-      ['故障（開幕IL）', `${(off.injuries ?? []).length}人`],
-      ['ブレイク', `${(off.breakouts ?? []).length}人`],
-    ]),
-    el('div', { class: 'muted', style: 'margin-top:6px' }, 'FA入札・トレード起案などの操作UI（ストーブリーグ）はフェーズE3で追加予定。'),
-  ]));
-  // 自チームの新加入（ドラフト新人・playerLink で詳細へ）。
-  const myRookies = (off.rookies ?? []).filter((p) => p.teamId === gs.playerTeamId);
-  if (myRookies.length) {
-    root.append(el('h3', { class: 'leaguename' }, `自チームの新人（${myRookies.length}人）`));
-    root.append(el('div', { class: 'awardlist' }, myRookies.map((p) => el('div', { class: 'awardrow' }, [
-      playerLink(p.id),
-      el('span', { class: 'muted' }, `　${p.role === 'pitcher' ? '投手' : posJP(p.primaryPos)}・${p.age}歳`),
-    ]))));
-  }
-  // 自チームの育成獲得（二軍名簿へ入る・チームタブで確認できる）。
-  const myFarm = (gs.league.farm ?? []).filter((p) => p.teamId === gs.playerTeamId);
-  if (myFarm.length) {
-    root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ハブの「チーム」タブ→二軍で確認できます。`));
-  }
+/**
+ * E3: src/ui/stove.mjs（ストーブリーグ/オフダイジェスト）へ渡すUI共有ヘルパー束
+ * （teamTabDeps/watchDeps と同じ流儀: 分割モジュールは deps 経由で ui.mjs を参照する）。
+ */
+function stoveDeps() {
+  return {
+    el, td, state, game, kv, playerLink, posJP, scoutGrade, tname, pname,
+    fmt3, refreshRes, autoSave, leagueNameOf,
+    renderHub: () => renderHub(),
+    renderSeasonResult: () => renderSeasonResult(),
+    advanceToNextYearUI: () => advanceToNextYearUI(),
+  };
 }
 
 // --- 表彰パネル（C4・シーズンリザルト） --------------------------------------

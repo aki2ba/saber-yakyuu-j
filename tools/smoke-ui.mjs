@@ -407,15 +407,54 @@ assert.ok(walk(tOverlay).some((n) => (n.className || '').includes('headnick')), 
 subtabs.find((n) => textOf(n).includes('二軍'))._onclick();
 assert.ok(walk(appDiv).some((n) => textOf(n).includes('育成選手はまだいません')), '1年目の二軍は空メッセージ');
 
-// E1c) 年送り（E1最小版）: リザルト→翌シーズンへ→オフ要約→2年目ハブ
+// ============================================================================
+// フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）→年送り→ダイジェスト反映
+// ============================================================================
+// E3a) リザルト→ストーブリーグ画面（スキップ導線も残っていること）
 btnByText('ハブ')._onclick();
 btnByText('シーズンリザルトへ')._onclick();
 assert.ok(allClass('plink').length >= 1, '表彰パネルの受賞者名がリンク化（playerLink）');
-const nextYearBtn = btnByText('翌シーズンへ');
-assert.ok(nextYearBtn, 'リザルトに年送りボタン');
-nextYearBtn._onclick();
-assert.ok(textOf(hasClass('header')).includes('オフシーズン'), 'オフシーズン要約ダイジェストが出る');
-assert.ok(walk(appDiv).some((n) => textOf(n).includes('引退')), 'オフ要約に引退等の件数');
+assert.ok(btnByText('翌シーズンへ'), 'リザルトにスキップ年送りボタンが残る');
+const stoveBtn = btnByText('ストーブリーグへ');
+assert.ok(stoveBtn, 'リザルトにストーブリーグ導線');
+stoveBtn._onclick();
+assert.ok(textOf(hasClass('header')).includes('ストーブリーグ'), 'ストーブリーグ画面のヘッダ');
+assert.ok(btnByText('FA市場') && btnByText('トレード') && btnByText('育成・支配下'), 'FA市場/トレード/育成・支配下のタブ');
+
+// E3b) FA市場: 宣言見込み一覧 → 入札（bidFA＝介入ログ）→ 取消ボタンに変わる
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('FA宣言見込み')), 'FA宣言見込みの見出しが出る');
+const bidBtn = btnByText('入札する');
+assert.ok(bidBtn, 'FA宣言見込みの選手に入札ボタン（seed固定で宣言見込みあり）');
+bidBtn._onclick();
+assert.ok(btnByText('入札済み・取消'), '入札後は取消ボタンに変わる（marketInterventions に記録）');
+assert.ok(textOf(hasClass('header')).includes('FA入札1件'), 'ヘッダの介入予定にFA入札1件');
+
+// E3c) トレード: 放出選手を選ぶ→同型相手に受諾/拒否見込み（相手AI査定の評価差）→打診（proposeTrade）
+btnByText('トレード')._onclick();
+const pickBtns = allClass('stovepick');
+assert.ok(pickBtns.length >= 25, `放出候補=自チームの支配下が並ぶ (got ${pickBtns.length})`);
+pickBtns[0]._onclick();
+const verdictCells = walk(appDiv).filter((n) => n.tag === 'td').map(textOf);
+assert.ok(verdictCells.some((t) => t.includes('受諾見込み') || t.includes('拒否見込み')), '同型相手ごとに受諾/拒否見込み（評価差）が出る');
+const askBtn = btnByText('打診する');
+assert.ok(askBtn, '同型の相手選手に打診ボタン');
+askBtn._onclick();
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('起案済みトレード')), '打診後は起案済みトレード一覧に載る');
+assert.ok(textOf(hasClass('header')).includes('トレード起案1件'), 'ヘッダの介入予定にトレード起案1件');
+
+// E3d) 育成・支配下タブ（1年目は育成なし→案内文。昇格はエンジン自動判定の可視化）
+btnByText('育成・支配下')._onclick();
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('昇格候補')), '育成タブに昇格候補セクション');
+
+// E3e) 年送り（オフシーズン処理）→ ダイジェストにFA入札/トレード起案の結果が反映
+btnByText('オフシーズン処理を実行')._onclick();
+assert.ok(textOf(hasClass('header')).includes('オフシーズン'), 'オフシーズンダイジェストが出る');
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('引退')), 'ダイジェストに引退等の件数');
+const digestAll = textOf(appDiv);
+assert.ok(/FA入札(成立|不成立)/.test(digestAll), 'FA入札の結果（成立/不成立と理由）がダイジェストに反映');
+assert.ok(/トレード(成立|拒否|不成立)/.test(digestAll), 'トレード起案の受諾/拒否（評価差の理由）がダイジェストに表示');
+assert.ok(digestAll.includes('あなたの球団'), 'ダイジェストに自チームの動きパネル');
+assert.ok(digestAll.includes('表彰ダイジェスト'), 'ダイジェストに表彰（MVP/新人王）');
 btnByText('シーズン開幕へ')._onclick();
 assert.ok(textOf(hasClass('header')).includes('2027年'), `2年目ハブに進む (${textOf(hasClass('header'))})`);
 
@@ -438,6 +477,7 @@ recLinks[0]._onclick();
 assert.ok(allClass('overlay').length >= 1, '記録タブのリンクから選手モーダルが開く');
 
 console.log('UI smoke OK (E1): チームタブ(一軍33人一覧/仕様列/ソート/等級)→行クリックでモーダル(所属/二つ名ヘッダ)→年送り(オフ要約)→2年目二軍名簿→育成選手モーダル→記録タブplayerLink、例外なし');
+console.log('UI smoke OK (E3編成): リザルト→ストーブリーグ(FA市場宣言見込み→入札/取消・トレード放出選択→受諾/拒否見込み→打診・育成昇格候補)→オフ処理→ダイジェスト(FA/トレード結果反映・自チームの動き・表彰)、例外なし');
 
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 

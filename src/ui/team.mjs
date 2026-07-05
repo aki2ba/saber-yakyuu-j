@@ -130,8 +130,9 @@ function buildTeamRosterRows(players, u) {
  * コーチの見立て・総合等級（S/A/B/C/D/E）。ui.mjs の scoutBars と同じ観測座標
  * (scoutSeed,'coachView',軸キー) で軸ごとに決定論ノイズを乗せ、主要軸の平均を等級化する。
  * 何度描画しても同じ等級（決定論）・真値そのものは出さない（三層構造 layer3）。
+ * E3: ストーブリーグ画面（stove.mjs）も同じ見立てを使うため export する。
  */
-function teamScoutGrade(p, cfg, u) {
+export function teamScoutGrade(p, cfg, u) {
   const t = p.trueAbility;
   const cl20 = (x) => Math.max(20, Math.min(80, x));
   const sd = (cfg?.tuning?.mgr?.scoutSd ?? 5) * 1.4;

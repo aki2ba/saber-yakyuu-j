@@ -328,6 +328,74 @@ assert.ok(walk(cOverlay).some((n) => textOf(n).includes('受賞履歴')), '経�
 // D3・§11.3: 記録の時代補正「+指標」が経歴タブに表示される（完了1季ぶんで発現）。
 assert.ok(walk(cOverlay).some((n) => textOf(n).includes('時代補正 +指標')), '経歴タブに時代補正+指標セクションがある（D3「見せる」）');
 
+// ============================================================================
+// フェーズE1: チームタブ（一軍/二軍の選手一覧）／選手モーダルヘッダ整備／playerLink導線／年送り
+// ============================================================================
+// E1a) ハブ「チーム」タブ → 一軍（支配下）一覧: サブタブ・野手/投手テーブル・仕様列・ソート
+btnByText('チーム')._onclick();
+const subtabs = allClass('subtab').filter((n) => n.tag === 'button'); // 'subtabs'コンテナを除外
+assert.ok(subtabs.length >= 2, `チームタブに一軍/二軍サブタブ (got ${subtabs.length})`);
+assert.ok(subtabs.some((n) => textOf(n).includes('一軍')) && subtabs.some((n) => textOf(n).includes('二軍')), 'サブタブが一軍/二軍');
+const teamTabHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+assert.ok(teamTabHeads.some((t) => t.startsWith('野手')) && teamTabHeads.some((t) => t.startsWith('投手')), `野手/投手の見出し (${teamTabHeads.join('/')})`);
+const rosterThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+for (const col of ['位置', '年齢', '打席', '打率', 'OPS', '打点', '盗塁', 'wRC+', 'WAR', '等級', '状態', '役割', '登板', '防御', 'FIP', 'WHIP', 'K-BB%']) {
+  assert.ok(rosterThs.some((t) => t.startsWith(col)), `チーム一覧に${col}列 (${rosterThs.join(',')})`);
+}
+const rosterRows = () => walk(appDiv).filter((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
+assert.ok(rosterRows().length >= 25, `支配下ロスター全員が並ぶ (got ${rosterRows().length})`); // 33人/球団
+// 等級セル（S/A/B/C/D/E のどれか）が出る
+const rosterCells = walk(appDiv).filter((n) => n.tag === 'td').map(textOf);
+assert.ok(rosterCells.some((t) => /^[SABCDE]$/.test(t)), 'スカウト等級（コーチの見立て）が表示される');
+// 列ソート（th クリックで矢印・例外なし）
+walk(appDiv).find((n) => n.tag === 'th' && textOf(n).startsWith('打席'))._onclick();
+assert.ok(walk(appDiv).some((n) => n.tag === 'th' && textOf(n).includes('▼')), '列ソートの矢印が出る');
+// 行クリック → 選手詳細モーダル（E1整備ヘッダ: 所属/年齢/利き手/二つ名）
+rosterRows()[0]._onclick();
+const tOverlay = allClass('overlay').pop();
+assert.ok(tOverlay, 'チーム一覧の行クリックで選手モーダルが開く');
+const tHead = walk(tOverlay).find((n) => (n.className || '').includes('modalhead'));
+const tHeadTxt = textOf(tHead);
+assert.ok(tHeadTxt.includes('支配下（一軍）'), `モーダルヘッダに所属（一軍） (${tHeadTxt})`);
+assert.ok(tHeadTxt.includes('歳') && (tHeadTxt.includes('右') || tHeadTxt.includes('左') || tHeadTxt.includes('両')), 'ヘッダに年齢/利き手');
+assert.ok(walk(tOverlay).some((n) => (n.className || '').includes('headnick')), 'ヘッダに二つ名バッジ');
+
+// E1b) 二軍（育成）サブタブ: 1年目は空（育成契約は翌オフから）→ 空メッセージ
+subtabs.find((n) => textOf(n).includes('二軍'))._onclick();
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('育成選手はまだいません')), '1年目の二軍は空メッセージ');
+
+// E1c) 年送り（E1最小版）: リザルト→翌シーズンへ→オフ要約→2年目ハブ
+btnByText('ハブ')._onclick();
+btnByText('シーズンリザルトへ')._onclick();
+assert.ok(allClass('plink').length >= 1, '表彰パネルの受賞者名がリンク化（playerLink）');
+const nextYearBtn = btnByText('翌シーズンへ');
+assert.ok(nextYearBtn, 'リザルトに年送りボタン');
+nextYearBtn._onclick();
+assert.ok(textOf(hasClass('header')).includes('オフシーズン'), 'オフシーズン要約ダイジェストが出る');
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('引退')), 'オフ要約に引退等の件数');
+btnByText('シーズン開幕へ')._onclick();
+assert.ok(textOf(hasClass('header')).includes('2027年'), `2年目ハブに進む (${textOf(hasClass('header'))})`);
+
+// E1d) 2年目の二軍（育成）名簿: 育成獲得が発生→行クリックで育成選手のモーダルが開く
+btnByText('チーム')._onclick(); // サブタブ選択は「二軍」を維持している
+const farmRows = rosterRows();
+assert.ok(farmRows.length >= 1, `2年目の二軍名簿に育成選手が並ぶ (got ${farmRows.length})`);
+farmRows[0]._onclick();
+const fOverlay = allClass('overlay').pop();
+const fHeadTxt = textOf(walk(fOverlay).find((n) => (n.className || '').includes('modalhead')));
+assert.ok(fHeadTxt.includes('育成（二軍）'), `育成選手のモーダルに所属=育成 (${fHeadTxt})`);
+assert.ok(walk(fOverlay).some((n) => textOf(n).includes('コーチの見立て')), '育成選手モーダルにスカウト評価（真値非露出）');
+assert.ok(walk(fOverlay).some((n) => textOf(n).includes('一軍出場はありません')), '未出場の育成選手はNaN成績でなく案内文');
+
+// E1e) playerLink の導線: 記録タブの選手名リンク → モーダル
+btnByText('記録')._onclick();
+const recLinks = allClass('plink').filter((n) => n._onclick);
+assert.ok(recLinks.length >= 1, `記録タブの選手名がリンク化 (got ${allClass('plink').length})`);
+recLinks[0]._onclick();
+assert.ok(allClass('overlay').length >= 1, '記録タブのリンクから選手モーダルが開く');
+
+console.log('UI smoke OK (E1): チームタブ(一軍33人一覧/仕様列/ソート/等級)→行クリックでモーダル(所属/二つ名ヘッダ)→年送り(オフ要約)→2年目二軍名簿→育成選手モーダル→記録タブplayerLink、例外なし');
+
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);

@@ -11,11 +11,12 @@ import {
   playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct, pythag,
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
   leagueBatting, leaguePitching, makeRng, hashSeed,
+  createPlayerSeason, // E1: 育成/未出場選手のモーダル用の空観測ライン
 } from './engine.mjs';
 // フェーズC1 ゲーム層API（配布バンドルではグローバル・開発時Node解決用に import も書く）。
 // バンドルでは import 行が剥がれ、これらは先行スクリプト（game/index.mjs 由来）のグローバルを参照する。
 import {
-  newGame, advanceDay, advanceTo, save, load, allPlayersById,
+  newGame, advanceDay, advanceTo, advanceYear, save, load, allPlayersById,
   setManagerProfile, clearManagerProfile,
   // C4 演出: 表彰/記録/二つ名/ニュース（バンドルではグローバル・開発時Node解決用に import）。
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
@@ -23,6 +24,9 @@ import {
   careerEraPlus, // D3・§11.3: 記録の時代補正「+指標」（打高/投高時代を跨いで同価値化）
   DEF_AWARD_NAME, TITLE_LABELS, detectGameNotables, notableHeadline, streakOf, weeklyDigest,
 } from './game/index.mjs';
+// フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
+// （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
+import { renderTeamTab } from './ui/team.mjs';
 
 const state = {
   league: null,
@@ -360,18 +364,21 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0) {
 // 投手: 基本 / 投球(xFIP/SIERA/被打球) / 文脈(WPA/pLI/gmLI/SD/MD)
 function openModal(playerId) {
   const p = state.byId.get(playerId);
-  const s = state.res.statsById.get(playerId);
-  if (!p || !s) return;
+  if (!p) return;
   const isPitcher = p.role === 'pitcher';
+  // E1: 育成（二軍）・当年未出場の選手も開けるように、観測ラインが無ければ空ラインで代替する。
+  //   観測が空のときは指標タブを出さない（0除算のNaN表示を避け、基本＋経歴のみ）。
+  let s = state.res && state.res.statsById ? state.res.statsById.get(playerId) : null;
+  const hasStats = !!s && (isPitcher ? (s.pitching.g > 0 || s.pitching.outs > 0) : s.batting.pa > 0);
+  if (!s) s = createPlayerSeason(playerId, state.res ? state.res.season : 0);
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
-  box.append(el('div', { class: 'modalhead' }, [
-    el('div', {}, [el('span', { class: 'pname' }, p.name), el('span', { class: 'muted' }, `  ${state.teamName.get(p.teamId) || ''} / ${isPitcher ? '投手' : primaryPos(p)} / ${p.age}歳 / ${handLabel(p.throws)}投${handLabel(p.bats)}打`)]),
-    el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'),
-  ]));
-  const modalTabs = isPitcher
-    ? [['basic', '基本'], ['pitch', '投球'], ['context', '文脈']]
-    : [['basic', '基本'], ['batted', '打球'], ['splits', 'スプリット'], ['context', '文脈'], ['field', '守備成分']];
+  box.append(modalHeader(p, isPitcher, overlay));
+  const modalTabs = !hasStats
+    ? [['basic', '基本']]
+    : isPitcher
+      ? [['basic', '基本'], ['pitch', '投球'], ['context', '文脈']]
+      : [['basic', '基本'], ['batted', '打球'], ['splits', 'スプリット'], ['context', '文脈'], ['field', '守備成分']];
   // キャリアモード（game.gs）では「経歴」タブ（二つ名/年度別成績/受賞履歴/成長曲線）を足す。
   if (game.gs) modalTabs.push(['career', '経歴']);
   let cur = 'basic';
@@ -396,9 +403,38 @@ function openModal(playerId) {
   document.getElementById('app').append(overlay);
 }
 
+/**
+ * モーダルヘッダ（E1整備）: 名前＋二つ名（キャリア時）／所属（一軍支配下・育成二軍）・位置・
+ * 年齢・利き手／受賞歴（キャリア時・直近3件＋件数）。三層構造: 二つ名も受賞も観測ベース。
+ */
+function modalHeader(p, isPitcher, overlay) {
+  const gs = game.gs;
+  const left = el('div', {});
+  const nameRow = el('div', {}, [el('span', { class: 'pname' }, p.name)]);
+  if (gs) nameRow.append(el('span', { class: 'headnick' }, `「${nicknameFor(p, gs.careerStats, gs.cfg)}」`));
+  left.append(nameRow);
+  // 所属: キャリアモードのみ一軍(支配下)/育成(二軍)を明示（rosterStatus・E1）。
+  const belong = gs ? (p.rosterStatus === 'minor' ? '育成（二軍）' : '支配下（一軍）') + ' / ' : '';
+  left.append(el('div', { class: 'muted' },
+    `${state.teamName.get(p.teamId) || ''} / ${belong}${isPitcher ? '投手' : posJP(primaryPos(p))} / ${p.age}歳 / ${handLabel(p.throws)}投${handLabel(p.bats)}打`));
+  if (gs) {
+    const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: allPlayersById(gs), cfg: gs.cfg });
+    if (hist.length) {
+      const recent = hist.slice(-3).map((a) => `${a.year} ${a.label}${a.pos ? `（${posJP(a.pos)}）` : ''}`).join('・');
+      left.append(el('div', { class: 'headawards' }, `🏅 ${recent}${hist.length > 3 ? ` 他${hist.length - 3}件` : ''}`));
+    }
+  }
+  return el('div', { class: 'modalhead' }, [left, el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]);
+}
+
 // 基本タブ: 成績サマリ＋（打者）WAR内訳/対球種 ＋能力バー
 function renderModalBasic(box, p, s, isPitcher) {
-  if (isPitcher) {
+  const hasStats = isPitcher ? (s.pitching.g > 0 || s.pitching.outs > 0) : s.batting.pa > 0;
+  if (!hasStats) {
+    // E1: 育成（二軍）・当年未出場。観測成績はまだ無い＝見立てのみ表示（NaN指標を出さない）。
+    box.append(el('div', { class: 'muted' },
+      `今季の一軍出場はありません${p.rosterStatus === 'minor' ? '（育成契約・二軍所属）' : ''}。`));
+  } else if (isPitcher) {
     const m = playerPitching(s, state.lc, state.cfg);
     const pw = pitcherWAR(s, state.cfg, state.lc);
     box.append(kv([['WAR', pw.war.toFixed(1)], ['登板', m.g], ['勝', m.w], ['敗', m.l], ['S', m.sv], ['投球回', m.ip.toFixed(1)], ['防御率', f2(m.era)], ['FIP', f2(m.fip)], ['奪三', m.so], ['K/9', f2(m.kPer9)]]));
@@ -827,6 +863,20 @@ function handLabel(h) {
   return { R: '右', L: '左', S: '両' }[h] || h || '?';
 }
 
+/**
+ * 選手名リンク（E1・導線の全画面化）: クリックで選手詳細モーダルを開く共通ヘルパー。
+ * byId に居ない選手（引退者など・モーダルを組めない）は素のテキストで返す。
+ * 行クリックと入れ子になる場所でも使えるよう stopPropagation する。
+ */
+function playerLink(id, label) {
+  const nm = label ?? pname(id);
+  if (!state.byId.get(id)) return el('span', {}, String(nm));
+  return el('span', {
+    class: 'plink',
+    onclick: (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); openModal(id); },
+  }, String(nm));
+}
+
 // ============================================================================
 // フェーズC1b: ゲームシェル（タイトル→ニューゲーム→シーズンハブ→観戦→リザルト）
 //
@@ -860,7 +910,8 @@ function sprayDir(deg) {
 function bindGameContext(gs) {
   state.cfg = gs.cfg;
   state.league = gs.league;
-  state.byId = new Map(gs.league.players.map((p) => [p.id, p]));
+  // E1: 育成（league.farm）も byId に含める＝二軍一覧・playerLink から名前解決/モーダルを開ける。
+  state.byId = new Map([...gs.league.players, ...(gs.league.farm ?? [])].map((p) => [p.id, p]));
   state.teamName = new Map(gs.league.teams.map((t) => [t.id, t.name]));
 }
 
@@ -970,9 +1021,10 @@ function startNewGame(seed, teamId) {
 }
 
 // --- シーズンハブ -----------------------------------------------------------
+// E1: 「チーム」タブ（自チーム選手一覧・一軍/二軍）を新設。従来のリーグ12球団集計は「球団比較」へ改名。
 const HUB_TABS = [
-  ['hub', 'ハブ'], ['standings', '順位表'], ['war', 'WAR'],
-  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', 'チーム'], ['records', '記録'],
+  ['hub', 'ハブ'], ['team', 'チーム'], ['standings', '順位表'], ['war', 'WAR'],
+  ['batting', '打撃'], ['pitching', '投手'], ['fielding', '守備'], ['teams', '球団比較'], ['records', '記録'],
 ];
 
 function renderHub(tab = 'hub') {
@@ -994,6 +1046,7 @@ function renderHub(tab = 'hub') {
   root.append(header, bar, content);
   if (tab === 'hub') renderHubHome(content);
   else if (tab === 'records') renderRecords(content);
+  else if (tab === 'team') { refreshRes(); renderTeamTab(content, teamTabDeps()); } // E1: 自チーム選手一覧
   else {
     refreshRes();
     if (tab === 'standings') renderStandings(content);
@@ -1003,6 +1056,19 @@ function renderHub(tab = 'hub') {
     else if (tab === 'fielding') renderFielding(content);
     else if (tab === 'teams') renderTeams(content);
   }
+}
+
+/**
+ * E1: src/ui/team.mjs（チームタブ）へ渡すUI共有ヘルパー束。分割モジュールは ui.mjs の
+ * ヘルパー/状態を import せず（バンドルの同一スコープで名前衝突・Node循環importを避ける）、
+ * この deps オブジェクト経由で参照する。
+ */
+function teamTabDeps() {
+  return {
+    el, td, state, game, openModal, playerLink, posJP, primaryPos, scoutGrade,
+    fmt3, pct, pendingDayOf,
+    rerender: () => renderHub('team'),
+  };
 }
 
 /** 進行が「次に処理する節」（1始まり表示）。 */
@@ -1055,7 +1121,7 @@ function renderHubHome(c) {
     c.append(el('h3', { class: 'leaguename' }, `故障者リスト（${injured.length}名離脱中）`));
     c.append(el('div', { class: 'recentlist' }, injured.map((e) => el('div', { class: 'recentrow' }, [
       el('span', { class: 'wl wll' }, e.severity === 'major' ? '重' : '軽'),
-      el('span', {}, `${pname(e.id)}（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）`),
+      el('span', {}, [playerLink(e.id), `（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）`]), // E1: 選手名→詳細
       el('span', { class: 'score' }, `残り約${e.gamesLost - curDay}試合`),
     ]))));
   }
@@ -1112,13 +1178,14 @@ function renderNewsFeed(c) {
   });
   // 今季のチーム注目選手（自チーム最高WAR・観測ベース）。序盤で試合が薄いと出ない。
   const star = teamSeasonStar(rt, gs.playerTeamId);
-  if (star) heads.unshift({ text: `${tname(gs.playerTeamId)}の今季の顔は ${pname(star.id)}（WAR ${star.war.toFixed(1)}・「${star.nick}」）`, cls: 'info' });
+  // E1: 選手名は playerLink でモーダルへ（見出しは parts=要素列 or text=文字列のどちらでも描ける）。
+  if (star) heads.unshift({ parts: [`${tname(gs.playerTeamId)}の今季の顔は `, playerLink(star.id), `（WAR ${star.war.toFixed(1)}・「${star.nick}」）`], cls: 'info' });
   c.append(el('h3', { class: 'leaguename' }, '📰 ニュース'));
   if (!heads.length) {
     c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
     return;
   }
-  c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+  c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))));
 }
 
 /** 自チームの今季最高WAR選手（観測ベース）と二つ名。データが薄い序盤は null。 */
@@ -1164,7 +1231,7 @@ function renderRecords(c) {
     if (miles.length) {
       c.append(el('h3', { class: 'leaguename' }, `${lastYear}年 達成マイルストーン`));
       c.append(el('div', { class: 'awardlist' }, miles.map((m) => el('div', { class: 'awardrow' }, [
-        el('span', { class: 'awardbadge' }, `${m.name}　${m.category} ${m.threshold}${m.unit}到達（通算${m.total}）`),
+        el('span', { class: 'awardbadge' }, [playerLink(m.playerId, m.name), `　${m.category} ${m.threshold}${m.unit}到達（通算${m.total}）`]), // E1: 選手名→詳細
       ]))));
     }
   }
@@ -1194,7 +1261,7 @@ function recordColumns(cats) {
     el('div', { class: 'rechead' }, title),
     ...rows.slice(0, 10).map((r, i) => el('div', { class: 'recrow' }, [
       el('span', { class: 'recrank' }, `${i + 1}`),
-      el('span', { class: 'recname' }, r.name),
+      el('span', { class: 'recname' }, [playerLink(r.playerId, r.name)]), // E1: 選手名→詳細（引退者は素のテキスト）
       el('span', { class: 'recval' }, fmt(r)),
     ])),
     rows.length ? el('span', {}, '') : el('div', { class: 'muted' }, '—'),
@@ -1578,6 +1645,8 @@ function renderSeasonResult() {
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, `${gs.year}年 シーズンリザルト`),
     el('div', { class: 'row' }, [
+      // E1最小の年送り（E3でこの手前に「ストーブリーグ」ステップが入る予定・phaseE_spec E3）。
+      el('button', { class: 'primary', onclick: () => advanceToNextYearUI() }, '▶ 翌シーズンへ（オフシーズン処理）'),
       el('button', { onclick: () => renderHub('standings') }, '成績を見る'),
       el('button', { class: 'link', onclick: () => renderTitle() }, 'タイトルへ'),
     ]),
@@ -1592,6 +1661,56 @@ function renderSeasonResult() {
   renderStandings(content); // 2リーグ順位表＋ポストシーズンパネル（既存描画を再利用）
 }
 
+// --- 年送り（E1最小版。E3で「ストーブリーグ」ステップに拡張予定） -----------------
+// 市場介入（bidFA/proposeTrade）は advanceYear の前に marketInterventions へ積む前提（E3のUI）。
+// ここではエンジン既存の advanceYear（決定論・セーブは careerStats/介入ログから replay 再現）を
+// 実行し、オフシーズン要約ダイジェストを表示するのみ＝UI都合の新たな乱数消費・状態変更はない。
+function advanceToNextYearUI() {
+  const off = advanceYear(game.gs);
+  bindGameContext(game.gs); // 引退/新人/育成獲得で players/farm が変わる＝byId を張り直す
+  autoSave();
+  renderOffseasonDigest(off);
+}
+
+/** オフシーズン要約ダイジェスト（E1最小。E3で引退/ドラフト/FA/トレードの詳細1画面に整理予定）。 */
+function renderOffseasonDigest(off) {
+  const gs = game.gs;
+  const root = document.getElementById('app');
+  root.innerHTML = '';
+  root.append(el('div', { class: 'header' }, [
+    el('h2', {}, `${gs.year - 1}年 オフシーズン`),
+    el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => renderHub() }, `▶ ${gs.year}年シーズン開幕へ`)]),
+  ]));
+  root.append(el('div', { class: 'pspanel' }, [
+    el('h3', { class: 'leaguename' }, 'ストーブリーグ要約（リーグ全体）'),
+    kv([
+      ['引退', `${(off.retirees ?? []).length}人`],
+      ['新人入団', `${(off.rookies ?? []).length}人`],
+      ['育成昇格', `${(off.promotions ?? []).length}人`],
+      ['FA移籍', `${(off.fa ?? []).length}件`],
+      ['トレード', `${(off.trades ?? []).length}件`],
+      ['拾い上げ', `${(off.pickups ?? []).length}件`],
+      ['故障（開幕IL）', `${(off.injuries ?? []).length}人`],
+      ['ブレイク', `${(off.breakouts ?? []).length}人`],
+    ]),
+    el('div', { class: 'muted', style: 'margin-top:6px' }, 'FA入札・トレード起案などの操作UI（ストーブリーグ）はフェーズE3で追加予定。'),
+  ]));
+  // 自チームの新加入（ドラフト新人・playerLink で詳細へ）。
+  const myRookies = (off.rookies ?? []).filter((p) => p.teamId === gs.playerTeamId);
+  if (myRookies.length) {
+    root.append(el('h3', { class: 'leaguename' }, `自チームの新人（${myRookies.length}人）`));
+    root.append(el('div', { class: 'awardlist' }, myRookies.map((p) => el('div', { class: 'awardrow' }, [
+      playerLink(p.id),
+      el('span', { class: 'muted' }, `　${p.role === 'pitcher' ? '投手' : posJP(p.primaryPos)}・${p.age}歳`),
+    ]))));
+  }
+  // 自チームの育成獲得（二軍名簿へ入る・チームタブで確認できる）。
+  const myFarm = (gs.league.farm ?? []).filter((p) => p.teamId === gs.playerTeamId);
+  if (myFarm.length) {
+    root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ハブの「チーム」タブ→二軍で確認できます。`));
+  }
+}
+
 // --- 表彰パネル（C4・シーズンリザルト） --------------------------------------
 function renderAwardsPanel(c) {
   const gs = game.gs;
@@ -1604,16 +1723,18 @@ function renderAwardsPanel(c) {
     year: gs.year,
   });
   c.append(el('h3', { class: 'leaguename' }, `🏅 ${gs.year}年 表彰`));
-  const nameOf = (id) => (id ? pname(id) : '—');
+  // E1: 受賞者名は playerLink でモーダルへ（導線の全画面化）。引退者は素のテキストに落ちる。
+  const linkOf = (id) => (id ? playerLink(id) : '—');
   for (const lg of aw.leagues) {
     const box = el('div', { class: 'awardpanel' });
     box.append(el('div', { class: 'awardlgname' }, leagueNameOf(gs.cfg, lg.leagueId)));
     // MVP・新人王
-    const top = [['MVP', lg.mvp ? `${nameOf(lg.mvp.playerId)}（WAR ${lg.mvp.war.toFixed(1)}）` : '—']];
-    if (lg.roty) top.push(['新人王', `${nameOf(lg.roty.playerId)}（WAR ${lg.roty.war.toFixed(1)}）`]);
+    const bigVal = (a) => [playerLink(a.playerId), `（WAR ${a.war.toFixed(1)}）`];
+    const top = [['MVP', lg.mvp ? bigVal(lg.mvp) : '—']];
+    if (lg.roty) top.push(['新人王', bigVal(lg.roty)]);
     box.append(el('div', { class: 'awardtop' }, top.map(([k, v]) => el('div', { class: 'awardbig' }, [el('span', { class: 'awardbigk' }, k), el('span', { class: 'awardbigv' }, v)]))));
     // タイトル9種
-    const tvals = (t) => (t ? `${nameOf(t.playerId)}` : '—');
+    const tvals = (t) => (t ? linkOf(t.playerId) : '—');
     const titleGrid = Object.keys(TITLE_LABELS).map((k) => el('div', { class: 'kv' }, [
       el('div', { class: 'kvk' }, TITLE_LABELS[k]), el('div', { class: 'kvv' }, tvals(lg.titles[k])),
     ]));
@@ -1622,12 +1743,12 @@ function renderAwardsPanel(c) {
     // ベストナイン
     box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, 'ベストナイン'));
     box.append(el('div', { class: 'kvgrid' }, lg.bestNine.map((b) => el('div', { class: 'kv' }, [
-      el('div', { class: 'kvk' }, posJP(b.pos)), el('div', { class: 'kvv' }, nameOf(b.playerId)),
+      el('div', { class: 'kvk' }, posJP(b.pos)), el('div', { class: 'kvv' }, linkOf(b.playerId)),
     ]))));
     // 守備の栄誉賞（UZR+OAA・架空名）
     box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, `${DEF_AWARD_NAME}（UZR+OAA）`));
     box.append(el('div', { class: 'kvgrid' }, lg.gloves.map((g) => el('div', { class: 'kv' }, [
-      el('div', { class: 'kvk' }, posJP(g.pos)), el('div', { class: 'kvv' }, `${nameOf(g.playerId)}（${signed(g.defScore)}）`),
+      el('div', { class: 'kvk' }, posJP(g.pos)), el('div', { class: 'kvv' }, g.playerId ? [playerLink(g.playerId), `（${signed(g.defScore)}）`] : '—'),
     ]))));
     c.append(box);
   }

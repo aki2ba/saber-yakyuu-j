@@ -8,7 +8,7 @@
 //   - default export は使わない規約。名前衝突は避ける（共有ヘルパーは util.mjs に集約）
 // エンジンが大規模化したら esbuild へ移行可能（同じ入出力契約）。
 // ============================================================================
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, relative, sep } from 'node:path';
 
@@ -75,7 +75,23 @@ const bundled = order
 // UI（ブラウザ専用）を別スクリプトとしてインライン化。engine.mjs からの import は剥がす
 // （エンジンは先行<script>でグローバルに定義済み＝classic scriptの共有レキシカルスコープ参照）。
 // エンジンは第1<script>に閉じるので verify-identity.mjs はそのまま機能する。
-const uiStripped = strip(readFileSync(join(root, 'src', 'ui.mjs'), 'utf8'));
+const uiSrc = readFileSync(join(root, 'src', 'ui.mjs'), 'utf8');
+// フェーズE: UI分割モジュール（src/ui/*.mjs）を ui.mjs と同じ<script>へ前置 concat する
+// （ui.mjs の import 行は strip で剥がれるため、同梱しないと参照エラーになる）。
+// 同梱漏れを黙って通さないよう、ui.mjs の ./ui/ import が全て存在することを機械検証する。
+const uiDir = join(root, 'src', 'ui');
+const uiSubFiles = existsSync(uiDir) ? readdirSync(uiDir).filter((f) => f.endsWith('.mjs')).sort() : [];
+for (const m of uiSrc.matchAll(IMPORT_RE)) {
+  const spec = m[1];
+  if (!spec.startsWith('./ui/')) continue;
+  if (!uiSubFiles.includes(spec.slice('./ui/'.length))) {
+    throw new Error(`UIバンドルに欠落: ${spec}（src/ui/ 配下に置くこと）`);
+  }
+}
+const uiSubCode = uiSubFiles
+  .map((f) => `// ===== src/ui/${f} =====\n${strip(readFileSync(join(uiDir, f), 'utf8'))}`)
+  .join('\n\n');
+const uiStripped = (uiSubCode ? uiSubCode + '\n\n' : '') + `// ===== src/ui.mjs =====\n${strip(uiSrc)}`;
 
 const html = `<!DOCTYPE html>
 <html lang="ja">
@@ -203,6 +219,14 @@ const html = `<!DOCTYPE html>
   .nickmark { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
   .nicktext { font-size:18px; font-weight:800; color:var(--gold); }
   svg.growth { width:280px; max-width:100%; background:#0c3122; border-radius:8px; margin-top:6px; }
+  /* E1: チームタブ（一軍/二軍サブタブ）・選手名リンク・モーダルヘッダ（二つ名/受賞歴） */
+  .subtabs { display:flex; gap:6px; margin:8px 0 4px; flex-wrap:wrap; }
+  .subtab { padding:5px 14px; font-size:13px; }
+  .subtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .plink { color:#8fc7ff; cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
+  .plink:hover { color:var(--gold); }
+  .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }
+  .headawards { font-size:11px; color:var(--muted); margin-top:2px; }
   .reccols { display:flex; flex-wrap:wrap; gap:10px; }
   .reccol { flex:1; min-width:150px; }
   .rechead { color:var(--muted); font-size:12px; border-bottom:1px solid var(--line); margin-bottom:3px; }

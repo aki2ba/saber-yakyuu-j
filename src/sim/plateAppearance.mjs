@@ -136,6 +136,10 @@ const PA_RESULT = {
  */
 export function runPlateAppearance(env) {
   const { batter, pitcher, catcher, cfg, rng, tto, bLine, pLine, cLine, bases } = env;
+  // 観戦の一球速報フック（フェーズE2・§16）: 存在するときのみ各投球の確定点で
+  // (n, 球種, 判定, ボール, ストライク, 暴投走者進塁) を通知する。gc/onEvent と同じ流儀で
+  // 乱数は一切消費しない＝onPitch の有無で打席結果・シーズン結果は不変（決定論の門番は verify）。
+  const onPitch = env.onPitch ?? null;
   const K = cfg.tuning.pitch;
   const bat = batter.trueAbility;
   const pit = pitcher.trueAbility.pitching;
@@ -164,6 +168,7 @@ export function runPlateAppearance(env) {
     // (a) 球種選択（カウント依存）
     const pitch = selectPitchByCount(pitcher, rng, cfg, balls, strikes);
     const cls = pitch ? pitchClass(pitch.type) : 'fastball';
+    const ptype = pitch ? pitch.type : 'fastball'; // 一球速報の球種表示（E2・乱数非消費）
     const whiffVal = pitch ? pitch.whiff : 50;
     const apt = cls === 'fastball' ? bat.batting.vsFastball : bat.batting.vsBreaking;
     nPitches++;
@@ -187,7 +192,10 @@ export function runPlateAppearance(env) {
     // (f) HBP: 明確ボール（内角外れ）の低確率イベント
     if (band === 2) {
       const pHbp = K.hbpPerClearBall * (1 + K.hbpControlW * (50 - pit.control));
-      if (rng.next() < pHbp) { R.outcome = 'HBP'; R.decisiveClass = cls; break; }
+      if (rng.next() < pHbp) {
+        if (onPitch) onPitch(nPitches, ptype, 'hbp', balls, strikes, false);
+        R.outcome = 'HBP'; R.decisiveClass = cls; break;
+      }
     }
 
     // (c) スイング判断: Swing% = f(帯, eye, カウント)
@@ -222,6 +230,7 @@ export function runPlateAppearance(env) {
         else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
         if (nPitches === 1) firstPitchStrike = true;
         strikes++;
+        if (onPitch) onPitch(nPitches, ptype, 'whiff', balls, strikes, false);
         if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
       } else {
         // 接触: ファウル vs インプレー（2ストライクのファウルはカウント維持）
@@ -231,6 +240,7 @@ export function runPlateAppearance(env) {
           bLine.fouls++; pLine.fouls++;
           if (nPitches === 1) firstPitchStrike = true;
           if (strikes < 2) strikes++;
+          if (onPitch) onPitch(nPitches, ptype, 'foul', balls, strikes, false);
         } else {
           // インプレー → 既存の打球パイプライン（不変）
           R.battedBall = generateBattedBall(batter, pitcher, cfg, rng, {
@@ -239,6 +249,7 @@ export function runPlateAppearance(env) {
           R.outcome = 'inPlay';
           R.decisiveClass = cls;
           if (nPitches === 1) firstPitchStrike = true;
+          if (onPitch) onPitch(nPitches, ptype, 'inplay', balls, strikes, false);
           break;
         }
       }
@@ -248,6 +259,7 @@ export function runPlateAppearance(env) {
         bLine.calledStrikes++; pLine.calledStrikes++;
         if (nPitches === 1) firstPitchStrike = true;
         strikes++;
+        if (onPitch) onPitch(nPitches, ptype, 'called', balls, strikes, false);
         if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
       } else if (band === 1) {
         const pCS = clamp(K.borderCsBase + K.frameSlopePerPt * (framing - 50), 0.02, 0.98);
@@ -261,13 +273,16 @@ export function runPlateAppearance(env) {
           bLine.calledStrikes++; pLine.calledStrikes++;
           if (nPitches === 1) firstPitchStrike = true;
           strikes++;
+          if (onPitch) onPitch(nPitches, ptype, 'called', balls, strikes, false);
           if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
         } else {
           balls++;
+          if (onPitch) onPitch(nPitches, ptype, 'ball', balls, strikes, false);
           if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
         }
       } else {
         // 明確ボール: (g) ワンバウンド球×捕手blocking → 暴投/捕逸
+        let wild = false; // 一球速報用（後逸で走者進塁したか・乱数非消費）
         if (cls === 'breaking' && rng.next() < K.dirtBaseBreaking) {
           bLine.ballsInDirt++; pLine.ballsInDirt++;
           if (bases[0] || bases[1] || bases[2]) {
@@ -277,10 +292,12 @@ export function runPlateAppearance(env) {
               if (cLine) { if (rng.next() < K.wpShare) cLine.wp++; else cLine.pb++; }
               else rng.next(); // 捕手不在でも乱数消費数を一定に
               wpRuns += advanceOnWildPitch(bases);
+              wild = true;
             }
           }
         }
         balls++;
+        if (onPitch) onPitch(nPitches, ptype, 'ball', balls, strikes, wild);
         if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
       }
     }

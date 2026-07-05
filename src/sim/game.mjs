@@ -190,11 +190,11 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
     bases[0] = null;
     rStat.batting.sb++;
     if (catcherId) statFor(catcherId, fielding.teamId).fielding.sbAllowed++; // 捕手が許したSB（乱数非消費）
-    if (batting.onEvent) batting.onEvent({ type: 'steal', success: true, runnerId: stealRunner, batTeam: batting.teamId });
+    if (batting.onEvent) batting.onEvent({ type: 'steal', success: true, runnerId: stealRunner, batTeam: batting.teamId, basesPids: bases.slice(), outsAfter: outs });
   } else {
     bases[0] = null; // 盗塁死
     rStat.batting.cs++;
-    if (batting.onEvent) batting.onEvent({ type: 'steal', success: false, runnerId: stealRunner, batTeam: batting.teamId });
+    if (batting.onEvent) batting.onEvent({ type: 'steal', success: false, runnerId: stealRunner, batTeam: batting.teamId, basesPids: bases.slice(), outsAfter: outs + 1 });
     if (catcherId) statFor(catcherId, fielding.teamId).fielding.csMade++; // 捕手が刺したCS（乱数非消費）
     // 盗塁死は投手在籍中の記録アウト＝投手IPに算入（監査A2: ΣpositionOuts==8·Σpitcher.outs を回復）。
     statFor(fielding.curPid, fielding.teamId).pitching.outs++;
@@ -406,6 +406,24 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const pStat = statFor(fielding.curPid, fielding.teamId);
     const batterWoba = observedWoba(bStat.batting, cfg); // 采配用の観測評価（真値は見ない）
 
+    // 観戦実況（E2・乱数非消費）: 打席開始＝「◇ 打者 対 投手」行と盤面（走者/アウト/カウント初期化）の素データ。
+    if (fielding.onEvent) {
+      fielding.onEvent({
+        type: 'atbat',
+        inning,
+        half: battingIsHome ? 'bottom' : 'top',
+        batTeam: batting.teamId,
+        pitTeam: fielding.teamId,
+        batterId,
+        pitcherId: fielding.curPid,
+        pitcherPitches: Math.round(fielding.cur.pitches), // この登板の球数（表示用）
+        outs,
+        basesPids: bases.slice(), // 塁上走者の playerId（走者名表示・E2）
+        batScore: batting.score,
+        fldScore: fielding.score,
+      });
+    }
+
     // 文脈指標（§B2）: 打席プレーの「状態前」（盗塁/代打反映後）と登板初打者フラグを控える。
     const paBase = baseBits(bases);
     const paOuts = outs;
@@ -443,6 +461,21 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       if (pBunt > 0 && rng.next() < pBunt) {
         const bunt = resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat);
         outs = bunt.outs;
+        // 観戦実況（E2・乱数非消費）: 犠打の結果（成功/バント安打/失敗）を素データで通知。
+        if (fielding.onEvent) {
+          fielding.onEvent({
+            type: 'bunt',
+            inning,
+            half: battingIsHome ? 'bottom' : 'top',
+            batTeam: batting.teamId,
+            batterId,
+            outcome: bunt.dh ? 'hit' : bunt.dab ? 'fail' : 'success',
+            outsAfter: outs,
+            basesPids: bases.slice(),
+            batScore: batting.score,
+            fldScore: fielding.score,
+          });
+        }
         // スプリット計上（§B3b）: 犠打も1打席＝vsL/vsR・得点圏・ホーム/ビジターへ配る（PA恒等の維持）。
         recordPaSplits(bStat.batting, pitcher.throws, battingIsHome, (paBase & 6) !== 0, bunt.dab, bunt.dh, bunt.d1, 0, 0, 0, 0, 0, 0, 0);
         creditPlay(gc, {
@@ -489,6 +522,11 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       const pa = runPlateAppearance({
         batter, pitcher, catcher, cfg, rng, tto,
         bLine: bStat.batting, pLine: pStat.pitching, cLine, bases, outs,
+        // 一球速報（E2・乱数非消費）: 存在するときのみ各投球を構造化イベントで発火。
+        onPitch: fielding.onEvent
+          ? (n, pitchType, call, balls, strikes, wild) =>
+              fielding.onEvent({ type: 'pitch', n, pitchType, call, balls, strikes, wild })
+          : null,
       });
       outcome = pa.outcome; // 'K'|'BB'|'HBP'|'inPlay'
       battedBall = pa.battedBall;
@@ -702,6 +740,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         outsAfter: outs,
         runsOnPlay: runs,
         basesAfter: baseBits(bases),
+        basesPids: bases.slice(), // 塁上走者の playerId（E2・走者名表示）
         batScore: batting.score,
         fldScore: fielding.score,
         bb: battedBall
@@ -872,6 +911,7 @@ function maybePinchRun(batting, fielding, bases, inning, cfg, statFor) {
   }
   bases[pick.baseIdx] = pick.pid;
   batting.subs.push({ type: 'PR', inning, outPid, inPid: pick.pid });
+  if (batting.onEvent) batting.onEvent({ type: 'sub', kind: 'PR', team: batting.teamId, inning, inPid: pick.pid, outPid, basesPids: bases.slice() });
 }
 
 /** 守備固め（§S2-3）。守備側ハーフ開始時に適用。 */
@@ -885,6 +925,7 @@ function maybeDefensiveSub(side, oppScore, inning, cfg) {
   if (slot) slot.playerId = pick.pid;
   removeFromBench(side, pick.pid);
   side.subs.push({ type: 'DEF', inning, outPid, inPid: pick.pid });
+  if (side.onEvent) side.onEvent({ type: 'sub', kind: 'DEF', team: side.teamId, inning, inPid: pick.pid, outPid, pos: pick.pos });
 }
 
 // --- 犠打の解決（§S2-4） -----------------------------------------------------

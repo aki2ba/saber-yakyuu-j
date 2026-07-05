@@ -227,6 +227,27 @@ const html = `<!DOCTYPE html>
   .plink:hover { color:var(--gold); }
   .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }
   .headawards { font-size:11px; color:var(--muted); margin-top:2px; }
+  /* E2: スポナビ風観戦（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替） */
+  .watchgrid { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; margin:10px 0; }
+  .watchgrid svg.diamond { width:260px; max-width:100%; }
+  .matchup { flex:1; min-width:250px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); }
+  .bso { display:flex; gap:16px; margin-bottom:8px; flex-wrap:wrap; }
+  .bsorow { display:flex; align-items:center; gap:5px; }
+  .bsolabel { color:var(--muted); font-size:12px; width:12px; font-weight:700; }
+  .lamp { width:11px; height:11px; border-radius:50%; background:#0c3122; border:1px solid var(--line); display:inline-block; }
+  .lamp.lb.on { background:#7bc47f; border-color:#7bc47f; }
+  .lamp.ls.on { background:var(--gold); border-color:var(--gold); }
+  .lamp.lo.on { background:#c96a5a; border-color:#c96a5a; }
+  .murow { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; margin:7px 0; font-size:13px; }
+  .mulabel { color:var(--muted); font-size:11px; border:1px solid var(--line); border-radius:4px; padding:0 6px; }
+  .muname { font-weight:700; font-size:14px; }
+  .mutoday { color:var(--chalk); }
+  .pbpline.ev-ab { color:var(--chalk); font-weight:600; }
+  .pbpline.ev-pitch { color:var(--muted); }
+  .lineupbox { border:1px solid var(--line); border-radius:8px; padding:6px 10px; margin-top:10px; }
+  .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
+  .lineupbody.collapsed { display:none; }
+  .lineupcol { flex:1; min-width:230px; }
   .reccols { display:flex; flex-wrap:wrap; gap:10px; }
   .reccol { flex:1; min-width:150px; }
   .rechead { color:var(--muted); font-size:12px; border-bottom:1px solid var(--line); margin-bottom:3px; }

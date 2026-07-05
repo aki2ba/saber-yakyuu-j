@@ -250,14 +250,57 @@ assert.ok(tendBtns.length >= 8, `采配パネルに方針ボタンがある (got
 tendBtns[0]._onclick(); // 「積極」等を1つ押す→介入登録＋ハブ再描画（例外が出ないこと）
 assert.ok(hasClass('header'), '介入後もハブが再描画される');
 
-// G5) 次の試合へ → 観戦（スコアボード＋ダイヤモンド＋実況＋ベンチ/ブルペン残量）
+// G5) 次の試合へ → 観戦（E2: スポナビ風 = ラインスコア/盤面/対戦カード/一球速報/進行切替）
 btnByText('次の試合へ')._onclick();
 assert.ok(btnByText('観戦') && btnByText('ダイジェスト') && btnByText('スキップ'), '観戦/ダイジェスト/スキップの選択が出る');
 btnByText('観戦')._onclick();
-assert.ok(allClass('pbpline').length >= 1, '実況ログ（打席前ポーズ＝1プレー表示）');
+assert.ok(allClass('pbpline').length >= 1, '実況ログ（打席開始行から表示）');
 assert.ok(walk(appDiv).some((n) => (n.className || '').includes('diamond')), 'ダイヤモンド盤面SVGが描かれる');
 assert.ok(walk(appDiv).some((n) => (n.className || '').includes('scoreboard')), 'スコアボードが描かれる');
 assert.ok(hasClass('benchbox'), 'ベンチ/ブルペン残量が描かれる');
+// E2a) ラインスコア: 9イニング列＋R/H/E列（スポナビ風ヘッダ）
+{
+  const sb = hasClass('scoreboard');
+  const sbThs = walk(sb).filter((n) => n.tag === 'th').map(textOf);
+  for (const col of ['1', '5', '9', 'R', 'H', 'E']) {
+    assert.ok(sbThs.includes(col), `ラインスコアに${col}列 (${sbThs.join(',')})`);
+  }
+  const sbRows = walk(sb).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
+  assert.equal(sbRows.length, 2, 'ラインスコアは両軍2行');
+}
+// E2b) 対戦カード: 打者/投手・今日の結果・球数・B-S-Oランプ・選手名リンク
+const muBox = hasClass('matchup');
+assert.ok(muBox, '対戦カードが描かれる');
+const muTxt = textOf(muBox);
+assert.ok(muTxt.includes('打者') && muTxt.includes('投手') && muTxt.includes('球数'), `対戦カードに打者/投手/球数 (${muTxt.slice(0, 80)})`);
+assert.ok(walk(muBox).filter((n) => (n.className || '').includes('lamp')).length >= 7, 'B-S-Oランプ（3+2+2）が描かれる');
+// E2c) 進行単位切替: 1球/1打席/1イニング＋自動再生トグル
+for (const b of ['1球', '1打席', '1イニング', '自動再生']) {
+  assert.ok(btnByText(b), `進行コントロールに「${b}」`);
+}
+btnByText('1球')._onclick();
+btnByText('1球')._onclick();
+btnByText('1球')._onclick();
+const pitchLines = allClass('pbpline').map(textOf);
+assert.ok(pitchLines.some((t) => t.includes('球目')), `一球速報行「n球目 球種 判定」が出る (${pitchLines.slice(0, 6).join(' | ')})`);
+assert.ok(pitchLines.some((t) => t.includes('◇')), '打席開始行「◇ 打者 対 投手」が出る');
+assert.ok(walk(hasClass('pbp')).some((n) => (n.className || '').includes('plink')), '実況の選手名がリンク化（playerLink）');
+btnByText('1打席')._onclick();
+assert.ok(hasClass('matchup'), '1打席進行後も観戦画面が再描画される');
+btnByText('1イニング')._onclick();
+assert.ok(hasClass('matchup'), '1イニング進行後も観戦画面が再描画される');
+// 自動再生トグル: ON→タイマー予約→OFF（UIのみ・状態不変）
+btnByText('自動再生')._onclick();
+assert.ok(btnByText('止める'), '自動再生ONで停止ボタンに変わる');
+btnByText('止める')._onclick();
+assert.ok(btnByText('自動再生'), '自動再生OFFに戻る');
+// E2d) 折りたたみ: 両軍スタメン表（打順/守/今日）＋ベンチ・ブルペン残量の統合
+btnByText('スタメン・ベンチ')._onclick();
+{
+  const luThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  assert.ok(luThs.includes('打順') && luThs.includes('今日'), `スタメン表に打順/今日列 (${luThs.join(',')})`);
+  assert.ok(allClass('lineupcol').length >= 2, '両軍のスタメン表が並ぶ');
+}
 btnByText('最後まで')._onclick();
 assert.ok(hasClass('finalscore'), '最後まで進めると最終スコアが出る');
 const finalTxt = textOf(hasClass('finalscore'));
@@ -400,3 +443,4 @@ console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP
 
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
 console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');
+console.log('UI smoke OK (E2観戦): ラインスコア(9回+R/H/E)→対戦カード(打者/投手/球数/B-S-Oランプ/playerLink)→一球速報(n球目/◇打席行)→進行切替(1球/1打席/1イニング/自動再生)→スタメン折りたたみ(打順/今日)、例外なし');

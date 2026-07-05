@@ -27,6 +27,8 @@ import {
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
 import { renderTeamTab } from './ui/team.mjs';
+// フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
+import { renderWatchScreen } from './ui/watch.mjs';
 
 const state = {
   league: null,
@@ -890,7 +892,7 @@ function playerLink(id, label) {
 
 const game = {
   gs: null, // GameState（newGame/load の返値）
-  watch: null, // 観戦中の { rec, events, idx, progressive }
+  watch: null, // 観戦中の { rec, events, idx, progressive, unit, auto, showBench }（E2: 進行単位/自動再生/折りたたみ）
   slots: {}, // セッション内セーブミラー（同期ロード用。永続は IndexedDB）
   bg: null, // 「シーズン終了まで」バックグラウンド進行の状態
 };
@@ -898,13 +900,7 @@ const game = {
 // --- 小物（ゲーム層） -------------------------------------------------------
 const pname = (id) => (state.byId.get(id) ? state.byId.get(id).name : id);
 const tname = (id) => state.teamName.get(id) || id;
-const BATTED_JP = { GB: 'ゴロ', LD: 'ライナー', FB: 'フライ', PU: 'ポップフライ' };
 const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
-
-/** 打球方向（スプレー角→左/中/右）。sprayChart と同じ符号系（負=左, 正=右）。 */
-function sprayDir(deg) {
-  return deg < -12 ? '左' : deg > 12 ? '右' : '中';
-}
 
 /** ゲーム層の共有コンテキスト（stat 描画が参照する state.* をゲーム状態から張る）。 */
 function bindGameContext(gs) {
@@ -1422,15 +1418,24 @@ function playNextPlayerGame(mode) {
   const last = steps[steps.length - 1];
   const rec = last.playerGames.length ? last.playerGames[last.playerGames.length - 1] : null;
   if (rec && collect && last.playerEvents) {
-    game.watch = { rec, events: last.playerEvents, idx: mode === 'watch' ? indexOfFirstPa(last.playerEvents) : last.playerEvents.length, progressive: mode === 'watch' };
+    // E2: 観戦は最初の打席開始（atbat）から一球ずつ。ダイジェストは全消化（結果行のみ表示）。
+    game.watch = {
+      rec,
+      events: last.playerEvents,
+      idx: mode === 'watch' ? indexOfFirstAtbat(last.playerEvents) : last.playerEvents.length,
+      progressive: mode === 'watch',
+      unit: 'pitch', // 進行単位: 'pitch'|'pa'|'inning'
+      auto: false, // 自動再生トグル（UIのみ・状態不変）
+      showBench: false, // スタメン/ベンチ・ブルペン残量の折りたたみ
+    };
     renderWatch();
   } else {
     renderHub();
   }
 }
 
-function indexOfFirstPa(events) {
-  const i = events.findIndex((e) => e.type === 'pa');
+function indexOfFirstAtbat(events) {
+  const i = events.findIndex((e) => e.type === 'atbat' || e.type === 'pa');
   return i < 0 ? events.length : i + 1;
 }
 
@@ -1466,133 +1471,20 @@ function runToSeasonEnd() {
   step();
 }
 
-// --- 試合観戦UI（スコアボード＋ダイヤモンド＋実況＋ベンチ/ブルペン残量） -----------
+// --- 試合観戦UI（E2: スポナビ風。実装は src/ui/watch.mjs・ここは deps 供給のみ） ---------
 function renderWatch() {
-  const w = game.watch;
-  const root = document.getElementById('app');
-  root.innerHTML = '';
-  const view = reconstruct(w.events, w.idx);
-  const done = w.idx >= w.events.length;
-  root.append(el('div', { class: 'header' }, [
-    el('h2', {}, [`観戦　`, el('span', { class: 'muted' }, `${tname(view.home)} vs ${tname(view.away)}`)]),
-    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { game.watch = null; renderHub(); } }, 'ハブへ戻る')]),
-  ]));
-  root.append(scoreboard(view));
-  root.append(el('div', { class: 'watchmid' }, [diamondSVG(view), benchBox(view)]));
-  // 実況ログ
-  root.append(el('div', { class: 'pbp' }, view.lines.map((ln) => el('div', { class: 'pbpline ' + (ln.cls || '') }, ln.text))));
-  // コントロール
-  const ctrl = el('div', { class: 'row', style: 'flex-wrap:wrap;margin-top:8px' });
-  if (!done) {
-    ctrl.append(el('button', { class: 'primary', onclick: () => { w.idx = nextPaIdx(w.events, w.idx); renderWatch(); } }, '▶ 次のプレー'));
-    ctrl.append(el('button', { onclick: () => { w.idx = w.events.length; renderWatch(); } }, '最後まで'));
-  } else {
-    ctrl.append(el('div', { class: 'finalscore' }, `試合終了　${tname(view.home)} ${view.scoreH} - ${view.scoreA} ${tname(view.away)}`));
-    // 珍記録検出（C4・§54）: 試合イベント列からノーヒッター/完全試合/サイクル/猛打賞を拾う。
-    const { notables } = detectGameNotables(w.events);
-    for (const n of notables) {
-      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id));
-      if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
-    }
-    ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; renderHub(); } }, 'ハブへ戻る'));
-  }
-  root.append(ctrl);
+  renderWatchScreen(watchDeps());
 }
 
-/** 次の pa まで idx を進める（実況の「打席前ポーズ」相当）。 */
-function nextPaIdx(events, idx) {
-  let i = idx;
-  while (i < events.length && events[i].type !== 'pa') i++;
-  return i < events.length ? i + 1 : events.length;
-}
-
-/** events[0..idx) を再生して観戦ビュー（スコア/塁/アウト/実況/残量）を組む。 */
-function reconstruct(events, idx) {
-  const v = {
-    home: null, away: null, scoreH: 0, scoreA: 0,
-    inning: 1, half: 'top', bases: 0, outs: 0,
-    line: [], lines: [],
-    myBull: 0, myBench: 0, myBullMax: 0, myBenchMax: 0,
+/**
+ * E2: src/ui/watch.mjs（観戦画面）へ渡すUI共有ヘルパー束（E1 teamTabDeps と同じ流儀:
+ * 分割モジュールは ui.mjs のヘルパー/状態を import せず deps 経由で参照する）。
+ */
+function watchDeps() {
+  return {
+    el, td, state, game, tname, pname, posJP, playerLink,
+    svgEl, svgText, fmt3, f2, refreshRes, renderHub,
   };
-  const my = game.gs.playerTeamId;
-  const addLine = (inning, half, r) => {
-    let cell = v.line.find((x) => x.inning === inning);
-    if (!cell) { cell = { inning, top: 0, bottom: 0 }; v.line.push(cell); }
-    cell[half] += r;
-  };
-  for (let i = 0; i < idx && i < events.length; i++) {
-    const e = events[i];
-    if (e.type === 'start') {
-      v.home = e.home; v.away = e.away;
-      const meHome = e.home === my;
-      v.myBull = v.myBullMax = (meHome ? e.homeBullpen : e.awayBullpen).length;
-      v.myBench = v.myBenchMax = (meHome ? e.homeBench : e.awayBench).length;
-      v.lines.push({ text: `プレイボール: ${tname(e.away)}（先攻） vs ${tname(e.home)}（後攻）`, cls: 'ev-start' });
-    } else if (e.type === 'pa') {
-      v.inning = e.inning; v.half = e.half; v.bases = e.basesAfter; v.outs = e.outsAfter;
-      if (e.batTeam === v.home) { v.scoreH = e.batScore; v.scoreA = e.fldScore; }
-      else { v.scoreA = e.batScore; v.scoreH = e.fldScore; }
-      if (e.runsOnPlay) addLine(e.inning, e.half === 'bottom' ? 'bottom' : 'top', e.runsOnPlay);
-      v.lines.push({ text: paNarration(e), cls: e.result === 'HR' ? 'ev-hr' : e.runsOnPlay ? 'ev-run' : '' });
-    } else if (e.type === 'steal') {
-      v.lines.push({ text: `　${pname(e.runnerId)} が盗塁${e.success ? '成功' : '失敗（盗塁死）'}`, cls: e.success ? 'ev-run' : '' });
-    } else if (e.type === 'sub') {
-      const mine = e.team === my;
-      if (e.kind === 'RP') { if (mine) v.myBull = Math.max(0, v.myBull - 1); v.lines.push({ text: `　[${tname(e.team)}] 投手交代 → ${pname(e.inPid)}`, cls: 'ev-sub' }); }
-      else if (e.kind === 'PH') { if (mine) v.myBench = Math.max(0, v.myBench - 1); v.lines.push({ text: `　[${tname(e.team)}] 代打 ${pname(e.inPid)}（← ${pname(e.outPid)}）`, cls: 'ev-sub' }); }
-    } else if (e.type === 'end') {
-      v.scoreH = e.homeScore; v.scoreA = e.awayScore;
-      v.lines.push({ text: `試合終了: ${tname(v.home)} ${e.homeScore} - ${e.awayScore} ${tname(v.away)}${e.innings > 9 ? `（延長${e.innings}回）` : ''}`, cls: 'ev-start' });
-    }
-  }
-  return v;
-}
-
-/** 打席結果の言語化（セイバー感: EV/LA/落下点）。 */
-function paNarration(e) {
-  const half = e.half === 'bottom' ? '裏' : '表';
-  const head = `${e.inning}回${half} ${pname(e.batterId)}`;
-  let body;
-  if (e.outcome === 'K') body = '空振り三振';
-  else if (e.outcome === 'BB') body = e.isIBB ? '申告敬遠' : '四球';
-  else if (e.outcome === 'HBP') body = '死球';
-  else if (e.result === 'E') body = '失策で出塁';
-  else if (e.bb) {
-    const ev = Math.round(e.bb.evKmh);
-    const la = Math.round(e.bb.laDeg);
-    const dist = Math.round(e.bb.distanceM);
-    const dir = sprayDir(e.bb.sprayDeg);
-    const q = `[EV${ev} LA${la}° ${dir}方向${dist}m]`;
-    if (e.result === 'HR') body = `本塁打！ ${q}`;
-    else if (e.result === '3B') body = `三塁打 ${q}`;
-    else if (e.result === '2B') body = `二塁打 ${q}`;
-    else if (e.result === '1B') body = `ヒット ${q}`;
-    else body = `${BATTED_JP[e.battedType] || '打球'}アウト ${q}`;
-  } else body = '凡退';
-  const rbi = e.runsOnPlay ? `　${e.runsOnPlay}点!` : '';
-  return `${head}: ${body}${rbi}`;
-}
-
-/** スコアボード（イニング別＋合計）。 */
-function scoreboard(v) {
-  const maxInn = Math.max(9, v.line.length, v.inning);
-  const head = el('tr', {}, [el('th', { class: 'left' }, ''), ...Array.from({ length: maxInn }, (_, i) => el('th', {}, String(i + 1))), el('th', { class: 'rcol' }, 'R')]);
-  const cell = (teamIsHome, inn) => {
-    const c = v.line.find((x) => x.inning === inn + 1);
-    if (!c) return '';
-    const r = teamIsHome ? c.bottom : c.top;
-    // 後攻がサヨナラ等で打っていない回は空欄
-    return r || (inn + 1 <= v.inning ? '0' : '');
-  };
-  const rowFor = (teamId, isHome, total) => el('tr', { class: teamId === game.gs.playerTeamId ? 'myteam' : '' }, [
-    el('td', { class: 'left' }, tname(teamId)),
-    ...Array.from({ length: maxInn }, (_, i) => td(cell(isHome, i))),
-    el('td', { class: 'rcol' }, String(total)),
-  ]);
-  return el('div', { class: 'tablewrap' }, [el('table', { class: 'stat scoreboard' }, [
-    el('thead', {}, head),
-    el('tbody', {}, [rowFor(v.away, false, v.scoreA), rowFor(v.home, true, v.scoreH)]),
-  ])]);
 }
 
 /** SVG <text> 要素（既存 svgEl は子を持たないため専用ヘルパで textContent を設定）。 */
@@ -1600,39 +1492,6 @@ function svgText(attrs, text) {
   const e = svgEl('text', attrs);
   e.textContent = text;
   return e;
-}
-
-/** ダイヤモンド盤面（SVG・占有塁＋アウトカウント）。 */
-function diamondSVG(v) {
-  const W = 200, H = 190;
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'diamond' });
-  const cx = W / 2, cy = 128, s = 46; // ホーム基準
-  const home = [cx, cy], first = [cx + s, cy - s], second = [cx, cy - 2 * s], third = [cx - s, cy - s];
-  svg.append(svgEl('polygon', { points: `${home} ${first} ${second} ${third}`, fill: '#123d2a', stroke: '#2f6b4a' }));
-  const baseAt = (pt, occ) => svgEl('rect', { x: pt[0] - 8, y: pt[1] - 8, width: 16, height: 16, transform: `rotate(45 ${pt[0]} ${pt[1]})`, fill: occ ? '#e8b84b' : '#0c3122', stroke: '#c9a06a' });
-  svg.append(baseAt(first, v.bases & 1));
-  svg.append(baseAt(second, v.bases & 2));
-  svg.append(baseAt(third, v.bases & 4));
-  svg.append(svgEl('rect', { x: home[0] - 7, y: home[1] - 7, width: 14, height: 14, transform: `rotate(45 ${home[0]} ${home[1]})`, fill: '#f4f1e6' }));
-  // アウトカウント
-  for (let i = 0; i < 3; i++) svg.append(svgEl('circle', { cx: 24 + i * 16, cy: 172, r: 5, fill: i < v.outs ? '#e8b84b' : '#0c3122', stroke: '#c9a06a' }));
-  svg.append(svgText({ x: 62, y: 176, fill: '#9fb8ac', 'font-size': '11' }, `${v.outs} OUT`));
-  svg.append(svgText({ x: cx, y: 18, fill: '#e9e4d0', 'font-size': '12', 'text-anchor': 'middle' }, `${v.inning}回${v.half === 'bottom' ? '裏' : '表'}`));
-  return svg;
-}
-
-/** ベンチ/ブルペン残量（自チーム）。 */
-function benchBox(v) {
-  const bar = (label, cur, max) => el('div', { class: 'resrow' }, [
-    el('span', { class: 'reslabel' }, label),
-    el('span', { class: 'restrack' }, [el('span', { class: 'resfill', style: `width:${max ? (cur / max) * 100 : 0}%` })]),
-    el('span', { class: 'resval' }, `${cur}/${max}`),
-  ]);
-  return el('div', { class: 'benchbox' }, [
-    el('div', { class: 'muted' }, `自チーム残量`),
-    bar('ブルペン', v.myBull, v.myBullMax),
-    bar('ベンチ', v.myBench, v.myBenchMax),
-  ]);
 }
 
 // --- シーズンリザルト --------------------------------------------------------

@@ -279,6 +279,12 @@ const html = `<!DOCTYPE html>
   .zonecol { min-width:170px; text-align:center; }
   svg.zoneplot { width:170px; max-width:100%; }
   .zonelegend { font-size:10px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin-top:2px; cursor:help; }
+  /* F1コース図v2: 凡例2段（形＝球種/色＝判定）・打者の影・右肩の球番号・利き腕タグ */
+  .zonelegend .leglabel { color:var(--chalk); }
+  .batshadow { fill:#9fb8ac; stroke:#9fb8ac; opacity:.28; }
+  .batlabel { fill:#9fb8ac; opacity:.9; }
+  .pnum { paint-order:stroke; stroke:#0c3122; stroke-width:2px; }
+  .handtag { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; white-space:nowrap; }
   /* 一球判定の統一色（コース図ドット・現打席リスト・実況一球行の全部に適用）:
      ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青。fill はSVGテキスト（ドット）用 */
   .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:#f4f1e6; fill:#f4f1e6; }

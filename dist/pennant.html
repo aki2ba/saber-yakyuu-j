@@ -184,6 +184,12 @@
   .zonecol { min-width:170px; text-align:center; }
   svg.zoneplot { width:170px; max-width:100%; }
   .zonelegend { font-size:10px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin-top:2px; cursor:help; }
+  /* F1コース図v2: 凡例2段（形＝球種/色＝判定）・打者の影・右肩の球番号・利き腕タグ */
+  .zonelegend .leglabel { color:var(--chalk); }
+  .batshadow { fill:#9fb8ac; stroke:#9fb8ac; opacity:.28; }
+  .batlabel { fill:#9fb8ac; opacity:.9; }
+  .pnum { paint-order:stroke; stroke:#0c3122; stroke-width:2px; }
+  .handtag { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; white-space:nowrap; }
   /* 一球判定の統一色（コース図ドット・現打席リスト・実況一球行の全部に適用）:
      ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青。fill はSVGテキスト（ドット）用 */
   .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:#f4f1e6; fill:#f4f1e6; }
@@ -10954,6 +10960,12 @@ function teamRosterTable(data, cols, sort, u) {
 //     帯の中の細かい位置は hashSeed（rng非消費の決定論ハッシュ）による演出＝同じ試合は何度見ても同じ図。
 //   - 判定の色体系を統一: ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青（pc-*クラス）。
 //     コース図ドット・現打席リスト・実況の一球行（全球表示時）で共通。
+// F1コース図v2（phaseF_spec・UIのみ）:
+//   - 投手目線化: TVセンターカメラと同じ向き（一塁側=画面右・三塁側=画面左）。watchPitchXY の
+//     x を最後に左右反転するだけ（決定論ハッシュ・帯データは不変＝座標変換のみ）。
+//   - 打者の影: ゾーン脇に半透明シルエット（右打者=画面左/左打者=画面右・スイッチは effectiveBats）。
+//   - 利き腕表示: 対戦カードに「右打/左打/両打(実効側)」「右投/左投」（bats/throws は公開情報）。
+//   - 球種マーカー: 形＝球種（●▲◆▼■⬢）／色＝判定（pc-*維持）／番号=右肩。凡例2段化。
 // 設計原則:
 //   - エンジンとUIの分離: 描画は onEvent の構造化イベント列
 //     （start/atbat/pitch/pa/bunt/steal/sub/end・すべて乱数非消費）の純再生（watchReconstruct）。
@@ -10969,6 +10981,19 @@ function teamRosterTable(data, cols, sort, u) {
 
 
 const WATCH_PITCH_JP = { fastball: 'ストレート', slider: 'スライダー', curve: 'カーブ', changeup: 'チェンジアップ', fork: 'フォーク', sinker: 'シンカー', cutter: 'カットボール' };
+// F1: 球種→マーカー形状（形＝球種／色＝判定／番号=右肩）。model/positions.mjs の PITCH_TYPES 全種をカバー
+// （fastball/sinker/cutter/slider/curve/changeup/fork）。未知の球種は hex にフォールバック。
+const WATCH_PITCH_SHAPE = {
+  fastball: 'circle', // ●ストレート
+  slider: 'triup', // ▲スライダー
+  curve: 'diamond', // ◆カーブ
+  fork: 'tridown', // ▼フォーク
+  changeup: 'square', // ■チェンジアップ
+  sinker: 'hex', // ⬢シンカー/カット系（その他）
+  cutter: 'hex',
+};
+// 凡例1段目「形＝球種」の表記（全球種を6形状に集約して掲示）
+const WATCH_SHAPE_LEGEND = [['●', 'ストレート'], ['▲', 'スライダー'], ['◆', 'カーブ'], ['▼', 'フォーク'], ['■', 'チェンジ'], ['⬢', 'シンカー/カット']];
 const WATCH_CALL_JP = { ball: 'ボール', called: '見逃しストライク', whiff: '空振り', foul: 'ファウル', inplay: '打った！', hbp: '死球' };
 const WATCH_BATTED_JP = { GB: 'ゴロ', LD: 'ライナー', FB: 'フライ', PU: '小フライ' };
 const WATCH_HITS = new Set(['1B', '2B', '3B', 'HR']);
@@ -11147,7 +11172,7 @@ function watchReconstruct(events, idx, u) {
       // 全投球にカウント(B-S)を統一表記（最終球も省略しない）
       const wild = e.wild ? '　→ 捕手が後逸！走者進塁' : '';
       const ptxt = `${e.n}球目 ${WATCH_PITCH_JP[e.pitchType] || e.pitchType} ${WATCH_CALL_JP[e.call] || e.call} ${e.balls}-${e.strikes}${wild}`;
-      if (v.curAb) v.curAb.pitches.push({ n: e.n, call: e.call, band: e.band, text: ptxt });
+      if (v.curAb) v.curAb.pitches.push({ n: e.n, call: e.call, band: e.band, type: e.pitchType, text: ptxt });
       // 一球行にも統一色（コース図ドット/現打席リストと同じ pc-* クラス）
       v.lines.push({ kind: 'pitch', cls: 'ev-pitch ' + watchCallCls(e.call), text: '　' + ptxt });
     } else if (e.type === 'pa') {
@@ -11347,13 +11372,15 @@ const WATCH_ZP = { W: 160, H: 180, zx: 50, zy: 52, zw: 60, zh: 76 };
  *  - 明確ボールは「際からの距離減衰」で描く（現実の外し球の大半はゾーン至近。大外れは稀）
  *  - スイングされた球（chase）は際のすぐ外に限定（届かない場所のファウルを描かない）
  *  - 見逃しボールはやや低め方向へバイアス（低めに外す/ワンバウンド系が最頻という現実）
+ * F1投手目線化: 決定論ハッシュはそのままに、最後に x を左右反転（座標変換のみ）。
+ *  TVセンターカメラと同じ向き＝一塁側が画面右・三塁側が画面左（ゾーンは水平中央なので枠内は枠内のまま）。
  */
 function watchPitchXY(rec, abIdx, n, band, swung = false) {
   const { W, H, zx, zy, zw, zh } = WATCH_ZP;
   const day = rec && rec.day != null ? rec.day : 0;
   const key1 = hashSeed(day, String(rec && rec.home || ''), String(rec && rec.away || ''), abIdx, n, 1) / 4294967296;
   const key2 = hashSeed(day, String(rec && rec.home || ''), String(rec && rec.away || ''), abIdx, n, 2) / 4294967296;
-  if (band === 0) return [zx + 6 + key1 * (zw - 12), zy + 7 + key2 * (zh - 14)]; // ゾーン枠内
+  if (band === 0) return [W - (zx + 6 + key1 * (zw - 12)), zy + 7 + key2 * (zh - 14)]; // ゾーン枠内（投手目線へ反転）
   // 枠中心からの方位角でゾーン枠線上の点を取り、際は±ジッタ・明確ボールは外側へ減衰で押し出す
   const cx = zx + zw / 2; const cy = zy + zh / 2;
   // 見逃しの明確ボールは方位を低め寄りに（sinが正=下方向の確率を上げる）
@@ -11367,35 +11394,48 @@ function watchPitchXY(rec, abIdx, n, band, swung = false) {
   else r = t + 5 + key2 * key2 * 22; // 見逃しボール: 距離減衰（大半は+5〜11px・大外れは稀）
   const x = Math.min(W - 12, Math.max(12, cx + dx * r));
   const y = Math.min(H - 12, Math.max(12, cy + dy * r));
-  return [x, y];
+  return [W - x, y]; // 投手目線＝捕手視点から左右反転
 }
 
-/** コース図カラム（見出し＋ゾーンSVG＋凡例）。 */
+/** コース図カラム（見出し＋ゾーンSVG＋凡例2段: 形＝球種／色＝判定）。F1で投手目線化。 */
 function watchZoneCol(v, u, w) {
   const { el } = u;
   const col = el('div', { class: 'zonecol' });
-  col.append(el('div', { class: 'curabhead' }, 'コース（捕手視点）'));
+  col.append(el('div', { class: 'curabhead' }, 'コース（投手目線）'));
   col.append(watchZonePlot(v, u, w));
-  const leg = el('div', {
-    class: 'zonelegend',
+  // 凡例1段目「形＝球種」（実際の速報アプリの再現・全球種を6形状に集約）
+  col.append(el('div', {
+    class: 'zonelegend legshape',
+    title: 'マーカーの形が球種を表します（●ストレート ▲スライダー ◆カーブ ▼フォーク ■チェンジアップ ⬢シンカー/カット系）。',
+  }, [
+    el('span', { class: 'leglabel' }, '形＝球種:'),
+    ...WATCH_SHAPE_LEGEND.map(([s, name]) => el('span', {}, s + name)),
+  ]));
+  // 凡例2段目「色＝判定」（現行の pc-* 統一色）
+  col.append(el('div', {
+    class: 'zonelegend legcolor',
     title: '高さ・コースの帯（ゾーン内／際／明確ボール）は投球の実データ。帯の中の細かい位置は決定論ハッシュによる演出です（同じ試合は何度見ても同じ図）。',
   }, [
+    el('span', { class: 'leglabel' }, '色＝判定:'),
     el('span', { class: 'pc-ball' }, '●ボール'),
     el('span', { class: 'pc-called' }, '●見逃し'),
     el('span', { class: 'pc-whiff' }, '●空振り'),
     el('span', { class: 'pc-foul' }, '●ファウル'),
     el('span', { class: 'pc-inplay' }, '●インプレー'),
-  ]);
-  col.append(leg);
+  ]));
   return col;
 }
 
-/** ストライクゾーンプロット本体: ゾーン枠＋九分割目安線＋現打席の投球ドット（①②③…）。 */
+/**
+ * ストライクゾーンプロット本体（F1・投手目線）: ゾーン枠＋九分割目安線＋打者の影＋
+ * 現打席の投球マーカー（形＝球種／色＝判定／番号=右肩）。
+ */
 function watchZonePlot(v, u, w) {
   const { svgEl, svgText } = u;
   const { W, H, zx, zy, zw, zh } = WATCH_ZP;
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'zoneplot' });
   svg.append(svgEl('rect', { x: 2, y: 2, width: W - 4, height: H - 4, rx: 8, fill: '#0c3122', stroke: '#2f6b4a' })); // 外周
+  watchBatterShadow(svg, v, u); // 打者の影（ゾーン枠より奥＝先に描く）
   svg.append(svgEl('rect', { x: zx, y: zy, width: zw, height: zh, fill: '#123d2a', stroke: '#9fb8ac', 'stroke-width': '1.5' })); // ゾーン枠
   for (let i = 1; i < 3; i++) { // 九分割の目安線
     svg.append(svgEl('line', { x1: zx + (zw / 3) * i, y1: zy, x2: zx + (zw / 3) * i, y2: zy + zh, stroke: '#2f6b4a', 'stroke-width': '0.6' }));
@@ -11406,13 +11446,55 @@ function watchZonePlot(v, u, w) {
     for (const p of ab.pitches) {
       const swung = p.call === 'whiff' || p.call === 'foul' || p.call === 'inplay';
       const [x, y] = watchPitchXY(w.rec, ab.abIdx, p.n, p.band ?? 1, swung);
-      svg.append(svgText({
-        x, y: y + 4.5, class: 'pdot ' + watchCallCls(p.call),
-        'font-size': '13', 'font-weight': '700', 'text-anchor': 'middle',
-      }, watchCircledNum(p.n)));
+      const cls = watchCallCls(p.call);
+      svg.append(watchPitchMarker(u, x, y, p.type, 'pdot ' + cls)); // 形＝球種・fill=判定色
+      // 球番号①②…は形の右肩に小さく
+      svg.append(svgText({ x: x + 5.2, y: y - 3.2, class: 'pnum ' + cls, 'font-size': '7.5', 'font-weight': '700' }, watchCircledNum(p.n)));
     }
   }
   return svg;
+}
+
+/** F1: 球種→SVGマーカー（circle/polygon/rect・fill は判定色クラス pc-* に委譲）。 */
+function watchPitchMarker(u, x, y, type, cls) {
+  const { svgEl } = u;
+  const kind = WATCH_PITCH_SHAPE[type] || 'hex';
+  if (kind === 'circle') return svgEl('circle', { cx: x.toFixed(1), cy: y.toFixed(1), r: 4.8, class: cls });
+  if (kind === 'square') return svgEl('rect', { x: (x - 4.2).toFixed(1), y: (y - 4.2).toFixed(1), width: 8.4, height: 8.4, class: cls });
+  let pts;
+  if (kind === 'triup') pts = [[0, -5.6], [5, 4.2], [-5, 4.2]];
+  else if (kind === 'tridown') pts = [[0, 5.6], [5, -4.2], [-5, -4.2]];
+  else if (kind === 'diamond') pts = [[0, -6], [5, 0], [0, 6], [-5, 0]];
+  else pts = Array.from({ length: 6 }, (_, i) => { // hex（⬢・フラットトップ）
+    const a = Math.PI / 6 + (i * Math.PI) / 3;
+    return [5.4 * Math.cos(a), 5.4 * Math.sin(a)];
+  });
+  return svgEl('polygon', { points: pts.map(([dx, dy]) => `${(x + dx).toFixed(1)},${(y + dy).toFixed(1)}`).join(' '), class: cls });
+}
+
+/**
+ * F1: 打者の影（半透明シルエット・簡易SVG人型: 頭円＋胴＋脚＋バット線）＋「右打/左打」ラベル。
+ * 投手目線＝右打者は三塁側（画面左）・左打者は一塁側（画面右）。
+ * スイッチヒッターは対戦投手との実効打席（engine の effectiveBats・公開情報）で側を決める。
+ */
+function watchBatterShadow(svg, v, u) {
+  const { svgEl, svgText, state } = u;
+  const { W } = WATCH_ZP;
+  const bat = v.batterId ? state.byId.get(v.batterId) : null;
+  if (!bat) return;
+  const pit = v.curPitcherId ? state.byId.get(v.curPitcherId) : null;
+  const side = pit ? effectiveBats(bat, pit) : (bat.bats === 'S' ? 'L' : bat.bats); // 'R'|'L'（実効打席）
+  const tx = side === 'R' ? 26 : W - 26; // 右打=画面左（三塁側）／左打=画面右（一塁側）
+  // ローカル座標は「画面左の打者（バットは+x=ゾーン向き）」で定義し、左打者は scale(-1,1) で鏡映
+  const g = svgEl('g', { class: 'batshadow', transform: `translate(${tx} 0)${side === 'L' ? ' scale(-1 1)' : ''}` });
+  g.append(svgEl('circle', { cx: 0, cy: 58, r: 7 })); // 頭
+  g.append(svgEl('rect', { x: -7, y: 67, width: 14, height: 36, rx: 6 })); // 胴
+  g.append(svgEl('line', { x1: -3.5, y1: 103, x2: -6.5, y2: 140, 'stroke-width': 5.5 })); // 脚
+  g.append(svgEl('line', { x1: 3.5, y1: 103, x2: 6.5, y2: 140, 'stroke-width': 5.5 }));
+  g.append(svgEl('line', { x1: 5, y1: 74, x2: 20, y2: 46, 'stroke-width': 3.2 })); // バット（構え）
+  svg.append(g);
+  // ラベルは鏡映グループの外（文字を反転させない）・影の頭側に
+  svg.append(svgText({ x: tx, y: 42, class: 'batlabel', 'font-size': '9', 'text-anchor': 'middle' }, side === 'R' ? '右打' : '左打'));
 }
 
 /** サブタブ「速報」: 実況フィード（新しい順・既定は打席結果のみ・全球表示トグル）。 */
@@ -11534,12 +11616,23 @@ function watchDiamond(v, u) {
   return svg;
 }
 
-/** 対戦カード（現在の打者/投手・今日の結果・シーズン成績）。B-S-Oは「今の状況」パネルへ移設。 */
+/** F1: 打者の利き腕表記（両打は対戦投手との実効打席も括弧で: 例「両打(左)」）。 */
+function watchBatsJP(batter, pitcher) {
+  if (batter.bats === 'S') {
+    return pitcher ? `両打(${effectiveBats(batter, pitcher) === 'L' ? '左' : '右'})` : '両打';
+  }
+  return batter.bats === 'L' ? '左打' : '右打';
+}
+
+/** 対戦カード（現在の打者/投手・利き腕・今日の結果・シーズン成績）。B-S-Oは「今の状況」パネルへ移設。 */
 function watchMatchup(v, u) {
   const { el, state, playerLink, fmt3, f2 } = u;
   const box = el('div', { class: 'matchup' });
-  // 打者（今日 X打数Y安打＋当日打席履歴チップ＋シーズンAVG/HR/OPS）
+  // 打者（利き腕＋今日 X打数Y安打＋当日打席履歴チップ＋シーズンAVG/HR/OPS）
   const bid = v.batterId;
+  const bp = bid ? state.byId.get(bid) : null; // bats/throws は公開情報（player モデル）
+  const pid = v.curPitcherId;
+  const pp = pid ? state.byId.get(pid) : null;
   const bs = bid && state.res && state.res.statsById ? state.res.statsById.get(bid) : null;
   const bm = bs && bs.batting.pa > 0 ? playerBatting(bs, state.lc) : null;
   const d = bid ? v.daily.get(bid) : null;
@@ -11547,17 +11640,18 @@ function watchMatchup(v, u) {
   box.append(el('div', { class: 'murow' }, [
     el('span', { class: 'mulabel' }, '打者'),
     el('span', { class: 'muname' }, bid ? [playerLink(bid)] : '—'),
+    ...(bp ? [el('span', { class: 'handtag' }, watchBatsJP(bp, pp))] : []),
     el('span', { class: 'mutoday' }, hasToday ? `今日 ${d.ab}打数${d.h}安打` : '今日 第1打席'),
     ...(hasToday && d.res.length ? [el('span', { class: 'reschips' }, d.res.map((r) => el('span', { class: 'reschip' }, r)))] : []),
     el('span', { class: 'muted' }, bm ? `AVG ${fmt3(bm.avg)} / ${bm.hr}本 / OPS ${fmt3(bm.ops)}` : '今季成績なし'),
   ]));
-  // 投手（球数＋シーズンERA/K）
-  const pid = v.curPitcherId;
+  // 投手（利き腕＋球数＋シーズンERA/K）
   const ps = pid && state.res && state.res.statsById ? state.res.statsById.get(pid) : null;
   const pm = ps && ps.pitching.outs > 0 ? playerPitching(ps, state.lc, state.cfg) : null;
   box.append(el('div', { class: 'murow' }, [
     el('span', { class: 'mulabel' }, '投手'),
     el('span', { class: 'muname' }, pid ? [playerLink(pid)] : '—'),
+    ...(pp ? [el('span', { class: 'handtag' }, pp.throws === 'L' ? '左投' : '右投')] : []),
     el('span', { class: 'mutoday' }, `球数 ${v.curPitchCount || 0}`),
     el('span', { class: 'muted' }, pm && Number.isFinite(pm.era) ? `ERA ${f2(pm.era)} / ${pm.so}K` : '今季成績なし'),
   ]));

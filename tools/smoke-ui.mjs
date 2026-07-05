@@ -294,6 +294,33 @@ assert.ok(muBox, '対戦カードが描かれる');
 const muTxt = textOf(muBox);
 assert.ok(muTxt.includes('打者') && muTxt.includes('投手') && muTxt.includes('球数'), `対戦カードに打者/投手/球数 (${muTxt.slice(0, 80)})`);
 assert.ok(walk(duelPanel).some((n) => (n.className || '').includes('zoneplot')), '対戦パネルにコース図SVG(.zoneplot)');
+// F1a) コース図v2: 投手目線の見出し＋利き腕表示（打者「右打/左打/両打」・投手「右投/左投」）
+assert.ok(walk(duelPanel).some((n) => textOf(n).includes('コース（投手目線）')), 'コース図の見出しが「コース（投手目線）」');
+assert.ok(/(右打|左打|両打)/.test(muTxt), `対戦カードの打者に利き腕表記 (${muTxt.slice(0, 80)})`);
+assert.ok(/(右投|左投)/.test(muTxt), `対戦カードの投手に利き腕表記 (${muTxt.slice(0, 80)})`);
+assert.ok(walk(muBox).filter((n) => (n.className || '').includes('handtag')).length >= 2, '打者/投手の利き腕タグ(.handtag)が両方出る');
+// F1b) 打者の影: 存在＋左右（右打者=三塁側=画面左=x座標が左半分/左打者=一塁側=画面右）＋頭側ラベル
+{
+  const zp0 = walk(duelPanel).find((n) => (n.className || '').includes('zoneplot'));
+  const shadow = walk(zp0).find((n) => (n.className || '').includes('batshadow'));
+  assert.ok(shadow, 'ゾーン脇に打者の影(.batshadow)が描かれる');
+  const lbl = walk(zp0).find((n) => (n.className || '').includes('batlabel'));
+  assert.ok(lbl && /^[右左]打$/.test(textOf(lbl)), `影の近くに右打/左打ラベル (${lbl ? textOf(lbl) : 'なし'})`);
+  const txm = String(shadow.attrs.transform || '').match(/translate\((-?[\d.]+)/);
+  assert.ok(txm, `影のグループにtranslate座標 (${shadow.attrs.transform})`);
+  const tx = parseFloat(txm[1]);
+  if (textOf(lbl) === '右打') assert.ok(tx < 80, `右打者の影は画面左＝三塁側（x=${tx} < 80）`);
+  else assert.ok(tx > 80, `左打者の影は画面右＝一塁側（x=${tx} > 80）`);
+}
+// F1c) 凡例2段: 1段目「形＝球種」・2段目「色＝判定」
+{
+  const legs = walk(duelPanel).filter((n) => (n.className || '').includes('zonelegend'));
+  assert.equal(legs.length, 2, `コース図の凡例が2段 (got ${legs.length})`);
+  const leg1 = textOf(legs[0]); const leg2 = textOf(legs[1]);
+  assert.ok(leg1.includes('形＝球種') && leg1.includes('●ストレート') && leg1.includes('▲スライダー') && leg1.includes('▼フォーク'),
+    `凡例1段目=形＝球種 (${leg1})`);
+  assert.ok(leg2.includes('色＝判定') && leg2.includes('空振り') && leg2.includes('インプレー'), `凡例2段目=色＝判定 (${leg2})`);
+}
 // E2c) 進行単位切替: 1球/1打席/1イニング＋自動再生トグル
 for (const b of ['1球', '1打席', '1イニング', '自動再生']) {
   assert.ok(btnByText(b), `進行コントロールに「${b}」`);
@@ -310,21 +337,28 @@ assert.ok(hasClass('curab'), '「現在の打席」ボックスが対戦カー�
   assert.ok(abPitches[0].startsWith('1球目'), `投球は1球目からの正順 (${abPitches[0]})`);
   assert.ok(abPitches.every((t) => /\d-\d/.test(t)), `全投球行にカウントB-S表記 (${abPitches.join(' | ')})`);
 }
-// E2z-c) コース図: ドット数=現打席の投球数・番号①からの丸数字・判定色クラス（帯は実データ・枠内位置は決定論ハッシュ）
+// E2z-c/F1d) コース図: マーカー数=現打席の投球数・形＝球種（circle/polygon/rect）・色＝判定（pc-*）・
+//            番号①②…は右肩の小テキスト（帯は実データ・枠内位置は決定論ハッシュ）
 {
   const abRows = allClass('curabpitch').filter((n) => textOf(n).includes('球目'));
   const zp = walk(appDiv).find((n) => (n.className || '').includes('zoneplot'));
   const dots = walk(zp).filter((n) => (n.className || '').includes('pdot'));
-  assert.equal(dots.length, abRows.length, `コース図のドット数=現打席の投球数 (dots=${dots.length}, pitches=${abRows.length})`);
-  assert.ok(dots.some((n) => textOf(n).includes('①')), '1球目のドットは番号①');
-  assert.ok(dots.every((n) => /pc-(ball|called|whiff|foul|inplay)/.test(n.className || '')), `全ドットに判定色クラスpc-* (${dots.map((n) => n.className).join(',')})`);
+  assert.equal(dots.length, abRows.length, `コース図のマーカー数=現打席の投球数 (dots=${dots.length}, pitches=${abRows.length})`);
+  assert.ok(dots.every((n) => ['circle', 'polygon', 'rect'].includes(n.tag)),
+    `マーカーは形状SVG（circle/polygon/rect＝形が球種） (${dots.map((n) => n.tag).join(',')})`);
+  assert.ok(dots.every((n) => /pc-(ball|called|whiff|foul|inplay)/.test(n.className || '')), `全マーカーに判定色クラスpc-* (${dots.map((n) => n.className).join(',')})`);
+  const pnums = walk(zp).filter((n) => (n.className || '').includes('pnum'));
+  assert.equal(pnums.length, dots.length, `各マーカーの右肩に球番号テキスト (nums=${pnums.length}, dots=${dots.length})`);
+  assert.ok(pnums.some((n) => textOf(n).includes('①')), '1球目の番号は①');
+  assert.ok(pnums.every((n) => /pc-(ball|called|whiff|foul|inplay)/.test(n.className || '')), '球番号にも判定色クラスpc-*');
   assert.ok(abRows.every((n) => /pc-(ball|called|whiff|foul|inplay)/.test(n.className || '')), '現打席リストの一球行にも同じ色クラスpc-*');
-  // 決定論: 再描画（1球進めず同じ状態を再構築）してもドット座標が同一（座標はハッシュ演出＝rng非消費）
-  const xy = dots.map((n) => `${n.attrs.x},${n.attrs.y}`).join(' ');
+  // 決定論: 再描画（1球進めず同じ状態を再構築）してもマーカー座標が同一（座標はハッシュ演出＝rng非消費）
+  const dotSig = (ns) => ns.map((n) => n.attrs.points || `${n.attrs.cx ?? n.attrs.x},${n.attrs.cy ?? n.attrs.y}`).join(' ');
+  const xy = dotSig(dots);
   btnByText('自動再生')._onclick(); // ON→OFF で2回再描画（再生位置は不変）
   btnByText('止める')._onclick();
   const zp2 = walk(appDiv).find((n) => (n.className || '').includes('zoneplot'));
-  const xy2 = walk(zp2).filter((n) => (n.className || '').includes('pdot')).map((n) => `${n.attrs.x},${n.attrs.y}`).join(' ');
+  const xy2 = dotSig(walk(zp2).filter((n) => (n.className || '').includes('pdot')));
   assert.equal(xy2, xy, 'コース図の座標は決定論（同じ再生位置なら何度描いても同じ図）');
 }
 // E2改b) 実況フィードは既定で一球行/◇打席行を畳む → 「全球表示」トグルで出す
@@ -627,4 +661,5 @@ console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
 console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');
 console.log('UI smoke OK (E2観戦・ゾーニング改): 今の状況パネル(大スコア/回/アウト/B-S-O/盤面)→ラインスコア(9回+R/H/E)→対戦パネル(打者/投手カード+現打席正順+コース図ドット数=投球数/番号①/pc-色統一/座標決定論)→サブタブ(速報/ボックス/スタメン切替)→実況畳み(結果1行+[N回表裏]+色分け+得点行スコア付記)→全球表示トグル(一球行もpc-色)→進行切替(1球/1打席/1イニング/自動再生)、例外なし');
+console.log('UI smoke OK (F1コース図v2): 投手目線見出し+打者の影(右打=画面左/左打=画面右+頭側ラベル)+利き腕表示(右打/左打/両打・右投/左投)+球種形状マーカー(circle/polygon/rect×pc-色+右肩番号)+凡例2段(形＝球種/色＝判定)、例外なし');
 console.log('UI smoke OK (E4動線): タブ整理(ホーム/チーム/日程・結果/順位/成績サブタブ/ニュース/記録)→日程・結果(月別/勝敗/先発link)→試合クリック→簡易ボックススコア(ラインスコアR/H/E+両軍打者/投手ライン)→ニュースタブ(選手の活躍→playerLink→モーダル)、例外なし');

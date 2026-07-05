@@ -66,6 +66,20 @@ export function notableHeadline(n, pnameOf, tnameOf) {
 }
 
 /**
+ * 昇降格ニュース見出し（F2-3）。mv = rt.rosterMoves / step.rosterMoves の1件。
+ * off要約・週次ダイジェスト・ハブのニュース欄の素材（純関数・乱数非使用）。
+ * @param {{type:string, teamId:string, upName:string, upPos:string, downName:string, downPos:string}} mv
+ * @param {Function} tnameOf teamId→球団名
+ */
+export function rosterMoveHeadline(mv, tnameOf) {
+  const t = tnameOf(mv.teamId);
+  if (mv.type === 'ilReplace') return `${t}、${mv.downName}（${mv.downPos}）が故障で登録抹消 — 二軍から${mv.upName}を昇格`;
+  if (mv.type === 'ilReturn') return `${t}、${mv.upName}（${mv.upPos}）が離脱から復帰し一軍登録（${mv.downName}は登録抹消）`;
+  if (mv.type === 'perfSwap') return `${t}、不振の${mv.downName}（${mv.downPos}）を登録抹消 — 二軍で好調の${mv.upName}を昇格`;
+  return '';
+}
+
+/**
  * 直近の連勝/連敗を数える（自チーム視点・最新試合から遡る）。
  * @param {Array} gameLog [{home,away,homeScore,awayScore,tie}]
  * @returns {{type:'W'|'L'|'T'|null, len:number}}

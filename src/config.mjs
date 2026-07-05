@@ -475,6 +475,28 @@ export const TUNING_DEFAULT = {
     farmKeepPerPos: 2, // 登録選抜が各主ポジションに二軍へ残す最低野手数（二軍のデプスチャート成立を保証）
   },
 
+  // シーズン中の出場登録入替（F2-3 roster_moves.mjs・phaseF_spec F2-3）。
+  //   三層構造: 判定は一軍/二軍の観測statline＋スカウト評価（決定論ノイズ）のみ（真値不参照）。
+  //   鉄則7: 1年目は enableMoves が立たず一切不作動（simulateSeason と bit 同一を維持）。
+  moves: {
+    swapCooldownDays: 10, // 入替クールダウン（NPB10日ルールの簡略化）: 登録/抹消から再移動までの日数
+    ilMinDays: 4, // IL補充を出す最低の残り離脱日数（数日の離脱では登録を動かさない）
+    reviewInterval: 25, // 成績入替チェックの周期（チーム消化試合数。既存の25試合レビューと同周期）
+    perfSwapMargin: 0.008, // 野手の成績入替に要する実効wOBA差（二軍評価−レベル差割引 > 一軍評価＋これ）
+    farmGapWoba: 0.02, // 二軍観測wOBAのレベル差割引（二軍の投手レベルは低い＝観測は甘く出る）
+    farmMinPA: 40, // 昇格候補野手に要する二軍観測の最低PA（標本不足では動かさない）
+    pitchSwapRA9: 1.2, // 投手の成績入替に要するRA9差（一軍RA9 −（二軍RA9＋割引）> これ）
+    farmGapRA9: 0.7, // 二軍観測RA9のレベル差割引
+    pitchMinBF: 40, // 一軍不振投手の判定に要する最低対戦打者数
+    farmPitchMinOuts: 45, // 昇格候補投手に要する二軍観測の最低アウト数（15回）
+    // IL補充の球団AI評価（callupScore = evaluateProspect＋二軍観測の加点。観測＋スカウト）
+    callupWobaW: 250, // 二軍観測wOBA偏差 → 球団AI評価点の換算（野手）
+    callupRa9W: 6, // 二軍観測RA9偏差 → 球団AI評価点の換算（投手）
+    callupRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
+    callupTrustPA: 80, // 二軍観測の信頼度半飽和PA（野手・少PAはスカウト評価優位）
+    callupTrustOuts: 90, // 同（投手・アウト数）
+  },
+
   // 編成・打順（S1 buildDepthChart v2。§S1-3）
   depth: {
     posToolW: 0.4, // positionRank: 守備素材(Range,50中心)の重み（習熟=1基準）
@@ -865,6 +887,13 @@ export const TUNING_DEFAULT = {
       promoteThreshold: 57, // 育成の「観測成績」がこれ超で支配下登録（稀）
       promoteObsNoiseSd: 6, // 昇格判定の観測ノイズSD（球場が薄い＝観測が荒い）
       promoteObsBias: -2, // 観測は下振れ方向にバイアス（育成は観測が歪む・§12.2）
+      // F2-3: 昇格判定を二軍実成績ベースへ強化（§12.1）。当年の二軍statlineが「観測」へ加点される
+      //   （二軍で打った/抑えた育成ほど昇格しやすい。標本が薄いと信頼度加重で効きが弱まる）。
+      promotePerfTrustPA: 100, // 二軍打撃観測の信頼度半飽和PA
+      promotePerfTrustOuts: 120, // 二軍投球観測の信頼度半飽和アウト数（40回）
+      promoteWobaW: 60, // 二軍観測wOBA偏差 → 昇格観測点の換算（野手）
+      promoteRa9W: 1.5, // 二軍観測RA9偏差 → 昇格観測点の換算（投手）
+      promoteRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
     },
 
     // ------------------------------------------------------------------------

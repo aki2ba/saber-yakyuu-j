@@ -24,6 +24,7 @@ import { createUsageState } from '../sim/usage.mjs';
 import { buildDepthChart } from '../sim/team.mjs';
 import { simulatePostseason } from '../sim/postseason.mjs';
 import { buildBoxScore } from './boxscore.mjs';
+import { applyRosterMovesForDay, createMovesState } from './roster_moves.mjs';
 
 /**
  * 二軍リーグのランタイムを組む（F2-2・phaseF_spec F2-2）。
@@ -34,7 +35,7 @@ import { buildBoxScore } from './boxscore.mjs';
  * 成立しない構成（ミニリーグ/旧テストの少人数ロスター）では null を返し二軍なしで動く。
  * @returns {?Object} FarmRuntime（可変・cursor が進行位置）
  */
-function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam }) {
+function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injuries = [] }) {
   const F = cfg.league.farm;
   if (!F || !(F.leagues ?? []).length) return null;
   const parentIds = (cfg.league.leagues ?? []).map((l) => l.id);
@@ -71,6 +72,17 @@ function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam }) {
   }
   // 起用AI: 一軍と同じ usage（priorPitch なし＝破綻救援ガード不作動。育成試合の簡略）。
   const usageByTeam = new Map(teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, null)]));
+  // 開幕IL（F2-3）: 直前オフの故障者は二軍でも出場不可（IL選手が二軍戦に出る矛盾の防止・C2.4/§10.5）。
+  //   1年目は injuries が空＝無影響（F2-2 と bit 同一）。
+  if (injuries.length) {
+    const teamOf = new Map();
+    for (const [tid, r] of rosterByTeam) for (const p of r) teamOf.set(p.id, tid);
+    for (const ev of injuries) {
+      const tid = teamOf.get(ev.id);
+      if (tid == null || !ev.gamesLost) continue;
+      usageByTeam.get(tid)?.injuredUntil.set(ev.id, ev.gamesLost);
+    }
+  }
   // 日程: buildSchedule を farm 用の試合数ノブで再利用（リーグ内22×5相手=110試合・交流戦なし）。
   const schedCfg = {
     ...cfg,
@@ -158,7 +170,7 @@ function advanceFarmThrough(rt, throughDay) {
  *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
  * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
  */
-export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null }) {
+export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null, enableMoves = false, masterSeed = null }) {
   const { leagueDh, teamById, chartsByTeam, depthByTeam, registeredByTeam } = buildTeamCharts(league, cfg);
   // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
   const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
@@ -186,11 +198,16 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
   }
   const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
   const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
+  // 二軍リーグ（F2-2）: 一軍と同じ day カレンダーに並走。成立しない構成（ミニリーグ）は null。
+  const farm = buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injuries });
   return {
     league,
     cfg,
     season,
     seed,
+    // キャリアのマスターシード（F2-3: 球団評価プロファイル＝キャリア中固定の座標。
+    // 未提供（sim層/単体テスト）は season seed で代用＝同一シーズン内では同様に決定論）。
+    masterSeed: masterSeed ?? seed,
     park,
     parkByTeam,
     playerTeamId,
@@ -199,8 +216,10 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     chartsByTeam,
     depthByTeam,
     registeredByTeam, // F2-2: 出場登録29人（teamId → Set(pid)。登録外＋育成＝二軍）
-    // 二軍リーグ（F2-2）: 一軍と同じ day カレンダーに並走。成立しない構成（ミニリーグ）は null。
-    farm: buildFarmRuntime(league, cfg, { season, seed, registeredByTeam }),
+    farm,
+    // 出場登録入替（F2-3）: enableMoves（=2年目以降のゲーム層のみ）かつ farm 成立時のみ作動。
+    moves: createMovesState(league, { enableMoves, masterSeed: masterSeed ?? seed, season, farm }),
+    rosterMoves: [], // 当該シーズンの昇降格ニュースログ（§17: 当該シーズンのみ・replayで再構築）
     schedule,
     standings,
     stats,
@@ -247,9 +266,12 @@ function applyInterventionsForDay(rt, d) {
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
 export function advanceRuntimeDay(rt, opts = {}) {
-  if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], playerGames: [], playerEvents: null, seasonEnded: false };
+  if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: false };
   const d = pendingDay(rt);
   applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
+  // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
+  // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
+  const rosterMoves = applyRosterMovesForDay(rt, d);
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
@@ -311,7 +333,7 @@ export function advanceRuntimeDay(rt, opts = {}) {
     finalizeRuntime(rt);
     seasonEnded = true;
   }
-  return { day: d, games, farmGames, playerGames, playerEvents, seasonEnded };
+  return { day: d, games, farmGames, rosterMoves, playerGames, playerEvents, seasonEnded };
 }
 
 /** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */

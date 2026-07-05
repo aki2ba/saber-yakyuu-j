@@ -957,7 +957,19 @@ const LEAGUE_DEFAULT = {
   inLeagueGamesPerOpp: 25, // リーグ内 同一相手との試合数（ホーム13/12を交互に）
   interLeagueGamesPerOpp: 3, // 交流戦 同一相手との試合数（3連戦を一方の本拠地で）
   rotationSize: 6, // 先発ローテ人数（中6日・NPB標準）
-  rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
+  rosterActive: 29, // 出場登録人数（F2-2: 支配下70人からシーズン開始時に球団AIが29人を選抜。NPB=出場登録29人相当）
+  // 二軍リーグ（F2-2）: 同じ12球団のファームを2リーグ（完全架空名・一軍と同分割）で並走させる。
+  //   一軍と同じ simulateGame・別の集計器(farmStats)。日程は一軍と同じ day カレンダーに載せる（同日消化）。
+  //   null にすると二軍リーグを組まない（一軍結果は独立ストリームゆえ有無で byte 不変＝重い多年テストの節約用）。
+  farm: {
+    leagues: [
+      { id: 'F1', name: '若草リーグ', dh: true }, // 一軍L1球団のファーム（二軍は両リーグDH制＝育成試合の簡略）
+      { id: 'F2', name: '暁リーグ', dh: true }, // 一軍L2球団のファーム
+    ],
+    inLeagueGamesPerOpp: 22, // リーグ内 5相手×22 = 110試合（NPBファーム~110-130試合帯の下限側）
+    interLeagueGamesPerOpp: 0, // 二軍の交流戦は無し（総試合 660 = 110×12/2）
+    gamesPerSeason: 110,
+  },
   // ポストシーズン規則（§S3-3）: CS1st=2戦先勝 → CSFinal=1位に1勝アド・4勝先取 → 日本シリーズ=4勝先取(2-3-2)
   postseason: {
     csFirstWins: 2, // CSファーストの必要勝数（2位本拠地）
@@ -1372,6 +1384,53 @@ const TUNING_DEFAULT = {
     maxTeamConsecDays: 6, // 連続試合日はこの日数まで（超えたら休日を挟む＝NPBの週1休の近似）
   },
 
+  // ロスター生成の規模（F2-1・§12.1/§15）: 支配下70人＋育成10-40人/球団（NPB準拠）。
+  //   一軍はこの母集団から上澄み選抜（デプスチャート）＝二軍は自然に「一軍に及ばない選手＋若手」になる。
+  //   能力の生成分布そのものは従来を維持（generatePitcher/generateFielder のノブは不変）。
+  roster: {
+    controlledPerTeam: 70, // 支配下人数/球団（NPB=70人）
+    pitchersMin: 33, // 投手数の下限（球団差 33-36。残り＝野手 34-37）
+    pitchersMax: 36, // 投手数の上限
+    corePitchers: 13, // 年齢を従来一様帯(18-37)で引く「主力層」投手数（超過分は若手厚めの年齢帯）
+    coreFielders: 20, // 同・野手数（従来 FIELDER_PLAN 相当＝各ポジの一軍層）
+    youngAgeMin: 18, // 下位支配下（コア超過分）の年齢帯: min + floor((max-min+1)·u^skew)
+    youngAgeMax: 27,
+    youngAgeSkew: 2.0, // skew>1 で若年側へ歪む（18-24中心＝成長曲線途中の若手を厚く）
+    devCountMin: 10, // 育成選手数の下限（球団の育成方針 devFocus で 10-40 に散る）
+    devCountMax: 40, // 育成選手数の上限
+    devAgeMin: 18, // 育成の年齢帯（18-24中心・若手最厚）
+    devAgeMax: 24,
+    devAgeSkew: 1.5,
+    devPitcherShare: 0.55, // 育成に占める投手の割合（NPB育成は投手偏重の近似）
+    offenseTopN: 12, // リーグ攻撃力均衡化で測る「一軍級の上位野手」数（全員合計だと育成/控えの人数差で歪む）
+    // --- F2-2 出場登録29人の選抜（selectActiveRoster・編成時評価＝buildDepthChart と同輪） ---
+    activePitchers: 14, // 登録29人中の投手数（ローテ6+救援8。NPBの13-15人帯の中庸。残り15人=野手）
+    activeBackupCatchers: 1, // 守備8ポジ充足後に必ず確保する控え捕手数（正捕手+1＝捕手2人体制）
+    farmKeepPerPos: 2, // 登録選抜が各主ポジションに二軍へ残す最低野手数（二軍のデプスチャート成立を保証）
+  },
+
+  // シーズン中の出場登録入替（F2-3 roster_moves.mjs・phaseF_spec F2-3）。
+  //   三層構造: 判定は一軍/二軍の観測statline＋スカウト評価（決定論ノイズ）のみ（真値不参照）。
+  //   鉄則7: 1年目は enableMoves が立たず一切不作動（simulateSeason と bit 同一を維持）。
+  moves: {
+    swapCooldownDays: 10, // 入替クールダウン（NPB10日ルールの簡略化）: 登録/抹消から再移動までの日数
+    ilMinDays: 4, // IL補充を出す最低の残り離脱日数（数日の離脱では登録を動かさない）
+    reviewInterval: 25, // 成績入替チェックの周期（チーム消化試合数。既存の25試合レビューと同周期）
+    perfSwapMargin: 0.008, // 野手の成績入替に要する実効wOBA差（二軍評価−レベル差割引 > 一軍評価＋これ）
+    farmGapWoba: 0.02, // 二軍観測wOBAのレベル差割引（二軍の投手レベルは低い＝観測は甘く出る）
+    farmMinPA: 40, // 昇格候補野手に要する二軍観測の最低PA（標本不足では動かさない）
+    pitchSwapRA9: 1.2, // 投手の成績入替に要するRA9差（一軍RA9 −（二軍RA9＋割引）> これ）
+    farmGapRA9: 0.7, // 二軍観測RA9のレベル差割引
+    pitchMinBF: 40, // 一軍不振投手の判定に要する最低対戦打者数
+    farmPitchMinOuts: 45, // 昇格候補投手に要する二軍観測の最低アウト数（15回）
+    // IL補充の球団AI評価（callupScore = evaluateProspect＋二軍観測の加点。観測＋スカウト）
+    callupWobaW: 250, // 二軍観測wOBA偏差 → 球団AI評価点の換算（野手）
+    callupRa9W: 6, // 二軍観測RA9偏差 → 球団AI評価点の換算（投手）
+    callupRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
+    callupTrustPA: 80, // 二軍観測の信頼度半飽和PA（野手・少PAはスカウト評価優位）
+    callupTrustOuts: 90, // 同（投手・アウト数）
+  },
+
   // 編成・打順（S1 buildDepthChart v2。§S1-3）
   depth: {
     posToolW: 0.4, // positionRank: 守備素材(Range,50中心)の重み（習熟=1基準）
@@ -1757,11 +1816,18 @@ const TUNING_DEFAULT = {
     //   昇格判定＝育成の観測成績が閾値超で支配下登録（＝這い上がり）。「稀に」起きるよう閾値を高く。
     farm: {
       perTeamSignsPerYear: 2, // 毎オフに各球団が獲る育成選手数（ドラフト漏れ＝過小評価された surplus から）
-      perTeamMax: 8, // 育成枠の上限（超過は観測下位を解雇）
+      perTeamMax: 45, // 育成枠の上限（超過は観測下位を解雇）。F2-1: 初期生成の育成10-40人を収容できる幅へ拡大
       maxAge: 26, // これを超えた育成選手は解雇（大成せず箱を空ける）
       promoteThreshold: 57, // 育成の「観測成績」がこれ超で支配下登録（稀）
       promoteObsNoiseSd: 6, // 昇格判定の観測ノイズSD（球場が薄い＝観測が荒い）
       promoteObsBias: -2, // 観測は下振れ方向にバイアス（育成は観測が歪む・§12.2）
+      // F2-3: 昇格判定を二軍実成績ベースへ強化（§12.1）。当年の二軍statlineが「観測」へ加点される
+      //   （二軍で打った/抑えた育成ほど昇格しやすい。標本が薄いと信頼度加重で効きが弱まる）。
+      promotePerfTrustPA: 100, // 二軍打撃観測の信頼度半飽和PA
+      promotePerfTrustOuts: 120, // 二軍投球観測の信頼度半飽和アウト数（40回）
+      promoteWobaW: 60, // 二軍観測wOBA偏差 → 昇格観測点の換算（野手）
+      promoteRa9W: 1.5, // 二軍観測RA9偏差 → 昇格観測点の換算（投手）
+      promoteRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
     },
 
     // ------------------------------------------------------------------------
@@ -2133,6 +2199,87 @@ function posRankScore(p, pos, cfg) {
 }
 
 /**
+ * 出場登録29人の選抜（F2-2・§S1-3の編成時評価と同輪）。支配下ロスターから
+ * cfg.league.rosterActive 人を球団AIが選抜する（シーズン開始時に一度だけ）。
+ *   投手: ローテ rotationSize 人を starterScore、残り枠を relieverScore で（計 activePitchers 人）。
+ *   野手: 難ポジ優先で各ポジ最良(posRankScore) → 控え捕手 → 残り枠は hitScore 降順。
+ *         ただし各主ポジションに farmKeepPerPos 人を二軍へ残す（二軍のデプスチャート成立を保証）。
+ * ここは「編成の初期値」なので trueAbility を直接参照してよい（buildDepthChart と同じ原則。
+ * シーズン中の入替は F2-3 が観測成績ベースで行う）。決定論: 乱数非使用の純関数（score降順・同点は
+ * 配列順＝league.players 順で安定）。roster が rosterActive 以下なら全員登録（ミニリーグ/単体テスト互換）。
+ * @param {Array} roster 1球団の支配下選手（league.players の teamId 絞り込み）
+ * @returns {Array} 登録選手（投手→野手の順・rosterActive 人）
+ */
+function selectActiveRoster(roster, cfg) {
+  const nActive = cfg.league.rosterActive ?? roster.length;
+  if (roster.length <= nActive) return roster.slice();
+  const R = cfg.tuning.roster ?? {};
+  const pitchers = roster.filter((p) => p.role === 'pitcher');
+  const fielders = roster.filter((p) => p.role === 'fielder');
+
+  // --- 投手枠: 先発ローテを starterScore、救援枠を relieverScore で選抜 ---
+  const rotationSize = cfg.league.rotationSize;
+  const byStarter = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
+  const rot = byStarter.slice(0, Math.min(rotationSize, byStarter.length));
+  const relievers = byStarter.slice(rot.length).sort((a, b) => relieverScore(b) - relieverScore(a));
+  const selP = rot.concat(relievers).slice(0, Math.min(R.activePitchers ?? 14, pitchers.length));
+
+  // --- 野手枠: 残り人数（29−投手14＝15人目安） ---
+  const nFieldTarget = Math.max(0, nActive - selP.length);
+  const used = new Set();
+  const selF = [];
+  const pickBest = (scoreFn) => {
+    let best = null;
+    let bv = -Infinity;
+    for (const f of fielders) {
+      if (used.has(f.id)) continue;
+      const v = scoreFn(f);
+      if (v > bv) {
+        bv = v;
+        best = f;
+      }
+    }
+    if (best) {
+      used.add(best.id);
+      selF.push(best);
+    }
+    return best;
+  };
+  // 1) 難ポジ優先（C→SS→CF→…）で各ポジ最良＝スタメン8人相当を確保
+  for (const pos of POSITION_DIFFICULTY) {
+    if (selF.length >= nFieldTarget) break;
+    pickBest((f) => posRankScore(f, pos, cfg));
+  }
+  // 2) 控え捕手（正捕手の休養AI・故障時に捕手が枯れないための保険）
+  for (let k = 0; k < (R.activeBackupCatchers ?? 1) && selF.length < nFieldTarget; k++) {
+    pickBest((f) => posRankScore(f, 'C', cfg));
+  }
+  // 3) 残り枠: hitScore 降順（代打/DH/控えの母集団）。各主ポジ farmKeepPerPos 人は二軍に残す。
+  const keep = R.farmKeepPerPos ?? 0;
+  const remainByPos = new Map();
+  for (const f of fielders) {
+    if (!used.has(f.id)) remainByPos.set(f.primaryPos, (remainByPos.get(f.primaryPos) ?? 0) + 1);
+  }
+  const restSorted = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
+  for (const f of restSorted) {
+    if (selF.length >= nFieldTarget) break;
+    if ((remainByPos.get(f.primaryPos) ?? 0) - 1 < keep) continue; // 取ると二軍の当該ポジが薄くなる→飛ばす
+    remainByPos.set(f.primaryPos, remainByPos.get(f.primaryPos) - 1);
+    used.add(f.id);
+    selF.push(f);
+  }
+  // 4) 制約で埋まらない場合の安全弁（極端なポジ偏在ロスター）: 制約を無視して充足する
+  for (const f of restSorted) {
+    if (selF.length >= nFieldTarget) break;
+    if (!used.has(f.id)) {
+      used.add(f.id);
+      selF.push(f);
+    }
+  }
+  return selP.concat(selF);
+}
+
+/**
  * ロスターから編成表を作る（v2）。
  * @param {Array} roster
  * @param {Object} cfg createConfig() の設定（rotationSize / tuning.depth を参照）
@@ -2242,15 +2389,24 @@ function buildDepthChart(roster, cfg, opts = {}) {
 
 
 // --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
+// F2-1: リーグ総人口 ~1,000-1,300人へ拡大したため姓・名を各56へ増強（組合せ3,136＝衝突率を抑制）。
 const SURNAMES = [
   '青柳', '石垣', '大空', '海堂', '桐生', '黒瀬', '小鳥遊', '相良',
   '志摩', '瀬川', '立花', '茅野', '鶴見', '灯野', '成瀬', '羽鳥',
   '氷室', '深沢', '真壁', '御影', '柳沢', '結城', '芳賀', '鷲尾',
+  '綾瀬', '一之瀬', '宇津木', '恵那', '奥寺', '篝', '如月', '九条',
+  '燕堂', '西園寺', '汐見', '菫原', '瀬能', '空木', '橘田', '悠木',
+  '燈台', '波岡', '仁科', '布瀬', '帆村', '真鍋原', '三日月', '椋本',
+  '芽室', '八雲', '夕凪', '嵐田', '凛堂', '若栗', '澪標', '菖蒲谷',
 ];
 const GIVEN = [
   '陽', '駿', '空良', '樹', '奏太', '海斗', '大河', '蒼真',
   '悠人', '玲', '湊', '一颯', '隼', '楓', '直', '和',
   '琉生', '碧', '慶', '拓実', '真澄', '航', '創', '燿',
+  '旭', '郁弥', '詠太', '凱', '海里', '馨', '橙也', '恭吾',
+  '澄人', '奏楽', '汰一', '瑞樹', '天翔', '透吾', '那由', '虹郎',
+  '暖', '晴凪', '柊真', '楓雅', '穂高', '真昼', '深青', '結人',
+  '遥斗', '洛', '凌雅', '瑠海', '蓮司', '禄', '航琉', '皐',
 ];
 
 // --- 架空チーム名（実在NPB球団名を避けた造語） -------------------------------
@@ -2461,8 +2617,10 @@ function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, 
   return p;
 }
 
-// 1チームの守備位置配分（合計20野手＋13投手＝33人）
-const FIELDER_PLAN = [
+// 1チームの守備位置配分（F2-1: 支配下70人＝投手33-36＋野手34-37）。
+//   CORE=従来の一軍層20人（年齢は従来一様帯）／DEPTH=二軍層14人（若手厚め）／EXTRA=35-37人目の追加先。
+//   合計で各ポジション最低4人（C4 1B4 2B4-5 3B4 SS5 LF4 CF5 RF4-5）＝一軍・二軍の両編成が同時に成立する。
+const CORE_FIELDER_PLAN = [
   'C', 'C', 'C',
   '1B', '1B',
   '2B', '2B', '2B',
@@ -2472,18 +2630,84 @@ const FIELDER_PLAN = [
   'CF', 'CF', 'CF',
   'RF', 'RF',
 ];
-const PITCHERS_PER_TEAM = 13;
+const DEPTH_FIELDER_PLAN = [
+  'C',
+  '1B', '1B',
+  '2B',
+  '3B', '3B',
+  'SS', 'SS',
+  'LF', 'LF',
+  'CF', 'CF',
+  'RF', 'RF',
+];
+const EXTRA_FIELDER_POS = ['C', '2B', 'RF']; // 野手35-37人目の追加ポジション（投手数の球団差ぶん）
 
-/** 1チームのロスターを生成 */
-function generateTeam(rng, teamId) {
-  const roster = [];
-  for (let i = 0; i < PITCHERS_PER_TEAM; i++) {
-    roster.push(generatePitcher(rng, `${teamId}P${i + 1}`));
+/**
+ * 若手厚めの年齢を1つ引く（F2-1）: min + floor((max-min+1)·u^skew)。skew>1 で若年側へ歪む。
+ * 下位支配下（コア超過分）と育成選手の年齢帯に使う（18-24中心＝成長曲線途中の若手）。
+ */
+function drawYoungAge(rng, min, max, skew) {
+  return min + Math.floor((max - min + 1) * Math.pow(rng.next(), skew));
+}
+
+/**
+ * 1チームの支配下ロスターを生成（F2-1: 70人＝投手33-36＋野手34-37）。
+ * 投手数は rng で球団ごとに散らし、残りを野手に充てる（合計は cfg.tuning.roster.controlledPerTeam で恒常）。
+ * コア（従来33人相当）は年齢一様帯 18-37、コア超過の下位支配下は若手厚め（youngAge* ノブ）。
+ */
+function generateTeam(rng, teamId, cfg) {
+  const R = cfg.tuning.roster;
+  const nPitchers = R.pitchersMin + rng.int(R.pitchersMax - R.pitchersMin + 1);
+  const nFielders = R.controlledPerTeam - nPitchers;
+  const plan = CORE_FIELDER_PLAN.concat(DEPTH_FIELDER_PLAN);
+  for (let i = plan.length; i < nFielders; i++) {
+    plan.push(EXTRA_FIELDER_POS[(i - CORE_FIELDER_PLAN.length - DEPTH_FIELDER_PLAN.length) % EXTRA_FIELDER_POS.length]);
   }
-  FIELDER_PLAN.forEach((pos, i) => {
-    roster.push(generateFielder(rng, `${teamId}F${i + 1}`, pos));
-  });
+  const roster = [];
+  for (let i = 0; i < nPitchers; i++) {
+    const p = generatePitcher(rng, `${teamId}P${i + 1}`);
+    // 下位支配下投手（コア13人超過分）は若手を厚く＝二軍は「成長曲線途中の若手」の置き場になる
+    if (i >= R.corePitchers) p.age = drawYoungAge(rng, R.youngAgeMin, R.youngAgeMax, R.youngAgeSkew);
+    roster.push(p);
+  }
+  for (let i = 0; i < nFielders; i++) {
+    const p = generateFielder(rng, `${teamId}F${i + 1}`, plan[i]);
+    if (i >= R.coreFielders) p.age = drawYoungAge(rng, R.youngAgeMin, R.youngAgeMax, R.youngAgeSkew);
+    roster.push(p);
+  }
   return roster;
+}
+
+/**
+ * 球団の育成方針（devFocus 20-80）から育成選手の保有数を決める（F2-1・決定論の純関数）。
+ * devCountMin..Max へ線形写像＝育成に厚い球団(ソフトバンク型)と薄い球団の個性が人数に出る。
+ */
+function devCountFor(devFocus, cfg) {
+  const R = cfg.tuning.roster;
+  const t = clamp((devFocus - 20) / 60, 0, 1);
+  return Math.round(R.devCountMin + (R.devCountMax - R.devCountMin) * t);
+}
+
+/**
+ * 1球団分の育成選手を生成する（F2-1・§12.1）。rosterStatus='minor' で league.farm に入る別枠。
+ * 能力の生成分布は支配下と同一（観測が薄い・ノイズ大なのは既存 §12.1 の farm 観測枠組みが担う）。
+ * 年齢は 18-24 中心（若手最厚）。id は `${teamId}D{n}`＝支配下(P/F)と衝突しない。
+ */
+function generateFarmPlayers(rng, teamId, count, cfg) {
+  const R = cfg.tuning.roster;
+  const list = [];
+  for (let i = 0; i < count; i++) {
+    const id = `${teamId}D${i + 1}`;
+    const isPitcher = rng.chance(R.devPitcherShare);
+    const p = isPitcher
+      ? generatePitcher(rng, id)
+      : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
+    p.age = drawYoungAge(rng, R.devAgeMin, R.devAgeMax, R.devAgeSkew);
+    p.rosterStatus = 'minor';
+    p.teamId = teamId;
+    list.push(p);
+  }
+  return list;
 }
 
 /**
@@ -2496,6 +2720,7 @@ function generateManager(rng) {
     stealTend: draw(rng, 50, 12), // 盗塁の積極性
     ibbTend: draw(rng, 50, 12), // 敬遠の使い方
     quickHook: draw(rng, 50, 12), // 継投の早さ（高いほど早く投手を代える）
+    devFocus: draw(rng, 50, 14), // 育成方針（F2-1・フロントの個性）: 高いほど育成選手を多く抱える（10-40人へ写像）
   };
 }
 
@@ -2558,14 +2783,28 @@ function generateLeague(masterSeed, config) {
   for (let ti = 0; ti < numTeams; ti++) {
     const teamId = `T${ti + 1}`;
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
-    const roster = generateTeam(trng, teamId);
+    const roster = generateTeam(trng, teamId, config);
     for (const p of roster) p.teamId = teamId;
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
     // 球場ジオメトリの生偏差（D2・§11.2）。park専用RNG系列＝選手/監督RNGを消費しない（選手はD2前とbyte同一）。
     const parkDev = generatePark(makeRng(hashSeed(masterSeed, 'park', ti)), config);
-    // 攻撃力＝野手のhitScore合計（投手はDH無で常に打つため、均衡はDH枠以外の野手攻撃で測る）。
-    const offense = roster.filter((p) => p.role === 'fielder').reduce((a, p) => a + hitScore(p), 0);
-    built.push({ teamId, roster, manager, offense, parkDev });
+    // 育成選手（F2-1・§12.1）: 球団の育成方針(devFocus)で人数に差（10-40人）。専用RNG系列＝支配下と独立。
+    const farm = generateFarmPlayers(
+      makeRng(hashSeed(masterSeed, 'devroster', ti)),
+      teamId,
+      devCountFor(manager.devFocus, config),
+      config,
+    );
+    // 攻撃力＝「一軍級の上位野手」のhitScore合計（F2-1: 全野手合計だと二軍層/育成の人数差で歪むため
+    //   デプスチャートに乗る上位 offenseTopN 人で測る＝リーグ間の一軍攻撃力を均衡させる本来の目的に整合）。
+    const topN = config.tuning.roster.offenseTopN;
+    const offense = roster
+      .filter((p) => p.role === 'fielder')
+      .map((p) => hitScore(p))
+      .sort((a, b) => b - a)
+      .slice(0, topN)
+      .reduce((a, v) => a + v, 0);
+    built.push({ teamId, roster, farm, manager, offense, parkDev });
   }
 
   // 球場偏差をリーグ内でゼロサム中心化（D2）: 各偏差からリーグ平均を引き、球場分布の平均＝中立球場に
@@ -2612,6 +2851,7 @@ function generateLeague(masterSeed, config) {
     : built;
   const teams = [];
   const players = [];
+  const farm = [];
   ordered.forEach((t, idx) => {
     const gi = leagueOf.get(t.teamId);
     const name = TEAM_NAMES[idx] ?? t.teamId;
@@ -2625,8 +2865,10 @@ function generateLeague(masterSeed, config) {
       playerIds: t.roster.map((p) => p.id),
     });
     players.push(...t.roster);
+    // 育成選手（F2-1）: league.players/team.playerIds と別枠の league.farm へ（既存 §12.1 farm 枠組み）。
+    farm.push(...t.farm);
   });
-  return { masterSeed, teams, players };
+  return { masterSeed, teams, players, farm };
 }
 
 /** Fisher–Yates（rng使用・決定論） */
@@ -5559,7 +5801,16 @@ function selectLineup(state, ctx, cfg) {
 
     // (3) 空席の充填: 候補プールの実効評価最良（全滅なら positionRank/全野手から最初の未使用）
     if (pid == null) {
-      pid = bestOf(pool) ?? (pos === 'DH' ? fielders : chart.positionRank[pos]).find((x) => !excluded(x));
+      const all = pos === 'DH' ? fielders : chart.positionRank[pos];
+      pid =
+        bestOf(pool) ??
+        all.find((x) => !excluded(x)) ??
+        // F2-2 最終安全弁: 出場登録29人制（野手15人）では休養の集中＋IL重複で候補が尽き得る。
+        // 休養は柔らかい希望なので解除して充当（IL相当は最後まで避ける）。スタメン9人を必ず埋め、
+        // 候補が残る通常時は一切通らない＝挙動不変。乱数非消費（決定論）。
+        all.find((x) => !used.has(x) && !isInjured(state, x, ctx.day)) ??
+        all.find((x) => !used.has(x));
+      if (pid != null) resting.delete(pid); // 休養解除で先発する場合は rested から外す
     } else if (pos !== 'C' && ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher)) {
       // (4) プラトーン: 同利きの担当に対し、実効評価（守備込み）で上回る候補がいれば当日限りの入替
       const alt = bestOf(pool.filter((x) => x !== pid));
@@ -6310,18 +6561,24 @@ function serializeDays(flat, teams, maxConsec) {
 
 /**
  * 編成表一式を作る（DH有/無の depth chart・リーグDH規則・teamById・後方互換 depthByTeam）。
+ * F2-2: 一軍デプスチャートは「出場登録 rosterActive 人」（selectActiveRoster が支配下から選抜）
+ * のみで編成する。登録外の支配下＋育成は二軍（season_runtime の farm リーグ）へ回る。
  * @param {{teams:Array,players:Array}} league
- * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map}}
+ * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map, registeredByTeam:Map}}
+ *   registeredByTeam: teamId → Set(登録選手id)（二軍ロスターの補集合判定に使う）
  */
 function buildTeamCharts(league, cfg) {
   const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
   const teamById = new Map(league.teams.map((t) => [t.id, t]));
   const chartsByTeam = new Map();
+  const registeredByTeam = new Map();
   for (const t of league.teams) {
     const roster = league.players.filter((p) => p.teamId === t.id);
+    const active = selectActiveRoster(roster, cfg); // 出場登録（roster<=rosterActive なら全員＝旧挙動）
+    registeredByTeam.set(t.id, new Set(active.map((p) => p.id)));
     chartsByTeam.set(t.id, {
-      dh: buildDepthChart(roster, cfg, { dh: true }),
-      noDh: buildDepthChart(roster, cfg, { dh: false }),
+      dh: buildDepthChart(active, cfg, { dh: true }),
+      noDh: buildDepthChart(active, cfg, { dh: false }),
     });
   }
   // 後方互換の depthByTeam: 各チームの所属リーグ規則での編成（リーグ未設定はDH有）
@@ -6331,7 +6588,7 @@ function buildTeamCharts(league, cfg) {
       return [t.id, (leagueDh.get(t.league) ?? true) ? c.dh : c.noDh];
     }),
   );
-  return { leagueDh, teamById, chartsByTeam, depthByTeam };
+  return { leagueDh, teamById, chartsByTeam, depthByTeam, registeredByTeam };
 }
 
 /**
@@ -7066,7 +7323,9 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.9.1-pitchband';
+// F2-2: 出場登録29人（一軍デプスチャート=登録者のみ）＋二軍リーグ並走＝エンジン挙動が 0.9.1 から
+//   変わる（verify-identity/smoke の新ベースラインは F2-5 の再較正確定後に取得する）。
+const ENGINE_VERSION = '0.10.0-farm';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 
@@ -7257,210 +7516,6 @@ function buildBoxScore(events) {
 }
 
 
-// ===== src/game/season_runtime.mjs =====
-// ============================================================================
-// フェーズC1a: 1シーズンの「日次進行ランタイム」（ヘッドレス・UI非依存）
-//
-// season.mjs の simulateSeason は「1シーズン一括」だが、ゲームシェルは day（節）単位で
-// 進めたい。ここでは simulateSeason と *同一の per-game 処理*（playScheduledGame）を
-// schedule の index（gi）順に1日ぶんずつ駆動する。gi は階層シードの座標なので、
-// 一括実行でも日次分割実行でも結果は bit 単位で同一になる（既存50較正指標が不変）。
-//
-// 決定論: 乱数は makeRng(hashSeed(seed, ...)) のみ。Date.now/Math.random 非使用。
-//   セーブ/ロードは save.mjs が「開幕状態から cursor まで再走（replay）」で復元する
-//   （seed と cursor が RNG カーソルに相当する。usage/集計はこの再走で厳密に再現される）。
-// ============================================================================
-
-
-
-
-
-
-
-
-/**
- * 1シーズンの日次ランタイムを開幕状態で作る。
- * @param {{teams:Array,players:Array}} league generateLeague の出力
- * @param {Object} cfg createConfig()
- * @param {{season:number, seed:number, park?:Object, playerTeamId:string, injuries?:Array}} opts
- *   injuries=直前オフで確定した故障 [{id,severity,gamesLost}]。各選手を新シーズン開幕から
- *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
- * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
- */
-function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null }) {
-  const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
-  // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
-  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
-  const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
-  const standings = new Map();
-  for (const t of league.teams) {
-    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
-  }
-  const stats = makeSeasonStats(season);
-  // priorPitch=前年の観測投手ライン(pid→line)。破綻救援ガード（多年運用・原則2）の"前歴"。
-  //   1年目は null（前年なし）＝ガード不作動＝較正53指標が byte 不変（startYear が2年目以降のみ渡す）。
-  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, priorPitch)]));
-  // 開幕IL: 故障選手を所属チームの起用状態に「day < gamesLost の間は不可」として載せる。
-  //   day は schedule の節index（1日≒1試合）＝gamesLost をそのまま離脱日数として扱う。
-  //   これで selectLineup/selectStarter/bullpenAvailable が離脱中の選手を除外し、ベンチ/控えが
-  //   自然に穴を埋める（phaseA の起用AI資産）。injuries が空（1年目）なら一切効かない。
-  const byId = new Map(league.players.map((p) => [p.id, p]));
-  const seasonInjuries = [];
-  for (const ev of injuries) {
-    const p = byId.get(ev.id);
-    if (!p || !ev.gamesLost) continue; // 引退で消えた選手（pid不在）は無視
-    const u = usageByTeam.get(p.teamId);
-    if (u) u.injuredUntil.set(ev.id, ev.gamesLost);
-    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, gamesLost: ev.gamesLost });
-  }
-  const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
-  const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
-  return {
-    league,
-    cfg,
-    season,
-    seed,
-    park,
-    parkByTeam,
-    playerTeamId,
-    leagueDh,
-    teamById,
-    chartsByTeam,
-    depthByTeam,
-    schedule,
-    standings,
-    stats,
-    usageByTeam,
-    runSplit,
-    cursor: 0, // 次に処理する schedule の index（= gi。day 境界でのみ止まる）
-    finalDay,
-    seasonInjuries, // 当該シーズン開幕IL（ハブ表示用・[{id,name,teamId,severity,gamesLost}]・当年のみ）
-    playerGameLog: [], // 自チームの試合結果（当該シーズンのみ・§17）
-    // 采配介入（フェーズC1b）: 自チーム監督プロファイルの人間差し替えログ。
-    //   [{ day, teamId, manager:{buntTend,stealTend,ibbTend,quickHook} }]（絶対値）。
-    //   その day 以降の試合に効く。save に含め、load 時に replay で同一 day に再適用＝決定論を保つ。
-    interventions: [],
-    finished: false,
-    table: null,
-    standingsByLeague: null,
-    postseason: null,
-  };
-}
-
-/** 次に処理する day（節）。全消化後は finalDay+1。 */
-function pendingDay(rt) {
-  return rt.cursor < rt.schedule.length ? rt.schedule[rt.cursor].day : rt.finalDay + 1;
-}
-
-/**
- * 采配介入を適用（フェーズC1b）。この day に効く監督プロファイルの差し替えを teamById へ反映する。
- * live 実行でも load 後の replay でも同一 day で同一に呼ばれる＝決定論を保つ（絶対値パッチ）。
- */
-function applyInterventionsForDay(rt, d) {
-  for (const iv of rt.interventions) {
-    if (iv.day !== d) continue;
-    const team = rt.teamById.get(iv.teamId);
-    if (team) team.manager = { ...team.manager, ...iv.manager };
-  }
-}
-
-/**
- * 1日（節）ぶんの試合をまとめて消化する。schedule は day 昇順・同一 day が連続するため、
- * cursor は必ず day 境界で止まる（save/load の cursor 再走が day 単位で正確になる）。
- * @param {Object} rt SeasonRuntime
- * @param {{collectPlayerEvents?:boolean}} opts collectPlayerEvents=自チーム試合の観戦実況イベントを返す
- * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean}}
- *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
- */
-function advanceRuntimeDay(rt, opts = {}) {
-  if (rt.finished) return { day: pendingDay(rt), games: [], playerGames: [], playerEvents: null, seasonEnded: false };
-  const d = pendingDay(rt);
-  applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
-  const pass = {
-    statFor: rt.stats.statFor,
-    getBat: rt.stats.getBat,
-    getPitch: rt.stats.getPitch, // 破綻救援ガードの当年観測（多年運用・原則2）
-    standings: rt.standings,
-    runSplit: rt.runSplit,
-  };
-  const ctx = {
-    seed: rt.seed,
-    park: rt.park,
-    parkByTeam: rt.parkByTeam,
-    cfg: rt.cfg,
-    leagueDh: rt.leagueDh,
-    teamById: rt.teamById,
-    chartsByTeam: rt.chartsByTeam,
-    usageByTeam: rt.usageByTeam,
-    pass,
-  };
-  const games = [];
-  const playerGames = [];
-  let playerEvents = null;
-  while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
-    const g = rt.schedule[rt.cursor];
-    const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
-    // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
-    // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
-    // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
-    let events = null;
-    pass.onEvent = isPlayer ? (e) => events.push(e) : undefined;
-    if (pass.onEvent) events = [];
-    const res = playScheduledGame(ctx, g, rt.cursor);
-    const rec = {
-      day: d,
-      home: g.home,
-      away: g.away,
-      homeScore: res.homeScore,
-      awayScore: res.awayScore,
-      tie: res.tie,
-      innings: res.innings,
-    };
-    if (isPlayer && events) {
-      // E4: 日程・結果タブの簡易ボックススコア（両軍打者/投手の当日ライン・集計行のみ）。
-      // live も load の replay も同一イベント列から再構築される（決定論・save は集計値のみ）。
-      rec.box = buildBoxScore(events);
-    }
-    games.push(rec);
-    if (isPlayer) {
-      rt.playerGameLog.push(rec); // 集計値のみ（イベントは積まない・§17）
-      playerGames.push(rec);
-      if (opts.collectPlayerEvents && events) playerEvents = events;
-    }
-    rt.cursor++;
-  }
-  let seasonEnded = false;
-  if (rt.cursor >= rt.schedule.length) {
-    finalizeRuntime(rt);
-    seasonEnded = true;
-  }
-  return { day: d, games, playerGames, playerEvents, seasonEnded };
-}
-
-/** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */
-function finalizeRuntime(rt) {
-  const { table, standingsByLeague } = finalizeStandings(rt.standings);
-  rt.table = table;
-  rt.standingsByLeague = standingsByLeague;
-  let postseason = null;
-  if ((rt.cfg.league.leagues ?? []).length === 2) {
-    postseason = simulatePostseason({
-      rankings: rt.cfg.league.leagues.map((l) => ({ id: l.id, rows: standingsByLeague[l.id] ?? [] })),
-      chartsByTeam: rt.chartsByTeam,
-      teamById: rt.teamById,
-      leagueDh: rt.leagueDh,
-      cfg: rt.cfg,
-      seed: hashSeed(rt.seed, 'postseason'),
-      season: rt.season,
-      park: rt.park,
-      parkByTeam: rt.parkByTeam,
-    });
-  }
-  rt.postseason = postseason;
-  rt.finished = true;
-}
-
-
 // ===== src/game/aging.mjs =====
 // ============================================================================
 // フェーズC2a: 加齢・成長カーブ（§10.1-10.3 / §12.4）
@@ -7609,6 +7664,1124 @@ function agePitch(pitch, ctx) {
   for (const k of ['current', 'whiff', 'hrSuppress', 'contactQuality']) {
     pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx) + drift(ctx));
   }
+}
+
+
+// ===== src/game/market.mjs =====
+// ============================================================================
+// フェーズC3a: 編成市場（球団AI評価の球団差・ドラフト・育成/支配下二層）
+//   §13/§15（球団AIをわざと現実的に間違わせる＝市場の非効率を仕込む）／§12.1（這い上がりの箱）。
+//
+//   teamEvalProfile(masterSeed, teamId, cfg)  … 球団ごとに固定の「評価の癖」を分布から引く
+//   evaluateProspect(profile, prospect, cfg, ctx) … 観測ツール(真値+スカウトノイズ)×球団重みでの評価
+//   trueValue(prospect, cfg)                  … 真価値の代理（テスト/宝の泉の可視化用・AIは見ない）
+//   runMarket(league, cfg, {...})             … 引退枠を「育成昇格→ドラフト→育成獲得」で埋める
+//
+// 設計原則（phaseC_spec・厳守）:
+//   - エンジンを壊さない: 本モジュールはオフシーズン遷移（2年目以降）でのみ呼ばれる。1年目
+//     レギュラーシーズン（既存50較正）には一切効かない（generateLeague/シムは不変）。
+//   - 三層構造: 球団AIは trueAbility を直接見ない。評価は「観測ツール(真値+球団固有ノイズ)」を
+//     球団固有の重み（守備/位置の過小評価度・出塁重視度・年齢バイアス）で合成する＝わざと不完全。
+//     歪んだ球団評価と真価値(trueValue)の差分こそ「宝の泉」。守備を正しく重める球団(wDef>1)を
+//     混ぜると、他球団の捨てた守備型の宝を系統的に拾う（守備版マネーボール）。
+//   - 決定論: 乱数は階層シード rng のみ（Date.now/Math.random 非使用）。ウェーバー順は前年順位
+//     （teamHistory・save に含まれ replay 再構築される）、くじは lottery シードで解決＝再現可能。
+//   - ロスター構成の恒常: 引退枠(teamId,role,primaryPos)を同型で1:1に埋める（人口/構成不変）。
+// ============================================================================
+
+
+
+
+
+
+
+/** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
+function byId(a, b) {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** 球種の質（current/whiff の平均）。球種なしは 50。 */
+function pitchStuff(t) {
+  const ps = t.pitching.pitches;
+  if (!ps.length) return 50;
+  let s = 0;
+  for (const pi of ps) s += (pi.current + pi.whiff) / 2;
+  return s / ps.length;
+}
+
+/**
+ * 総合力の粗い代理（~20-80・真値ベース）。育成の昇格判定と farm 剪定に使う内部指標。
+ * roster.mjs の overallAbility と同型（役割別に主要真値を平均）。真値なので AI の「評価」ではない。
+ */
+function overallRating(p) {
+  const t = p.trueAbility;
+  if (p.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    return (veloR + t.pitching.control + t.pitching.stamina + pitchStuff(t)) / 4;
+  }
+  const b = t.batting;
+  let bestProf = 20;
+  for (const k of Object.keys(t.fielding.positionProf)) bestProf = Math.max(bestProf, t.fielding.positionProf[k]);
+  return (b.ev + b.contact + b.la + b.eye + t.common.speed + t.fielding.positioningIQ + bestProf) / 7;
+}
+
+/**
+ * 球団ごとの評価プロファイル（§13/§15）。masterSeed×teamId から固定で引く（キャリア中不変＝球団の癖）。
+ *   wBat  打撃/投球コアの重み（球団差小）
+ *   wEye  出塁(選球眼)重視度（球団差大）
+ *   wDef  守備/位置価値の重み（多くが<1＝系統的な過小評価。稀に>1＝守備を正しく重める球団）
+ *   ageBias 年齢バイアス（若手志向のペナルティ/歳）
+ *   noiseSd スカウト観測ノイズSD（球団ごとの評価の荒さ）
+ * @returns {{teamId:string, wBat:number, wEye:number, wDef:number, ageBias:number, noiseSd:number}}
+ */
+function teamEvalProfile(masterSeed, teamId, cfg) {
+  const pc = cfg.tuning.market.profile;
+  const r = makeRng(hashSeed(masterSeed, 'evalprofile', teamId));
+  return {
+    teamId,
+    wBat: clamp(r.normal(pc.wBatMean, pc.wBatSd), pc.wBatMin, pc.wBatMax),
+    wEye: clamp(r.normal(pc.wEyeMean, pc.wEyeSd), pc.wEyeMin, pc.wEyeMax),
+    wDef: clamp(r.normal(pc.wDefMean, pc.wDefSd), pc.wDefMin, pc.wDefMax),
+    ageBias: clamp(r.normal(pc.ageBiasMean, pc.ageBiasSd), pc.ageBiasMin, pc.ageBiasMax),
+    noiseSd: Math.max(pc.noiseSdMin, r.normal(pc.noiseSdMean, pc.noiseSdSd)),
+  };
+}
+
+/** 観測ツール = 真値 + 球団固有スカウトノイズ（ctx 無し or noiseSd=0 なら真値そのまま＝テスト用）。 */
+function obsTool(trueVal, profile, ctx, tool, pid) {
+  if (!ctx || !profile.noiseSd) return trueVal;
+  const r = makeRng(hashSeed(ctx.masterSeed, 'scout', ctx.yearIndex, ctx.teamId, pid, tool));
+  return trueVal + r.normal(0, profile.noiseSd);
+}
+
+/**
+ * 球団 profile による prospect の評価スカラー（§13）。観測ツール（真値+球団固有ノイズ）を
+ * 球団固有の重みで合成する（trueAbility を直接は見ない＝三層構造）。守備/位置価値は wDef で重み、
+ * 多くの球団は wDef<1 ＝守備/位置を過小評価する（宝を捨てる）。
+ * @param {Object} profile teamEvalProfile() の返値（テストは noiseSd:0 の即席 profile を渡せる）
+ * @param {Object} p prospect（Player）
+ * @param {Object} cfg
+ * @param {{masterSeed:number, yearIndex:number, teamId:string}|null} ctx ノイズ座標（null=無ノイズ）
+ */
+function evaluateProspect(profile, p, cfg, ctx = null) {
+  const m = cfg.tuning.market.eval;
+  const t = p.trueAbility;
+  const id = p.id;
+  const ageK = profile.ageBias * Math.max(0, p.age - 18);
+  if (p.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    const velo = obsTool(veloR, profile, ctx, 'velo', id);
+    const ctrl = obsTool(t.pitching.control, profile, ctx, 'control', id);
+    const stam = obsTool(t.pitching.stamina, profile, ctx, 'stamina', id);
+    const stuff = obsTool(pitchStuff(t), profile, ctx, 'stuff', id);
+    return profile.wBat * (velo + ctrl + stam + stuff) - ageK;
+  }
+  const b = t.batting;
+  const c = t.common;
+  const f = t.fielding;
+  const ev = obsTool(b.ev, profile, ctx, 'ev', id);
+  const contact = obsTool(b.contact, profile, ctx, 'contact', id);
+  const eye = obsTool(b.eye, profile, ctx, 'eye', id);
+  const la = obsTool(b.la, profile, ctx, 'la', id);
+  const power = obsTool(c.power, profile, ctx, 'power', id);
+  const prof = obsTool(f.positionProf[p.primaryPos] ?? 20, profile, ctx, 'prof', id);
+  const iq = obsTool(f.positioningIQ, profile, ctx, 'iq', id);
+  const reaction = obsTool(c.reaction, profile, ctx, 'reaction', id);
+  const arm = obsTool(c.arm, profile, ctx, 'arm', id);
+  const batComp = ev + contact + power + m.laW * la;
+  const defComp = prof + iq + reaction + m.armW * arm;
+  const posVal = (POSITION_ADJUST_PER_1350[p.primaryPos] ?? 0) * m.posScale;
+  return profile.wBat * batComp + profile.wEye * m.eyeScale * eye + profile.wDef * (defComp + posVal) - ageK;
+}
+
+/**
+ * 真価値の代理（テスト/可視化用・AIは見ない）。守備・位置価値を「正しく」重めた全知評価
+ * （wBat=wEye=wDef=1・ノイズ0・年齢バイアス0）。歪んだ球団評価との差分が「宝の泉」（§13）。
+ */
+function trueValue(p, cfg) {
+  return evaluateProspect({ wBat: 1, wEye: 1, wDef: 1, ageBias: 0, noiseSd: 0 }, p, cfg, null);
+}
+
+/** 前年順位からのウェーバー逆順（勝率の低い順＝弱いチームが先）。standings 無しは teams 順。 */
+function waiverOrder(standings, league) {
+  if (!standings || !standings.length) return league.teams.map((t) => t.id);
+  const winPct = (s) => {
+    const dec = (s.w ?? 0) + (s.l ?? 0);
+    return dec ? s.w / dec : 0.5;
+  };
+  return standings
+    .slice()
+    .sort((a, b) => winPct(a) - winPct(b) || (a.teamId < b.teamId ? -1 : 1))
+    .map((s) => s.teamId);
+}
+
+/** 世代（高卒18/大卒22/社会人25）から新人の年齢を1つ引く（§15 世代生成）。 */
+function pickCohortAge(rng, cohort) {
+  const u = rng.next();
+  if (u < cohort.hsShare) return cohort.hsAge;
+  if (u < cohort.hsShare + cohort.colShare) return cohort.colAge;
+  return cohort.corpAge;
+}
+
+/**
+ * ドラフトプールを生成する。各(role,primaryPos)型で「空き数＋surplus」人の prospect を
+ * スカウト観測（世代年齢・真値）付きで作る。surplus が選択肢を生み、球団評価差＝宝の源になる。
+ * @returns {Map<string, Array>} typeKey('role:pos') → prospect[]
+ */
+function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = null }) {
+  const mk = cfg.tuning.market;
+  const byType = new Map();
+  for (const v of vacancies) {
+    const tk = `${v.role}:${v.primaryPos}`;
+    if (!byType.has(tk)) byType.set(tk, { role: v.role, primaryPos: v.primaryPos, count: 0 });
+    byType.get(tk).count++;
+  }
+  const pool = new Map();
+  let gi = 0;
+  for (const [tk, info] of byType) {
+    const n = info.count + mk.surplusPerType;
+    const arr = [];
+    for (let i = 0; i < n; i++) {
+      const id = `D${yearIndex}n${gi++}`;
+      const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
+      // era（時代トレンド・D3）: 世代の波・球速の経年上昇を新人生成時に反映（王朝均衡 boost は draft 後）。
+      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era });
+      arr.push(p);
+    }
+    pool.set(tk, arr);
+  }
+  return pool;
+}
+
+/**
+ * ドラフト（ウェーバー逆順×1位競合くじ・NPB風）。空き枠(vacancies)を pool から埋める。
+ *   Round1: 各球団が自評価の最高 prospect を1位指名 → 競合はくじで解決（負けは再指名）。
+ *   Round2+: ウェーバー順（弱い順）に残り枠を自評価の最高で1人ずつ埋める。
+ * 各球団は自分の空き枠と同型(role:pos)の prospect しか獲れない（構成恒常）。
+ * @returns {{rookies:Array, undrafted:Array, draftLog:Object}}
+ */
+function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex }) {
+  const teamVac = new Map(); // teamId → [{role,primaryPos}]（残り空き枠のキュー）
+  for (const t of order) teamVac.set(t, []);
+  for (const v of vacancies) {
+    if (!teamVac.has(v.teamId)) teamVac.set(v.teamId, []);
+    teamVac.get(v.teamId).push({ role: v.role, primaryPos: v.primaryPos });
+  }
+  const available = new Map(); // typeKey → prospect[]（獲得で減る）
+  for (const [k, arr] of pool) available.set(k, arr.slice());
+  const rookies = [];
+  const draftLog = { order: order.slice(), picks: [], lotteries: [] };
+
+  // 球団の「残り空き枠の型のうち、自評価が最高の available prospect」を返す。
+  const bestFor = (teamId) => {
+    const vac = teamVac.get(teamId);
+    if (!vac || !vac.length) return null;
+    const types = new Set(vac.map((v) => `${v.role}:${v.primaryPos}`));
+    const profile = profiles.get(teamId);
+    let best = null;
+    let bestVal = -Infinity;
+    let bestType = null;
+    for (const tk of types) {
+      const arr = available.get(tk) || [];
+      for (const pr of arr) {
+        const val = evaluateProspect(profile, pr, cfg, { masterSeed, yearIndex, teamId });
+        if (val > bestVal || (val === bestVal && (best === null || pr.id < best.id))) {
+          bestVal = val;
+          best = pr;
+          bestType = tk;
+        }
+      }
+    }
+    return best ? { prospect: best, typeKey: bestType } : null;
+  };
+
+  const assign = (teamId, prospect, typeKey, meta) => {
+    const vac = teamVac.get(teamId);
+    const vi = vac.findIndex((v) => `${v.role}:${v.primaryPos}` === typeKey);
+    vac.splice(vi, 1);
+    const arr = available.get(typeKey);
+    arr.splice(arr.findIndex((p) => p.id === prospect.id), 1);
+    prospect.teamId = teamId;
+    prospect.rosterStatus = 'active';
+    rookies.push(prospect);
+    draftLog.picks.push({ teamId, prospectId: prospect.id, ...meta });
+  };
+
+  // --- Round1: 1位指名＋競合くじ ---
+  const pendingR1 = new Set(order.filter((t) => (teamVac.get(t) || []).length));
+  while (pendingR1.size) {
+    const noms = new Map(); // prospectId → {prospect, byTeam:Map<teamId,typeKey>}
+    for (const teamId of order) {
+      if (!pendingR1.has(teamId)) continue;
+      const b = bestFor(teamId);
+      if (!b) { pendingR1.delete(teamId); continue; }
+      if (!noms.has(b.prospect.id)) noms.set(b.prospect.id, { prospect: b.prospect, byTeam: new Map() });
+      noms.get(b.prospect.id).byTeam.set(teamId, b.typeKey);
+    }
+    if (!noms.size) break;
+    for (const [pid, nom] of noms) {
+      const teams = [...nom.byTeam.keys()];
+      let winner;
+      let contested = false;
+      if (teams.length === 1) {
+        winner = teams[0];
+      } else {
+        contested = true;
+        const r = makeRng(hashSeed(masterSeed, 'lottery', yearIndex, pid));
+        winner = teams[r.int(teams.length)];
+        draftLog.lotteries.push({ prospectId: pid, contenders: teams.slice(), winner });
+      }
+      assign(winner, nom.prospect, nom.byTeam.get(winner), { round: 1, via: contested ? 'lottery' : 'nominate', contested });
+      pendingR1.delete(winner);
+    }
+  }
+
+  // --- Round2+: ウェーバー順（弱い順）に残り枠を埋める ---
+  for (let round = 2; round <= 200; round++) {
+    let progress = false;
+    for (const teamId of order) {
+      if (!(teamVac.get(teamId) || []).length) continue;
+      const b = bestFor(teamId);
+      if (!b) continue;
+      assign(teamId, b.prospect, b.typeKey, { round, via: 'waiver', contested: false });
+      progress = true;
+    }
+    if (!progress) break;
+  }
+
+  const undrafted = [];
+  for (const arr of available.values()) undrafted.push(...arr);
+  return { rookies, undrafted, draftLog };
+}
+
+/**
+ * ドラフト漏れ（undrafted＝球団評価に過小評価された surplus）を育成枠へ配る。
+ * ウェーバー順ラウンドロビンで各球団 perTeamSignsPerYear 人まで。rosterStatus='minor' で farm へ。
+ */
+function signDevelopment(league, cfg, undrafted, order) {
+  const mk = cfg.tuning.market.farm;
+  const pool = undrafted.slice().sort(byId);
+  const signed = new Map(order.map((t) => [t, 0]));
+  let pi = 0;
+  let any = true;
+  while (pi < pool.length && any) {
+    any = false;
+    for (const teamId of order) {
+      if (pi >= pool.length) break;
+      if ((signed.get(teamId) ?? 0) >= mk.perTeamSignsPerYear) continue;
+      const d = pool[pi++];
+      d.teamId = teamId;
+      d.rosterStatus = 'minor';
+      league.farm.push(d);
+      signed.set(teamId, (signed.get(teamId) ?? 0) + 1);
+      any = true;
+    }
+  }
+}
+
+/**
+ * 育成の二軍実成績ボーナス（F2-3・§12.1強化）: 昇格判定の「観測」へ当年の二軍statlineを加点する。
+ * 二軍で打った/抑えた育成ほど昇格しやすい（三層構造: 観測statlineのみ・真値不参照）。
+ * 標本が薄いほど信頼度加重で効きが弱まる（少PA/少IPの上振れに騙されない）。obs 無し（未出場・
+ * 二軍リーグ不成立の旧構成）は 0＝従来の判定と同一。
+ * @param {Object} d 育成選手
+ * @param {?Object} obs 当年の二軍 statline（{batting,pitching}・careerFarmStats 由来）
+ */
+function farmPerfBonus(d, obs, cfg) {
+  if (!obs) return 0;
+  const f = cfg.tuning.market.farm;
+  if (d.role === 'fielder') {
+    const b = obs.batting;
+    if (!b || !(b.pa > 0)) return 0;
+    const trust = b.pa / (b.pa + f.promotePerfTrustPA);
+    return f.promoteWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+  }
+  const pi = obs.pitching;
+  if (!pi || !(pi.outs > 0)) return 0;
+  const trust = pi.outs / (pi.outs + f.promotePerfTrustOuts);
+  return f.promoteRa9W * (f.promoteRa9Ref - (pi.r * 27) / pi.outs) * trust;
+}
+
+/** 育成枠の剪定: 年齢超過は解雇、球団あたり perTeamMax 超は観測下位から解雇（箱を有限に保つ）。 */
+function pruneFarm(league, cfg) {
+  const mk = cfg.tuning.market.farm;
+  const byTeam = new Map();
+  for (const d of league.farm) {
+    if (d.age > mk.maxAge) continue;
+    if (!byTeam.has(d.teamId)) byTeam.set(d.teamId, []);
+    byTeam.get(d.teamId).push(d);
+  }
+  const kept = [];
+  for (const arr of byTeam.values()) {
+    arr.sort((a, b) => overallRating(b) - overallRating(a) || byId(a, b));
+    for (const d of arr.slice(0, mk.perTeamMax)) kept.push(d);
+  }
+  kept.sort(byId);
+  league.farm = kept;
+}
+
+/**
+ * 編成市場の中核（C3a）。引退枠 vacancies を「育成昇格 → ドラフト → 育成獲得」で埋める。
+ *   1. 育成枠を加齢（発達）させる
+ *   2. 昇格判定: 育成の観測成績が閾値超 かつ 自球団に同型の空き枠あり → 支配下登録（稀・§12.1）
+ *   3. ドラフト: 残り空き枠をウェーバー逆順×くじで埋める（§15）
+ *   4. 育成獲得: ドラフト漏れ（過小評価 surplus）を育成枠へ（安く獲れる箱・§12.1）
+ *   5. 剪定: 育成枠を有限に保つ
+ * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
+ * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
+ */
+function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null, farmObs = null }) {
+  const mk = cfg.tuning.market;
+  if (!league.farm) league.farm = [];
+  const profiles = new Map();
+  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+
+  // 1. 育成枠の発達（加齢）。独立シード座標＝支配下選手の加齢ストリームを一切乱さない。
+  applyAging(league.farm, cfg, { seed: hashSeed(masterSeed, 'farmaging', yearIndex) });
+
+  // 2. 昇格判定（§12.1・這い上がり／F2-3強化）。観測成績（真値+下振れバイアス+ノイズ＋
+  //    **当年の二軍実成績ボーナス**）が閾値超 かつ 自球団に同型の空き枠がある育成選手を支配下登録
+  //    する（枠が空くという「機会」に依存＝稀）。支配下70枠（roster.controlledPerTeam）の管理:
+  //    昇格は枠の空きがある球団のみ（引退→空き枠の通常フローでは常に空くが、不変量として明示的に守る）。
+  const cap = cfg.tuning.roster?.controlledPerTeam ?? Infinity;
+  const controlledCount = new Map();
+  for (const p of league.players) controlledCount.set(p.teamId, (controlledCount.get(p.teamId) ?? 0) + 1);
+  const remainingVac = vacancies.slice();
+  const promoted = [];
+  const promotions = [];
+  const stillFarm = [];
+  for (const d of league.farm.slice().sort(byId)) {
+    const tk = `${d.role}:${d.primaryPos}`;
+    const r = makeRng(hashSeed(masterSeed, 'promote', yearIndex, d.id));
+    const observed =
+      overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd) +
+      farmPerfBonus(d, farmObs ? farmObs.get(d.id) : null, cfg);
+    const vi = remainingVac.findIndex((v) => v.teamId === d.teamId && `${v.role}:${v.primaryPos}` === tk);
+    const hasRoom = (controlledCount.get(d.teamId) ?? 0) < cap; // 支配下70枠の空き（F2-3枠管理）
+    if (observed >= mk.farm.promoteThreshold && vi >= 0 && hasRoom) {
+      remainingVac.splice(vi, 1);
+      controlledCount.set(d.teamId, (controlledCount.get(d.teamId) ?? 0) + 1);
+      d.rosterStatus = 'active';
+      promoted.push(d);
+      promotions.push({ playerId: d.id, teamId: d.teamId, role: d.role, primaryPos: d.primaryPos, age: d.age, observed: Math.round(observed) });
+    } else {
+      stillFarm.push(d);
+    }
+  }
+  league.farm = stillFarm;
+
+  // 3. ドラフト（残り枠）。era＝世代の波/球速上昇を pool 生成時に反映（D3・§11.3）。
+  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
+  const order = waiverOrder(standings, league);
+  const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex });
+  // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
+  //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
+  if (balanceBoost && balanceBoost.size) {
+    for (const p of rookies) {
+      const b = balanceBoost.get(p.teamId) || 0;
+      if (b) applyEraToRookie(p, null, b);
+    }
+  }
+
+  // 4. 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。5. 剪定。
+  signDevelopment(league, cfg, undrafted, order);
+  pruneFarm(league, cfg);
+
+  return { promoted, rookies, draftLog, promotions };
+}
+
+
+// ===== src/game/roster_moves.mjs =====
+// ============================================================================
+// F2-3: シーズン中の出場登録入替（昇格・降格）— phaseF_spec F2-3 / §S3-2 / §12.1
+//
+//   applyRosterMovesForDay(rt, day)
+//     … 日次進行の冒頭（その日の試合前）に呼ばれ、各球団AIが出場登録29人を入れ替える:
+//       (1) IL復帰:   故障離脱で入替登録されていた選手が復帰 → 補充選手（不在なら同型最下位）と再入替
+//       (2) IL補充:   一軍登録者が離脱中 → 二軍から同型最良（球団AI評価=観測＋スカウト）を登録へ昇格
+//       (3) 成績入替: 既存の25試合レビューと同周期で、一軍で不振の登録者と「二軍観測成績」が
+//                     良い控えを入替（クールダウン日数ノブ＝NPB10日ルールの簡略化）
+//
+// 設計原則（req_1/req_2・厳守）:
+//   - 三層構造: 判定は 観測statline（一軍 rt.stats / 二軍 rt.farm.stats）＋スカウト評価
+//     （scoutSeed・球団評価プロファイル由来の決定論ノイズ）のみ。trueAbility の直接参照は
+//     編成の初期値の再構築（buildDepthChart/createUsageState）だけに閉じる（既存の原則と同輪）。
+//   - 決定論: 乱数の共有ストリームを一切消費しない（評価は hashSeed 派生の独立RNG or 乱数非使用。
+//     同点は id 昇順で解決）。load の replay は同一観測から同一の入替を再現する（verifyStandings が門番）。
+//   - 1年目シム不変（鉄則7）: startYear が yearIndex>=1 でのみ enableMoves を立てる。
+//     1年目のゲームランナーは simulateSeason（一括）と bit 同一のまま（較正53指標に非干渉）。
+//   - 構成恒常: 入替は 野手=同 primaryPos／投手=同 role の1:1＝登録・二軍双方のポジション構成が
+//     シーズンを通じて不変（両軍デプスチャート成立の保証）。育成(rosterStatus='minor')はシーズン中
+//     は登録しない（支配下70枠の管理。育成→支配下はオフの C3a 強化判定＝market.runMarket のみ）。
+//   - ニュース: 入替は rt.rosterMoves に記録され step.rosterMoves でも返る（週次ダイジェスト/
+//     ハブの素材。§17: 集計値・当該シーズンのみ＝save 非対象、replay で再構築）。
+// ============================================================================
+
+
+
+
+
+
+/** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
+function byId(a, b) {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** 観測RA9（未出場/アウト0は null＝判定対象外）。 */
+function obsRA9(line) {
+  if (!line || !(line.outs > 0)) return null;
+  return (line.r * 27) / line.outs;
+}
+
+/** 出場登録中の支配下ロスター（league.players ∩ registered）。 */
+function activeRosterOf(rt, teamId) {
+  const reg = rt.registeredByTeam.get(teamId);
+  return rt.league.players.filter((p) => p.teamId === teamId && reg.has(p.id));
+}
+
+/** 球団評価プロファイル（キャリア中固定・§13）。moves 用に遅延キャッシュ。 */
+function profileOf(rt, teamId) {
+  let pr = rt.moves.profiles.get(teamId);
+  if (!pr) {
+    pr = teamEvalProfile(rt.masterSeed, teamId, rt.cfg);
+    rt.moves.profiles.set(teamId, pr);
+  }
+  return pr;
+}
+
+/** クールダウン中か（10日ルール簡略・swapCooldownDays）。 */
+function inCooldown(rt, pid, day) {
+  return (rt.moves.cooldownUntil.get(pid) ?? -1) > day;
+}
+
+/**
+ * IL補充の球団AI評価（観測＋スカウト）: evaluateProspect（観測ツール=真値＋球団固有ノイズ・
+ * 球団の癖の重み）を土台に、二軍の観測statline（wOBA/RA9）を信頼度加重で加点する。
+ * 三層構造: 真値の直接参照はない（evaluateProspect がスカウト観測を模す既存の球団AI評価）。
+ */
+function callupScore(rt, teamId, p, cfg) {
+  const mv = cfg.tuning.moves;
+  const ctx = { masterSeed: rt.moves.scoutSeed, yearIndex: rt.season, teamId };
+  let score = evaluateProspect(profileOf(rt, teamId), p, cfg, ctx);
+  if (p.role === 'fielder') {
+    const b = rt.farm.stats.getBat(p.id);
+    if (b.pa > 0) {
+      const trust = b.pa / (b.pa + mv.callupTrustPA);
+      score += mv.callupWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+    }
+  } else {
+    const ra9 = obsRA9(rt.farm.stats.getPitch(p.id));
+    if (ra9 != null) {
+      const pi = rt.farm.stats.getPitch(p.id);
+      const trust = pi.outs / (pi.outs + mv.callupTrustOuts);
+      score += mv.callupRa9W * (mv.callupRa9Ref - ra9) * trust;
+    }
+  }
+  return score;
+}
+
+/**
+ * チャート＋起用状態を新ロスターで再構築し、動的フィールド（疲労/出場履歴/IL/担当）を引き継ぐ。
+ * createUsageState は選手ごとの scoutSeed 派生RNGのみ使用＝共有ストリーム非消費（決定論）。
+ * 残留選手の scoutEval/defEval/rangeEval は再構築でも同値（scoutSeed 基準）＝評価の連続性が保たれる。
+ * @returns {{dh:Object, noDh:Object}} 新チャート
+ */
+function rebuildSlice({ team, roster, cfg, chartsByTeam, usageByTeam }) {
+  const charts = {
+    dh: buildDepthChart(roster, cfg, { dh: true }),
+    noDh: buildDepthChart(roster, cfg, { dh: false }),
+  };
+  chartsByTeam.set(team.id, charts);
+  const old = usageByTeam.get(team.id);
+  const nu = createUsageState(team, charts, cfg, old ? old.priorPitch : null);
+  if (old) {
+    nu.games = old.games;
+    nu.lastSnap = old.lastSnap;
+    nu.consecStarts = old.consecStarts;
+    nu.startsByPid = old.startsByPid;
+    nu.startsAtPos = old.startsAtPos;
+    nu.lastStartDay = old.lastStartDay;
+    nu.startDaysByPid = old.startDaysByPid;
+    nu.pitchedByDay = old.pitchedByDay;
+    nu.injuredUntil = old.injuredUntil;
+    nu.rotIdx = charts.dh.rotation.length ? old.rotIdx % charts.dh.rotation.length : 0;
+    // 担当（regular/challenger/share）の引き継ぎ: 旧担当が新ロスターに残っていればそのまま
+    // （見直しの漸進性を保つ）。抹消された担当は新チャートの既定（編成時評価）へ戻る。
+    for (const pos of Object.keys(nu.assign)) {
+      const oa = old.assign[pos];
+      if (!oa || oa.regular == null || !charts.dh.byId.has(oa.regular)) continue;
+      const keepCh = oa.challenger != null && charts.dh.byId.has(oa.challenger);
+      nu.assign[pos] = { regular: oa.regular, challenger: keepCh ? oa.challenger : null, share: keepCh ? oa.share : 0 };
+    }
+  }
+  usageByTeam.set(team.id, nu);
+  return charts;
+}
+
+/**
+ * 出場登録の1:1入替を実行する（up=二軍→登録・down=登録→二軍）。一軍/二軍双方の
+ * チャート・起用状態を再構築し、双方の選手にクールダウンを課す。
+ */
+function swapRegistration(rt, teamId, up, down, day) {
+  const cfg = rt.cfg;
+  const reg = rt.registeredByTeam.get(teamId);
+  reg.delete(down.id);
+  reg.add(up.id);
+  // 一軍側の再編成（depthByTeam も所属リーグ規則で張り替え＝後方互換の参照を保つ）
+  const team = rt.teamById.get(teamId);
+  const charts = rebuildSlice({ team, roster: activeRosterOf(rt, teamId), cfg, chartsByTeam: rt.chartsByTeam, usageByTeam: rt.usageByTeam });
+  rt.depthByTeam.set(teamId, (rt.leagueDh.get(team.league) ?? true) ? charts.dh : charts.noDh);
+  // 二軍側（up を除き down を加える）
+  const f = rt.farm;
+  const fr = f.rosterByTeam.get(teamId);
+  const idx = fr.findIndex((p) => p.id === up.id);
+  if (idx >= 0) fr.splice(idx, 1);
+  fr.push(down);
+  rebuildSlice({ team: f.teamById.get(teamId), roster: fr, cfg, chartsByTeam: f.chartsByTeam, usageByTeam: f.usageByTeam });
+  // クールダウン（10日ルール簡略）: 双方とも当分は成績入替の対象にしない（IL復帰は強制につき無視される）
+  const until = day + cfg.tuning.moves.swapCooldownDays;
+  rt.moves.cooldownUntil.set(up.id, until);
+  rt.moves.cooldownUntil.set(down.id, until);
+}
+
+/** 入替をニュースイベントとして記録する（rt.rosterMoves・当該シーズンのみ・§17）。 */
+function logMove(rt, out, { day, teamId, type, up, down }) {
+  const mv = {
+    day,
+    teamId,
+    type, // 'ilReplace' | 'ilReturn' | 'perfSwap'
+    upId: up.id,
+    upName: up.name,
+    upPos: up.role === 'pitcher' ? 'P' : up.primaryPos,
+    downId: down.id,
+    downName: down.name,
+    downPos: down.role === 'pitcher' ? 'P' : down.primaryPos,
+  };
+  rt.rosterMoves.push(mv);
+  out.push(mv);
+  return mv;
+}
+
+/** 同型（野手=同 primaryPos／投手=同 role）の二軍昇格候補（育成・離脱中・クールダウン中は除外）。 */
+function farmCandidates(rt, teamId, like, day) {
+  const fu = rt.farm.usageByTeam.get(teamId);
+  return rt.farm.rosterByTeam.get(teamId).filter(
+    (q) =>
+      q.rosterStatus !== 'minor' && // 育成はシーズン中は登録できない（支配下70枠・オフのC3aのみ）
+      q.role === like.role &&
+      (like.role === 'pitcher' || q.primaryPos === like.primaryPos) &&
+      !isInjured(fu, q.id, day) &&
+      !inCooldown(rt, q.id, day),
+  );
+}
+
+/** 候補から score 最大を選ぶ（同点は id 昇順＝決定論）。 */
+function bestBy(cands, score) {
+  let best = null;
+  let bv = -Infinity;
+  for (const q of cands.slice().sort(byId)) {
+    const v = score(q);
+    if (v > bv) {
+      bv = v;
+      best = q;
+    }
+  }
+  return best;
+}
+
+/** (1) IL復帰: 離脱が明けた入替対象を再登録する（補充選手が居なければ同型の観測最下位と入替）。 */
+function processIlReturns(rt, teamId, day, out) {
+  const entries = [...rt.moves.ilSwaps].filter(([, s]) => s.teamId === teamId).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  for (const [pid, swap] of entries) {
+    const u = rt.usageByTeam.get(teamId);
+    if (isInjured(u, pid, day)) continue; // まだ離脱中
+    const p = rt.moves.byId.get(pid);
+    rt.moves.ilSwaps.delete(pid);
+    if (!p || p.teamId !== teamId) continue; // 安全弁（シーズン中の移籍は無い）
+    const reg = rt.registeredByTeam.get(teamId);
+    if (reg.has(pid)) continue; // 既に登録済み（想定外の安全弁）
+    // 復帰と入替で抹消する相手: 原則は補充選手。成績入替で既に降格済みなら同型の観測最下位。
+    let down = rt.moves.byId.get(swap.subId);
+    if (!down || !reg.has(swap.subId)) {
+      const cands = activeRosterOf(rt, teamId).filter(
+        (q) => q.role === p.role && (p.role === 'pitcher' || q.primaryPos === p.primaryPos) && !isInjured(u, q.id, day),
+      );
+      down = p.role === 'pitcher'
+        ? bestBy(cands, (q) => obsRA9(rt.stats.getPitch(q.id)) ?? rt.cfg.tuning.moves.callupRa9Ref) // RA9最悪
+        : bestBy(cands, (q) => -blendedWoba(u, q.id, rt.stats.getBat, rt.cfg)); // 混合評価最低
+      if (!down) continue; // 同型が居ない（理論上は起きない）
+    }
+    swapRegistration(rt, teamId, p, down, day);
+    logMove(rt, out, { day, teamId, type: 'ilReturn', up: p, down });
+  }
+}
+
+/** (2) IL補充: 離脱中の登録者を、二軍の同型最良（球団AI評価=観測＋スカウト）と入替する。 */
+function processIlReplacements(rt, teamId, day, out) {
+  const cfg = rt.cfg;
+  const mv = cfg.tuning.moves;
+  for (const p of activeRosterOf(rt, teamId).sort(byId)) {
+    const u = rt.usageByTeam.get(teamId);
+    const until = u.injuredUntil.get(p.id) ?? 0;
+    if (until <= day) continue; // 離脱していない
+    if (until - day < mv.ilMinDays) continue; // 残り離脱が短い＝登録を動かさない
+    if (rt.moves.ilSwaps.has(p.id)) continue; // 補充済み（登録に残らないため通常は来ない）
+    const best = bestBy(farmCandidates(rt, teamId, p, day), (q) => callupScore(rt, teamId, q, cfg));
+    if (!best) continue; // 同型候補が枯れている→起用AIのベンチ運用に任せる
+    swapRegistration(rt, teamId, best, p, day);
+    // 降格した離脱者は二軍でも出場不可（IL選手が二軍戦に出る矛盾の防止）
+    rt.farm.usageByTeam.get(teamId).injuredUntil.set(p.id, until);
+    rt.moves.ilSwaps.set(p.id, { teamId, subId: best.id });
+    logMove(rt, out, { day, teamId, type: 'ilReplace', up: best, down: p });
+  }
+}
+
+/**
+ * (3) 成績入替: 25試合レビューと同周期で、一軍の観測不振者と二軍観測好調者を入替する。
+ * 三層構造: 一軍側=混合評価（観測wOBA＋スカウト・blendedWoba）／二軍側=二軍の混合評価から
+ * レベル差割引 farmGapWoba を引いた値。投手は観測RA9同士の比較（真値不参照）。
+ * 野手・投手 各1件/レビューまで（急な総入替をしない＝シェア漸増の見直しと同じ思想）。
+ */
+function processPerfSwaps(rt, teamId, day, out) {
+  const cfg = rt.cfg;
+  const mv = cfg.tuning.moves;
+  const fu = () => rt.farm.usageByTeam.get(teamId);
+  const u = () => rt.usageByTeam.get(teamId);
+
+  // --- 野手: 混合評価の最下位から順に、同ポジションの二軍好調者と比較 ---
+  const downFielders = activeRosterOf(rt, teamId)
+    .filter((p) => p.role === 'fielder' && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
+    .map((p) => ({ p, v: blendedWoba(u(), p.id, rt.stats.getBat, cfg) }))
+    .sort((a, b) => a.v - b.v || byId(a.p, b.p));
+  for (const { p, v } of downFielders) {
+    const cands = farmCandidates(rt, teamId, p, day).filter((q) => rt.farm.stats.getBat(q.id).pa >= mv.farmMinPA);
+    const best = bestBy(cands, (q) => blendedWoba(fu(), q.id, rt.farm.stats.getBat, cfg));
+    if (!best) continue;
+    const qv = blendedWoba(fu(), best.id, rt.farm.stats.getBat, cfg) - mv.farmGapWoba;
+    if (qv - v > mv.perfSwapMargin) {
+      swapRegistration(rt, teamId, best, p, day);
+      logMove(rt, out, { day, teamId, type: 'perfSwap', up: best, down: p });
+      break; // 1レビュー1件まで
+    }
+  }
+
+  // --- 投手: ローテ外の観測RA9最悪から順に、二軍の観測RA9最良と比較 ---
+  const rot = new Set(rt.chartsByTeam.get(teamId).dh.rotation); // ローテは中6日の継続性を優先し対象外
+  const downPitchers = activeRosterOf(rt, teamId)
+    .filter((p) => p.role === 'pitcher' && !rot.has(p.id) && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
+    .map((p) => ({ p, line: rt.stats.getPitch(p.id) }))
+    .filter(({ line }) => line.bf >= mv.pitchMinBF && obsRA9(line) != null)
+    .sort((a, b) => obsRA9(b.line) - obsRA9(a.line) || byId(a.p, b.p));
+  for (const { p, line } of downPitchers) {
+    const cands = farmCandidates(rt, teamId, p, day).filter((q) => (rt.farm.stats.getPitch(q.id).outs ?? 0) >= mv.farmPitchMinOuts);
+    const best = bestBy(cands, (q) => -obsRA9(rt.farm.stats.getPitch(q.id)));
+    if (!best) continue;
+    if (obsRA9(line) - (obsRA9(rt.farm.stats.getPitch(best.id)) + mv.farmGapRA9) > mv.pitchSwapRA9) {
+      swapRegistration(rt, teamId, best, p, day);
+      logMove(rt, out, { day, teamId, type: 'perfSwap', up: best, down: p });
+      break; // 1レビュー1件まで
+    }
+  }
+}
+
+/**
+ * この day の試合前に出場登録の入替を適用する（F2-3の入口・advanceRuntimeDay から呼ばれる）。
+ * enableMoves が立っていない（1年目・sim層・ミニリーグ=farm不成立）構成では常に何もしない。
+ * @returns {Array} 実行した入替 [{day,teamId,type,upId,upName,upPos,downId,downName,downPos}]
+ */
+function applyRosterMovesForDay(rt, day) {
+  if (!rt.moves || !rt.farm || !rt.cfg.tuning.moves) return [];
+  const out = [];
+  for (const team of rt.league.teams) {
+    processIlReturns(rt, team.id, day, out);
+    processIlReplacements(rt, team.id, day, out);
+    // 成績入替はチーム消化試合が reviewInterval を跨ぐたびに1回（既存25試合レビューの拡張）
+    const reviewIdx = Math.floor(rt.usageByTeam.get(team.id).games / rt.cfg.tuning.moves.reviewInterval);
+    if (reviewIdx > (rt.moves.lastReviewIdx.get(team.id) ?? 0)) {
+      rt.moves.lastReviewIdx.set(team.id, reviewIdx);
+      processPerfSwaps(rt, team.id, day, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * moves 状態の初期化（startSeasonRuntime から呼ばれる）。enableMoves=false（1年目・sim層）や
+ * farm 不成立（ミニリーグ）では null＝完全不作動（既存挙動と bit 同一）。
+ */
+function createMovesState(league, { enableMoves, masterSeed, season, farm }) {
+  if (!enableMoves || !farm) return null;
+  const byIdMap = new Map();
+  for (const p of league.players) byIdMap.set(p.id, p);
+  for (const p of league.farm ?? []) byIdMap.set(p.id, p);
+  return {
+    scoutSeed: hashSeed(masterSeed, 'moves', season), // 球団AI評価の観測ノイズ座標（決定論・年別）
+    byId: byIdMap, // 全選手 id→player（シーズン中は不変）
+    cooldownUntil: new Map(), // pid → この day まで再移動不可（10日ルール簡略）
+    ilSwaps: new Map(), // 離脱者 pid → {teamId, subId}（復帰時の再入替に使う）
+    lastReviewIdx: new Map(), // teamId → 処理済みレビュー番号（25試合周期）
+    profiles: new Map(), // teamId → teamEvalProfile（遅延キャッシュ・キャリア中固定と同値）
+  };
+}
+
+
+// ===== src/game/season_runtime.mjs =====
+// ============================================================================
+// フェーズC1a: 1シーズンの「日次進行ランタイム」（ヘッドレス・UI非依存）
+//
+// season.mjs の simulateSeason は「1シーズン一括」だが、ゲームシェルは day（節）単位で
+// 進めたい。ここでは simulateSeason と *同一の per-game 処理*（playScheduledGame）を
+// schedule の index（gi）順に1日ぶんずつ駆動する。gi は階層シードの座標なので、
+// 一括実行でも日次分割実行でも結果は bit 単位で同一になる（既存50較正指標が不変）。
+//
+// 決定論: 乱数は makeRng(hashSeed(seed, ...)) のみ。Date.now/Math.random 非使用。
+//   セーブ/ロードは save.mjs が「開幕状態から cursor まで再走（replay）」で復元する
+//   （seed と cursor が RNG カーソルに相当する。usage/集計はこの再走で厳密に再現される）。
+// ============================================================================
+
+
+
+
+
+
+
+
+
+
+/**
+ * 二軍リーグのランタイムを組む（F2-2・phaseF_spec F2-2）。
+ * 同じ12球団のファームを cfg.league.farm.leagues の2リーグ（完全架空名・一軍と同分割）で
+ * ~110試合。**一軍と同じ playScheduledGame**・別の集計器(farmStats)・独立の階層シード
+ * （hashSeed(seed,'farm') を根にする＝一軍の 'game'/'lineup' 系列と非干渉→一軍は farm の
+ * 有無で byte 不変）。二軍ロスター＝登録外の支配下＋育成（league.farm・rosterStatus='minor'）。
+ * 成立しない構成（ミニリーグ/旧テストの少人数ロスター）では null を返し二軍なしで動く。
+ * @returns {?Object} FarmRuntime（可変・cursor が進行位置）
+ */
+function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injuries = [] }) {
+  const F = cfg.league.farm;
+  if (!F || !(F.leagues ?? []).length) return null;
+  const parentIds = (cfg.league.leagues ?? []).map((l) => l.id);
+  // 二軍ロスター: 支配下の登録外＋育成（どちらも p.teamId で球団へ紐づく）
+  const rosterByTeam = new Map(league.teams.map((t) => [t.id, []]));
+  for (const p of league.players) {
+    const reg = registeredByTeam.get(p.teamId);
+    if (reg && !reg.has(p.id)) rosterByTeam.get(p.teamId)?.push(p);
+  }
+  for (const p of league.farm ?? []) rosterByTeam.get(p.teamId)?.push(p);
+  // 成立チェック: 全球団で 投手>=ローテ+2・野手>=9。満たさなければ二軍リーグは組まない（旧構成互換）。
+  for (const t of league.teams) {
+    const r = rosterByTeam.get(t.id) ?? [];
+    const nP = r.filter((p) => p.role === 'pitcher').length;
+    if (nP < cfg.league.rotationSize + 2 || r.length - nP < 9) return null;
+  }
+  // 二軍チーム: 親球団と同一 id/名前/監督/本拠地。リーグだけ farm 側（親リーグと同分割で対応付け）。
+  const teams = league.teams.map((t) => ({
+    id: t.id,
+    name: t.name,
+    league: F.leagues[Math.max(0, parentIds.indexOf(t.league))]?.id ?? F.leagues[0].id,
+    manager: t.manager,
+    park: t.park,
+  }));
+  const teamById = new Map(teams.map((t) => [t.id, t]));
+  const leagueDh = new Map(F.leagues.map((l) => [l.id, l.dh]));
+  const chartsByTeam = new Map();
+  for (const t of teams) {
+    const r = rosterByTeam.get(t.id);
+    chartsByTeam.set(t.id, {
+      dh: buildDepthChart(r, cfg, { dh: true }),
+      noDh: buildDepthChart(r, cfg, { dh: false }),
+    });
+  }
+  // 起用AI: 一軍と同じ usage（priorPitch なし＝破綻救援ガード不作動。育成試合の簡略）。
+  const usageByTeam = new Map(teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, null)]));
+  // 開幕IL（F2-3）: 直前オフの故障者は二軍でも出場不可（IL選手が二軍戦に出る矛盾の防止・C2.4/§10.5）。
+  //   1年目は injuries が空＝無影響（F2-2 と bit 同一）。
+  if (injuries.length) {
+    const teamOf = new Map();
+    for (const [tid, r] of rosterByTeam) for (const p of r) teamOf.set(p.id, tid);
+    for (const ev of injuries) {
+      const tid = teamOf.get(ev.id);
+      if (tid == null || !ev.gamesLost) continue;
+      usageByTeam.get(tid)?.injuredUntil.set(ev.id, ev.gamesLost);
+    }
+  }
+  // 日程: buildSchedule を farm 用の試合数ノブで再利用（リーグ内22×5相手=110試合・交流戦なし）。
+  const schedCfg = {
+    ...cfg,
+    league: {
+      ...cfg.league,
+      inLeagueGamesPerOpp: F.inLeagueGamesPerOpp,
+      interLeagueGamesPerOpp: F.interLeagueGamesPerOpp,
+      gamesPerSeason: F.gamesPerSeason,
+    },
+  };
+  const farmSeed = hashSeed(seed, 'farm'); // 独立の階層シード根＝一軍の乱数列と非干渉
+  const schedule = buildSchedule(teams, makeRng(hashSeed(farmSeed, 'schedule')), schedCfg);
+  const standings = new Map();
+  for (const t of teams) {
+    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
+  }
+  return {
+    seed: farmSeed,
+    teams,
+    teamById,
+    leagueDh,
+    rosterByTeam, // 二軍ロスター（UI/検証用: teamId → players）
+    chartsByTeam,
+    usageByTeam,
+    schedule,
+    standings,
+    stats: makeSeasonStats(season), // farmStats: 一軍と別の集計器（per-(player,season)・§17集計値のみ）
+    runSplit: { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } },
+    cursor: 0,
+    finished: false,
+    table: null,
+    standingsByLeague: null,
+  };
+}
+
+/**
+ * 二軍の試合を throughDay（含む）まで消化する（F2-2）。二軍は観戦/介入対象外＝スキップ消化のみ
+ * （onEvent 無し・box 無し）。一軍と同じ playScheduledGame を farm の独立コンテキストで回す。
+ * 全日程消化で順位表を確定し finished にする。
+ * @returns {Array} 消化した試合の集計行 [{day,home,away,homeScore,awayScore,tie}]
+ */
+function advanceFarmThrough(rt, throughDay) {
+  const f = rt.farm;
+  if (!f || f.finished) return [];
+  const pass = {
+    statFor: f.stats.statFor,
+    getBat: f.stats.getBat,
+    getPitch: f.stats.getPitch,
+    standings: f.standings,
+    runSplit: f.runSplit,
+  };
+  const ctx = {
+    seed: f.seed,
+    park: rt.park,
+    parkByTeam: rt.parkByTeam, // 二軍も親球団の本拠地 park を使う（専用球場は将来拡張）
+    cfg: rt.cfg,
+    leagueDh: f.leagueDh,
+    teamById: f.teamById,
+    chartsByTeam: f.chartsByTeam,
+    usageByTeam: f.usageByTeam,
+    pass,
+  };
+  const games = [];
+  while (f.cursor < f.schedule.length && f.schedule[f.cursor].day <= throughDay) {
+    const g = f.schedule[f.cursor];
+    const res = playScheduledGame(ctx, g, f.cursor);
+    games.push({ day: g.day, home: g.home, away: g.away, homeScore: res.homeScore, awayScore: res.awayScore, tie: res.tie });
+    f.cursor++;
+  }
+  if (f.cursor >= f.schedule.length) {
+    const { table, standingsByLeague } = finalizeStandings(f.standings);
+    f.table = table;
+    f.standingsByLeague = standingsByLeague; // 二軍の順位表も記録（UI: 順位タブのサブ表示素材）
+    f.finished = true;
+  }
+  return games;
+}
+
+/**
+ * 1シーズンの日次ランタイムを開幕状態で作る。
+ * @param {{teams:Array,players:Array}} league generateLeague の出力
+ * @param {Object} cfg createConfig()
+ * @param {{season:number, seed:number, park?:Object, playerTeamId:string, injuries?:Array}} opts
+ *   injuries=直前オフで確定した故障 [{id,severity,gamesLost}]。各選手を新シーズン開幕から
+ *   gamesLost 日ぶん離脱(IL)させ、起用AI/ベンチが穴を埋める（C2.4/§10.5）。空配列（1年目）は無影響。
+ * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
+ */
+function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null, enableMoves = false, masterSeed = null }) {
+  const { leagueDh, teamById, chartsByTeam, depthByTeam, registeredByTeam } = buildTeamCharts(league, cfg);
+  // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
+  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
+  const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
+  const standings = new Map();
+  for (const t of league.teams) {
+    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
+  }
+  const stats = makeSeasonStats(season);
+  // priorPitch=前年の観測投手ライン(pid→line)。破綻救援ガード（多年運用・原則2）の"前歴"。
+  //   1年目は null（前年なし）＝ガード不作動＝較正53指標が byte 不変（startYear が2年目以降のみ渡す）。
+  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, priorPitch)]));
+  // 開幕IL: 故障選手を所属チームの起用状態に「day < gamesLost の間は不可」として載せる。
+  //   day は schedule の節index（1日≒1試合）＝gamesLost をそのまま離脱日数として扱う。
+  //   これで selectLineup/selectStarter/bullpenAvailable が離脱中の選手を除外し、ベンチ/控えが
+  //   自然に穴を埋める（phaseA の起用AI資産）。injuries が空（1年目）なら一切効かない。
+  const byId = new Map(league.players.map((p) => [p.id, p]));
+  const seasonInjuries = [];
+  for (const ev of injuries) {
+    const p = byId.get(ev.id);
+    if (!p || !ev.gamesLost) continue; // 引退で消えた選手（pid不在）は無視
+    const u = usageByTeam.get(p.teamId);
+    if (u) u.injuredUntil.set(ev.id, ev.gamesLost);
+    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, gamesLost: ev.gamesLost });
+  }
+  const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
+  const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
+  // 二軍リーグ（F2-2）: 一軍と同じ day カレンダーに並走。成立しない構成（ミニリーグ）は null。
+  const farm = buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injuries });
+  return {
+    league,
+    cfg,
+    season,
+    seed,
+    // キャリアのマスターシード（F2-3: 球団評価プロファイル＝キャリア中固定の座標。
+    // 未提供（sim層/単体テスト）は season seed で代用＝同一シーズン内では同様に決定論）。
+    masterSeed: masterSeed ?? seed,
+    park,
+    parkByTeam,
+    playerTeamId,
+    leagueDh,
+    teamById,
+    chartsByTeam,
+    depthByTeam,
+    registeredByTeam, // F2-2: 出場登録29人（teamId → Set(pid)。登録外＋育成＝二軍）
+    farm,
+    // 出場登録入替（F2-3）: enableMoves（=2年目以降のゲーム層のみ）かつ farm 成立時のみ作動。
+    moves: createMovesState(league, { enableMoves, masterSeed: masterSeed ?? seed, season, farm }),
+    rosterMoves: [], // 当該シーズンの昇降格ニュースログ（§17: 当該シーズンのみ・replayで再構築）
+    schedule,
+    standings,
+    stats,
+    usageByTeam,
+    runSplit,
+    cursor: 0, // 次に処理する schedule の index（= gi。day 境界でのみ止まる）
+    finalDay,
+    seasonInjuries, // 当該シーズン開幕IL（ハブ表示用・[{id,name,teamId,severity,gamesLost}]・当年のみ）
+    playerGameLog: [], // 自チームの試合結果（当該シーズンのみ・§17）
+    // 采配介入（フェーズC1b）: 自チーム監督プロファイルの人間差し替えログ。
+    //   [{ day, teamId, manager:{buntTend,stealTend,ibbTend,quickHook} }]（絶対値）。
+    //   その day 以降の試合に効く。save に含め、load 時に replay で同一 day に再適用＝決定論を保つ。
+    interventions: [],
+    finished: false,
+    table: null,
+    standingsByLeague: null,
+    postseason: null,
+  };
+}
+
+/** 次に処理する day（節）。全消化後は finalDay+1。 */
+function pendingDay(rt) {
+  return rt.cursor < rt.schedule.length ? rt.schedule[rt.cursor].day : rt.finalDay + 1;
+}
+
+/**
+ * 采配介入を適用（フェーズC1b）。この day に効く監督プロファイルの差し替えを teamById へ反映する。
+ * live 実行でも load 後の replay でも同一 day で同一に呼ばれる＝決定論を保つ（絶対値パッチ）。
+ */
+function applyInterventionsForDay(rt, d) {
+  for (const iv of rt.interventions) {
+    if (iv.day !== d) continue;
+    const team = rt.teamById.get(iv.teamId);
+    if (team) team.manager = { ...team.manager, ...iv.manager };
+  }
+}
+
+/**
+ * 1日（節）ぶんの試合をまとめて消化する。schedule は day 昇順・同一 day が連続するため、
+ * cursor は必ず day 境界で止まる（save/load の cursor 再走が day 単位で正確になる）。
+ * @param {Object} rt SeasonRuntime
+ * @param {{collectPlayerEvents?:boolean}} opts collectPlayerEvents=自チーム試合の観戦実況イベントを返す
+ * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean}}
+ *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
+ */
+function advanceRuntimeDay(rt, opts = {}) {
+  if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: false };
+  const d = pendingDay(rt);
+  applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
+  // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
+  // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
+  const rosterMoves = applyRosterMovesForDay(rt, d);
+  const pass = {
+    statFor: rt.stats.statFor,
+    getBat: rt.stats.getBat,
+    getPitch: rt.stats.getPitch, // 破綻救援ガードの当年観測（多年運用・原則2）
+    standings: rt.standings,
+    runSplit: rt.runSplit,
+  };
+  const ctx = {
+    seed: rt.seed,
+    park: rt.park,
+    parkByTeam: rt.parkByTeam,
+    cfg: rt.cfg,
+    leagueDh: rt.leagueDh,
+    teamById: rt.teamById,
+    chartsByTeam: rt.chartsByTeam,
+    usageByTeam: rt.usageByTeam,
+    pass,
+  };
+  const games = [];
+  const playerGames = [];
+  let playerEvents = null;
+  while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
+    const g = rt.schedule[rt.cursor];
+    const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
+    // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
+    // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
+    // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
+    let events = null;
+    pass.onEvent = isPlayer ? (e) => events.push(e) : undefined;
+    if (pass.onEvent) events = [];
+    const res = playScheduledGame(ctx, g, rt.cursor);
+    const rec = {
+      day: d,
+      home: g.home,
+      away: g.away,
+      homeScore: res.homeScore,
+      awayScore: res.awayScore,
+      tie: res.tie,
+      innings: res.innings,
+    };
+    if (isPlayer && events) {
+      // E4: 日程・結果タブの簡易ボックススコア（両軍打者/投手の当日ライン・集計行のみ）。
+      // live も load の replay も同一イベント列から再構築される（決定論・save は集計値のみ）。
+      rec.box = buildBoxScore(events);
+    }
+    games.push(rec);
+    if (isPlayer) {
+      rt.playerGameLog.push(rec); // 集計値のみ（イベントは積まない・§17）
+      playerGames.push(rec);
+      if (opts.collectPlayerEvents && events) playerEvents = events;
+    }
+    rt.cursor++;
+  }
+  // 二軍の同日試合（F2-2）: 一軍と同じ day カレンダーで並走消化（<=d ＝ 一軍が全休日を飛ばしても
+  // 取り残さない）。二軍は独立シード根（hashSeed(seed,'farm')）＝一軍の結果は二軍の有無で byte 不変。
+  const farmGames = advanceFarmThrough(rt, d);
+  let seasonEnded = false;
+  if (rt.cursor >= rt.schedule.length) {
+    finalizeRuntime(rt);
+    seasonEnded = true;
+  }
+  return { day: d, games, farmGames, rosterMoves, playerGames, playerEvents, seasonEnded };
+}
+
+/** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */
+function finalizeRuntime(rt) {
+  // 二軍の残り日程を洗い流す（F2-2）: 通常は二軍(~110試合)が一軍(143試合)より先に終わるが、
+  // 日程直列化の揺らぎで残っても、一軍シーズン確定時に必ず全消化する（=二軍全日程消化の保証）。
+  advanceFarmThrough(rt, Infinity);
+  const { table, standingsByLeague } = finalizeStandings(rt.standings);
+  rt.table = table;
+  rt.standingsByLeague = standingsByLeague;
+  let postseason = null;
+  if ((rt.cfg.league.leagues ?? []).length === 2) {
+    postseason = simulatePostseason({
+      rankings: rt.cfg.league.leagues.map((l) => ({ id: l.id, rows: standingsByLeague[l.id] ?? [] })),
+      chartsByTeam: rt.chartsByTeam,
+      teamById: rt.teamById,
+      leagueDh: rt.leagueDh,
+      cfg: rt.cfg,
+      seed: hashSeed(rt.seed, 'postseason'),
+      season: rt.season,
+      park: rt.park,
+      parkByTeam: rt.parkByTeam,
+    });
+  }
+  rt.postseason = postseason;
+  rt.finished = true;
 }
 
 
@@ -7968,397 +9141,6 @@ function summarizeRetiree(p, retiredAfterYear) {
     injuries: (p.trueAbility.career.injuryHistory ?? []).length,
     breakEvents: (p.trueAbility.career.breakEvents ?? []).length,
   };
-}
-
-
-// ===== src/game/market.mjs =====
-// ============================================================================
-// フェーズC3a: 編成市場（球団AI評価の球団差・ドラフト・育成/支配下二層）
-//   §13/§15（球団AIをわざと現実的に間違わせる＝市場の非効率を仕込む）／§12.1（這い上がりの箱）。
-//
-//   teamEvalProfile(masterSeed, teamId, cfg)  … 球団ごとに固定の「評価の癖」を分布から引く
-//   evaluateProspect(profile, prospect, cfg, ctx) … 観測ツール(真値+スカウトノイズ)×球団重みでの評価
-//   trueValue(prospect, cfg)                  … 真価値の代理（テスト/宝の泉の可視化用・AIは見ない）
-//   runMarket(league, cfg, {...})             … 引退枠を「育成昇格→ドラフト→育成獲得」で埋める
-//
-// 設計原則（phaseC_spec・厳守）:
-//   - エンジンを壊さない: 本モジュールはオフシーズン遷移（2年目以降）でのみ呼ばれる。1年目
-//     レギュラーシーズン（既存50較正）には一切効かない（generateLeague/シムは不変）。
-//   - 三層構造: 球団AIは trueAbility を直接見ない。評価は「観測ツール(真値+球団固有ノイズ)」を
-//     球団固有の重み（守備/位置の過小評価度・出塁重視度・年齢バイアス）で合成する＝わざと不完全。
-//     歪んだ球団評価と真価値(trueValue)の差分こそ「宝の泉」。守備を正しく重める球団(wDef>1)を
-//     混ぜると、他球団の捨てた守備型の宝を系統的に拾う（守備版マネーボール）。
-//   - 決定論: 乱数は階層シード rng のみ（Date.now/Math.random 非使用）。ウェーバー順は前年順位
-//     （teamHistory・save に含まれ replay 再構築される）、くじは lottery シードで解決＝再現可能。
-//   - ロスター構成の恒常: 引退枠(teamId,role,primaryPos)を同型で1:1に埋める（人口/構成不変）。
-// ============================================================================
-
-
-
-
-
-
-/** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
-function byId(a, b) {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-/** 球種の質（current/whiff の平均）。球種なしは 50。 */
-function pitchStuff(t) {
-  const ps = t.pitching.pitches;
-  if (!ps.length) return 50;
-  let s = 0;
-  for (const pi of ps) s += (pi.current + pi.whiff) / 2;
-  return s / ps.length;
-}
-
-/**
- * 総合力の粗い代理（~20-80・真値ベース）。育成の昇格判定と farm 剪定に使う内部指標。
- * roster.mjs の overallAbility と同型（役割別に主要真値を平均）。真値なので AI の「評価」ではない。
- */
-function overallRating(p) {
-  const t = p.trueAbility;
-  if (p.role === 'pitcher') {
-    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
-    return (veloR + t.pitching.control + t.pitching.stamina + pitchStuff(t)) / 4;
-  }
-  const b = t.batting;
-  let bestProf = 20;
-  for (const k of Object.keys(t.fielding.positionProf)) bestProf = Math.max(bestProf, t.fielding.positionProf[k]);
-  return (b.ev + b.contact + b.la + b.eye + t.common.speed + t.fielding.positioningIQ + bestProf) / 7;
-}
-
-/**
- * 球団ごとの評価プロファイル（§13/§15）。masterSeed×teamId から固定で引く（キャリア中不変＝球団の癖）。
- *   wBat  打撃/投球コアの重み（球団差小）
- *   wEye  出塁(選球眼)重視度（球団差大）
- *   wDef  守備/位置価値の重み（多くが<1＝系統的な過小評価。稀に>1＝守備を正しく重める球団）
- *   ageBias 年齢バイアス（若手志向のペナルティ/歳）
- *   noiseSd スカウト観測ノイズSD（球団ごとの評価の荒さ）
- * @returns {{teamId:string, wBat:number, wEye:number, wDef:number, ageBias:number, noiseSd:number}}
- */
-function teamEvalProfile(masterSeed, teamId, cfg) {
-  const pc = cfg.tuning.market.profile;
-  const r = makeRng(hashSeed(masterSeed, 'evalprofile', teamId));
-  return {
-    teamId,
-    wBat: clamp(r.normal(pc.wBatMean, pc.wBatSd), pc.wBatMin, pc.wBatMax),
-    wEye: clamp(r.normal(pc.wEyeMean, pc.wEyeSd), pc.wEyeMin, pc.wEyeMax),
-    wDef: clamp(r.normal(pc.wDefMean, pc.wDefSd), pc.wDefMin, pc.wDefMax),
-    ageBias: clamp(r.normal(pc.ageBiasMean, pc.ageBiasSd), pc.ageBiasMin, pc.ageBiasMax),
-    noiseSd: Math.max(pc.noiseSdMin, r.normal(pc.noiseSdMean, pc.noiseSdSd)),
-  };
-}
-
-/** 観測ツール = 真値 + 球団固有スカウトノイズ（ctx 無し or noiseSd=0 なら真値そのまま＝テスト用）。 */
-function obsTool(trueVal, profile, ctx, tool, pid) {
-  if (!ctx || !profile.noiseSd) return trueVal;
-  const r = makeRng(hashSeed(ctx.masterSeed, 'scout', ctx.yearIndex, ctx.teamId, pid, tool));
-  return trueVal + r.normal(0, profile.noiseSd);
-}
-
-/**
- * 球団 profile による prospect の評価スカラー（§13）。観測ツール（真値+球団固有ノイズ）を
- * 球団固有の重みで合成する（trueAbility を直接は見ない＝三層構造）。守備/位置価値は wDef で重み、
- * 多くの球団は wDef<1 ＝守備/位置を過小評価する（宝を捨てる）。
- * @param {Object} profile teamEvalProfile() の返値（テストは noiseSd:0 の即席 profile を渡せる）
- * @param {Object} p prospect（Player）
- * @param {Object} cfg
- * @param {{masterSeed:number, yearIndex:number, teamId:string}|null} ctx ノイズ座標（null=無ノイズ）
- */
-function evaluateProspect(profile, p, cfg, ctx = null) {
-  const m = cfg.tuning.market.eval;
-  const t = p.trueAbility;
-  const id = p.id;
-  const ageK = profile.ageBias * Math.max(0, p.age - 18);
-  if (p.role === 'pitcher') {
-    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
-    const velo = obsTool(veloR, profile, ctx, 'velo', id);
-    const ctrl = obsTool(t.pitching.control, profile, ctx, 'control', id);
-    const stam = obsTool(t.pitching.stamina, profile, ctx, 'stamina', id);
-    const stuff = obsTool(pitchStuff(t), profile, ctx, 'stuff', id);
-    return profile.wBat * (velo + ctrl + stam + stuff) - ageK;
-  }
-  const b = t.batting;
-  const c = t.common;
-  const f = t.fielding;
-  const ev = obsTool(b.ev, profile, ctx, 'ev', id);
-  const contact = obsTool(b.contact, profile, ctx, 'contact', id);
-  const eye = obsTool(b.eye, profile, ctx, 'eye', id);
-  const la = obsTool(b.la, profile, ctx, 'la', id);
-  const power = obsTool(c.power, profile, ctx, 'power', id);
-  const prof = obsTool(f.positionProf[p.primaryPos] ?? 20, profile, ctx, 'prof', id);
-  const iq = obsTool(f.positioningIQ, profile, ctx, 'iq', id);
-  const reaction = obsTool(c.reaction, profile, ctx, 'reaction', id);
-  const arm = obsTool(c.arm, profile, ctx, 'arm', id);
-  const batComp = ev + contact + power + m.laW * la;
-  const defComp = prof + iq + reaction + m.armW * arm;
-  const posVal = (POSITION_ADJUST_PER_1350[p.primaryPos] ?? 0) * m.posScale;
-  return profile.wBat * batComp + profile.wEye * m.eyeScale * eye + profile.wDef * (defComp + posVal) - ageK;
-}
-
-/**
- * 真価値の代理（テスト/可視化用・AIは見ない）。守備・位置価値を「正しく」重めた全知評価
- * （wBat=wEye=wDef=1・ノイズ0・年齢バイアス0）。歪んだ球団評価との差分が「宝の泉」（§13）。
- */
-function trueValue(p, cfg) {
-  return evaluateProspect({ wBat: 1, wEye: 1, wDef: 1, ageBias: 0, noiseSd: 0 }, p, cfg, null);
-}
-
-/** 前年順位からのウェーバー逆順（勝率の低い順＝弱いチームが先）。standings 無しは teams 順。 */
-function waiverOrder(standings, league) {
-  if (!standings || !standings.length) return league.teams.map((t) => t.id);
-  const winPct = (s) => {
-    const dec = (s.w ?? 0) + (s.l ?? 0);
-    return dec ? s.w / dec : 0.5;
-  };
-  return standings
-    .slice()
-    .sort((a, b) => winPct(a) - winPct(b) || (a.teamId < b.teamId ? -1 : 1))
-    .map((s) => s.teamId);
-}
-
-/** 世代（高卒18/大卒22/社会人25）から新人の年齢を1つ引く（§15 世代生成）。 */
-function pickCohortAge(rng, cohort) {
-  const u = rng.next();
-  if (u < cohort.hsShare) return cohort.hsAge;
-  if (u < cohort.hsShare + cohort.colShare) return cohort.colAge;
-  return cohort.corpAge;
-}
-
-/**
- * ドラフトプールを生成する。各(role,primaryPos)型で「空き数＋surplus」人の prospect を
- * スカウト観測（世代年齢・真値）付きで作る。surplus が選択肢を生み、球団評価差＝宝の源になる。
- * @returns {Map<string, Array>} typeKey('role:pos') → prospect[]
- */
-function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = null }) {
-  const mk = cfg.tuning.market;
-  const byType = new Map();
-  for (const v of vacancies) {
-    const tk = `${v.role}:${v.primaryPos}`;
-    if (!byType.has(tk)) byType.set(tk, { role: v.role, primaryPos: v.primaryPos, count: 0 });
-    byType.get(tk).count++;
-  }
-  const pool = new Map();
-  let gi = 0;
-  for (const [tk, info] of byType) {
-    const n = info.count + mk.surplusPerType;
-    const arr = [];
-    for (let i = 0; i < n; i++) {
-      const id = `D${yearIndex}n${gi++}`;
-      const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
-      // era（時代トレンド・D3）: 世代の波・球速の経年上昇を新人生成時に反映（王朝均衡 boost は draft 後）。
-      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era });
-      arr.push(p);
-    }
-    pool.set(tk, arr);
-  }
-  return pool;
-}
-
-/**
- * ドラフト（ウェーバー逆順×1位競合くじ・NPB風）。空き枠(vacancies)を pool から埋める。
- *   Round1: 各球団が自評価の最高 prospect を1位指名 → 競合はくじで解決（負けは再指名）。
- *   Round2+: ウェーバー順（弱い順）に残り枠を自評価の最高で1人ずつ埋める。
- * 各球団は自分の空き枠と同型(role:pos)の prospect しか獲れない（構成恒常）。
- * @returns {{rookies:Array, undrafted:Array, draftLog:Object}}
- */
-function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex }) {
-  const teamVac = new Map(); // teamId → [{role,primaryPos}]（残り空き枠のキュー）
-  for (const t of order) teamVac.set(t, []);
-  for (const v of vacancies) {
-    if (!teamVac.has(v.teamId)) teamVac.set(v.teamId, []);
-    teamVac.get(v.teamId).push({ role: v.role, primaryPos: v.primaryPos });
-  }
-  const available = new Map(); // typeKey → prospect[]（獲得で減る）
-  for (const [k, arr] of pool) available.set(k, arr.slice());
-  const rookies = [];
-  const draftLog = { order: order.slice(), picks: [], lotteries: [] };
-
-  // 球団の「残り空き枠の型のうち、自評価が最高の available prospect」を返す。
-  const bestFor = (teamId) => {
-    const vac = teamVac.get(teamId);
-    if (!vac || !vac.length) return null;
-    const types = new Set(vac.map((v) => `${v.role}:${v.primaryPos}`));
-    const profile = profiles.get(teamId);
-    let best = null;
-    let bestVal = -Infinity;
-    let bestType = null;
-    for (const tk of types) {
-      const arr = available.get(tk) || [];
-      for (const pr of arr) {
-        const val = evaluateProspect(profile, pr, cfg, { masterSeed, yearIndex, teamId });
-        if (val > bestVal || (val === bestVal && (best === null || pr.id < best.id))) {
-          bestVal = val;
-          best = pr;
-          bestType = tk;
-        }
-      }
-    }
-    return best ? { prospect: best, typeKey: bestType } : null;
-  };
-
-  const assign = (teamId, prospect, typeKey, meta) => {
-    const vac = teamVac.get(teamId);
-    const vi = vac.findIndex((v) => `${v.role}:${v.primaryPos}` === typeKey);
-    vac.splice(vi, 1);
-    const arr = available.get(typeKey);
-    arr.splice(arr.findIndex((p) => p.id === prospect.id), 1);
-    prospect.teamId = teamId;
-    prospect.rosterStatus = 'active';
-    rookies.push(prospect);
-    draftLog.picks.push({ teamId, prospectId: prospect.id, ...meta });
-  };
-
-  // --- Round1: 1位指名＋競合くじ ---
-  const pendingR1 = new Set(order.filter((t) => (teamVac.get(t) || []).length));
-  while (pendingR1.size) {
-    const noms = new Map(); // prospectId → {prospect, byTeam:Map<teamId,typeKey>}
-    for (const teamId of order) {
-      if (!pendingR1.has(teamId)) continue;
-      const b = bestFor(teamId);
-      if (!b) { pendingR1.delete(teamId); continue; }
-      if (!noms.has(b.prospect.id)) noms.set(b.prospect.id, { prospect: b.prospect, byTeam: new Map() });
-      noms.get(b.prospect.id).byTeam.set(teamId, b.typeKey);
-    }
-    if (!noms.size) break;
-    for (const [pid, nom] of noms) {
-      const teams = [...nom.byTeam.keys()];
-      let winner;
-      let contested = false;
-      if (teams.length === 1) {
-        winner = teams[0];
-      } else {
-        contested = true;
-        const r = makeRng(hashSeed(masterSeed, 'lottery', yearIndex, pid));
-        winner = teams[r.int(teams.length)];
-        draftLog.lotteries.push({ prospectId: pid, contenders: teams.slice(), winner });
-      }
-      assign(winner, nom.prospect, nom.byTeam.get(winner), { round: 1, via: contested ? 'lottery' : 'nominate', contested });
-      pendingR1.delete(winner);
-    }
-  }
-
-  // --- Round2+: ウェーバー順（弱い順）に残り枠を埋める ---
-  for (let round = 2; round <= 200; round++) {
-    let progress = false;
-    for (const teamId of order) {
-      if (!(teamVac.get(teamId) || []).length) continue;
-      const b = bestFor(teamId);
-      if (!b) continue;
-      assign(teamId, b.prospect, b.typeKey, { round, via: 'waiver', contested: false });
-      progress = true;
-    }
-    if (!progress) break;
-  }
-
-  const undrafted = [];
-  for (const arr of available.values()) undrafted.push(...arr);
-  return { rookies, undrafted, draftLog };
-}
-
-/**
- * ドラフト漏れ（undrafted＝球団評価に過小評価された surplus）を育成枠へ配る。
- * ウェーバー順ラウンドロビンで各球団 perTeamSignsPerYear 人まで。rosterStatus='minor' で farm へ。
- */
-function signDevelopment(league, cfg, undrafted, order) {
-  const mk = cfg.tuning.market.farm;
-  const pool = undrafted.slice().sort(byId);
-  const signed = new Map(order.map((t) => [t, 0]));
-  let pi = 0;
-  let any = true;
-  while (pi < pool.length && any) {
-    any = false;
-    for (const teamId of order) {
-      if (pi >= pool.length) break;
-      if ((signed.get(teamId) ?? 0) >= mk.perTeamSignsPerYear) continue;
-      const d = pool[pi++];
-      d.teamId = teamId;
-      d.rosterStatus = 'minor';
-      league.farm.push(d);
-      signed.set(teamId, (signed.get(teamId) ?? 0) + 1);
-      any = true;
-    }
-  }
-}
-
-/** 育成枠の剪定: 年齢超過は解雇、球団あたり perTeamMax 超は観測下位から解雇（箱を有限に保つ）。 */
-function pruneFarm(league, cfg) {
-  const mk = cfg.tuning.market.farm;
-  const byTeam = new Map();
-  for (const d of league.farm) {
-    if (d.age > mk.maxAge) continue;
-    if (!byTeam.has(d.teamId)) byTeam.set(d.teamId, []);
-    byTeam.get(d.teamId).push(d);
-  }
-  const kept = [];
-  for (const arr of byTeam.values()) {
-    arr.sort((a, b) => overallRating(b) - overallRating(a) || byId(a, b));
-    for (const d of arr.slice(0, mk.perTeamMax)) kept.push(d);
-  }
-  kept.sort(byId);
-  league.farm = kept;
-}
-
-/**
- * 編成市場の中核（C3a）。引退枠 vacancies を「育成昇格 → ドラフト → 育成獲得」で埋める。
- *   1. 育成枠を加齢（発達）させる
- *   2. 昇格判定: 育成の観測成績が閾値超 かつ 自球団に同型の空き枠あり → 支配下登録（稀・§12.1）
- *   3. ドラフト: 残り空き枠をウェーバー逆順×くじで埋める（§15）
- *   4. 育成獲得: ドラフト漏れ（過小評価 surplus）を育成枠へ（安く獲れる箱・§12.1）
- *   5. 剪定: 育成枠を有限に保つ
- * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
- * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
- */
-function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null }) {
-  const mk = cfg.tuning.market;
-  if (!league.farm) league.farm = [];
-  const profiles = new Map();
-  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
-
-  // 1. 育成枠の発達（加齢）。独立シード座標＝支配下選手の加齢ストリームを一切乱さない。
-  applyAging(league.farm, cfg, { seed: hashSeed(masterSeed, 'farmaging', yearIndex) });
-
-  // 2. 昇格判定（§12.1・這い上がり）。観測成績（真値+下振れバイアス+ノイズ）が閾値超 かつ
-  //    自球団に同型の空き枠がある育成選手を支配下登録する（枠が空くという「機会」に依存＝稀）。
-  const remainingVac = vacancies.slice();
-  const promoted = [];
-  const promotions = [];
-  const stillFarm = [];
-  for (const d of league.farm.slice().sort(byId)) {
-    const tk = `${d.role}:${d.primaryPos}`;
-    const r = makeRng(hashSeed(masterSeed, 'promote', yearIndex, d.id));
-    const observed = overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd);
-    const vi = remainingVac.findIndex((v) => v.teamId === d.teamId && `${v.role}:${v.primaryPos}` === tk);
-    if (observed >= mk.farm.promoteThreshold && vi >= 0) {
-      remainingVac.splice(vi, 1);
-      d.rosterStatus = 'active';
-      promoted.push(d);
-      promotions.push({ playerId: d.id, teamId: d.teamId, role: d.role, primaryPos: d.primaryPos, age: d.age, observed: Math.round(observed) });
-    } else {
-      stillFarm.push(d);
-    }
-  }
-  league.farm = stillFarm;
-
-  // 3. ドラフト（残り枠）。era＝世代の波/球速上昇を pool 生成時に反映（D3・§11.3）。
-  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
-  const order = waiverOrder(standings, league);
-  const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex });
-  // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
-  //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
-  if (balanceBoost && balanceBoost.size) {
-    for (const p of rookies) {
-      const b = balanceBoost.get(p.teamId) || 0;
-      if (b) applyEraToRookie(p, null, b);
-    }
-  }
-
-  // 4. 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。5. 剪定。
-  signDevelopment(league, cfg, undrafted, order);
-  pruneFarm(league, cfg);
-
-  return { promoted, rookies, draftLog, promotions };
 }
 
 
@@ -9362,6 +10144,20 @@ function notableHeadline(n, pnameOf, tnameOf) {
 }
 
 /**
+ * 昇降格ニュース見出し（F2-3）。mv = rt.rosterMoves / step.rosterMoves の1件。
+ * off要約・週次ダイジェスト・ハブのニュース欄の素材（純関数・乱数非使用）。
+ * @param {{type:string, teamId:string, upName:string, upPos:string, downName:string, downPos:string}} mv
+ * @param {Function} tnameOf teamId→球団名
+ */
+function rosterMoveHeadline(mv, tnameOf) {
+  const t = tnameOf(mv.teamId);
+  if (mv.type === 'ilReplace') return `${t}、${mv.downName}（${mv.downPos}）が故障で登録抹消 — 二軍から${mv.upName}を昇格`;
+  if (mv.type === 'ilReturn') return `${t}、${mv.upName}（${mv.upPos}）が離脱から復帰し一軍登録（${mv.downName}は登録抹消）`;
+  if (mv.type === 'perfSwap') return `${t}、不振の${mv.downName}（${mv.downPos}）を登録抹消 — 二軍で好調の${mv.upName}を昇格`;
+  return '';
+}
+
+/**
  * 直近の連勝/連敗を数える（自チーム視点・最新試合から遡る）。
  * @param {Array} gameLog [{home,away,homeScore,awayScore,tie}]
  * @returns {{type:'W'|'L'|'T'|null, len:number}}
@@ -9469,8 +10265,11 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
  *  真値/ロスターは §17 に従い save に含めず masterSeed から replay 再構築するため、v1 の
- *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。 */
-const SCHEMA_VERSION = 2;
+ *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。
+ *  v3（F2-2）: 出場登録29人＋二軍リーグ導入。一軍デプスチャートが70人全員→登録29人からの編成に
+ *  変わり season replay の結果が v2 と非互換（＝v2 セーブは明示拒否）。セーブに二軍の順位/集計
+ *  （seasonState.farm / farmPlayers / careerFarmStats）を追加。 */
+const SCHEMA_VERSION = 3;
 
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
@@ -9499,7 +10298,7 @@ function offseasonSeed(masterSeed, yearIndex) {
  * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
  * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], marketInterventions = [] }) {
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [] }) {
   const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
@@ -9508,6 +10307,10 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
   const obs = new Map();
   for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+  // 当年の二軍観測 statline（F2-3: 育成→支配下の昇格判定を二軍実成績ベースへ強化・§12.1）。
+  //   careerFarmStats も blob に永続される＝live と load-replay で同一部分集合（決定論）。
+  const farmObs = new Map();
+  for (const s of careerFarmStats) if (s.season === year) farmObs.set(s.playerId, s);
   // 当年ぶんのプレイヤー市場操作のみ適用（他年の介入は除外・再現可能）。
   const ivs = marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === yearIndex);
   // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
@@ -9527,7 +10330,7 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   const rookieEra = computeEra(masterSeed, yearIndex + 1, cfg);
   const balanceBoost = teamBalanceBoost(standings, cfg);
   // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
-  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost });
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost, farmObs });
   league.players = league.players.concat(promoted, rookies);
   rebuildTeamRosters(league);
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
@@ -9566,6 +10369,11 @@ function startYear(state) {
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
     priorPitch,
+    // 出場登録入替（F2-3）: IL補充/成績入替は2年目以降のみ（鉄則7: 1年目のゲームランナーは
+    // simulateSeason（一括）と bit 同一＝較正53指標に非干渉）。masterSeed は球団評価プロファイル
+    // （キャリア中固定・§13）の座標＝オフの market と同一の「球団の癖」で入替判断する。
+    enableMoves: state.yearIndex > 0,
+    masterSeed: state.masterSeed,
     // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
     //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
     //   再構築されるため決定論（IL は真値でなく offseasonTransition の再計算で復元＝save に含めない）。
@@ -9596,7 +10404,7 @@ function captureBaseManager(state) {
 function newGame(masterSeed, playerTeamId, options = {}) {
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(masterSeed, cfg);
-  league.farm = []; // 育成枠（C3a・支配下396とは別枠）。1年目は空＝既存50較正に無影響
+  // 育成枠（C3a・§12.1）: F2-1 から初期生成で埋まる（generateLeague が league.farm を返す・支配下840とは別枠）
   if (!league.teams.some((t) => t.id === playerTeamId)) {
     throw new Error(`playerTeamId ${playerTeamId} がリーグに存在しない`);
   }
@@ -9612,7 +10420,8 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     cfg,
     league,
     careerStats: [], // 完了シーズンの選手集計（永続・§17）
-    teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
+    careerFarmStats: [], // 完了シーズンの二軍選手集計（F2-2・一軍と分離して永続・§17）
+    teamHistory: [], // 完了シーズンのチーム成績/優勝（永続。F2-2: farmStandings=二軍順位も持つ）
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
@@ -9693,32 +10502,36 @@ function proposeTrade(state, aPlayer, bPlayer) {
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
 function recordSeasonHistory(state) {
   const rt = state.rt;
+  const packRow = (r) => ({
+    teamId: r.teamId,
+    name: r.name,
+    league: r.league,
+    g: r.g,
+    w: r.w,
+    l: r.l,
+    t: r.t,
+    rs: r.rs,
+    ra: r.ra,
+  });
   state.teamHistory.push({
     year: state.year,
-    standings: rt.table.map((r) => ({
-      teamId: r.teamId,
-      name: r.name,
-      league: r.league,
-      g: r.g,
-      w: r.w,
-      l: r.l,
-      t: r.t,
-      rs: r.rs,
-      ra: r.ra,
-    })),
+    standings: rt.table.map(packRow),
+    // 二軍の最終順位（F2-2・二軍リーグが成立した年のみ）。順位タブ/チームタブの履歴素材。
+    farmStandings: rt.farm && rt.farm.table ? rt.farm.table.map(packRow) : null,
     champion: rt.postseason ? rt.postseason.champion : null,
   });
-  for (const s of rt.stats.stats.values()) {
-    state.careerStats.push({
-      playerId: s.playerId,
-      season: s.season,
-      teamId: s.teamId,
-      batting: s.batting,
-      pitching: s.pitching,
-      baserunning: s.baserunning,
-      fielding: s.fielding,
-    });
-  }
+  const packSeason = (s) => ({
+    playerId: s.playerId,
+    season: s.season,
+    teamId: s.teamId,
+    batting: s.batting,
+    pitching: s.pitching,
+    baserunning: s.baserunning,
+    fielding: s.fielding,
+  });
+  for (const s of rt.stats.stats.values()) state.careerStats.push(packSeason(s));
+  // 二軍成績（farmStats）は一軍と分離して永続する（F2-2・選手詳細の一軍/二軍行の素材・§17集計値のみ）。
+  if (rt.farm) for (const s of rt.farm.stats.stats.values()) state.careerFarmStats.push(packSeason(s));
 }
 
 /**
@@ -9788,6 +10601,7 @@ function advanceYear(state) {
     year: state.year,
     standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
     careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
+    careerFarmStats: state.careerFarmStats, // 当年の二軍 statline（F2-3: 育成昇格の実成績判定）
     marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
   });
   // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
@@ -9836,6 +10650,22 @@ function save(state) {
         runSplit: { dh: { ...rt.runSplit.dh }, noDh: { ...rt.runSplit.noDh } },
         playerGameLog: rt.playerGameLog,
         postseason: rt.finished ? rt.postseason : null,
+        // 二軍リーグ（F2-2）: 順位/進行位置のスナップショット（load の replay 検証と UI 素材）。
+        farm: rt.farm
+          ? {
+              cursor: rt.farm.cursor,
+              finished: rt.farm.finished,
+              standings: [...rt.farm.standings.values()].map((s) => ({
+                teamId: s.teamId,
+                g: s.g,
+                w: s.w,
+                l: s.l,
+                t: s.t,
+                rs: s.rs,
+                ra: s.ra,
+              })),
+            }
+          : null,
       }
     : null;
   return {
@@ -9849,7 +10679,10 @@ function save(state) {
     year: state.year,
     // 現行シーズンの選手集計（§17集計値。UI表示/スキーマ準拠。復元は replay 由来で厳密再現）
     players: rt ? [...rt.stats.stats.values()] : [],
+    // 現行シーズンの二軍選手集計（F2-2 farmStats・一軍と分離。復元は replay 由来で厳密再現）
+    farmPlayers: rt && rt.farm ? [...rt.farm.stats.stats.values()] : [],
     careerStats: state.careerStats, // 完了シーズン集計（永続）
+    careerFarmStats: state.careerFarmStats, // 完了シーズンの二軍集計（F2-2・永続）
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
@@ -9886,7 +10719,8 @@ function load(blob, options = {}) {
   }
   const cfg = options.cfg ?? createConfig();
   const league = generateLeague(data.masterSeed >>> 0, cfg);
-  league.farm = []; // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）
+  // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）。F2-1: 初期分は generateLeague が
+  // masterSeed から決定論再生成し、過去オフの増減は下の offseasonTransition replay が再現する。
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -9899,6 +10733,7 @@ function load(blob, options = {}) {
     cfg,
     league,
     careerStats: data.careerStats ?? [],
+    careerFarmStats: data.careerFarmStats ?? [], // 完了シーズンの二軍集計（F2-2・blob から復元）
     teamHistory: data.teamHistory ?? [],
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
@@ -9920,6 +10755,7 @@ function load(blob, options = {}) {
       standings: standingsForYear(state, state.firstSeason + y),
       // 放出/契約更改の "実観測" は careerStats（blob 復元済み）を season==year で絞る＝live と同一部分集合。
       careerStats: state.careerStats,
+      careerFarmStats: state.careerFarmStats, // 育成昇格の二軍実成績（F2-3・blob 復元済み＝live と同一）
       marketInterventions: state.marketInterventions,
     });
     state.retiredPlayers.push(...off.retirees);
@@ -9936,6 +10772,14 @@ function load(blob, options = {}) {
     // 完了済みシーズンの careerStats/teamHistory は blob から復元済み）。
     while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt);
     verifyStandings(state.rt, ss.standings);
+    // 二軍の復元検証（F2-2）: replay が再構築した farm の進行位置/順位が保存スナップショットと
+    // 一致するか（一軍と同じ決定論の門番。farm 不成立構成では両方 null で素通り）。
+    if (ss.farm && state.rt.farm) {
+      if (state.rt.farm.cursor !== ss.farm.cursor) {
+        throw new Error(`load: 二軍の復元cursorが保存値と不一致（${state.rt.farm.cursor} != ${ss.farm.cursor}）`);
+      }
+      verifyStandings(state.rt.farm, ss.farm.standings);
+    }
   }
   return state;
 }
@@ -11816,7 +12660,7 @@ function renderSetup() {
   const playBtn = el('button', { class: 'primary', onclick: () => renderTitle() }, '🎮 ゲームを始める（キャリア）');
   return el('div', { class: 'setup' }, [
     el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
-    el('p', { class: 'muted' }, 'リーグシードごとに架空選手396人（12球団×33人）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
+    el('p', { class: 'muted' }, 'リーグシードごとに架空選手840人（12球団×支配下70人・ほかに育成選手）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
     el('div', { class: 'row' }, [el('label', {}, 'リーグシード: '), seedInput, btn]),
     el('div', { id: 'status', class: 'muted' }, ''),
     el('hr', { style: 'border:none;border-top:1px solid var(--line);margin:14px 0' }),

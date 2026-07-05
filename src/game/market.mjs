@@ -22,6 +22,7 @@ import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp, clampRating } from '../model/util.mjs';
 import { generateRookie, applyEraToRookie } from '../generate.mjs';
 import { applyAging } from './aging.mjs';
+import { observedWoba } from '../sim/manager.mjs';
 import { POSITION_ADJUST_PER_1350 } from '../model/positions.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
@@ -308,6 +309,29 @@ function signDevelopment(league, cfg, undrafted, order) {
   }
 }
 
+/**
+ * 育成の二軍実成績ボーナス（F2-3・§12.1強化）: 昇格判定の「観測」へ当年の二軍statlineを加点する。
+ * 二軍で打った/抑えた育成ほど昇格しやすい（三層構造: 観測statlineのみ・真値不参照）。
+ * 標本が薄いほど信頼度加重で効きが弱まる（少PA/少IPの上振れに騙されない）。obs 無し（未出場・
+ * 二軍リーグ不成立の旧構成）は 0＝従来の判定と同一。
+ * @param {Object} d 育成選手
+ * @param {?Object} obs 当年の二軍 statline（{batting,pitching}・careerFarmStats 由来）
+ */
+function farmPerfBonus(d, obs, cfg) {
+  if (!obs) return 0;
+  const f = cfg.tuning.market.farm;
+  if (d.role === 'fielder') {
+    const b = obs.batting;
+    if (!b || !(b.pa > 0)) return 0;
+    const trust = b.pa / (b.pa + f.promotePerfTrustPA);
+    return f.promoteWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+  }
+  const pi = obs.pitching;
+  if (!pi || !(pi.outs > 0)) return 0;
+  const trust = pi.outs / (pi.outs + f.promotePerfTrustOuts);
+  return f.promoteRa9W * (f.promoteRa9Ref - (pi.r * 27) / pi.outs) * trust;
+}
+
 /** 育成枠の剪定: 年齢超過は解雇、球団あたり perTeamMax 超は観測下位から解雇（箱を有限に保つ）。 */
 function pruneFarm(league, cfg) {
   const mk = cfg.tuning.market.farm;
@@ -336,7 +360,7 @@ function pruneFarm(league, cfg) {
  * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
  * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
  */
-export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null }) {
+export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null, farmObs = null }) {
   const mk = cfg.tuning.market;
   if (!league.farm) league.farm = [];
   const profiles = new Map();
@@ -345,8 +369,13 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
   // 1. 育成枠の発達（加齢）。独立シード座標＝支配下選手の加齢ストリームを一切乱さない。
   applyAging(league.farm, cfg, { seed: hashSeed(masterSeed, 'farmaging', yearIndex) });
 
-  // 2. 昇格判定（§12.1・這い上がり）。観測成績（真値+下振れバイアス+ノイズ）が閾値超 かつ
-  //    自球団に同型の空き枠がある育成選手を支配下登録する（枠が空くという「機会」に依存＝稀）。
+  // 2. 昇格判定（§12.1・這い上がり／F2-3強化）。観測成績（真値+下振れバイアス+ノイズ＋
+  //    **当年の二軍実成績ボーナス**）が閾値超 かつ 自球団に同型の空き枠がある育成選手を支配下登録
+  //    する（枠が空くという「機会」に依存＝稀）。支配下70枠（roster.controlledPerTeam）の管理:
+  //    昇格は枠の空きがある球団のみ（引退→空き枠の通常フローでは常に空くが、不変量として明示的に守る）。
+  const cap = cfg.tuning.roster?.controlledPerTeam ?? Infinity;
+  const controlledCount = new Map();
+  for (const p of league.players) controlledCount.set(p.teamId, (controlledCount.get(p.teamId) ?? 0) + 1);
   const remainingVac = vacancies.slice();
   const promoted = [];
   const promotions = [];
@@ -354,10 +383,14 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
   for (const d of league.farm.slice().sort(byId)) {
     const tk = `${d.role}:${d.primaryPos}`;
     const r = makeRng(hashSeed(masterSeed, 'promote', yearIndex, d.id));
-    const observed = overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd);
+    const observed =
+      overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd) +
+      farmPerfBonus(d, farmObs ? farmObs.get(d.id) : null, cfg);
     const vi = remainingVac.findIndex((v) => v.teamId === d.teamId && `${v.role}:${v.primaryPos}` === tk);
-    if (observed >= mk.farm.promoteThreshold && vi >= 0) {
+    const hasRoom = (controlledCount.get(d.teamId) ?? 0) < cap; // 支配下70枠の空き（F2-3枠管理）
+    if (observed >= mk.farm.promoteThreshold && vi >= 0 && hasRoom) {
       remainingVac.splice(vi, 1);
+      controlledCount.set(d.teamId, (controlledCount.get(d.teamId) ?? 0) + 1);
       d.rosterStatus = 'active';
       promoted.push(d);
       promotions.push({ playerId: d.id, teamId: d.teamId, role: d.role, primaryPos: d.primaryPos, age: d.age, observed: Math.round(observed) });

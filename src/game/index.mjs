@@ -34,7 +34,7 @@ import {
   leagueRecords, teamRecords, championCounts, milestones,
   careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
 } from './awards.mjs';
-import { detectGameNotables, notableHeadline, streakOf, weeklyDigest } from './news.mjs';
+import { detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMoveHeadline } from './news.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
@@ -72,7 +72,7 @@ function offseasonSeed(masterSeed, yearIndex) {
  * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
  * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], marketInterventions = [] }) {
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [] }) {
   const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
@@ -81,6 +81,10 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
   const obs = new Map();
   for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+  // 当年の二軍観測 statline（F2-3: 育成→支配下の昇格判定を二軍実成績ベースへ強化・§12.1）。
+  //   careerFarmStats も blob に永続される＝live と load-replay で同一部分集合（決定論）。
+  const farmObs = new Map();
+  for (const s of careerFarmStats) if (s.season === year) farmObs.set(s.playerId, s);
   // 当年ぶんのプレイヤー市場操作のみ適用（他年の介入は除外・再現可能）。
   const ivs = marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === yearIndex);
   // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
@@ -100,7 +104,7 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   const rookieEra = computeEra(masterSeed, yearIndex + 1, cfg);
   const balanceBoost = teamBalanceBoost(standings, cfg);
   // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
-  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost });
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost, farmObs });
   league.players = league.players.concat(promoted, rookies);
   rebuildTeamRosters(league);
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
@@ -139,6 +143,11 @@ function startYear(state) {
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
     priorPitch,
+    // 出場登録入替（F2-3）: IL補充/成績入替は2年目以降のみ（鉄則7: 1年目のゲームランナーは
+    // simulateSeason（一括）と bit 同一＝較正53指標に非干渉）。masterSeed は球団評価プロファイル
+    // （キャリア中固定・§13）の座標＝オフの market と同一の「球団の癖」で入替判断する。
+    enableMoves: state.yearIndex > 0,
+    masterSeed: state.masterSeed,
     // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
     //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
     //   再構築されるため決定論（IL は真値でなく offseasonTransition の再計算で復元＝save に含めない）。
@@ -366,6 +375,7 @@ export function advanceYear(state) {
     year: state.year,
     standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
     careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
+    careerFarmStats: state.careerFarmStats, // 当年の二軍 statline（F2-3: 育成昇格の実成績判定）
     marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
   });
   // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
@@ -519,6 +529,7 @@ export function load(blob, options = {}) {
       standings: standingsForYear(state, state.firstSeason + y),
       // 放出/契約更改の "実観測" は careerStats（blob 復元済み）を season==year で絞る＝live と同一部分集合。
       careerStats: state.careerStats,
+      careerFarmStats: state.careerFarmStats, // 育成昇格の二軍実成績（F2-3・blob 復元済み＝live と同一）
       marketInterventions: state.marketInterventions,
     });
     state.retiredPlayers.push(...off.retirees);
@@ -571,7 +582,7 @@ export {
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones,
   careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
-  detectGameNotables, notableHeadline, streakOf, weeklyDigest,
+  detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMoveHeadline,
 };
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';

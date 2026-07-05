@@ -12,6 +12,26 @@ import { clamp } from '../model/util.mjs';
 const div = (a, b) => (b ? a / b : 0);
 
 /**
+ * ピタゴラス期待勝率（pythagenpat・チーム得失点から実力勝率を推定）＋幸運度（§セイバー団体指標）。
+ * 指数は得点環境に応じて動く pythagenpat: exp = ((RS+RA)/G)^0.287。
+ * luck = (実勝率 − 期待勝率) × 決着試合数（+なら得失点差の割に勝ち越し＝幸運/接戦強い）。
+ * 三層構造に無関係な純関数（順位表の得失点=公開情報のみ使用）。
+ * @param {{w:number,l:number,rs:number,ra:number}} t 順位表の行（引分は決着に含めない）
+ * @returns {{expWinPct:number, luck:number, exponent:number}}
+ */
+export function pythag(t) {
+  const decided = (t.w || 0) + (t.l || 0);
+  const rs = t.rs || 0;
+  const ra = t.ra || 0;
+  if (decided === 0 || rs + ra === 0) return { expWinPct: 0.5, luck: 0, exponent: 2 };
+  const rpg = (rs + ra) / decided; // 1試合あたり総得点（両軍）
+  const exp = Math.pow(Math.max(rpg, 0.5), 0.287); // pythagenpat 指数
+  const expWinPct = Math.pow(rs, exp) / (Math.pow(rs, exp) + Math.pow(ra, exp));
+  const actualWinPct = t.w / decided;
+  return { expWinPct, luck: (actualWinPct - expWinPct) * decided, exponent: exp };
+}
+
+/**
  * Spd（簡易4成分・Bill James風0-10スケール・§B3b）。SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
  * 俊足で高くなる（各成分が走力に単調）。cfg.tuning.spd の基準で0-10へ写像し平均する。
  */

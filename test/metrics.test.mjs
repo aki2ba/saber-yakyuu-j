@@ -5,7 +5,7 @@ import { createConfig } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
 import { deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA } from '../src/sim/leagueConstants.mjs';
-import { playerBatting, playerPitching, playerBaserunning } from '../src/sim/metrics.mjs';
+import { playerBatting, playerPitching, playerBaserunning, pythag } from '../src/sim/metrics.mjs';
 import { leagueBatting } from '../src/sim/leagueStats.mjs';
 import { createBattingLine, createPitchingLine } from '../src/model/statline.mjs';
 
@@ -98,4 +98,25 @@ test('wSB はリーグ基準で中心化され、リーグ総和 ≈ 0（監査C
     raw += b.sb * cfg.tuning.run.runSB + b.cs * cfg.tuning.run.runCS;
   }
   assert.ok(Math.abs(sumWSB) < Math.abs(raw), '中心化で素点より0へ寄っている');
+});
+
+test('pythag: ピタゴラス期待勝率＋幸運度（得失点から実力勝率を推定・§団体指標）', () => {
+  // 得失点均衡なら期待勝率≈.500
+  const even = pythag({ w: 70, l: 70, rs: 600, ra: 600 });
+  assert.ok(Math.abs(even.expWinPct - 0.5) < 1e-9, '得失点均衡→期待勝率.500');
+  // 得点>失点なら期待勝率>.500、逆は<.500
+  assert.ok(pythag({ w: 80, l: 60, rs: 700, ra: 550 }).expWinPct > 0.5, '得点優位→期待勝率>.500');
+  assert.ok(pythag({ w: 60, l: 80, rs: 550, ra: 700 }).expWinPct < 0.5, '失点優位→期待勝率<.500');
+  // 幸運度: 得失点差の割に勝ち越すと luck>0（接戦強い/幸運）、その逆は luck<0
+  const lucky = pythag({ w: 82, l: 58, rs: 610, ra: 600 }); // ほぼ均衡なのに勝ち越し
+  assert.ok(lucky.luck > 0, '得失点均衡で勝ち越し→運>0');
+  const unlucky = pythag({ w: 58, l: 82, rs: 600, ra: 610 });
+  assert.ok(unlucky.luck < 0, '得失点均衡で負け越し→運<0');
+  // pythagenpat 指数は得点環境で動く（高得点環境ほど指数大）
+  assert.ok(pythag({ w: 70, l: 70, rs: 900, ra: 900 }).exponent > pythag({ w: 70, l: 70, rs: 400, ra: 400 }).exponent, '高得点環境→指数大');
+  // 実シーズンで リーグ全体の運の総和は概ね0付近（ゼロサム性）
+  const cfg = createConfig();
+  const res = simulateSeason(generateLeague(2026, cfg), cfg, { postseason: false });
+  const totalLuck = res.standings.reduce((a, t) => a + pythag(t).luck, 0);
+  assert.ok(Math.abs(totalLuck) < 20, `リーグ全体の運は概ねゼロサム（実測 ${totalLuck.toFixed(1)}）`);
 });

@@ -43,7 +43,7 @@ import { simulatePostseason } from './sim/postseason.mjs';
 import { leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague } from './sim/leagueStats.mjs';
 import { deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS } from './sim/leagueConstants.mjs';
 import { deriveParkFactors, parkFactorSpread } from './sim/parkFactor.mjs';
-import { playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding } from './sim/metrics.mjs';
+import { playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, pythag } from './sim/metrics.mjs';
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
@@ -76,7 +76,7 @@ export {
   leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague,
   deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS,
   deriveParkFactors, parkFactorSpread,
-  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding,
+  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, pythag,
   rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg,
   uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns,
   hitterWAR, pitcherWAR, playerWAR, posAdjRuns,

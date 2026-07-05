@@ -8,7 +8,7 @@
 // ============================================================================
 import {
   createConfig, generateLeague, simulateSeason, deriveLeagueConstants,
-  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct,
+  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct, pythag,
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
   leagueBatting, leaguePitching, makeRng, hashSeed,
 } from './engine.mjs';
@@ -207,13 +207,19 @@ function renderStandings(c) {
     ? leagues.map((l) => ({ title: `${l.name}（DH${l.dh ? '有' : '無'}）`, rows: byLg[l.id] ?? [] }))
     : [{ title: '総合', rows: state.res.standings }];
   for (const blk of blocks) {
-    const rows = blk.rows.map((t, i) => el('tr', {}, [
-      td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
-      td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-      td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
-    ]));
+    const rows = blk.rows.map((t, i) => {
+      const py = pythag(t); // ピタゴラス期待勝率＋幸運度（得失点から見た実力勝率と実勝率の差）
+      const luck = Math.round(py.luck);
+      return el('tr', {}, [
+        td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
+        td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+        td(fmt3(py.expWinPct)), td((luck > 0 ? '+' : '') + luck),
+        td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
+      ]);
+    });
     c.append(el('h3', { class: 'leaguename' }, blk.title));
-    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差', '交流戦'], rows));
+    // 期待勝率=得失点からのピタゴラス実力勝率 / 運=実勝率−期待勝率を勝数換算（+は接戦強い/幸運）
+    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差', '期待勝率', '運', '交流戦'], rows));
   }
   renderPostseasonPanel(c);
 }

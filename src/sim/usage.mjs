@@ -301,7 +301,16 @@ export function selectLineup(state, ctx, cfg) {
 
     // (3) 空席の充填: 候補プールの実効評価最良（全滅なら positionRank/全野手から最初の未使用）
     if (pid == null) {
-      pid = bestOf(pool) ?? (pos === 'DH' ? fielders : chart.positionRank[pos]).find((x) => !excluded(x));
+      const all = pos === 'DH' ? fielders : chart.positionRank[pos];
+      pid =
+        bestOf(pool) ??
+        all.find((x) => !excluded(x)) ??
+        // F2-2 最終安全弁: 出場登録29人制（野手15人）では休養の集中＋IL重複で候補が尽き得る。
+        // 休養は柔らかい希望なので解除して充当（IL相当は最後まで避ける）。スタメン9人を必ず埋め、
+        // 候補が残る通常時は一切通らない＝挙動不変。乱数非消費（決定論）。
+        all.find((x) => !used.has(x) && !isInjured(state, x, ctx.day)) ??
+        all.find((x) => !used.has(x));
+      if (pid != null) resting.delete(pid); // 休養解除で先発する場合は rested から外す
     } else if (pos !== 'C' && ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher)) {
       // (4) プラトーン: 同利きの担当に対し、実効評価（守備込み）で上回る候補がいれば当日限りの入替
       const alt = bestOf(pool.filter((x) => x !== pid));

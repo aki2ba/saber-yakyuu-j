@@ -58,6 +58,87 @@ function posRankScore(p, pos, cfg) {
 }
 
 /**
+ * 出場登録29人の選抜（F2-2・§S1-3の編成時評価と同輪）。支配下ロスターから
+ * cfg.league.rosterActive 人を球団AIが選抜する（シーズン開始時に一度だけ）。
+ *   投手: ローテ rotationSize 人を starterScore、残り枠を relieverScore で（計 activePitchers 人）。
+ *   野手: 難ポジ優先で各ポジ最良(posRankScore) → 控え捕手 → 残り枠は hitScore 降順。
+ *         ただし各主ポジションに farmKeepPerPos 人を二軍へ残す（二軍のデプスチャート成立を保証）。
+ * ここは「編成の初期値」なので trueAbility を直接参照してよい（buildDepthChart と同じ原則。
+ * シーズン中の入替は F2-3 が観測成績ベースで行う）。決定論: 乱数非使用の純関数（score降順・同点は
+ * 配列順＝league.players 順で安定）。roster が rosterActive 以下なら全員登録（ミニリーグ/単体テスト互換）。
+ * @param {Array} roster 1球団の支配下選手（league.players の teamId 絞り込み）
+ * @returns {Array} 登録選手（投手→野手の順・rosterActive 人）
+ */
+export function selectActiveRoster(roster, cfg) {
+  const nActive = cfg.league.rosterActive ?? roster.length;
+  if (roster.length <= nActive) return roster.slice();
+  const R = cfg.tuning.roster ?? {};
+  const pitchers = roster.filter((p) => p.role === 'pitcher');
+  const fielders = roster.filter((p) => p.role === 'fielder');
+
+  // --- 投手枠: 先発ローテを starterScore、救援枠を relieverScore で選抜 ---
+  const rotationSize = cfg.league.rotationSize;
+  const byStarter = pitchers.slice().sort((a, b) => starterScore(b) - starterScore(a));
+  const rot = byStarter.slice(0, Math.min(rotationSize, byStarter.length));
+  const relievers = byStarter.slice(rot.length).sort((a, b) => relieverScore(b) - relieverScore(a));
+  const selP = rot.concat(relievers).slice(0, Math.min(R.activePitchers ?? 14, pitchers.length));
+
+  // --- 野手枠: 残り人数（29−投手14＝15人目安） ---
+  const nFieldTarget = Math.max(0, nActive - selP.length);
+  const used = new Set();
+  const selF = [];
+  const pickBest = (scoreFn) => {
+    let best = null;
+    let bv = -Infinity;
+    for (const f of fielders) {
+      if (used.has(f.id)) continue;
+      const v = scoreFn(f);
+      if (v > bv) {
+        bv = v;
+        best = f;
+      }
+    }
+    if (best) {
+      used.add(best.id);
+      selF.push(best);
+    }
+    return best;
+  };
+  // 1) 難ポジ優先（C→SS→CF→…）で各ポジ最良＝スタメン8人相当を確保
+  for (const pos of POSITION_DIFFICULTY) {
+    if (selF.length >= nFieldTarget) break;
+    pickBest((f) => posRankScore(f, pos, cfg));
+  }
+  // 2) 控え捕手（正捕手の休養AI・故障時に捕手が枯れないための保険）
+  for (let k = 0; k < (R.activeBackupCatchers ?? 1) && selF.length < nFieldTarget; k++) {
+    pickBest((f) => posRankScore(f, 'C', cfg));
+  }
+  // 3) 残り枠: hitScore 降順（代打/DH/控えの母集団）。各主ポジ farmKeepPerPos 人は二軍に残す。
+  const keep = R.farmKeepPerPos ?? 0;
+  const remainByPos = new Map();
+  for (const f of fielders) {
+    if (!used.has(f.id)) remainByPos.set(f.primaryPos, (remainByPos.get(f.primaryPos) ?? 0) + 1);
+  }
+  const restSorted = fielders.filter((f) => !used.has(f.id)).sort((a, b) => hitScore(b) - hitScore(a));
+  for (const f of restSorted) {
+    if (selF.length >= nFieldTarget) break;
+    if ((remainByPos.get(f.primaryPos) ?? 0) - 1 < keep) continue; // 取ると二軍の当該ポジが薄くなる→飛ばす
+    remainByPos.set(f.primaryPos, remainByPos.get(f.primaryPos) - 1);
+    used.add(f.id);
+    selF.push(f);
+  }
+  // 4) 制約で埋まらない場合の安全弁（極端なポジ偏在ロスター）: 制約を無視して充足する
+  for (const f of restSorted) {
+    if (selF.length >= nFieldTarget) break;
+    if (!used.has(f.id)) {
+      used.add(f.id);
+      selF.push(f);
+    }
+  }
+  return selP.concat(selF);
+}
+
+/**
  * ロスターから編成表を作る（v2）。
  * @param {Array} roster
  * @param {Object} cfg createConfig() の設定（rotationSize / tuning.depth を参照）

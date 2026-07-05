@@ -23,7 +23,19 @@ export const LEAGUE_DEFAULT = {
   inLeagueGamesPerOpp: 25, // リーグ内 同一相手との試合数（ホーム13/12を交互に）
   interLeagueGamesPerOpp: 3, // 交流戦 同一相手との試合数（3連戦を一方の本拠地で）
   rotationSize: 6, // 先発ローテ人数（中6日・NPB標準）
-  rosterActive: 28, // 出場登録の目安（フェーズ3で精緻化）
+  rosterActive: 29, // 出場登録人数（F2-2: 支配下70人からシーズン開始時に球団AIが29人を選抜。NPB=出場登録29人相当）
+  // 二軍リーグ（F2-2）: 同じ12球団のファームを2リーグ（完全架空名・一軍と同分割）で並走させる。
+  //   一軍と同じ simulateGame・別の集計器(farmStats)。日程は一軍と同じ day カレンダーに載せる（同日消化）。
+  //   null にすると二軍リーグを組まない（一軍結果は独立ストリームゆえ有無で byte 不変＝重い多年テストの節約用）。
+  farm: {
+    leagues: [
+      { id: 'F1', name: '若草リーグ', dh: true }, // 一軍L1球団のファーム（二軍は両リーグDH制＝育成試合の簡略）
+      { id: 'F2', name: '暁リーグ', dh: true }, // 一軍L2球団のファーム
+    ],
+    inLeagueGamesPerOpp: 22, // リーグ内 5相手×22 = 110試合（NPBファーム~110-130試合帯の下限側）
+    interLeagueGamesPerOpp: 0, // 二軍の交流戦は無し（総試合 660 = 110×12/2）
+    gamesPerSeason: 110,
+  },
   // ポストシーズン規則（§S3-3）: CS1st=2戦先勝 → CSFinal=1位に1勝アド・4勝先取 → 日本シリーズ=4勝先取(2-3-2)
   postseason: {
     csFirstWins: 2, // CSファーストの必要勝数（2位本拠地）
@@ -457,6 +469,10 @@ export const TUNING_DEFAULT = {
     devAgeSkew: 1.5,
     devPitcherShare: 0.55, // 育成に占める投手の割合（NPB育成は投手偏重の近似）
     offenseTopN: 12, // リーグ攻撃力均衡化で測る「一軍級の上位野手」数（全員合計だと育成/控えの人数差で歪む）
+    // --- F2-2 出場登録29人の選抜（selectActiveRoster・編成時評価＝buildDepthChart と同輪） ---
+    activePitchers: 14, // 登録29人中の投手数（ローテ6+救援8。NPBの13-15人帯の中庸。残り15人=野手）
+    activeBackupCatchers: 1, // 守備8ポジ充足後に必ず確保する控え捕手数（正捕手+1＝捕手2人体制）
+    farmKeepPerPos: 2, // 登録選抜が各主ポジションに二軍へ残す最低野手数（二軍のデプスチャート成立を保証）
   },
 
   // 編成・打順（S1 buildDepthChart v2。§S1-3）

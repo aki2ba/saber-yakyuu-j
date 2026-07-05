@@ -13,7 +13,7 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { createPlayerSeason, createTeamSeason, createBattingLine, createPitchingLine } from '../model/statline.mjs';
 import { NEUTRAL_PARK } from '../model/battedball.mjs';
-import { buildDepthChart } from './team.mjs';
+import { buildDepthChart, selectActiveRoster } from './team.mjs';
 import { simulateGame } from './game.mjs';
 import { createUsageState, selectStarter, selectLineup, bullpenAvailable, recordGameUsage } from './usage.mjs';
 import { simulatePostseason } from './postseason.mjs';
@@ -133,18 +133,24 @@ function serializeDays(flat, teams, maxConsec) {
 
 /**
  * 編成表一式を作る（DH有/無の depth chart・リーグDH規則・teamById・後方互換 depthByTeam）。
+ * F2-2: 一軍デプスチャートは「出場登録 rosterActive 人」（selectActiveRoster が支配下から選抜）
+ * のみで編成する。登録外の支配下＋育成は二軍（season_runtime の farm リーグ）へ回る。
  * @param {{teams:Array,players:Array}} league
- * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map}}
+ * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map, registeredByTeam:Map}}
+ *   registeredByTeam: teamId → Set(登録選手id)（二軍ロスターの補集合判定に使う）
  */
 export function buildTeamCharts(league, cfg) {
   const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
   const teamById = new Map(league.teams.map((t) => [t.id, t]));
   const chartsByTeam = new Map();
+  const registeredByTeam = new Map();
   for (const t of league.teams) {
     const roster = league.players.filter((p) => p.teamId === t.id);
+    const active = selectActiveRoster(roster, cfg); // 出場登録（roster<=rosterActive なら全員＝旧挙動）
+    registeredByTeam.set(t.id, new Set(active.map((p) => p.id)));
     chartsByTeam.set(t.id, {
-      dh: buildDepthChart(roster, cfg, { dh: true }),
-      noDh: buildDepthChart(roster, cfg, { dh: false }),
+      dh: buildDepthChart(active, cfg, { dh: true }),
+      noDh: buildDepthChart(active, cfg, { dh: false }),
     });
   }
   // 後方互換の depthByTeam: 各チームの所属リーグ規則での編成（リーグ未設定はDH有）
@@ -154,7 +160,7 @@ export function buildTeamCharts(league, cfg) {
       return [t.id, (leagueDh.get(t.league) ?? true) ? c.dh : c.noDh];
     }),
   );
-  return { leagueDh, teamById, chartsByTeam, depthByTeam };
+  return { leagueDh, teamById, chartsByTeam, depthByTeam, registeredByTeam };
 }
 
 /**

@@ -39,8 +39,11 @@ import { detectGameNotables, notableHeadline, streakOf, weeklyDigest } from './n
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
  *  真値/ロスターは §17 に従い save に含めず masterSeed から replay 再構築するため、v1 の
- *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。 */
-export const SCHEMA_VERSION = 2;
+ *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。
+ *  v3（F2-2）: 出場登録29人＋二軍リーグ導入。一軍デプスチャートが70人全員→登録29人からの編成に
+ *  変わり season replay の結果が v2 と非互換（＝v2 セーブは明示拒否）。セーブに二軍の順位/集計
+ *  （seasonState.farm / farmPlayers / careerFarmStats）を追加。 */
+export const SCHEMA_VERSION = 3;
 
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
@@ -182,7 +185,8 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     cfg,
     league,
     careerStats: [], // 完了シーズンの選手集計（永続・§17）
-    teamHistory: [], // 完了シーズンのチーム成績/優勝（永続）
+    careerFarmStats: [], // 完了シーズンの二軍選手集計（F2-2・一軍と分離して永続・§17）
+    teamHistory: [], // 完了シーズンのチーム成績/優勝（永続。F2-2: farmStandings=二軍順位も持つ）
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
@@ -263,32 +267,36 @@ export function proposeTrade(state, aPlayer, bPlayer) {
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
 function recordSeasonHistory(state) {
   const rt = state.rt;
+  const packRow = (r) => ({
+    teamId: r.teamId,
+    name: r.name,
+    league: r.league,
+    g: r.g,
+    w: r.w,
+    l: r.l,
+    t: r.t,
+    rs: r.rs,
+    ra: r.ra,
+  });
   state.teamHistory.push({
     year: state.year,
-    standings: rt.table.map((r) => ({
-      teamId: r.teamId,
-      name: r.name,
-      league: r.league,
-      g: r.g,
-      w: r.w,
-      l: r.l,
-      t: r.t,
-      rs: r.rs,
-      ra: r.ra,
-    })),
+    standings: rt.table.map(packRow),
+    // 二軍の最終順位（F2-2・二軍リーグが成立した年のみ）。順位タブ/チームタブの履歴素材。
+    farmStandings: rt.farm && rt.farm.table ? rt.farm.table.map(packRow) : null,
     champion: rt.postseason ? rt.postseason.champion : null,
   });
-  for (const s of rt.stats.stats.values()) {
-    state.careerStats.push({
-      playerId: s.playerId,
-      season: s.season,
-      teamId: s.teamId,
-      batting: s.batting,
-      pitching: s.pitching,
-      baserunning: s.baserunning,
-      fielding: s.fielding,
-    });
-  }
+  const packSeason = (s) => ({
+    playerId: s.playerId,
+    season: s.season,
+    teamId: s.teamId,
+    batting: s.batting,
+    pitching: s.pitching,
+    baserunning: s.baserunning,
+    fielding: s.fielding,
+  });
+  for (const s of rt.stats.stats.values()) state.careerStats.push(packSeason(s));
+  // 二軍成績（farmStats）は一軍と分離して永続する（F2-2・選手詳細の一軍/二軍行の素材・§17集計値のみ）。
+  if (rt.farm) for (const s of rt.farm.stats.stats.values()) state.careerFarmStats.push(packSeason(s));
 }
 
 /**
@@ -406,6 +414,22 @@ export function save(state) {
         runSplit: { dh: { ...rt.runSplit.dh }, noDh: { ...rt.runSplit.noDh } },
         playerGameLog: rt.playerGameLog,
         postseason: rt.finished ? rt.postseason : null,
+        // 二軍リーグ（F2-2）: 順位/進行位置のスナップショット（load の replay 検証と UI 素材）。
+        farm: rt.farm
+          ? {
+              cursor: rt.farm.cursor,
+              finished: rt.farm.finished,
+              standings: [...rt.farm.standings.values()].map((s) => ({
+                teamId: s.teamId,
+                g: s.g,
+                w: s.w,
+                l: s.l,
+                t: s.t,
+                rs: s.rs,
+                ra: s.ra,
+              })),
+            }
+          : null,
       }
     : null;
   return {
@@ -419,7 +443,10 @@ export function save(state) {
     year: state.year,
     // 現行シーズンの選手集計（§17集計値。UI表示/スキーマ準拠。復元は replay 由来で厳密再現）
     players: rt ? [...rt.stats.stats.values()] : [],
+    // 現行シーズンの二軍選手集計（F2-2 farmStats・一軍と分離。復元は replay 由来で厳密再現）
+    farmPlayers: rt && rt.farm ? [...rt.farm.stats.stats.values()] : [],
     careerStats: state.careerStats, // 完了シーズン集計（永続）
+    careerFarmStats: state.careerFarmStats, // 完了シーズンの二軍集計（F2-2・永続）
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
@@ -470,6 +497,7 @@ export function load(blob, options = {}) {
     cfg,
     league,
     careerStats: data.careerStats ?? [],
+    careerFarmStats: data.careerFarmStats ?? [], // 完了シーズンの二軍集計（F2-2・blob から復元）
     teamHistory: data.teamHistory ?? [],
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
@@ -507,6 +535,14 @@ export function load(blob, options = {}) {
     // 完了済みシーズンの careerStats/teamHistory は blob から復元済み）。
     while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt);
     verifyStandings(state.rt, ss.standings);
+    // 二軍の復元検証（F2-2）: replay が再構築した farm の進行位置/順位が保存スナップショットと
+    // 一致するか（一軍と同じ決定論の門番。farm 不成立構成では両方 null で素通り）。
+    if (ss.farm && state.rt.farm) {
+      if (state.rt.farm.cursor !== ss.farm.cursor) {
+        throw new Error(`load: 二軍の復元cursorが保存値と不一致（${state.rt.farm.cursor} != ${ss.farm.cursor}）`);
+      }
+      verifyStandings(state.rt.farm, ss.farm.standings);
+    }
   }
   return state;
 }

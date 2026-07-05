@@ -26,7 +26,7 @@ import { PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance } 
 import { generateBattedBall } from './sim/battedBall.mjs';
 import { battedType, computeGeometry, assignFielder, resolveBattedBall } from './sim/battedBallResult.mjs';
 import { selectPitch, selectPitchByCount } from './sim/pitchGrid.mjs';
-import { buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore } from './sim/team.mjs';
+import { buildDepthChart, selectActiveRoster, hitScore, obpScore, powerScore, starterScore, relieverScore } from './sim/team.mjs';
 import {
   neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,
   buntAttemptProb, ibbProb, choosePinchHitter, choosePinchRunner, chooseDefensiveSub,
@@ -47,7 +47,9 @@ import { playerBatting, playerPitching, playerBaserunning, battingSplits, player
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 
-export const ENGINE_VERSION = '0.9.1-pitchband';
+// F2-2: 出場登録29人（一軍デプスチャート=登録者のみ）＋二軍リーグ並走＝エンジン挙動が 0.9.1 から
+//   変わる（verify-identity/smoke の新ベースラインは F2-5 の再較正確定後に取得する）。
+export const ENGINE_VERSION = '0.10.0-farm';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {
@@ -63,7 +65,7 @@ export {
   logit, expit, ratingDelta, log5,
   PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,
-  buildDepthChart, hitScore, obpScore, powerScore, starterScore, relieverScore,
+  buildDepthChart, selectActiveRoster, hitScore, obpScore, powerScore, starterScore, relieverScore,
   neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,
   buntAttemptProb, ibbProb, choosePinchHitter, choosePinchRunner, chooseDefensiveSub,
   chooseReliever, starterPitchLimit,

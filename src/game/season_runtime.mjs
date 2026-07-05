@@ -21,8 +21,133 @@ import {
   finalizeStandings,
 } from '../sim/season.mjs';
 import { createUsageState } from '../sim/usage.mjs';
+import { buildDepthChart } from '../sim/team.mjs';
 import { simulatePostseason } from '../sim/postseason.mjs';
 import { buildBoxScore } from './boxscore.mjs';
+
+/**
+ * 二軍リーグのランタイムを組む（F2-2・phaseF_spec F2-2）。
+ * 同じ12球団のファームを cfg.league.farm.leagues の2リーグ（完全架空名・一軍と同分割）で
+ * ~110試合。**一軍と同じ playScheduledGame**・別の集計器(farmStats)・独立の階層シード
+ * （hashSeed(seed,'farm') を根にする＝一軍の 'game'/'lineup' 系列と非干渉→一軍は farm の
+ * 有無で byte 不変）。二軍ロスター＝登録外の支配下＋育成（league.farm・rosterStatus='minor'）。
+ * 成立しない構成（ミニリーグ/旧テストの少人数ロスター）では null を返し二軍なしで動く。
+ * @returns {?Object} FarmRuntime（可変・cursor が進行位置）
+ */
+function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam }) {
+  const F = cfg.league.farm;
+  if (!F || !(F.leagues ?? []).length) return null;
+  const parentIds = (cfg.league.leagues ?? []).map((l) => l.id);
+  // 二軍ロスター: 支配下の登録外＋育成（どちらも p.teamId で球団へ紐づく）
+  const rosterByTeam = new Map(league.teams.map((t) => [t.id, []]));
+  for (const p of league.players) {
+    const reg = registeredByTeam.get(p.teamId);
+    if (reg && !reg.has(p.id)) rosterByTeam.get(p.teamId)?.push(p);
+  }
+  for (const p of league.farm ?? []) rosterByTeam.get(p.teamId)?.push(p);
+  // 成立チェック: 全球団で 投手>=ローテ+2・野手>=9。満たさなければ二軍リーグは組まない（旧構成互換）。
+  for (const t of league.teams) {
+    const r = rosterByTeam.get(t.id) ?? [];
+    const nP = r.filter((p) => p.role === 'pitcher').length;
+    if (nP < cfg.league.rotationSize + 2 || r.length - nP < 9) return null;
+  }
+  // 二軍チーム: 親球団と同一 id/名前/監督/本拠地。リーグだけ farm 側（親リーグと同分割で対応付け）。
+  const teams = league.teams.map((t) => ({
+    id: t.id,
+    name: t.name,
+    league: F.leagues[Math.max(0, parentIds.indexOf(t.league))]?.id ?? F.leagues[0].id,
+    manager: t.manager,
+    park: t.park,
+  }));
+  const teamById = new Map(teams.map((t) => [t.id, t]));
+  const leagueDh = new Map(F.leagues.map((l) => [l.id, l.dh]));
+  const chartsByTeam = new Map();
+  for (const t of teams) {
+    const r = rosterByTeam.get(t.id);
+    chartsByTeam.set(t.id, {
+      dh: buildDepthChart(r, cfg, { dh: true }),
+      noDh: buildDepthChart(r, cfg, { dh: false }),
+    });
+  }
+  // 起用AI: 一軍と同じ usage（priorPitch なし＝破綻救援ガード不作動。育成試合の簡略）。
+  const usageByTeam = new Map(teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg, null)]));
+  // 日程: buildSchedule を farm 用の試合数ノブで再利用（リーグ内22×5相手=110試合・交流戦なし）。
+  const schedCfg = {
+    ...cfg,
+    league: {
+      ...cfg.league,
+      inLeagueGamesPerOpp: F.inLeagueGamesPerOpp,
+      interLeagueGamesPerOpp: F.interLeagueGamesPerOpp,
+      gamesPerSeason: F.gamesPerSeason,
+    },
+  };
+  const farmSeed = hashSeed(seed, 'farm'); // 独立の階層シード根＝一軍の乱数列と非干渉
+  const schedule = buildSchedule(teams, makeRng(hashSeed(farmSeed, 'schedule')), schedCfg);
+  const standings = new Map();
+  for (const t of teams) {
+    standings.set(t.id, { ...createTeamSeason(t.id, season), name: t.name, league: t.league, il: { w: 0, l: 0, t: 0 } });
+  }
+  return {
+    seed: farmSeed,
+    teams,
+    teamById,
+    leagueDh,
+    rosterByTeam, // 二軍ロスター（UI/検証用: teamId → players）
+    chartsByTeam,
+    usageByTeam,
+    schedule,
+    standings,
+    stats: makeSeasonStats(season), // farmStats: 一軍と別の集計器（per-(player,season)・§17集計値のみ）
+    runSplit: { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } },
+    cursor: 0,
+    finished: false,
+    table: null,
+    standingsByLeague: null,
+  };
+}
+
+/**
+ * 二軍の試合を throughDay（含む）まで消化する（F2-2）。二軍は観戦/介入対象外＝スキップ消化のみ
+ * （onEvent 無し・box 無し）。一軍と同じ playScheduledGame を farm の独立コンテキストで回す。
+ * 全日程消化で順位表を確定し finished にする。
+ * @returns {Array} 消化した試合の集計行 [{day,home,away,homeScore,awayScore,tie}]
+ */
+function advanceFarmThrough(rt, throughDay) {
+  const f = rt.farm;
+  if (!f || f.finished) return [];
+  const pass = {
+    statFor: f.stats.statFor,
+    getBat: f.stats.getBat,
+    getPitch: f.stats.getPitch,
+    standings: f.standings,
+    runSplit: f.runSplit,
+  };
+  const ctx = {
+    seed: f.seed,
+    park: rt.park,
+    parkByTeam: rt.parkByTeam, // 二軍も親球団の本拠地 park を使う（専用球場は将来拡張）
+    cfg: rt.cfg,
+    leagueDh: f.leagueDh,
+    teamById: f.teamById,
+    chartsByTeam: f.chartsByTeam,
+    usageByTeam: f.usageByTeam,
+    pass,
+  };
+  const games = [];
+  while (f.cursor < f.schedule.length && f.schedule[f.cursor].day <= throughDay) {
+    const g = f.schedule[f.cursor];
+    const res = playScheduledGame(ctx, g, f.cursor);
+    games.push({ day: g.day, home: g.home, away: g.away, homeScore: res.homeScore, awayScore: res.awayScore, tie: res.tie });
+    f.cursor++;
+  }
+  if (f.cursor >= f.schedule.length) {
+    const { table, standingsByLeague } = finalizeStandings(f.standings);
+    f.table = table;
+    f.standingsByLeague = standingsByLeague; // 二軍の順位表も記録（UI: 順位タブのサブ表示素材）
+    f.finished = true;
+  }
+  return games;
+}
 
 /**
  * 1シーズンの日次ランタイムを開幕状態で作る。
@@ -34,7 +159,7 @@ import { buildBoxScore } from './boxscore.mjs';
  * @returns {Object} SeasonRuntime（可変・cursor が進行位置）
  */
 export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, playerTeamId, injuries = [], priorPitch = null }) {
-  const { leagueDh, teamById, chartsByTeam, depthByTeam } = buildTeamCharts(league, cfg);
+  const { leagueDh, teamById, chartsByTeam, depthByTeam, registeredByTeam } = buildTeamCharts(league, cfg);
   // 本拠地球場マップ（D2・§11.2）: 球団ごとの park（generateLeague が付与）。無い球団は単一 park へ。
   const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? park]));
   const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), cfg);
@@ -73,6 +198,9 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     teamById,
     chartsByTeam,
     depthByTeam,
+    registeredByTeam, // F2-2: 出場登録29人（teamId → Set(pid)。登録外＋育成＝二軍）
+    // 二軍リーグ（F2-2）: 一軍と同じ day カレンダーに並走。成立しない構成（ミニリーグ）は null。
+    farm: buildFarmRuntime(league, cfg, { season, seed, registeredByTeam }),
     schedule,
     standings,
     stats,
@@ -119,7 +247,7 @@ function applyInterventionsForDay(rt, d) {
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
 export function advanceRuntimeDay(rt, opts = {}) {
-  if (rt.finished) return { day: pendingDay(rt), games: [], playerGames: [], playerEvents: null, seasonEnded: false };
+  if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], playerGames: [], playerEvents: null, seasonEnded: false };
   const d = pendingDay(rt);
   applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
   const pass = {
@@ -175,16 +303,22 @@ export function advanceRuntimeDay(rt, opts = {}) {
     }
     rt.cursor++;
   }
+  // 二軍の同日試合（F2-2）: 一軍と同じ day カレンダーで並走消化（<=d ＝ 一軍が全休日を飛ばしても
+  // 取り残さない）。二軍は独立シード根（hashSeed(seed,'farm')）＝一軍の結果は二軍の有無で byte 不変。
+  const farmGames = advanceFarmThrough(rt, d);
   let seasonEnded = false;
   if (rt.cursor >= rt.schedule.length) {
     finalizeRuntime(rt);
     seasonEnded = true;
   }
-  return { day: d, games, playerGames, playerEvents, seasonEnded };
+  return { day: d, games, farmGames, playerGames, playerEvents, seasonEnded };
 }
 
 /** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */
 function finalizeRuntime(rt) {
+  // 二軍の残り日程を洗い流す（F2-2）: 通常は二軍(~110試合)が一軍(143試合)より先に終わるが、
+  // 日程直列化の揺らぎで残っても、一軍シーズン確定時に必ず全消化する（=二軍全日程消化の保証）。
+  advanceFarmThrough(rt, Infinity);
   const { table, standingsByLeague } = finalizeStandings(rt.standings);
   rt.table = table;
   rt.standingsByLeague = standingsByLeague;

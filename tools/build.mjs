@@ -228,6 +228,9 @@ const html = `<!DOCTYPE html>
   .subtabs { display:flex; gap:6px; margin:8px 0 4px; flex-wrap:wrap; }
   .subtab { padding:5px 14px; font-size:13px; }
   .subtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  /* F2-4: 二軍サブタブの育成契約バッジ・二軍順位の折りたたみ */
+  .devbadge { margin-left:5px; font-size:10px; color:#20160a; background:var(--gold); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
+  .farmstandings { margin-top:14px; }
   .plink { color:#8fc7ff; cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
   .plink:hover { color:var(--gold); }
   .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }

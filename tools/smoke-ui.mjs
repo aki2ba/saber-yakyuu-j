@@ -563,7 +563,8 @@ for (const col of ['位置', '年齢', '打席', '打率', 'OPS', '打点', '盗
   assert.ok(rosterThs.some((t) => t.startsWith(col)), `チーム一覧に${col}列 (${rosterThs.join(',')})`);
 }
 const rosterRows = () => walk(appDiv).filter((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
-assert.ok(rosterRows().length >= 25, `支配下ロスター全員が並ぶ (got ${rosterRows().length})`); // 33人/球団
+assert.equal(rosterRows().length, 29, `一軍サブタブ=出場登録29人ちょうど (got ${rosterRows().length})`); // F2-2/F2-4
+assert.ok(subtabs.some((n) => textOf(n).includes('出場登録（29人）')), 'サブタブラベルに出場登録（29人）');
 // 等級セル（S/A/B/C/D/E のどれか）が出る
 const rosterCells = walk(appDiv).filter((n) => n.tag === 'td').map(textOf);
 assert.ok(rosterCells.some((t) => /^[SABCDE]$/.test(t)), 'スカウト等級（コーチの見立て）が表示される');
@@ -576,13 +577,43 @@ const tOverlay = allClass('overlay').pop();
 assert.ok(tOverlay, 'チーム一覧の行クリックで選手モーダルが開く');
 const tHead = walk(tOverlay).find((n) => (n.className || '').includes('modalhead'));
 const tHeadTxt = textOf(tHead);
-assert.ok(tHeadTxt.includes('支配下（一軍）'), `モーダルヘッダに所属（一軍） (${tHeadTxt})`);
+assert.ok(tHeadTxt.includes('支配下（一軍登録）'), `モーダルヘッダに所属（一軍登録・F2-4） (${tHeadTxt})`);
 assert.ok(tHeadTxt.includes('歳') && (tHeadTxt.includes('右') || tHeadTxt.includes('左') || tHeadTxt.includes('両')), 'ヘッダに年齢/利き手');
 assert.ok(walk(tOverlay).some((n) => (n.className || '').includes('headnick')), 'ヘッダに二つ名バッジ');
 
-// E1b) 二軍（育成）サブタブ: 1年目は空（育成契約は翌オフから）→ 空メッセージ
+// E1b→F2a) 二軍サブタブ（F2-4）: 支配下の登録外＋育成（F2-1で1年目から在籍）・**二軍成績列**・育成バッジ
 subtabs.find((n) => textOf(n).includes('二軍'))._onclick();
-assert.ok(walk(appDiv).some((n) => textOf(n).includes('育成選手はまだいません')), '1年目の二軍は空メッセージ');
+{
+  const farmRows = rosterRows();
+  assert.ok(farmRows.length >= 45, `二軍=支配下残41人＋育成が並ぶ (got ${farmRows.length})`); // 70-29=41 + 育成10-40
+  const farmThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  assert.ok(farmThs.some((t) => t.startsWith('二軍打席')) && farmThs.some((t) => t.startsWith('二軍打率')), `二軍成績列（二軍打席/二軍打率） (${farmThs.join(',')})`);
+  assert.ok(farmThs.some((t) => t.startsWith('二軍登板')) && farmThs.some((t) => t.startsWith('二軍防御')), '投手にも二軍成績列（二軍登板/二軍防御）');
+  assert.ok(!farmThs.some((t) => t.startsWith('WAR')), '二軍表にWAR列は無い（リーグ水準差のため非表示）');
+  // 1年目終了時点＝二軍リーグ~110試合消化済み → 実観測の率が入る（'-'だけではない）
+  const farmTds = walk(appDiv).filter((n) => n.tag === 'td').map(textOf);
+  assert.ok(farmTds.some((t) => /^\.\d{3}$/.test(t)), `二軍成績のセルに実観測の率（.xxx）が入る (sample: ${farmTds.slice(0, 20).join(',')})`);
+  // 育成契約バッジ
+  const badges = allClass('devbadge');
+  assert.ok(badges.length >= 5, `育成選手に「育成」バッジ (got ${badges.length})`);
+  assert.ok(badges.every((n) => textOf(n) === '育成'), 'バッジの文言は「育成」');
+}
+// F2b) 順位タブ: 二軍リーグ順位の折りたたみ（F2-4）
+btnByText('順位')._onclick();
+{
+  const farmToggle = btnByText('二軍リーグ順位');
+  assert.ok(farmToggle, '順位タブに二軍リーグ順位のトグルがある');
+  assert.ok(!walk(appDiv).some((n) => textOf(n) === '若草リーグ（二軍・DH有）'), '既定では二軍順位は畳まれている');
+  farmToggle._onclick();
+  const farmHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(farmHeads.some((t) => t.includes('若草リーグ')) && farmHeads.some((t) => t.includes('暁リーグ')),
+    `二軍2リーグ（若草/暁）の順位表が開く (${farmHeads.join('/')})`);
+  const farmBox = hasClass('farmstandings');
+  const farmStandRows = walk(farmBox).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
+  assert.equal(farmStandRows.length, 12, `二軍順位は12球団（6×2リーグ） (got ${farmStandRows.length})`);
+  btnByText('二軍リーグ順位')._onclick(); // 畳んで戻す（次の描画に影響させない）
+}
+btnByText('チーム')._onclick(); // 二軍サブタブ選択のままチームタブへ戻す（後続E1dの前提を維持）
 
 // ============================================================================
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）→年送り→ダイジェスト反映
@@ -635,16 +666,76 @@ assert.ok(digestAll.includes('表彰ダイジェスト'), 'ダイジェストに
 btnByText('シーズン開幕へ')._onclick();
 assert.ok(textOf(hasClass('header')).includes('2027年'), `2年目ハブに進む (${textOf(hasClass('header'))})`);
 
-// E1d) 2年目の二軍（育成）名簿: 育成獲得が発生→行クリックで育成選手のモーダルが開く
+// E1d→F2c) 2年目の二軍名簿: 支配下（二軍）＋育成（バッジ）→ 選手詳細に一軍/二軍の年度別成績行
 btnByText('チーム')._onclick(); // サブタブ選択は「二軍」を維持している
 const farmRows = rosterRows();
-assert.ok(farmRows.length >= 1, `2年目の二軍名簿に育成選手が並ぶ (got ${farmRows.length})`);
-farmRows[0]._onclick();
+assert.ok(farmRows.length >= 45, `2年目の二軍名簿に支配下残＋育成が並ぶ (got ${farmRows.length})`);
+// 育成バッジ付きの行 → モーダル: 所属=育成（二軍）・スカウト評価・（開幕直後＝一軍未出場の案内）
+const badgeRow = farmRows.find((r) => walk(r).some((n) => (n.className || '').includes('devbadge')));
+assert.ok(badgeRow, '二軍名簿に育成バッジ付きの行がある');
+badgeRow._onclick();
 const fOverlay = allClass('overlay').pop();
 const fHeadTxt = textOf(walk(fOverlay).find((n) => (n.className || '').includes('modalhead')));
 assert.ok(fHeadTxt.includes('育成（二軍）'), `育成選手のモーダルに所属=育成 (${fHeadTxt})`);
 assert.ok(walk(fOverlay).some((n) => textOf(n).includes('コーチの見立て')), '育成選手モーダルにスカウト評価（真値非露出）');
 assert.ok(walk(fOverlay).some((n) => textOf(n).includes('一軍出場はありません')), '未出場の育成選手はNaN成績でなく案内文');
+// F2c) 経歴タブ: 年度別成績が一軍/二軍行に分かれる（1年目の二軍成績＝careerFarmStats 接続）。
+//   二軍名簿を順に開き「二軍」行を持つ選手を探す（新規獲得の育成など前年ファーム出場ゼロの選手を飛ばす）。
+{
+  let found = false;
+  for (const row of farmRows.slice(0, 20)) {
+    row._onclick();
+    const ov = allClass('overlay').pop();
+    const mt = walk(ov).filter((n) => n.tag === 'button' && (n.className || '').includes('mtab')).find((n) => textOf(n) === '経歴');
+    assert.ok(mt, '二軍選手のモーダルに経歴タブ');
+    mt._onclick();
+    const ths = walk(ov).filter((n) => n.tag === 'th').map(textOf);
+    const tds = walk(ov).filter((n) => n.tag === 'td').map(textOf);
+    if (ths.includes('軍') && tds.includes('二軍')) { found = true; break; }
+  }
+  assert.ok(found, '年度別成績に「軍」列＋「二軍」行（前年ファーム実成績）を持つ二軍選手がいる');
+}
+// 支配下（二軍）の行（バッジ無し）→ モーダル所属=支配下（二軍）
+{
+  const plainRow = farmRows.find((r) => !walk(r).some((n) => (n.className || '').includes('devbadge')));
+  assert.ok(plainRow, '二軍名簿に支配下（バッジ無し）の行がある');
+  plainRow._onclick();
+  const pOv = allClass('overlay').pop();
+  const pHead = textOf(walk(pOv).find((n) => (n.className || '').includes('modalhead')));
+  assert.ok(pHead.includes('支配下（二軍）'), `登録外の支配下は所属=支配下（二軍） (${pHead})`);
+}
+// F2d) 2年目シーズン中: 昇格・降格ニュース（F2-3 rosterMoves → ニュースタブ・playerLink 付き）
+btnByText('ホーム')._onclick();
+let movesFound = false;
+for (let mth = 0; mth < 5 && !movesFound; mth++) {
+  btnByText('月末まで')._onclick(); // 同期チャンク進行（IL補充・25試合レビューの成績入替が発生し得る）
+  btnByText('ニュース')._onclick();
+  const feedTxt = textOf(appDiv);
+  movesFound = feedTxt.includes('登録抹消') || feedTxt.includes('を昇格');
+  btnByText('ホーム')._onclick();
+}
+assert.ok(movesFound, '2年目のシーズン中に昇格・降格ニュース（登録抹消/昇格）が出る');
+btnByText('ニュース')._onclick();
+{
+  const newsHeads2 = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(newsHeads2.some((t) => t.includes('昇格・降格')), `ニュースタブに昇格・降格セクション (${newsHeads2.join('/')})`);
+  const mvRows = allClass('newsrow').filter((n) => /登録抹消|を昇格|一軍登録/.test(textOf(n)));
+  assert.ok(mvRows.length >= 1, `昇降格の見出し行がある (got ${mvRows.length})`);
+  const mvLink = walk(mvRows[0]).find((n) => (n.className || '').includes('plink') && n._onclick);
+  assert.ok(mvLink, '昇降格見出しの選手名がリンク化（playerLink）');
+  mvLink._onclick();
+  assert.ok(allClass('overlay').length >= 1, '昇降格ニュースのリンクから選手モーダルが開く');
+}
+// F2e) 2年目シーズン中の二軍成績: 二軍サブタブに実観測の率＋選手詳細の基本タブに「今季二軍成績」
+btnByText('チーム')._onclick(); // 二軍サブタブ維持
+{
+  const farmTds2 = walk(appDiv).filter((n) => n.tag === 'td').map(textOf);
+  assert.ok(farmTds2.some((t) => /^\.\d{3}$/.test(t)), '2年目シーズン中も二軍成績列に実観測の率が入る');
+  const fr2 = rosterRows();
+  fr2[0]._onclick(); // 野手表の先頭（二軍打席の多い選手）
+  const ov2 = allClass('overlay').pop();
+  assert.ok(walk(ov2).some((n) => textOf(n).includes('今季二軍成績')), '選手詳細の基本タブに「今季二軍成績」（現役の当年ファーム実成績）');
+}
 
 // E1e) playerLink の導線: 記録タブの選手名リンク → モーダル
 btnByText('記録')._onclick();
@@ -653,7 +744,8 @@ assert.ok(recLinks.length >= 1, `記録タブの選手名がリンク化 (got ${
 recLinks[0]._onclick();
 assert.ok(allClass('overlay').length >= 1, '記録タブのリンクから選手モーダルが開く');
 
-console.log('UI smoke OK (E1): チームタブ(一軍33人一覧/仕様列/ソート/等級)→行クリックでモーダル(所属/二つ名ヘッダ)→年送り(オフ要約)→2年目二軍名簿→育成選手モーダル→記録タブplayerLink、例外なし');
+console.log('UI smoke OK (E1): チームタブ(一軍=出場登録29人/仕様列/ソート/等級)→行クリックでモーダル(所属/二つ名ヘッダ)→年送り(オフ要約)→2年目二軍名簿→育成選手モーダル→記録タブplayerLink、例外なし');
+console.log('UI smoke OK (F2-4二軍UI): チームタブ二軍(支配下残+育成/二軍成績列/育成バッジ)→順位タブ二軍リーグ順位折りたたみ(若草/暁12球団)→選手詳細(年度別の一軍/二軍行・所属=一軍登録/二軍/育成・今季二軍成績)→2年目昇降格ニュース(登録抹消/昇格+playerLink→モーダル)、例外なし');
 console.log('UI smoke OK (E3編成): リザルト→ストーブリーグ(FA市場宣言見込み→入札/取消・トレード放出選択→受諾/拒否見込み→打診・育成昇格候補)→オフ処理→ダイジェスト(FA/トレード結果反映・自チームの動き・表彰)、例外なし');
 
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');

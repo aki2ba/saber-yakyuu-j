@@ -339,8 +339,8 @@ function stoveFarmTab(c, u) {
     .filter((p) => p.teamId === gs.playerTeamId)
     .sort((a, b) => (a.id < b.id ? -1 : 1));
   c.append(el('div', { class: 'muted', style: 'margin:6px 0' },
-    `育成→支配下の昇格はオフシーズン処理で自動判定されます: 育成選手の観測評価が昇格ライン（${mk.promoteThreshold}）を超え、`
-    + `かつ自球団に同型の空き枠（引退）が出た場合に支配下登録（支配下枠は33人固定）。${mk.maxAge}歳を超えた育成選手は解雇されます。`
+    `育成→支配下の昇格はオフシーズン処理で自動判定されます: 育成選手の観測評価（二軍実成績ボーナス込み・F2-3）が昇格ライン（${mk.promoteThreshold}）を超え、`
+    + `かつ自球団に同型の空き枠（引退）が出た場合に支配下登録（支配下枠は${gs.cfg.tuning.roster?.controlledPerTeam ?? 70}人）。${mk.maxAge}歳を超えた育成選手は解雇されます。`
     + '結果はオフシーズンのダイジェストに表示されます。'));
   c.append(el('h3', { class: 'leaguename' }, `昇格候補＝自チームの育成選手（${farm.length}人）`));
   if (!farm.length) {

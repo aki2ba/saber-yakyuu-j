@@ -187,8 +187,15 @@ export function runPlateAppearance(env) {
     const u1 = rng.next();
     const band = u1 < zone ? 0 : u1 < zone + border ? 1 : 2; // 0=ゾーン,1=ボーダー,2=明確ボール
 
+    // 帯→ゾーン内/外の計上（0.9.1-pitchband・O-Swing%のFanGraphs定義整合）:
+    //   ボーダー帯(band1)はゾーンの縁を跨ぐ帯（Statcastのshadow相当＝半分がゾーン内/半分がゾーン外）。
+    //   旧実装は band1 をどちらにも計上せず、O-Swing%=「明確ボールのみのスイング率」に偏っていた。
+    //   FanGraphs の O-Swing%（ゾーン外投球へのスイング率）へ近づけるため、際の半分をゾーン外として
+    //   按分計上する（oZonePitches/oSwings/oWhiffs += 0.5）。Zone%（zonePitches）は「明確にゾーン内」
+    //   の帯のみ＝従来定義のまま（目標帯[42,48]は不変）。両側(bLine/pLine)対称加算＝Σ恒等は保たれる。
     if (band === 0) { bLine.zonePitches++; pLine.zonePitches++; }
-    else if (band === 2) { bLine.oZonePitches++; pLine.oZonePitches++; }
+    else if (band === 1) { bLine.oZonePitches += 0.5; pLine.oZonePitches += 0.5; }
+    else { bLine.oZonePitches++; pLine.oZonePitches++; }
 
     // (f) HBP: 明確ボール（内角外れ）の低確率イベント
     if (band === 2) {
@@ -212,7 +219,8 @@ export function runPlateAppearance(env) {
     if (swung) {
       bLine.swings++; pLine.swings++;
       if (band === 0) { bLine.zSwings++; pLine.zSwings++; }
-      else if (band === 2) { bLine.oSwings++; pLine.oSwings++; }
+      else if (band === 1) { bLine.oSwings += 0.5; pLine.oSwings += 0.5; } // 際=半分ゾーン外（按分・上記コメント）
+      else { bLine.oSwings++; pLine.oSwings++; }
       // (d) 空振り率 = f(球種whiff, contact, 帯, 適性)
       const base = band === 0 ? K.whiffZoneBase : band === 1 ? K.whiffBorderBase : K.whiffOBase;
       let pWhiff =
@@ -228,7 +236,8 @@ export function runPlateAppearance(env) {
       if (rng.next() < pWhiff) {
         bLine.whiffs++; pLine.whiffs++;
         if (band === 0) { bLine.zWhiffs++; pLine.zWhiffs++; }
-        else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
+        else if (band === 1) { bLine.oWhiffs += 0.5; pLine.oWhiffs += 0.5; } // 際=半分ゾーン外（按分）
+        else { bLine.oWhiffs++; pLine.oWhiffs++; }
         if (nPitches === 1) firstPitchStrike = true;
         strikes++;
         if (onPitch) onPitch(nPitches, ptype, 'whiff', balls, strikes, false, band);

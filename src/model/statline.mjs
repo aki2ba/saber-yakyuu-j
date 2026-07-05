@@ -43,7 +43,10 @@ export function createBattingLine() {
     rbi: 0,
     // --- B1 一球ごとの生カウント（打者視点・§B1-2）。カウント状態機械の副産物。
     // pitches=見た球数, swings=スイング数, whiffs=空振り, fouls=ファウル, calledStrikes=見逃しストライク,
-    // zonePitches/oZonePitches=ゾーン内/明確ボールの球数, z/oSwings=各帯スイング, z/oWhiffs=各帯空振り,
+    // zonePitches=明確にゾーン内の球数（Zone%の分子・従来定義）。oZonePitches=ゾーン外の球数
+    // （0.9.1-pitchband: FanGraphs O-Swing%定義整合のため 明確ボール=1.0＋ボーダー帯=0.5 の按分計上。
+    //   ボーダー帯はゾーンの縁を跨ぐ＝半分ゾーン外とみなす。よって非整数になりうる）。
+    // z/oSwings=各帯スイング, z/oWhiffs=各帯空振り（o側はボーダー0.5按分・同上）,
     // ballsInDirt=ワンバウンド球数。率(Zone%/O-Swing%/Contact%/SwStr%/CSW%)はこれらから metrics で算出。
     pitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     // lumpedPitches=状態機械を通さない打席（敬遠/犠打）の投球数。pitches に含めて恒等(§B1-2 Σ打者==Σ投手)を保つが、
@@ -116,6 +119,7 @@ export function createPitchingLine() {
     pitches: 0, // 投球数
     lumpedPitches: 0, // 敬遠/犠打の投球数（打者側と対称・機械球数=pitches−lumpedPitches。率の分母から除外）
     // --- B1 一球ごとの生カウント（投手視点・§B1-2）。打者側と対称。被O-Swing等=「釣れる投手」の素。
+    // oZonePitches/oSwings/oWhiffs はボーダー帯0.5按分（0.9.1・打者側コメント参照）＝非整数になりうる。
     swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     firstPitchStrikes: 0, // 初球ストライク数（F-Strike%の分子。被F-Strike＝奪ストライク先行）

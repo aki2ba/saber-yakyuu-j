@@ -160,6 +160,8 @@ function runOnce(seed) {
   const disc = {
     pitchesPerPA: lgBat.pa ? lgBat.pitches / lgBat.pa : 0,
     zonePct: machinePitches ? lgBat.zonePitches / machinePitches : 0,
+    // O-Swing% はFanGraphs定義（ゾーン外投球へのスイング率）。oZonePitches/oSwings は
+    // plateAppearance 側で「明確ボール=1.0＋ボーダー帯=0.5按分」で計上済み（0.9.1-pitchband）。
     oSwingPct: lgBat.oZonePitches ? lgBat.oSwings / lgBat.oZonePitches : 0,
     zSwingPct: lgBat.zonePitches ? lgBat.zSwings / lgBat.zonePitches : 0,
     contactPct: lgBat.swings ? (lgBat.swings - lgBat.whiffs) / lgBat.swings : 0,

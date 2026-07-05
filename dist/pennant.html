@@ -725,7 +725,10 @@ function createBattingLine() {
     rbi: 0,
     // --- B1 一球ごとの生カウント（打者視点・§B1-2）。カウント状態機械の副産物。
     // pitches=見た球数, swings=スイング数, whiffs=空振り, fouls=ファウル, calledStrikes=見逃しストライク,
-    // zonePitches/oZonePitches=ゾーン内/明確ボールの球数, z/oSwings=各帯スイング, z/oWhiffs=各帯空振り,
+    // zonePitches=明確にゾーン内の球数（Zone%の分子・従来定義）。oZonePitches=ゾーン外の球数
+    // （0.9.1-pitchband: FanGraphs O-Swing%定義整合のため 明確ボール=1.0＋ボーダー帯=0.5 の按分計上。
+    //   ボーダー帯はゾーンの縁を跨ぐ＝半分ゾーン外とみなす。よって非整数になりうる）。
+    // z/oSwings=各帯スイング, z/oWhiffs=各帯空振り（o側はボーダー0.5按分・同上）,
     // ballsInDirt=ワンバウンド球数。率(Zone%/O-Swing%/Contact%/SwStr%/CSW%)はこれらから metrics で算出。
     pitches: 0, swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     // lumpedPitches=状態機械を通さない打席（敬遠/犠打）の投球数。pitches に含めて恒等(§B1-2 Σ打者==Σ投手)を保つが、
@@ -798,6 +801,7 @@ function createPitchingLine() {
     pitches: 0, // 投球数
     lumpedPitches: 0, // 敬遠/犠打の投球数（打者側と対称・機械球数=pitches−lumpedPitches。率の分母から除外）
     // --- B1 一球ごとの生カウント（投手視点・§B1-2）。打者側と対称。被O-Swing等=「釣れる投手」の素。
+    // oZonePitches/oSwings/oWhiffs はボーダー帯0.5按分（0.9.1・打者側コメント参照）＝非整数になりうる。
     swings: 0, whiffs: 0, fouls: 0, calledStrikes: 0,
     zonePitches: 0, zSwings: 0, zWhiffs: 0, oZonePitches: 0, oSwings: 0, oWhiffs: 0, ballsInDirt: 0,
     firstPitchStrikes: 0, // 初球ストライク数（F-Strike%の分子。被F-Strike＝奪ストライク先行）
@@ -1030,8 +1034,9 @@ const CALIBRATION_TARGETS = {
     sdLeader: [20, 50], // シャットダウン王（好救援の高レバレッジ成功）
     // --- B1-3 規律系（一球シムの副産物・リーグ集計の率）------------------------------
     pitchesPerPA: [3.7, 4.0], // 投球数/打席
-    zonePct: [0.42, 0.48], // Zone%（ゾーン内率）
-    oSwingPct: [0.26, 0.34], // O-Swing%（ボール球スイング率）
+    zonePct: [0.42, 0.48], // Zone%（明確にゾーン内の帯のみ・従来定義＝0.9.1でも不変）
+    oSwingPct: [0.26, 0.34], // O-Swing%（ゾーン外スイング率・FanGraphs定義。0.9.1: ボーダー帯を
+    //   半分ゾーン外として按分計上＝(際×0.5+明確)のスイング率。帯はNPB/MLB実測25-33%と整合し維持）
     zSwingPct: [0.60, 0.70], // Z-Swing%（ゾーン内スイング率）
     contactPct: [0.75, 0.81], // Contact%（スイングの接触率）
     swStrPct: [0.085, 0.12], // SwStr%（空振り/全投球）
@@ -1147,35 +1152,49 @@ const TUNING_DEFAULT = {
     zoneAheadW: -0.10, // 追い込み(0-2,1-2)でゾーン率減（ボールで釣る）
     zoneBehindW: 0.15, // ビハインド(3-0,3-1,2-0)でゾーン率増（置きにいく）
     zoneEvenBehindW: 0.04, // balls>strikes の軽いビハインドでゾーン率増
-    borderShare: 0.34, // 非ゾーンのうちボーダー帯（フレーミングが効く縁）の割合。残りは明確ボール
+    // 帯配分の現実化（0.9.1-pitchband・ユーザーレビュー「クソボールばかり」対応）:
+    //   Statcast帯換算では際(shadow)が全投球の~40%・明確ボール(chase/waste)は~30%。旧0.34は
+    //   際18.8%/明確36.6%と歪んでいた（際が少なく大外れが多い）→ 0.56で際~31%/明確~24%へ。
+    borderShare: 0.56, // 非ゾーンのうちボーダー帯（フレーミングが効く縁）の割合。残りは明確ボール
     // --- 打者スイング判断 ---
     zSwingBase: 0.62, // ゾーン内スイング率（Z-Swing%の主ノブ・B1較正: 0.66→0.62で早見せ→投球数/CSW↑）
-    bSwingBase: 0.46, // ボーダー帯スイング率
-    oSwingBase: 0.235, // ボール球スイング率（chase・O-Swing%の主ノブ）
-    swingEyeW: 0.006, // eye(50中心)→ボーダー/ボール球スイング率減（見極め）
+    bSwingBase: 0.46, // ボーダー帯スイング率（0.9.1: 据置。際の球数自体が~1.6倍になるため base 据置でも
+    //   際スイングの絶対量は増え、chase減と合わせて全体swing量はほぼ不変）
+    oSwingBase: 0.10, // ボール球スイング率（chase・0.9.1: 0.235→0.10。明確ボールへの手出し~30%は現実(~18%)比1.7倍
+    //   → 2ストライク保護スイング/同利き補正込みの実効で~15-18%へ現実化。BB%はborderCsBase/whiff系で再収束）
+    swingEyeW: 0.004, // eye(50中心)→ボーダー/ボール球スイング率減（見極め。0.9.1: 0.006→0.004。
+    //   chase基準の半減で eye 差の相対効果が増幅され、高eye打者のchaseが下限クランプに張り付いて
+    //   規律の質差が過大に→セパ得点差(DH規則単位)が帯上限超え＋野手WAR王9.5超え。
+    //   傾き圧縮で両者を帯へ戻す（0.005では野手WAR王9.6が残存→0.004で~8.9）
     swingZoneEyeW: 0.0015, // eye→ゾーンスイング率減（わずか。巧打者は good pitch を待てる）
     twoStrikeSwingW: 0.20, // 2ストライクの保護スイング増（全帯・B1較正: 0.11→0.20。当てにいく→ファウル粘り）
     threeOhTakeW: 0.42, // 3-0での自重（スイング率減）
     // --- スイング時の空振り ---
-    whiffZoneBase: 0.175, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。Contact/SwStr/CSWを帯へ）
-    whiffBorderBase: 0.27, // ボーダー帯スイングの空振り基準（B1較正: 0.16→0.27）
-    whiffOBase: 0.38, // ボール球スイング（chase）の空振り基準（B1較正: 0.26→0.38）
+    whiffZoneBase: 0.185, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。0.9.1: →0.185。
+    //   帯再配分で空振りの多いchase swingが減った分をゾーン内で補い Contact%[75,81] を維持）
+    whiffBorderBase: 0.32, // ボーダー帯スイングの空振り基準（B1較正: 0.16→0.27。0.9.1: →0.32・同上）
+    whiffOBase: 0.44, // ボール球スイング（chase）の空振り基準（B1較正: 0.26→0.38。0.9.1: →0.44・同上）
     whiffPitchW: 0.006, // 球種whiff(50中心)→空振り増
     whiffContactW: 0.006, // 打者contact(50中心)→空振り減
     whiffAptW: 0.004, // 対該当クラス適性(50中心)→空振り減
-    whiffTwoStrikeW: 0.18, // 2ストライクの空振り率減（当てにいく短縮スイング。ppa↑・K抑制・B1較正: 0→0.18）
+    whiffTwoStrikeW: 0.215, // 2ストライクの空振り率減（当てにいく短縮スイング。ppa↑・K抑制・B1較正: 0→0.18。
+    //   0.9.1: →0.215。whiff基準の引上げでK%が上限を超えないよう2ストライク側で相殺＝K[18,20.5]を維持）
     // --- 接触時: ファウル vs インプレー ---
     foulBase: 0.47, // 接触のうちファウルになる基準
     foulTwoStrikeW: 0.18, // 2ストライクでファウル率増（粘り＝カット・B1較正: 0.08→0.18で投球数/PA↑）
     // --- 見逃し時: ボーダー帯の捕手フレーミング判定 ---
-    borderCsBase: 0.24, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時）
-    frameSlopePerPt: 0.0040, // framing(50中心)→ボーダーCS率±（一球単位の創発・B1較正: 0.0045→0.0040でフレーミング上位を帯内へ）
+    borderCsBase: 0.183, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時。0.9.1: 0.24→0.183。
+    //   際の球数~1.6倍で見逃しストライクが増えBB%が沈むため、獲得率を下げて BB%[7.8,8.3] を回復）
+    frameSlopePerPt: 0.0024, // framing(50中心)→ボーダーCS率±（一球単位の創発。0.9.1: 0.0040→0.0024。
+    //   際が18.8%→~31%へ増えフレーミング機会が~1.6倍になったため、上位run[6,15]を保つよう傾きで相殺）
     runPerCall: 0.125, // 1コール(vs中立)→run（framingRuns。per-inning近似の置換・§7.3）
     // --- HBP（内角外れの低確率イベント。現行率~0.9%/PAを維持） ---
-    hbpPerClearBall: 0.007, // 明確ボール1球あたりのHBP率
+    hbpPerClearBall: 0.0104, // 明確ボール1球あたりのHBP率（0.9.1: 0.007→0.0104。明確ボール36.6%→~24.7%の
+    //   帯再配分でHBP機会が0.675倍になったため率で相殺＝HBP/PA~0.9%を維持）
     hbpControlW: 0.006, // 制球が低い(50-control)ほどHBP増
     // --- 暴投/捕逸（ワンバウンド球×捕手blocking） ---
-    dirtBaseBreaking: 0.11, // 明確ボール(変化球)がワンバウンドになる率
+    dirtBaseBreaking: 0.16, // 明確ボール(変化球)がワンバウンドになる率（0.9.1: 0.11→0.16。帯再配分で
+    //   明確ボールが0.675倍→WP+PB/球団[35,70]を維持するよう率で相殺）
     blockSlopePerPt: 0.005, // blocking(50中心)→ワンバウンド抜け回避
     wildBase: 0.52, // ワンバウンド×走者ありで球が抜ける基準（blockで減）
     wpShare: 0.6, // 抜けたうち暴投(投手起因→wp)の割合。残りは捕逸(捕手起因→pb)
@@ -1411,7 +1430,8 @@ const TUNING_DEFAULT = {
   //    かつ分布の裾も 打率王.348/HR王47 まで圧縮=M4対応。RBI王~145は満員打線ゆえ構造的に高め）。
   bb: {
     // EV(打球速度 km/h)
-    evBase: 139.55, // 平均打球速度の中心 ※D1-2: 同利きEV罰則強化(-1.2→-2.5)でリーグ平均EVが下がった分を全体で再センタリング（139→139.55・同利き相対差は不変）
+    evBase: 139.75, // 平均打球速度の中心 ※D1-2: 同利きEV罰則強化(-1.2→-2.5)でリーグ平均EVが下がった分を全体で再センタリング（139→139.55・同利き相対差は不変）。
+    //   0.9.1-pitchband: 帯再配分＋chase現実化＋swingEyeW圧縮で沈んだ得点環境(AVG/OBP/OPS)を全体で再センタリング（139.55→139.75）
     evPerEV: 0.355, // 打者EV適性1pt → km/h ※S5較正（裾圧縮＝野手WAR王7-9.5）
     evPerPower: 0.2, // 生体power1pt → km/h ※S5較正
     evPitchSuppress: 0.3, // 投手の被コンタクト質抑止1pt → km/h減（選択球種のcontactQuality）
@@ -2985,8 +3005,15 @@ function runPlateAppearance(env) {
     const u1 = rng.next();
     const band = u1 < zone ? 0 : u1 < zone + border ? 1 : 2; // 0=ゾーン,1=ボーダー,2=明確ボール
 
+    // 帯→ゾーン内/外の計上（0.9.1-pitchband・O-Swing%のFanGraphs定義整合）:
+    //   ボーダー帯(band1)はゾーンの縁を跨ぐ帯（Statcastのshadow相当＝半分がゾーン内/半分がゾーン外）。
+    //   旧実装は band1 をどちらにも計上せず、O-Swing%=「明確ボールのみのスイング率」に偏っていた。
+    //   FanGraphs の O-Swing%（ゾーン外投球へのスイング率）へ近づけるため、際の半分をゾーン外として
+    //   按分計上する（oZonePitches/oSwings/oWhiffs += 0.5）。Zone%（zonePitches）は「明確にゾーン内」
+    //   の帯のみ＝従来定義のまま（目標帯[42,48]は不変）。両側(bLine/pLine)対称加算＝Σ恒等は保たれる。
     if (band === 0) { bLine.zonePitches++; pLine.zonePitches++; }
-    else if (band === 2) { bLine.oZonePitches++; pLine.oZonePitches++; }
+    else if (band === 1) { bLine.oZonePitches += 0.5; pLine.oZonePitches += 0.5; }
+    else { bLine.oZonePitches++; pLine.oZonePitches++; }
 
     // (f) HBP: 明確ボール（内角外れ）の低確率イベント
     if (band === 2) {
@@ -3010,7 +3037,8 @@ function runPlateAppearance(env) {
     if (swung) {
       bLine.swings++; pLine.swings++;
       if (band === 0) { bLine.zSwings++; pLine.zSwings++; }
-      else if (band === 2) { bLine.oSwings++; pLine.oSwings++; }
+      else if (band === 1) { bLine.oSwings += 0.5; pLine.oSwings += 0.5; } // 際=半分ゾーン外（按分・上記コメント）
+      else { bLine.oSwings++; pLine.oSwings++; }
       // (d) 空振り率 = f(球種whiff, contact, 帯, 適性)
       const base = band === 0 ? K.whiffZoneBase : band === 1 ? K.whiffBorderBase : K.whiffOBase;
       let pWhiff =
@@ -3026,7 +3054,8 @@ function runPlateAppearance(env) {
       if (rng.next() < pWhiff) {
         bLine.whiffs++; pLine.whiffs++;
         if (band === 0) { bLine.zWhiffs++; pLine.zWhiffs++; }
-        else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
+        else if (band === 1) { bLine.oWhiffs += 0.5; pLine.oWhiffs += 0.5; } // 際=半分ゾーン外（按分）
+        else { bLine.oWhiffs++; pLine.oWhiffs++; }
         if (nPitches === 1) firstPitchStrike = true;
         strikes++;
         if (onPitch) onPitch(nPitches, ptype, 'whiff', balls, strikes, false, band);
@@ -7031,7 +7060,7 @@ function playerWAR(player, ps, cfg, lc) {
 
 
 
-const ENGINE_VERSION = '0.9.0-phaseB1';
+const ENGINE_VERSION = '0.9.1-pitchband';
 
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 

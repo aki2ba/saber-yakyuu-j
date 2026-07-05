@@ -104,6 +104,36 @@ test('2ストライク未満のファウルはストライクを1つ加算する
   assert.equal(r.pitches, 3, '2ファウルでカウントが進み3球目の見逃しで決着');
 });
 
+// ボーダー帯（際）の u1: zone < u1 < zone+border を config から動的に算出（較正値変更に頑健）。
+const zone00 = cfg.tuning.pitch.zoneBase; // 0-0・control50 はカウント補正なし
+const BORDER = zone00 + ((1 - zone00) * cfg.tuning.pitch.borderShare) / 2;
+
+test('ボーダー帯はゾーン外0.5按分で計上される（O-Swing%のFanGraphs定義整合・0.9.1）', () => {
+  // 4球ともボーダー帯を見逃し、フレーミング判定(0.97)はボール → BB。
+  // oZonePitches は際1球=0.5 の按分計上（明確ボール=1.0）。zonePitches は増えない。
+  const perPitch = [0.5, BORDER, NO_SWING, 0.97];
+  const rng = scriptRng([...perPitch, ...perPitch, ...perPitch, ...perPitch]);
+  const env = newEnv(rng);
+  const r = runPlateAppearance(env);
+  assert.equal(r.outcome, 'BB', '4ボールでBB');
+  assert.equal(env.pLine.oZonePitches, 2, '際4球×0.5=2.0 がゾーン外へ按分計上');
+  assert.equal(env.pLine.zonePitches, 0, 'ゾーン内には計上されない');
+  assert.equal(env.bLine.oZonePitches, 2, '打者側も対称に0.5按分');
+});
+
+test('ボーダー帯スイング/空振りも0.5按分で oSwings/oWhiffs へ計上される（0.9.1）', () => {
+  // 際スイング→接触→ファウル ×2（0-2）→ 際スイング→空振り（2ストライクでも whiff>0.001）で三振。
+  const foul = [0.5, BORDER, SWING, NO_WHIFF, FOUL];
+  const whiffK = [0.5, BORDER, SWING, 0.0001];
+  const rng = scriptRng([...foul, ...foul, ...whiffK]);
+  const env = newEnv(rng);
+  const r = runPlateAppearance(env);
+  assert.equal(r.outcome, 'K', '空振り三振');
+  assert.equal(env.bLine.oSwings, 1.5, '際スイング3×0.5=1.5');
+  assert.equal(env.bLine.oWhiffs, 0.5, '際空振り1×0.5=0.5');
+  assert.equal(env.bLine.swings, 3, '総スイングは整数のまま');
+});
+
 test('決定論: 同一シードで同一の打席結果列（乱数はrng経由のみ）', () => {
   const seq = (seed) => {
     const rng = makeRng(seed);

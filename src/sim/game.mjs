@@ -524,9 +524,10 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         batter, pitcher, catcher, cfg, rng, tto,
         bLine: bStat.batting, pLine: pStat.pitching, cLine, bases, outs,
         // 一球速報（E2・乱数非消費）: 存在するときのみ各投球を構造化イベントで発火。
+        // band=ロケーション帯（0=ゾーン内/1=ボーダー/2=明確ボール・既計算値）＝観戦コース図の実データ。
         onPitch: fielding.onEvent
-          ? (n, pitchType, call, balls, strikes, wild) =>
-              fielding.onEvent({ type: 'pitch', n, pitchType, call, balls, strikes, wild })
+          ? (n, pitchType, call, balls, strikes, wild, band) =>
+              fielding.onEvent({ type: 'pitch', n, pitchType, call, balls, strikes, wild, band })
           : null,
       });
       outcome = pa.outcome; // 'K'|'BB'|'HBP'|'inPlay'

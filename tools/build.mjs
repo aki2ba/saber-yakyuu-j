@@ -233,8 +233,6 @@ const html = `<!DOCTYPE html>
   .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }
   .headawards { font-size:11px; color:var(--muted); margin-top:2px; }
   /* E2: スポナビ風観戦（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替） */
-  .watchgrid { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; margin:10px 0; }
-  .watchgrid svg.diamond { width:260px; max-width:100%; }
   .matchup { flex:1; min-width:250px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); }
   .bso { display:flex; gap:16px; margin-bottom:8px; flex-wrap:wrap; }
   .bsorow { display:flex; align-items:center; gap:5px; }
@@ -249,9 +247,7 @@ const html = `<!DOCTYPE html>
   .mutoday { color:var(--chalk); }
   .pbpline.ev-ab { color:var(--chalk); font-weight:600; }
   .pbpline.ev-pitch { color:var(--muted); }
-  /* E2改: 対戦カード直下の「現在の打席」ボックス（正順の投球列＋決着結果の強調）＋履歴チップ＋実況ヘッダ */
-  .mucol { flex:1; min-width:250px; display:flex; flex-direction:column; gap:10px; }
-  .mucol .matchup { flex:none; min-width:0; }
+  /* E2改: 「現在の打席」ボックス（正順の投球列＋決着結果の強調）＋履歴チップ＋実況ヘッダ */
   .curab { border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--panel); }
   .curabhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:4px; }
   .curabpitch { font-size:13px; padding:1px 0; color:var(--chalk); }
@@ -259,10 +255,41 @@ const html = `<!DOCTYPE html>
   .reschips { display:inline-flex; gap:3px; flex-wrap:wrap; }
   .reschip { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
   .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
-  .lineupbox { border:1px solid var(--line); border-radius:8px; padding:6px 10px; margin-top:10px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
-  .lineupbody.collapsed { display:none; }
   .lineupcol { flex:1; min-width:230px; }
+  /* E2ゾーニング改: 「今の状況」パネル（スコア>回・アウト>対戦>詳細の視覚階層・最上位） */
+  .nowpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:space-between;
+              border:1px solid var(--clay); border-radius:10px; background:#0d3526; padding:10px 16px; margin:10px 0 8px; }
+  .nowscore { flex:1; min-width:260px; display:flex; gap:18px; align-items:center; justify-content:center; }
+  .nowteam { text-align:center; min-width:84px; }
+  .nowtname { font-size:14px; font-weight:600; color:var(--chalk); }
+  .nowteam.nowmy .nowtname { color:var(--gold); }
+  .nowtscore { font-size:38px; font-weight:800; line-height:1.15; }
+  .nowmid { text-align:center; }
+  .nowinning { font-size:18px; font-weight:700; color:var(--gold); }
+  .nowouts { font-size:13px; color:var(--muted); margin:2px 0; }
+  .nowpanel .bso { justify-content:center; margin:4px 0 0; gap:10px; }
+  .nowpanel svg.diamond { width:230px; max-width:100%; }
+  /* E2ゾーニング改: 「対戦」パネル（打者/投手カード＋現打席＋コース図） */
+  .duelpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start;
+               border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:10px 12px; margin:10px 0; }
+  .duelcol { flex:1; min-width:250px; display:flex; flex-direction:column; gap:10px; }
+  .duelpanel .matchup { border:none; background:none; padding:0; min-width:0; flex:none; }
+  .duelpanel .curab { background:#0d3526; }
+  .zonecol { min-width:170px; text-align:center; }
+  svg.zoneplot { width:170px; max-width:100%; }
+  .zonelegend { font-size:10px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin-top:2px; cursor:help; }
+  /* 一球判定の統一色（コース図ドット・現打席リスト・実況一球行の全部に適用）:
+     ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青。fill はSVGテキスト（ドット）用 */
+  .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:#f4f1e6; fill:#f4f1e6; }
+  .pc-called, .pbpline.pc-called, .curabpitch.pc-called { color:#7bc47f; fill:#7bc47f; }
+  .pc-whiff, .pbpline.pc-whiff, .curabpitch.pc-whiff { color:#e06d6d; fill:#e06d6d; }
+  .pc-foul, .pbpline.pc-foul, .curabpitch.pc-foul { color:#e8b84b; fill:#e8b84b; }
+  .pc-inplay, .pbpline.pc-inplay, .curabpitch.pc-inplay { color:#8fc7ff; fill:#8fc7ff; }
+  /* E2ゾーニング改: watch内サブタブ（速報/ボックス/スタメン） */
+  .wtabs { display:flex; gap:6px; margin:12px 0 4px; flex-wrap:wrap; }
+  .wtab { padding:5px 16px; font-size:13px; }
+  .wtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
   .reccols { display:flex; flex-wrap:wrap; gap:10px; }
   .reccol { flex:1; min-width:150px; }
   .rechead { color:var(--muted); font-size:12px; border-bottom:1px solid var(--line); margin-bottom:3px; }
@@ -279,8 +306,10 @@ const html = `<!DOCTYPE html>
     .header { flex-direction:column; align-items:flex-start; gap:6px; }
     .kvgrid { grid-template-columns:repeat(3,1fr); }
     .abilities { grid-template-columns:1fr; }
-    .watchgrid, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
-    .watchgrid svg.diamond { width:100%; }
+    .nowpanel, .duelpanel, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
+    .nowpanel svg.diamond { width:100%; }
+    .nowscore { min-width:0; width:100%; }
+    .nowtscore { font-size:30px; }
     .reccols { flex-direction:column; }
     .overlay { padding:8px; }
     .modal { padding:12px; }

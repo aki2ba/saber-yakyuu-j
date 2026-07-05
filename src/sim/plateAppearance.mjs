@@ -137,8 +137,9 @@ const PA_RESULT = {
 export function runPlateAppearance(env) {
   const { batter, pitcher, catcher, cfg, rng, tto, bLine, pLine, cLine, bases } = env;
   // 観戦の一球速報フック（フェーズE2・§16）: 存在するときのみ各投球の確定点で
-  // (n, 球種, 判定, ボール, ストライク, 暴投走者進塁) を通知する。gc/onEvent と同じ流儀で
+  // (n, 球種, 判定, ボール, ストライク, 暴投走者進塁, 帯band) を通知する。gc/onEvent と同じ流儀で
   // 乱数は一切消費しない＝onPitch の有無で打席結果・シーズン結果は不変（決定論の門番は verify）。
+  // band はこの一球の既計算ロケーション帯（0=ゾーン内/1=ボーダー/2=明確ボール）＝UIコース図の実データ。
   const onPitch = env.onPitch ?? null;
   const K = cfg.tuning.pitch;
   const bat = batter.trueAbility;
@@ -193,7 +194,7 @@ export function runPlateAppearance(env) {
     if (band === 2) {
       const pHbp = K.hbpPerClearBall * (1 + K.hbpControlW * (50 - pit.control));
       if (rng.next() < pHbp) {
-        if (onPitch) onPitch(nPitches, ptype, 'hbp', balls, strikes, false);
+        if (onPitch) onPitch(nPitches, ptype, 'hbp', balls, strikes, false, band);
         R.outcome = 'HBP'; R.decisiveClass = cls; break;
       }
     }
@@ -230,7 +231,7 @@ export function runPlateAppearance(env) {
         else if (band === 2) { bLine.oWhiffs++; pLine.oWhiffs++; }
         if (nPitches === 1) firstPitchStrike = true;
         strikes++;
-        if (onPitch) onPitch(nPitches, ptype, 'whiff', balls, strikes, false);
+        if (onPitch) onPitch(nPitches, ptype, 'whiff', balls, strikes, false, band);
         if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
       } else {
         // 接触: ファウル vs インプレー（2ストライクのファウルはカウント維持）
@@ -240,7 +241,7 @@ export function runPlateAppearance(env) {
           bLine.fouls++; pLine.fouls++;
           if (nPitches === 1) firstPitchStrike = true;
           if (strikes < 2) strikes++;
-          if (onPitch) onPitch(nPitches, ptype, 'foul', balls, strikes, false);
+          if (onPitch) onPitch(nPitches, ptype, 'foul', balls, strikes, false, band);
         } else {
           // インプレー → 既存の打球パイプライン（不変）
           R.battedBall = generateBattedBall(batter, pitcher, cfg, rng, {
@@ -249,7 +250,7 @@ export function runPlateAppearance(env) {
           R.outcome = 'inPlay';
           R.decisiveClass = cls;
           if (nPitches === 1) firstPitchStrike = true;
-          if (onPitch) onPitch(nPitches, ptype, 'inplay', balls, strikes, false);
+          if (onPitch) onPitch(nPitches, ptype, 'inplay', balls, strikes, false, band);
           break;
         }
       }
@@ -259,7 +260,7 @@ export function runPlateAppearance(env) {
         bLine.calledStrikes++; pLine.calledStrikes++;
         if (nPitches === 1) firstPitchStrike = true;
         strikes++;
-        if (onPitch) onPitch(nPitches, ptype, 'called', balls, strikes, false);
+        if (onPitch) onPitch(nPitches, ptype, 'called', balls, strikes, false, band);
         if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
       } else if (band === 1) {
         const pCS = clamp(K.borderCsBase + K.frameSlopePerPt * (framing - 50), 0.02, 0.98);
@@ -273,11 +274,11 @@ export function runPlateAppearance(env) {
           bLine.calledStrikes++; pLine.calledStrikes++;
           if (nPitches === 1) firstPitchStrike = true;
           strikes++;
-          if (onPitch) onPitch(nPitches, ptype, 'called', balls, strikes, false);
+          if (onPitch) onPitch(nPitches, ptype, 'called', balls, strikes, false, band);
           if (strikes >= 3) { R.outcome = 'K'; R.decisiveClass = cls; break; }
         } else {
           balls++;
-          if (onPitch) onPitch(nPitches, ptype, 'ball', balls, strikes, false);
+          if (onPitch) onPitch(nPitches, ptype, 'ball', balls, strikes, false, band);
           if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
         }
       } else {
@@ -297,7 +298,7 @@ export function runPlateAppearance(env) {
           }
         }
         balls++;
-        if (onPitch) onPitch(nPitches, ptype, 'ball', balls, strikes, wild);
+        if (onPitch) onPitch(nPitches, ptype, 'ball', balls, strikes, wild, band);
         if (balls >= 4) { R.outcome = 'BB'; R.decisiveClass = cls; break; }
       }
     }

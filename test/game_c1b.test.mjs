@@ -110,3 +110,23 @@ test('C1b: 観戦イベントに start/pa/end が含まれ、自チーム試合�
   const hr = events.find((e) => e.type === 'pa' && e.bb);
   if (hr) assert.ok(typeof hr.bb.evKmh === 'number' && typeof hr.bb.laDeg === 'number', '打球イベントに EV/LA が載る');
 });
+
+test('E2回帰: steal イベントは inning/half を必ず持つ（1イニング進行のハーフ境界判定の前提）', () => {
+  // 観戦UIの「1イニング」進行は「idx以降で最初に inning+half を持つイベント」で現ハーフを決める。
+  // steal が inning/half を欠くと、盗塁死3アウトでハーフが終わるケースで境界を通り越し
+  // 次ハーフを丸ごとスキップする（フェーズE検証の指摘）。全 steal イベントの搭載を不変量として守る。
+  const st = newGame(SEED, 'T1', { cfg: createConfig() });
+  let checked = 0;
+  for (let i = 0; i < 400 && !st.rt.finished; i++) {
+    const step = advanceDay(st, { collectPlayerEvents: true });
+    if (!step.playerEvents) continue;
+    for (const e of step.playerEvents) {
+      if (e.type !== 'steal') continue;
+      checked++;
+      assert.ok(Number.isInteger(e.inning) && e.inning >= 1, `steal に inning が載る (${JSON.stringify(e)})`);
+      assert.ok(e.half === 'top' || e.half === 'bottom', `steal に half が載る (${JSON.stringify(e)})`);
+    }
+    if (checked >= 10) break; // 十分な標本で打ち切り（テスト時間の節約）
+  }
+  assert.ok(checked > 0, `steal イベントが観測された (${checked})`);
+});

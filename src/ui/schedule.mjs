@@ -136,7 +136,7 @@ function schedOpenBox(rec, u) {
       box.append(schedPitcherTable(b.pitchers[side], u));
     }
     box.append(el('div', { class: 'muted', style: 'margin-top:6px' },
-      '当日集計の簡易ボックススコア（失点は在板中の得点＝継承走者は現投手へ帰属する近似）。選手名クリックで詳細。'));
+      '当日集計の簡易ボックススコア（失点は在板中の得点＝継承走者は現投手へ帰属する近似。打点も公式規則の近似で、シーズン集計と±1差が出ることがあります）。選手名クリックで詳細。'));
   }
   overlay.append(box);
   document.getElementById('app').append(overlay);

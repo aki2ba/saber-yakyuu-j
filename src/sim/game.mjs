@@ -147,7 +147,7 @@ function baseBits(bases) {
  * 盗塁の試行・成否（§6 wSB）。走者Steal/Speed × 投手Hold × 捕手Arm。outs を返す。
  * S2: 監督stealTend×状況の采配ゲート（大差では走らない・2死×強打者では自重）を乗せる。
  */
-function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
+function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning, half) {
   if (!bases[0] || bases[1]) return outs; // 一塁走者かつ二塁が空いている時のみ
   const runner = batting.byId.get(bases[0]);
   const s = cfg.tuning.steal;
@@ -190,11 +190,12 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng) {
     bases[0] = null;
     rStat.batting.sb++;
     if (catcherId) statFor(catcherId, fielding.teamId).fielding.sbAllowed++; // 捕手が許したSB（乱数非消費）
-    if (batting.onEvent) batting.onEvent({ type: 'steal', success: true, runnerId: stealRunner, batTeam: batting.teamId, basesPids: bases.slice(), outsAfter: outs });
+    // inning/half を必ず載せる（観戦UIのハーフ境界判定が inning 情報を持つイベントに依存・§E2）
+    if (batting.onEvent) batting.onEvent({ type: 'steal', success: true, runnerId: stealRunner, batTeam: batting.teamId, basesPids: bases.slice(), outsAfter: outs, inning, half });
   } else {
     bases[0] = null; // 盗塁死
     rStat.batting.cs++;
-    if (batting.onEvent) batting.onEvent({ type: 'steal', success: false, runnerId: stealRunner, batTeam: batting.teamId, basesPids: bases.slice(), outsAfter: outs + 1 });
+    if (batting.onEvent) batting.onEvent({ type: 'steal', success: false, runnerId: stealRunner, batTeam: batting.teamId, basesPids: bases.slice(), outsAfter: outs + 1, inning, half });
     if (catcherId) statFor(catcherId, fielding.teamId).fielding.csMade++; // 捕手が刺したCS（乱数非消費）
     // 盗塁死は投手在籍中の記録アウト＝投手IPに算入（監査A2: ΣpositionOuts==8·Σpitcher.outs を回復）。
     statFor(fielding.curPid, fielding.teamId).pitching.outs++;
@@ -368,7 +369,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const stBase = baseBits(bases);
     const stOuts = outs;
     const stRunner = bases[0];
-    outs = attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng);
+    outs = attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning, battingIsHome ? 'bottom' : 'top');
     // 文脈指標（§B2）: 盗塁/盗塁死で状態が動いたら ΔRE/ΔWPA を走者へ（投手は−側）。
     if (gc && stRunner != null && (baseBits(bases) !== stBase || outs !== stOuts)) {
       gc.onPlay({

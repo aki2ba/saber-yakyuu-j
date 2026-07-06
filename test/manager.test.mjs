@@ -124,7 +124,8 @@ test('choosePinchHitter: 投手へは6回以降ビハインドで・野手へは
   // 投手への代打: 6回以降・ビハインド
   const ctxP = { side, oppScore: 4, bases: [null, null, null], inning: 6, batterId: 'P0', isPitcher: true, oppPitcher };
   assert.equal(choosePinchHitter(ctxP, cfg), 'B1');
-  assert.equal(choosePinchHitter({ ...ctxP, inning: 5 }, cfg), null, '5回は投手に打たせる');
+  // F2-5較正: phPitcherInning 6→5（29人登録でベンチが厚くなった分の代打前倒し）。境界はノブ連動に。
+  assert.equal(choosePinchHitter({ ...ctxP, inning: cfg.tuning.sub.phPitcherInning - 1 }, cfg), null, 'phPitcherInning未満は投手に打たせる');
   assert.equal(choosePinchHitter({ ...ctxP, oppScore: 1 }, cfg), null, 'リード時は続投前提');
   // 救援が残っていなければ投手に代打を出せない
   const noPen = { ...side, usedPitchers: new Set(['RP1']) };

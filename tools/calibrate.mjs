@@ -21,6 +21,8 @@ import { hitterWAR, pitcherWAR } from '../src/sim/war.mjs';
 import { createBattingLine, createPitchingLine, addBattingLine, addPitchingLine } from '../src/model/statline.mjs';
 import { playerBatting, playerPitching } from '../src/sim/metrics.mjs';
 import { armRunsAboveAvg, mainPosition, totalFieldInnings } from '../src/sim/fielding.mjs';
+// --- F2-5 二軍サニティ用（ゲーム層の日次ランタイム＝二軍リーグ並走。既存30には一切影響しない） ---
+import { startSeasonRuntime, advanceRuntimeDay, pendingDay } from '../src/game/season_runtime.mjs';
 
 const OUTFIELD = new Set(['LF', 'CF', 'RF']);
 
@@ -423,4 +425,88 @@ console.log(drow('PF平均(ゼロサム)', avgR((r) => r.pfRunsMean), D.pfRunsMe
 console.log(drow('park補正wRC+(100中心)', avgR((r) => r.parkWrcPlusCenter), D.parkWrcPlusCenter, 2));
 console.log('');
 console.log(`=== フェーズD2追加チェック PASS ${dPass} / FAIL ${dFail} ===`);
-console.log(`=== 総合: 既存30 [PASS ${nPass}/FAIL ${nFail}]  ＋  フェーズB追加 [PASS ${bPass}/FAIL ${bFail}]  ＋  フェーズD2 [PASS ${dPass}/FAIL ${dFail}] ===`);
+
+// ============================================================================
+// F2-5 二軍サニティ（phaseF_spec F2-5）: 厳密な目標帯は設けず、二軍リーグの成立と
+// 「一軍に及ばない選手＋成長曲線途中の若手」という構造の発現だけを機械判定する。
+//   ①二軍打率が一軍と同水準（±15pt・実NPBファームは投手の質低下が大きく打率は同等〜やや高）
+//   ②二軍平均年齢が一軍（出場登録29人）より若い
+//   ③二軍全日程消化（660試合 = 110×12/2・farm.finished）
+//   ④人口整合（支配下70人/球団・育成10-40人/球団）
+// 二軍は独立シード根（hashSeed(seed,'farm')）＝このランは上の既存53指標へ一切影響しない。
+// ============================================================================
+const FARM_SEEDS = [1, 2, 3];
+function runFarmSanity(seed) {
+  const cfg = createConfig(OVERRIDES);
+  const lg = generateLeague(seed, cfg);
+  const rt = startSeasonRuntime(lg, cfg, { season: 2026, seed, playerTeamId: lg.teams[0].id });
+  while (!rt.finished) advanceRuntimeDay(rt);
+  // 打率（生カウント合算）
+  const sumAvg = (statsMap) => {
+    let h = 0;
+    let ab = 0;
+    for (const s of statsMap.values()) {
+      h += s.batting.h;
+      ab += s.batting.ab;
+    }
+    return ab ? h / ab : 0;
+  };
+  const avgTop = sumAvg(rt.stats.stats);
+  const avgFarm = sumAvg(rt.farm.stats.stats);
+  // 平均年齢: 一軍=出場登録29人 / 二軍=登録外の支配下＋育成（ロスター構成で判定）
+  const registered = new Set();
+  for (const set of rt.registeredByTeam.values()) for (const pid of set) registered.add(pid);
+  let ageTop = 0;
+  let nTop = 0;
+  let ageFarm = 0;
+  let nFarm = 0;
+  for (const p of lg.players) {
+    if (registered.has(p.id)) { ageTop += p.age; nTop++; }
+    else { ageFarm += p.age; nFarm++; }
+  }
+  for (const p of lg.farm ?? []) { ageFarm += p.age; nFarm++; }
+  // 人口整合
+  const perTeam = new Map(lg.teams.map((t) => [t.id, 0]));
+  for (const p of lg.players) perTeam.set(p.teamId, perTeam.get(p.teamId) + 1);
+  const devPerTeam = new Map(lg.teams.map((t) => [t.id, 0]));
+  for (const p of lg.farm ?? []) devPerTeam.set(p.teamId, devPerTeam.get(p.teamId) + 1);
+  const R = cfg.tuning.roster;
+  const popOk = [...perTeam.values()].every((n) => n === R.controlledPerTeam)
+    && [...devPerTeam.values()].every((n) => n >= R.devCountMin && n <= R.devCountMax);
+  return {
+    avgTop,
+    avgFarm,
+    avgDiff: avgFarm - avgTop,
+    ageTop: ageTop / nTop,
+    ageFarm: ageFarm / nFarm,
+    farmDone: rt.farm.finished && rt.farm.cursor === rt.farm.schedule.length,
+    farmGames: rt.farm.schedule.length,
+    popOk,
+  };
+}
+let fPass = 0;
+let fFail = 0;
+const fbool = (label, ok, note = '') => {
+  ok ? fPass++ : fFail++;
+  return `${ok ? 'PASS' : 'FAIL'}  ${label.padEnd(20)} ${note}`;
+};
+const farmRuns = FARM_SEEDS.map(runFarmSanity);
+const avgF = (fn) => farmRuns.reduce((a, r) => a + fn(r), 0) / farmRuns.length;
+const fAvgDiff = avgF((r) => r.avgDiff);
+const fAgeTop = avgF((r) => r.ageTop);
+const fAgeFarm = avgF((r) => r.ageFarm);
+console.log('');
+console.log('=== F2-5 二軍サニティ（seeds=' + FARM_SEEDS.join(',') + ' 平均・厳密帯なし） ===');
+// 実NPBのファーム打率は一軍と同水準〜やや高い（投手の質低下が打者の質低下を上回るため。
+// 例: イースタン打率 ~.250-.260 vs 一軍 .240s）。当初の「二軍が-10〜-40pt低い」想定は誤りだったため
+// 「環境として同水準（±15pt以内）」を成立条件とする。選手の質差は年齢・スカウト等級・昇降格で担保。
+console.log(fbool('二軍打率が一軍と同水準(±15pt・実NPBのファーム挙動)', Math.abs(fAvgDiff) <= 0.015,
+  `二軍 ${avgF((r) => r.avgFarm).toFixed(3)} − 一軍 ${avgF((r) => r.avgTop).toFixed(3)} = ${(fAvgDiff * 1000).toFixed(1)}pt`));
+console.log(fbool('二軍平均年齢<一軍', fAgeFarm < fAgeTop,
+  `二軍 ${fAgeFarm.toFixed(1)}歳 < 一軍 ${fAgeTop.toFixed(1)}歳`));
+console.log(fbool('二軍全日程消化(660試合)', farmRuns.every((r) => r.farmDone && r.farmGames === 660),
+  `games=${farmRuns[0].farmGames}`));
+console.log(fbool('人口整合(支配下70・育成10-40)', farmRuns.every((r) => r.popOk), ''));
+console.log('');
+console.log(`=== F2-5二軍サニティ PASS ${fPass} / FAIL ${fFail} ===`);
+console.log(`=== 総合: 既存30 [PASS ${nPass}/FAIL ${nFail}]  ＋  フェーズB追加 [PASS ${bPass}/FAIL ${bFail}]  ＋  フェーズD2 [PASS ${dPass}/FAIL ${dFail}]  ＋  二軍サニティ [PASS ${fPass}/FAIL ${fFail}] ===`);

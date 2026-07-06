@@ -56,7 +56,8 @@ export function generateName(rng) {
 /** 投手を1人生成 */
 export function generatePitcher(rng, id) {
   const velocityKmh = Math.round(clamp(rng.normal(146, 4.5), 130, 165)); // NPB先発平均~146
-  const control = draw(rng, 50, 12); // S5較正: 分散を微拡大（平均不変）＝エース級FIPの裾→投手WAR王
+  const control = draw(rng, 50, 13); // S5較正: 分散を微拡大（平均不変）＝エース級FIPの裾→投手WAR王
+  // （F2-5: 12→13。出場登録29人選抜でリーグ平均が上澄み化しエースの相対優位が圧縮→裾を再拡大）
   const stamina = draw(rng, 50, 12);
 
   // 球種数 2〜5（奪三振能力とは独立, §8.1）。fastball は必ず保有。
@@ -66,7 +67,7 @@ export function generatePitcher(rng, id) {
   const pitches = types.map((t) =>
     createPitch(t, {
       current: draw(rng, 50, 10),
-      whiff: draw(rng, 50, 14), // S5較正: 分散を微拡大（平均不変）＝奪三振の裾→投手WAR王
+      whiff: draw(rng, 50, 15), // S5較正: 分散を微拡大（平均不変）＝奪三振の裾→投手WAR王（F2-5: 14→15・同上）
       hrSuppress: draw(rng, 50, 10),
       contactQuality: draw(rng, 50, 10), // 被コンタクト質の抑止（EV抑止に接続・A-9修正）
     }),
@@ -89,13 +90,15 @@ export function generatePitcher(rng, id) {
     },
     // 投手打撃は実NPB水準（AVG~.15 / K%~30 / 極低BB）へ。特に対球種適性を低く設定しないと
     // 既定50（球種に対し平均打者）のままK%が上がらずAVGが.21まで膨れ、セパ得点差が埋没する（レビュー#3）。
+    // F2-5再較正: 出場登録29人選抜でDH枠の打者の質が上がりセパ得点差が帯上限(0.45)を超過
+    //   → 投手打撃を僅かに底上げ（DH無リーグの得点を持ち上げ差を帯内へ）。rng消費数は不変（値のみ）。
     batting: {
-      ev: draw(rng, 25, 6),
+      ev: draw(rng, 30, 6),
       la: draw(rng, 39, 6),
-      contact: draw(rng, 24, 6),
+      contact: draw(rng, 31, 6),
       eye: draw(rng, 29, 6),
-      vsFastball: draw(rng, 25, 6), // 対速球適性（低＝速球で三振を取られる）
-      vsBreaking: draw(rng, 23, 6), // 対変化球適性
+      vsFastball: draw(rng, 30, 6), // 対速球適性（低＝速球で三振を取られる）
+      vsBreaking: draw(rng, 28, 6), // 対変化球適性
     },
     pitching: { velocityKmh, control, stamina, gbRate: draw(rng, 50, 12), hold: draw(rng, 50, 10), pitches },
     // §12.4: peakAge も能力タイプと相関させる（技巧＝制球高ほど後ろズレ／速球高ほど前ズレ）。

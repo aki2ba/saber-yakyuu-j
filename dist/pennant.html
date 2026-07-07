@@ -33,6 +33,8 @@
   table.stat th:first-child { left:0; z-index:2; }
   table.stat td:first-child { position:sticky; left:0; background:var(--bg); z-index:1; }
   tr.clickable:hover { background:#174a34; cursor:pointer; }
+  /* 上記の先頭列固定より後ろに置き、自チーム強調/hoverが先頭セルだけ効かなくなるのを防ぐ */
+  tr.clickable:hover td:first-child { background:#174a34; }
   .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
   .modal { background:var(--panel); border:1px solid var(--clay); border-radius:10px; padding:16px;
@@ -83,6 +85,7 @@
   .wl { display:inline-block; width:18px; text-align:center; font-weight:700; border-radius:4px; }
   .wlw { color:#7bc47f; } .wll { color:#e06d6d; } .wlt { color:var(--muted); }
   tr.myteam td { background:#1c4a34; font-weight:700; }
+  tr.myteam td:first-child { background:#1c4a34; }
   .teamstate { margin:8px 0; font-size:14px; letter-spacing:1px; }
   .mgrpanel, .savepanel { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:12px; }
   .tendrow { display:flex; align-items:center; gap:6px; margin:4px 0; }
@@ -244,7 +247,7 @@
     .nowpanel svg.diamond { width:170px; }
     .nowscore { min-width:0; width:100%; }
     .nowtscore { font-size:30px; }
-    .watchctrl { position:sticky; top:0; z-index:5; background:var(--bg); padding:6px 0; margin:0 0 6px; }
+    .watchctrl { position:sticky; top:0; z-index:5; background:var(--bg); padding:6px 0; margin:0 0 6px; box-shadow:0 6px 8px -6px rgba(0,0,0,.5); }
     table.scoreboard th, table.scoreboard td { padding:3px 4px; font-size:11px; }
     .reccols { flex-direction:column; }
     .overlay { padding:8px; }

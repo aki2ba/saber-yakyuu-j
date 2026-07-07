@@ -110,7 +110,8 @@ function rankAndGb(standings, teamId) {
   const rank = lg.findIndex((r) => r.teamId === teamId) + 1;
   const top = lg[0];
   const gb = ((top.w - row.w) + (row.l - top.l)) / 2; // 標準的なゲーム差
-  return { rank, gb, total: lg.length };
+  const gp = row.w + row.l + (row.t || 0); // 消化試合数（開幕直後の「首位快走」誤発火を防ぐガード用）
+  return { rank, gb, total: lg.length, gp };
 }
 
 /**
@@ -125,9 +126,9 @@ export function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }
   const st = streakOf(gameLog, teamId);
   if (st.type === 'W' && st.len >= 3) out.push({ text: `${myName}、${st.len}連勝で波に乗る！`, cls: 'good' });
   else if (st.type === 'L' && st.len >= 3) out.push({ text: `${myName}、${st.len}連敗…反攻なるか`, cls: 'bad' });
-  // 首位攻防
+  // 首位攻防（開幕直後は全チーム勝率.000で並ぶため、順位の意味が生まれる試合数まではガード）
   const rg = rankAndGb(standings, teamId);
-  if (rg) {
+  if (rg && rg.gp >= 5) {
     if (rg.rank === 1) out.push({ text: `${myName}が首位快走（${rg.total}球団中1位）`, cls: 'good' });
     else if (rg.gb <= 3) out.push({ text: `首位攻防、${myName}は${rg.rank}位・${rg.gb.toFixed(1)}ゲーム差の激戦`, cls: 'info' });
   }

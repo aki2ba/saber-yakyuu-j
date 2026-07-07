@@ -218,19 +218,25 @@ function renderStandings(c) {
     ? leagues.map((l) => ({ title: `${l.name}（DH${l.dh ? '有' : '無'}）`, rows: byLg[l.id] ?? [] }))
     : [{ title: '総合', rows: state.res.standings }];
   for (const blk of blocks) {
+    const leader = blk.rows[0];
     const rows = blk.rows.map((t, i) => {
       const py = pythag(t); // ピタゴラス期待勝率＋幸運度（得失点から見た実力勝率と実勝率の差）
       const luck = Math.round(py.luck);
+      // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。首位行は0=表記「-」）
+      const gb = leader ? ((leader.w - t.w) + (t.l - leader.l)) / 2 : 0;
       return el('tr', {}, [
-        td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
-        td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+        td(i + 1),
+        el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
+        td(t.w), td(t.l), td(t.t),
+        td(fmt3(winPct(t))), td(gb <= 0 ? '-' : gb.toFixed(1)),
+        td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
         td(fmt3(py.expWinPct)), td((luck > 0 ? '+' : '') + luck),
         td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
       ]);
     });
     c.append(el('h3', { class: 'leaguename' }, blk.title));
     // 期待勝率=得失点からのピタゴラス実力勝率 / 運=実勝率−期待勝率を勝数換算（+は接戦強い/幸運）
-    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差', '期待勝率', '運', '交流戦'], rows));
+    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差', '得点', '失点', '得失点差', '期待勝率', '運', '交流戦'], rows));
   }
   renderPostseasonPanel(c);
   renderFarmStandings(c); // F2-4: 二軍リーグ順位（キャリアモードのみ・折りたたみ）
@@ -997,6 +1003,24 @@ const pname = (id) => (state.byId.get(id) ? state.byId.get(id).name : id);
 const tname = (id) => state.teamName.get(id) || id;
 const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 
+// 球団アクセントカラー（UI表示専用・generate.mjs の固定12球団名に対する静的マップ。
+// エンジン/球団モデルは一切変更しない＝表示レイヤーのみの識別色）。
+const TEAM_COLORS = {
+  '白鷺ホワイトス': '#e9e4d0',
+  '疾風ゲイルズ': '#5ecbe0',
+  '蒼波ブルーズ': '#4f8fe0',
+  '紅蓮フレイムス': '#e0574a',
+  '雷鳴サンダー': '#e8c93a',
+  '黒曜オブシディアン': '#9b8cd9',
+  '翠嶺グリーンズ': '#5fd694',
+  '金獅子ライオネル': '#d9a13d',
+  '銀翼シルバーズ': '#b8c4c9',
+  '暁アヴローラ': '#e0895a',
+  '嵐山ストームズ': '#8898a8',
+  '夜叉ナイツ': '#c65a86',
+};
+const teamColor = (id) => TEAM_COLORS[tname(id)] || 'var(--clay)';
+
 /** ゲーム層の共有コンテキスト（stat 描画が参照する state.* をゲーム状態から張る）。 */
 function bindGameContext(gs) {
   state.cfg = gs.cfg;
@@ -1266,10 +1290,17 @@ function renderHubHome(c) {
   const rows = currentStandings(rt);
   const myLg = rt.standings.get(gs.playerTeamId).league;
   const lgRows = rows.filter((r) => r.league === myLg);
+  const lgLeader = lgRows[0];
   c.append(el('h3', { class: 'leaguename' }, `${leagueNameOf(gs.cfg, myLg)} 順位`));
-  c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差'], lgRows.map((t, i) => el('tr', { class: t.teamId === gs.playerTeamId ? 'myteam' : '' }, [
-    td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t), td(fmt3(winPct(t))), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-  ]))));
+  c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差'], lgRows.map((t, i) => {
+    // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。以前は誤って得失点差を表示していた）
+    const gb = lgLeader ? ((lgLeader.w - t.w) + (t.l - lgLeader.l)) / 2 : 0;
+    return el('tr', { class: t.teamId === gs.playerTeamId ? 'myteam' : '' }, [
+      td(i + 1),
+      el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
+      td(t.w), td(t.l), td(t.t), td(fmt3(winPct(t))), td(gb <= 0 ? '-' : gb.toFixed(1)),
+    ]);
+  })));
 
   // チーム状態（調子＝直近10試合の勝敗・疲労＝ブルペン可用の目安は省略しC2で拡張）
   const form = teamForm(rt, gs.playerTeamId);
@@ -1678,7 +1709,7 @@ function renderWatch() {
  */
 function watchDeps() {
   return {
-    el, td, state, game, tname, pname, posJP, playerLink,
+    el, td, state, game, tname, pname, posJP, playerLink, teamColor,
     svgEl, svgText, fmt3, f2, refreshRes, renderHub,
   };
 }

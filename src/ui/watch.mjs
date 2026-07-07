@@ -689,9 +689,13 @@ function watchCallCls(call) {
  * 視覚階層の最上位（スコア > 回・アウト > 対戦 > 詳細）。
  */
 function watchNowPanel(v, u) {
-  const { el, game, tname } = u;
+  const { el, game, tname, teamColor } = u;
   const my = game.gs.playerTeamId;
-  const teamCol = (tid, score) => el('div', { class: 'nowteam' + (tid === my ? ' nowmy' : '') }, [
+  // F4: 球団アクセントカラー（UI表示専用の静的マップ・teamColor）で自チーム/相手チームを一目で判別
+  const teamCol = (tid, score) => el('div', {
+    class: 'nowteam' + (tid === my ? ' nowmy' : ''),
+    style: tid ? `--team-accent:${teamColor(tid)}` : '',
+  }, [
     el('div', { class: 'nowtname' }, tid ? tname(tid) : '—'),
     el('div', { class: 'nowtscore' }, String(score)),
   ]);
@@ -879,7 +883,7 @@ function watchMatchup(v, u) {
 function watchControls(v, u, done) {
   const { el, game, tname } = u;
   const w = game.watch;
-  const ctrl = el('div', { class: 'row', style: 'flex-wrap:wrap;margin:8px 0' });
+  const ctrl = el('div', { class: 'row watchctrl', style: 'flex-wrap:wrap;margin:8px 0' });
   if (!done) {
     const adv = (unit) => { w.unit = unit; w.idx = watchAdvanceIdx(w, unit); renderWatchScreen(u); };
     ctrl.append(el('button', { class: 'primary', onclick: () => adv('pitch') }, '▶ 1球'));
@@ -893,7 +897,7 @@ function watchControls(v, u, done) {
     const { notables } = detectGameNotables(w.events);
     for (const n of notables) {
       const head = notableHeadline(n, (id) => u.pname(id), (id) => tname(id));
-      if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
+      if (head) ctrl.append(el('div', { class: 'newsrow good notable', style: 'width:100%' }, `🎉 ${head}`));
     }
     ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ホームへ戻る'));
   }

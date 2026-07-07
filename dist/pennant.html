@@ -29,6 +29,9 @@
   table.stat th.left, table.stat td.left { text-align:left; }
   table.stat th.sorted { color:var(--gold); }
   table.stat td { padding:5px 8px; text-align:right; border-bottom:1px solid #1c4a34; }
+  /* F4: 列数の多い成績表（打撃26列等）を横スクロールしても選手名が見えるよう先頭列を固定 */
+  table.stat th:first-child { left:0; z-index:2; }
+  table.stat td:first-child { position:sticky; left:0; background:var(--bg); z-index:1; }
   tr.clickable:hover { background:#174a34; cursor:pointer; }
   .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
@@ -104,6 +107,12 @@
   .pbpline.ev-k, .curabresult.ev-k, .fieldlabel.ev-k { color:var(--muted); }
   .pbpline.ev-err, .curabresult.ev-err, .fieldlabel.ev-err { color:#e8b84b; }
   .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr, .fieldlabel.ev-hr { color:#ff8a76; font-weight:700; }
+  /* F4: 得点/HRの瞬間を一目で伝える演出（現在の打席の結果ボックスに一度だけ再生されるパルス。
+     観戦画面は毎回DOMを作り直すため、結果が決着した瞬間の描画で自然に1回だけ再生される）。 */
+  @keyframes pulseScore { 0% { box-shadow:0 0 0 0 rgba(255,138,118,.55); } 70% { box-shadow:0 0 0 12px rgba(255,138,118,0); } 100% { box-shadow:0 0 0 0 rgba(255,138,118,0); } }
+  .curabresult.ev-score, .curabresult.ev-hr { animation: pulseScore .9s ease-out; }
+  @keyframes notablePop { 0% { transform:scale(.95); opacity:0; } 100% { transform:scale(1); opacity:1; } }
+  .notable { animation: notablePop .35s ease-out; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
@@ -178,7 +187,8 @@
   .nowpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:space-between;
               border:1px solid var(--clay); border-radius:10px; background:#0d3526; padding:10px 16px; margin:10px 0 8px; }
   .nowscore { flex:1; min-width:260px; display:flex; gap:18px; align-items:center; justify-content:center; }
-  .nowteam { text-align:center; min-width:84px; }
+  /* F4: 球団アクセントカラー（--team-accent はJS側で teamColor() からインライン指定） */
+  .nowteam { text-align:center; min-width:84px; border-top:3px solid var(--team-accent, transparent); padding-top:4px; }
   .nowtname { font-size:14px; font-weight:600; color:var(--chalk); }
   .nowteam.nowmy .nowtname { color:var(--gold); }
   .nowtscore { font-size:38px; font-weight:800; line-height:1.15; }
@@ -229,9 +239,13 @@
     .kvgrid { grid-template-columns:repeat(3,1fr); }
     .abilities { grid-template-columns:1fr; }
     .nowpanel, .duelpanel, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
-    .nowpanel svg.diamond { width:100%; }
+    /* F4: 観戦画面の「1画面に収める」対応。盤面を縮小し、進行ボタンを画面上部に固定、
+       ラインスコアの余白を詰めてR/H/Eまで横スクロール無しで収まりやすくする。 */
+    .nowpanel svg.diamond { width:170px; }
     .nowscore { min-width:0; width:100%; }
     .nowtscore { font-size:30px; }
+    .watchctrl { position:sticky; top:0; z-index:5; background:var(--bg); padding:6px 0; margin:0 0 6px; }
+    table.scoreboard th, table.scoreboard td { padding:3px 4px; font-size:11px; }
     .reccols { flex-direction:column; }
     .overlay { padding:8px; }
     .modal { padding:12px; }
@@ -10219,7 +10233,8 @@ function rankAndGb(standings, teamId) {
   const rank = lg.findIndex((r) => r.teamId === teamId) + 1;
   const top = lg[0];
   const gb = ((top.w - row.w) + (row.l - top.l)) / 2; // 標準的なゲーム差
-  return { rank, gb, total: lg.length };
+  const gp = row.w + row.l + (row.t || 0); // 消化試合数（開幕直後の「首位快走」誤発火を防ぐガード用）
+  return { rank, gb, total: lg.length, gp };
 }
 
 /**
@@ -10234,9 +10249,9 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
   const st = streakOf(gameLog, teamId);
   if (st.type === 'W' && st.len >= 3) out.push({ text: `${myName}、${st.len}連勝で波に乗る！`, cls: 'good' });
   else if (st.type === 'L' && st.len >= 3) out.push({ text: `${myName}、${st.len}連敗…反攻なるか`, cls: 'bad' });
-  // 首位攻防
+  // 首位攻防（開幕直後は全チーム勝率.000で並ぶため、順位の意味が生まれる試合数まではガード）
   const rg = rankAndGb(standings, teamId);
-  if (rg) {
+  if (rg && rg.gp >= 5) {
     if (rg.rank === 1) out.push({ text: `${myName}が首位快走（${rg.total}球団中1位）`, cls: 'good' });
     else if (rg.gb <= 3) out.push({ text: `首位攻防、${myName}は${rg.rank}位・${rg.gb.toFixed(1)}ゲーム差の激戦`, cls: 'info' });
   }
@@ -12597,9 +12612,13 @@ function watchCallCls(call) {
  * 視覚階層の最上位（スコア > 回・アウト > 対戦 > 詳細）。
  */
 function watchNowPanel(v, u) {
-  const { el, game, tname } = u;
+  const { el, game, tname, teamColor } = u;
   const my = game.gs.playerTeamId;
-  const teamCol = (tid, score) => el('div', { class: 'nowteam' + (tid === my ? ' nowmy' : '') }, [
+  // F4: 球団アクセントカラー（UI表示専用の静的マップ・teamColor）で自チーム/相手チームを一目で判別
+  const teamCol = (tid, score) => el('div', {
+    class: 'nowteam' + (tid === my ? ' nowmy' : ''),
+    style: tid ? `--team-accent:${teamColor(tid)}` : '',
+  }, [
     el('div', { class: 'nowtname' }, tid ? tname(tid) : '—'),
     el('div', { class: 'nowtscore' }, String(score)),
   ]);
@@ -12787,7 +12806,7 @@ function watchMatchup(v, u) {
 function watchControls(v, u, done) {
   const { el, game, tname } = u;
   const w = game.watch;
-  const ctrl = el('div', { class: 'row', style: 'flex-wrap:wrap;margin:8px 0' });
+  const ctrl = el('div', { class: 'row watchctrl', style: 'flex-wrap:wrap;margin:8px 0' });
   if (!done) {
     const adv = (unit) => { w.unit = unit; w.idx = watchAdvanceIdx(w, unit); renderWatchScreen(u); };
     ctrl.append(el('button', { class: 'primary', onclick: () => adv('pitch') }, '▶ 1球'));
@@ -12801,7 +12820,7 @@ function watchControls(v, u, done) {
     const { notables } = detectGameNotables(w.events);
     for (const n of notables) {
       const head = notableHeadline(n, (id) => u.pname(id), (id) => tname(id));
-      if (head) ctrl.append(el('div', { class: 'newsrow good', style: 'width:100%' }, `🎉 ${head}`));
+      if (head) ctrl.append(el('div', { class: 'newsrow good notable', style: 'width:100%' }, `🎉 ${head}`));
     }
     ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ホームへ戻る'));
   }
@@ -13047,19 +13066,25 @@ function renderStandings(c) {
     ? leagues.map((l) => ({ title: `${l.name}（DH${l.dh ? '有' : '無'}）`, rows: byLg[l.id] ?? [] }))
     : [{ title: '総合', rows: state.res.standings }];
   for (const blk of blocks) {
+    const leader = blk.rows[0];
     const rows = blk.rows.map((t, i) => {
       const py = pythag(t); // ピタゴラス期待勝率＋幸運度（得失点から見た実力勝率と実勝率の差）
       const luck = Math.round(py.luck);
+      // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。首位行は0=表記「-」）
+      const gb = leader ? ((leader.w - t.w) + (t.l - leader.l)) / 2 : 0;
       return el('tr', {}, [
-        td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
-        td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+        td(i + 1),
+        el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
+        td(t.w), td(t.l), td(t.t),
+        td(fmt3(winPct(t))), td(gb <= 0 ? '-' : gb.toFixed(1)),
+        td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
         td(fmt3(py.expWinPct)), td((luck > 0 ? '+' : '') + luck),
         td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
       ]);
     });
     c.append(el('h3', { class: 'leaguename' }, blk.title));
     // 期待勝率=得失点からのピタゴラス実力勝率 / 運=実勝率−期待勝率を勝数換算（+は接戦強い/幸運）
-    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差', '期待勝率', '運', '交流戦'], rows));
+    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差', '得点', '失点', '得失点差', '期待勝率', '運', '交流戦'], rows));
   }
   renderPostseasonPanel(c);
   renderFarmStandings(c); // F2-4: 二軍リーグ順位（キャリアモードのみ・折りたたみ）
@@ -13826,6 +13851,24 @@ const pname = (id) => (state.byId.get(id) ? state.byId.get(id).name : id);
 const tname = (id) => state.teamName.get(id) || id;
 const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 
+// 球団アクセントカラー（UI表示専用・generate.mjs の固定12球団名に対する静的マップ。
+// エンジン/球団モデルは一切変更しない＝表示レイヤーのみの識別色）。
+const TEAM_COLORS = {
+  '白鷺ホワイトス': '#e9e4d0',
+  '疾風ゲイルズ': '#5ecbe0',
+  '蒼波ブルーズ': '#4f8fe0',
+  '紅蓮フレイムス': '#e0574a',
+  '雷鳴サンダー': '#e8c93a',
+  '黒曜オブシディアン': '#9b8cd9',
+  '翠嶺グリーンズ': '#5fd694',
+  '金獅子ライオネル': '#d9a13d',
+  '銀翼シルバーズ': '#b8c4c9',
+  '暁アヴローラ': '#e0895a',
+  '嵐山ストームズ': '#8898a8',
+  '夜叉ナイツ': '#c65a86',
+};
+const teamColor = (id) => TEAM_COLORS[tname(id)] || 'var(--clay)';
+
 /** ゲーム層の共有コンテキスト（stat 描画が参照する state.* をゲーム状態から張る）。 */
 function bindGameContext(gs) {
   state.cfg = gs.cfg;
@@ -14095,10 +14138,17 @@ function renderHubHome(c) {
   const rows = currentStandings(rt);
   const myLg = rt.standings.get(gs.playerTeamId).league;
   const lgRows = rows.filter((r) => r.league === myLg);
+  const lgLeader = lgRows[0];
   c.append(el('h3', { class: 'leaguename' }, `${leagueNameOf(gs.cfg, myLg)} 順位`));
-  c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差'], lgRows.map((t, i) => el('tr', { class: t.teamId === gs.playerTeamId ? 'myteam' : '' }, [
-    td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t), td(fmt3(winPct(t))), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-  ]))));
+  c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差'], lgRows.map((t, i) => {
+    // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。以前は誤って得失点差を表示していた）
+    const gb = lgLeader ? ((lgLeader.w - t.w) + (t.l - lgLeader.l)) / 2 : 0;
+    return el('tr', { class: t.teamId === gs.playerTeamId ? 'myteam' : '' }, [
+      td(i + 1),
+      el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
+      td(t.w), td(t.l), td(t.t), td(fmt3(winPct(t))), td(gb <= 0 ? '-' : gb.toFixed(1)),
+    ]);
+  })));
 
   // チーム状態（調子＝直近10試合の勝敗・疲労＝ブルペン可用の目安は省略しC2で拡張）
   const form = teamForm(rt, gs.playerTeamId);
@@ -14507,7 +14557,7 @@ function renderWatch() {
  */
 function watchDeps() {
   return {
-    el, td, state, game, tname, pname, posJP, playerLink,
+    el, td, state, game, tname, pname, posJP, playerLink, teamColor,
     svgEl, svgText, fmt3, f2, refreshRes, renderHub,
   };
 }

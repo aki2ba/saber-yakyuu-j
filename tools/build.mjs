@@ -124,6 +124,9 @@ const html = `<!DOCTYPE html>
   table.stat th.left, table.stat td.left { text-align:left; }
   table.stat th.sorted { color:var(--gold); }
   table.stat td { padding:5px 8px; text-align:right; border-bottom:1px solid #1c4a34; }
+  /* F4: 列数の多い成績表（打撃26列等）を横スクロールしても選手名が見えるよう先頭列を固定 */
+  table.stat th:first-child { left:0; z-index:2; }
+  table.stat td:first-child { position:sticky; left:0; background:var(--bg); z-index:1; }
   tr.clickable:hover { background:#174a34; cursor:pointer; }
   .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
@@ -199,6 +202,12 @@ const html = `<!DOCTYPE html>
   .pbpline.ev-k, .curabresult.ev-k, .fieldlabel.ev-k { color:var(--muted); }
   .pbpline.ev-err, .curabresult.ev-err, .fieldlabel.ev-err { color:#e8b84b; }
   .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr, .fieldlabel.ev-hr { color:#ff8a76; font-weight:700; }
+  /* F4: 得点/HRの瞬間を一目で伝える演出（現在の打席の結果ボックスに一度だけ再生されるパルス。
+     観戦画面は毎回DOMを作り直すため、結果が決着した瞬間の描画で自然に1回だけ再生される）。 */
+  @keyframes pulseScore { 0% { box-shadow:0 0 0 0 rgba(255,138,118,.55); } 70% { box-shadow:0 0 0 12px rgba(255,138,118,0); } 100% { box-shadow:0 0 0 0 rgba(255,138,118,0); } }
+  .curabresult.ev-score, .curabresult.ev-hr { animation: pulseScore .9s ease-out; }
+  @keyframes notablePop { 0% { transform:scale(.95); opacity:0; } 100% { transform:scale(1); opacity:1; } }
+  .notable { animation: notablePop .35s ease-out; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
@@ -273,7 +282,8 @@ const html = `<!DOCTYPE html>
   .nowpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:space-between;
               border:1px solid var(--clay); border-radius:10px; background:#0d3526; padding:10px 16px; margin:10px 0 8px; }
   .nowscore { flex:1; min-width:260px; display:flex; gap:18px; align-items:center; justify-content:center; }
-  .nowteam { text-align:center; min-width:84px; }
+  /* F4: 球団アクセントカラー（--team-accent はJS側で teamColor() からインライン指定） */
+  .nowteam { text-align:center; min-width:84px; border-top:3px solid var(--team-accent, transparent); padding-top:4px; }
   .nowtname { font-size:14px; font-weight:600; color:var(--chalk); }
   .nowteam.nowmy .nowtname { color:var(--gold); }
   .nowtscore { font-size:38px; font-weight:800; line-height:1.15; }
@@ -324,9 +334,13 @@ const html = `<!DOCTYPE html>
     .kvgrid { grid-template-columns:repeat(3,1fr); }
     .abilities { grid-template-columns:1fr; }
     .nowpanel, .duelpanel, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
-    .nowpanel svg.diamond { width:100%; }
+    /* F4: 観戦画面の「1画面に収める」対応。盤面を縮小し、進行ボタンを画面上部に固定、
+       ラインスコアの余白を詰めてR/H/Eまで横スクロール無しで収まりやすくする。 */
+    .nowpanel svg.diamond { width:170px; }
     .nowscore { min-width:0; width:100%; }
     .nowtscore { font-size:30px; }
+    .watchctrl { position:sticky; top:0; z-index:5; background:var(--bg); padding:6px 0; margin:0 0 6px; }
+    table.scoreboard th, table.scoreboard td { padding:3px 4px; font-size:11px; }
     .reccols { flex-direction:column; }
     .overlay { padding:8px; }
     .modal { padding:12px; }

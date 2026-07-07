@@ -298,6 +298,15 @@ assert.ok(!walk(duelPanel).some((n) => (n.className || '').includes('zoneplot'))
 assert.ok(/(右打|左打|両打)/.test(muTxt), `対戦カードの打者に利き腕表記 (${muTxt.slice(0, 80)})`);
 assert.ok(/(右投|左投)/.test(muTxt), `対戦カードの投手に利き腕表記 (${muTxt.slice(0, 80)})`);
 assert.ok(walk(muBox).filter((n) => (n.className || '').includes('handtag')).length >= 2, '打者/投手の利き腕タグ(.handtag)が両方出る');
+// F3) 打球フィールド図: 対戦パネル右カラムにSVGが常設される（試合開始直後は打球なし＝枠だけ）
+{
+  const fieldSvg = walk(duelPanel).find((n) => (n.className || '').includes('fieldchart'));
+  assert.ok(fieldSvg, '打球フィールド図SVG(.fieldchart)が対戦パネルに描かれる');
+  assert.ok((fieldSvg.className || '').includes('empty'), '打球がまだ無い間は枠だけの薄い表示(.empty)');
+  const fieldCol = hasClass('fieldcol');
+  assert.ok(textOf(fieldCol).includes('打球'), '打球フィールド図に見出し「打球」');
+  assert.ok(hasClass('fieldlabel') && textOf(hasClass('fieldlabel')).length > 0, '結果ラベル欄が描かれる');
+}
 // E2c) 進行単位切替: 1球/1打席/1イニング＋自動再生トグル
 for (const b of ['1球', '1打席', '1イニング', '自動再生']) {
   assert.ok(btnByText(b), `進行コントロールに「${b}」`);
@@ -362,6 +371,23 @@ btnByText('1打席')._onclick();
 assert.ok(hasClass('matchup'), '1打席進行後も観戦画面が再描画される');
 btnByText('1イニング')._onclick();
 assert.ok(hasClass('matchup'), '1イニング進行後も観戦画面が再描画される');
+// F3) 打球フィールド図: 打球が発生した打席では着弾マーカー1個＋軌跡線1本＋結果ラベル＋EV/飛距離
+{
+  let fieldSvg = walk(appDiv).find((n) => (n.className || '').includes('fieldchart'));
+  for (let k = 0; k < 30 && (fieldSvg.className || '').includes('empty'); k++) {
+    btnByText('1打席')._onclick();
+    fieldSvg = walk(appDiv).find((n) => (n.className || '').includes('fieldchart'));
+  }
+  assert.ok(!(fieldSvg.className || '').includes('empty'), '打球が発生すると枠だけ表示(.empty)が解除される');
+  const marks = walk(fieldSvg).filter((n) => (n.className || '').includes('fieldmark'));
+  assert.equal(marks.length, 1, `着弾マーカーは1個 (got ${marks.length})`);
+  const trajs = walk(fieldSvg).filter((n) => (n.className || '').includes('fieldtraj'));
+  assert.equal(trajs.length, 1, `軌跡線は1本 (got ${trajs.length})`);
+  const label = textOf(hasClass('fieldlabel'));
+  assert.ok(label.length > 0, `結果ラベルが表示される (${label})`);
+  const sub = textOf(hasClass('fieldsub'));
+  assert.ok(/EV\d+km\/h/.test(sub) && /\d+m/.test(sub), `EV/飛距離が表示される (${sub})`);
+}
 // E2改c) 畳み表示の結果行: [N回表/裏] プレフィックス＋選手名リンク
 {
   const paLines = allClass('pbpline').map(textOf);

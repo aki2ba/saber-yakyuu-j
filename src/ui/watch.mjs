@@ -82,9 +82,11 @@ export function renderWatchScreen(u) {
   root.append(watchLineScore(v, u));
   // 3) 進行コントロール（「今の状況」直下の固定位置: 1球/1打席/1イニング/自動再生/最後まで）
   root.append(watchControls(v, u, done));
-  // 4) 「対戦」パネル: 打者/投手カード＋現打席リスト（コース図はユーザー要望で撤去・1カラム）
+  // 4) 「対戦」パネル: 打者/投手カード＋現打席リスト（コース図はユーザー要望で撤去）
+  //    ＋ F3: 右カラムに「打球フィールド図」（直近打席の実データ・静的画像・スポナビ風）
   root.append(el('div', { class: 'duelpanel' }, [
     el('div', { class: 'duelcol' }, [watchMatchup(v, u), watchCurrentAb(v, u)]),
+    watchFieldChart(v, u),
   ]));
   // 5) watch内サブタブ: 速報（実況フィード・既定）／ボックス（両軍当日ライン）／スタメン（＋残量）
   root.append(el('div', { class: 'wtabs' }, [['live', '速報'], ['box', 'ボックス'], ['lineup', 'スタメン']].map(([k, label]) =>
@@ -153,6 +155,7 @@ function watchReconstruct(events, idx, u) {
     daily: new Map(), // batterId → {ab, h, res:[]}（当日成績）
     abIndex: 0, // 何打席目か（コース図の決定論ハッシュ座標のキー・atbatごとに+1）
     curAb: null, // 現在の打席 { abIdx, batterId, pitcherId, pitches:[{n,call,band,text}], result:{cls,parts}|null }
+    lastPA: null, // 直近の 'pa' イベント（打球フィールド図用）: { bb, result, resultText, cls }|null
     line: [], // [{inning, top, bottom}] イニング別得点
     halfStarted: new Set(), // '3/top' 等（ラインスコアの 0 と空欄の区別）
     lines: [], // 実況行 [{text|parts, cls, kind}]
@@ -233,6 +236,7 @@ function watchReconstruct(events, idx, u) {
       const tail = `: ${r.body}${pts}${e.runsOnPlay > 0 ? watchScoreTxt(v, tname) : ''}`;
       v.lines.push({ kind: 'pa', cls, parts: [`[${e.inning}回${watchHalfJP(e.half)}] `, u.playerLink(e.batterId), tail] });
       if (v.curAb) v.curAb.result = { cls, parts: [u.playerLink(e.batterId), tail] };
+      v.lastPA = { bb: e.bb || null, result: e.result, resultText: r.body, cls: r.cls };
       v.balls = 0; v.strikes = 0;
     } else if (e.type === 'bunt') {
       const beforeBat = e.batTeam === v.home ? v.scoreH : v.scoreA;
@@ -350,6 +354,61 @@ function watchCurrentAb(v, u) {
   for (const p of ab.pitches) box.append(el('div', { class: 'curabpitch ' + watchCallCls(p.call) }, p.text));
   if (ab.result) box.append(el('div', { class: 'curabresult ' + (ab.result.cls || '') }, ab.result.parts));
   return box;
+}
+
+/** 打球結果の着弾マーカー色（ui.mjs sprayChart の ballColor と同じ配色: HR=金/長打=青/単打=白/アウト=灰）。 */
+function watchBallColor(res) {
+  return res === 'HR' ? '#e8b84b' : res === '2B' || res === '3B' ? '#5aa9e6' : res === '1B' ? '#f4f1e6' : '#6d7f74';
+}
+
+/**
+ * F3: 「打球フィールド図」カラム（対戦パネルの右側・実データ1件・静的画像・スポナビ風）。
+ * 直近の 'pa' イベント（v.lastPA・watchReconstruct が再生済みイベントから記録）の打球データを
+ * 1件だけ描画する。sprayChart（ui.mjs）と同じ座標変換（ファウルライン±45°・内野目安円・本塁）を
+ * 流用し、着弾点は1つの大きめマーカー、本塁からの軌跡は laDeg 帯で弧の高さを変えて視覚的に区別する
+ * （物理シミュレーションではなく見た目の区別のみ）。打球のない打席（三振/四球等）は枠だけの薄い図＋
+ * 結果テキストのみを表示する。
+ */
+function watchFieldChart(v, u) {
+  const { el, svgEl } = u;
+  const col = el('div', { class: 'duelcol fieldcol' });
+  col.append(el('div', { class: 'duelhead' }, '打球'));
+  const p = v.lastPA;
+  const W = 240; const H = 220; const hx = W / 2; const hy = H - 20; const scale = (H - 36) / 135;
+  const pt = (deg, dist) => {
+    const r = (deg * Math.PI) / 180;
+    return [hx + dist * scale * Math.sin(r), hy - dist * scale * Math.cos(r)];
+  };
+  const hasBb = !!(p && p.bb);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fieldchart' + (hasBb ? '' : ' empty') });
+  const [lx, ly] = pt(-45, 125); const [rx, ry] = pt(45, 125);
+  svg.append(svgEl('path', { d: `M ${hx} ${hy} L ${lx} ${ly} A ${125 * scale} ${125 * scale} 0 0 1 ${rx} ${ry} Z`, fill: '#123d2a', stroke: '#2f6b4a' }));
+  const [b2x, b2y] = pt(0, 38);
+  svg.append(svgEl('circle', { cx: b2x, cy: b2y, r: 3, fill: '#c9a06a' }));
+  svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, fill: '#fff' }));
+  if (hasBb) {
+    const bb = p.bb;
+    const [ex, ey] = pt(bb.sprayDeg, Math.min(bb.distanceM, 130));
+    // 軌跡: laDeg帯で弧の高さを変える（<10=ゴロ気味の直線／10-25=浅い弧／25+=山なり）
+    const arcH = bb.laDeg < 10 ? 4 : bb.laDeg < 25 ? 20 : 46;
+    const ctrlX = (hx + ex) / 2; const ctrlY = (hy + ey) / 2 - arcH;
+    svg.append(svgEl('path', {
+      d: `M ${hx} ${hy} Q ${ctrlX.toFixed(1)} ${ctrlY.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`,
+      class: 'fieldtraj', fill: 'none', stroke: '#e9e4d0', 'stroke-width': '1.6', 'stroke-dasharray': '4 3', opacity: 0.9,
+    }));
+    svg.append(svgEl('circle', {
+      cx: ex.toFixed(1), cy: ey.toFixed(1), r: p.result === 'HR' ? 6.5 : 5.5, class: 'fieldmark',
+      fill: watchBallColor(p.result), stroke: '#0c3122', 'stroke-width': '1.5',
+    }));
+  }
+  col.append(svg);
+  if (!p) {
+    col.append(el('div', { class: 'fieldlabel muted' }, 'まだ打球なし'));
+  } else {
+    col.append(el('div', { class: 'fieldlabel ' + (p.cls || '') }, p.resultText));
+    if (hasBb) col.append(el('div', { class: 'fieldsub muted' }, `EV${Math.round(p.bb.evKmh)}km/h ${Math.round(p.bb.distanceM)}m`));
+  }
+  return col;
 }
 
 // ============================================================================

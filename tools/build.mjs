@@ -194,11 +194,11 @@ const html = `<!DOCTYPE html>
   .pbpline.ev-sub { color:#7fb0e0; }
   .pbpline.ev-start { color:var(--clay); font-weight:600; }
   /* E2改: 結果行の色分け（安打=青系/HR・得点=赤系強調/三振=グレー/四死球=緑系/失策・盗塁死=橙系） */
-  .pbpline.ev-hit, .curabresult.ev-hit { color:#8fc7ff; }
-  .pbpline.ev-bb, .curabresult.ev-bb { color:#7bc47f; }
-  .pbpline.ev-k, .curabresult.ev-k { color:var(--muted); }
-  .pbpline.ev-err, .curabresult.ev-err { color:#e8b84b; }
-  .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr { color:#ff8a76; font-weight:700; }
+  .pbpline.ev-hit, .curabresult.ev-hit, .fieldlabel.ev-hit { color:#8fc7ff; }
+  .pbpline.ev-bb, .curabresult.ev-bb, .fieldlabel.ev-bb { color:#7bc47f; }
+  .pbpline.ev-k, .curabresult.ev-k, .fieldlabel.ev-k { color:var(--muted); }
+  .pbpline.ev-err, .curabresult.ev-err, .fieldlabel.ev-err { color:#e8b84b; }
+  .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr, .fieldlabel.ev-hr { color:#ff8a76; font-weight:700; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
@@ -280,6 +280,13 @@ const html = `<!DOCTYPE html>
   .duelpanel .matchup { border:none; background:none; padding:0; min-width:0; flex:none; }
   .duelpanel .curab { background:#0d3526; }
   .handtag { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; white-space:nowrap; }
+  /* F3: 打球フィールド図（対戦パネル右カラム・直近打席1件の実データ・静的画像・スポナビ風） */
+  .fieldcol { align-items:center; text-align:center; flex:none; min-width:200px; }
+  .duelhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:2px; align-self:flex-start; }
+  svg.fieldchart { width:200px; max-width:100%; background:#0c3122; border-radius:8px; }
+  svg.fieldchart.empty { opacity:0.55; }
+  .fieldlabel { margin-top:6px; font-size:13px; font-weight:700; }
+  .fieldsub { font-size:11px; margin-top:2px; }
   /* 一球判定の統一色（現打席リスト・実況一球行に適用）:
      ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青 */
   .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:#f4f1e6; fill:#f4f1e6; }

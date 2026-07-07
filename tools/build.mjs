@@ -273,23 +273,15 @@ const html = `<!DOCTYPE html>
   .nowouts { font-size:13px; color:var(--muted); margin:2px 0; }
   .nowpanel .bso { justify-content:center; margin:4px 0 0; gap:10px; }
   .nowpanel svg.diamond { width:230px; max-width:100%; }
-  /* E2ゾーニング改: 「対戦」パネル（打者/投手カード＋現打席＋コース図） */
+  /* E2ゾーニング改: 「対戦」パネル（打者/投手カード＋現打席・F2でコース図は撤去し1カラムに） */
   .duelpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start;
                border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:10px 12px; margin:10px 0; }
   .duelcol { flex:1; min-width:250px; display:flex; flex-direction:column; gap:10px; }
   .duelpanel .matchup { border:none; background:none; padding:0; min-width:0; flex:none; }
   .duelpanel .curab { background:#0d3526; }
-  .zonecol { min-width:170px; text-align:center; }
-  svg.zoneplot { width:170px; max-width:100%; }
-  .zonelegend { font-size:10px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin-top:2px; cursor:help; }
-  /* F1コース図v2: 凡例2段（形＝球種/色＝判定）・打者の影・右肩の球番号・利き腕タグ */
-  .zonelegend .leglabel { color:var(--chalk); }
-  .batshadow { fill:#9fb8ac; stroke:#9fb8ac; opacity:.28; }
-  .batlabel { fill:#9fb8ac; opacity:.9; }
-  .pnum { paint-order:stroke; stroke:#0c3122; stroke-width:2px; }
   .handtag { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; white-space:nowrap; }
-  /* 一球判定の統一色（コース図ドット・現打席リスト・実況一球行の全部に適用）:
-     ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青。fill はSVGテキスト（ドット）用 */
+  /* 一球判定の統一色（現打席リスト・実況一球行に適用）:
+     ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青 */
   .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:#f4f1e6; fill:#f4f1e6; }
   .pc-called, .pbpline.pc-called, .curabpitch.pc-called { color:#7bc47f; fill:#7bc47f; }
   .pc-whiff, .pbpline.pc-whiff, .curabpitch.pc-whiff { color:#e06d6d; fill:#e06d6d; }

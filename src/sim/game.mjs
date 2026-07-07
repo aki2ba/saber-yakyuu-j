@@ -748,6 +748,10 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         bb: battedBall
           ? { evKmh: battedBall.evKmh, laDeg: battedBall.laDeg, sprayDeg: battedBall.sprayDeg, distanceM: battedBall.distanceM }
           : null,
+        // 守備帰属（UI観戦の指標変化表示用・§16）: 打球を処理した野手（hitFielderPosは既存のARM用と同一値を再利用）。
+        // 三振/四球等（打球なし）は null。新規乱数消費なし・既存の担当ポジション/選手IDをそのまま渡すだけ。
+        fielderPos: hitFielderPos,
+        fielderId: hitFielderPos ? fielding.defense[hitFielderPos] : null,
       });
     }
 

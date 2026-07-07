@@ -388,6 +388,29 @@ assert.ok(hasClass('matchup'), '1イニング進行後も観戦画面が再描�
   const sub = textOf(hasClass('fieldsub'));
   assert.ok(/EV\d+km\/h/.test(sub) && /\d+m/.test(sub), `EV/飛距離が表示される (${sub})`);
 }
+// §16) 打席ごとの指標変化: 「▼ 指標の変化」折りたたみ（既定で開く・結果ボックス直下）＋矢印/差分の表記
+{
+  const md = hasClass('metricdelta');
+  assert.ok(md, '指標変化セクション(.metricdelta)が存在する（直前の打球ありの打席で確認）');
+  assert.ok('open' in md.attrs, '指標変化セクションは既定で開いた折りたたみ(open属性)');
+  const summary = walk(md).find((n) => n.tag === 'summary');
+  assert.ok(summary && textOf(summary).includes('指標の変化'), '見出し「▼ 指標の変化」');
+  const mdRows = allClass('mdrow').map(textOf);
+  assert.ok(mdRows.length >= 1, `指標変化の行が出る (${mdRows.join(' | ')})`);
+  assert.ok(mdRows.every((t) => /→.+（[+-]/.test(t)), `矢印(→)＋差分(+/-)の表記形式 (${mdRows.join(' | ')})`);
+  // 安打の打席まで1打席ずつ進めて、AVG/SLG等の打者側変化行が出ることを確認（守備側にはOAA/UZR行が出る打席もある）
+  let hitCr = hasClass('curabresult');
+  let isHit = hitCr && /ev-hit|ev-hr/.test(hitCr.className || '');
+  for (let k = 0; k < 150 && !isHit && btnByText('1打席'); k++) {
+    btnByText('1打席')._onclick();
+    hitCr = hasClass('curabresult');
+    isHit = hitCr && /ev-hit|ev-hr/.test(hitCr.className || '');
+  }
+  assert.ok(isHit, '安打の打席まで進められる');
+  const hitRows = allClass('mdrow').map(textOf);
+  assert.ok(hitRows.some((t) => t.startsWith('AVG')), `安打の打席でAVG変化行が出る (${hitRows.join(' | ')})`);
+  assert.ok(hitRows.some((t) => t.startsWith('SLG') || t.startsWith('OPS')), `安打の打席でSLG/OPS変化行も出る (${hitRows.join(' | ')})`);
+}
 // E2改c) 畳み表示の結果行: [N回表/裏] プレフィックス＋選手名リンク
 {
   const paLines = allClass('pbpline').map(textOf);

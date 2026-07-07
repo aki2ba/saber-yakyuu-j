@@ -257,6 +257,15 @@ const html = `<!DOCTYPE html>
   .curabresult { margin-top:6px; padding:6px 10px; border-radius:6px; background:#0c3122; font-size:15px; font-weight:700; }
   .reschips { display:inline-flex; gap:3px; flex-wrap:wrap; }
   .reschip { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+  /* §16: 打席ごとの指標変化（「▼ 指標の変化」折りたたみ・既定で開く・結果ボックスの下にぶら下げる） */
+  .metricdelta { margin-top:6px; border-top:1px dashed var(--line); padding-top:6px; }
+  .metricdelta summary { cursor:pointer; color:var(--muted); font-size:11px; font-weight:700; list-style:none; }
+  .metricdelta summary::-webkit-details-marker { display:none; }
+  .mdgroup { margin-top:4px; }
+  .mdname { font-size:11px; color:var(--muted); margin-right:6px; }
+  .mdrow { font-size:12px; padding:1px 0 1px 4px; color:var(--chalk); }
+  .mdrow.mdup { color:#7bc47f; }
+  .mdrow.mddown { color:#e06d6d; }
   .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
   .lineupcol { flex:1; min-width:230px; }

@@ -341,10 +341,12 @@ export function renderWatchScreen(u) {
     setTimeout(() => {
       const cw = game.watch;
       if (!cw || cw !== w || !cw.auto || cw.idx >= cw.events.length) return;
+      cw.justAdvanced = true;
       cw.idx = watchAdvanceIdx(cw, cw.unit || 'pitch');
       renderWatchScreen(u);
     }, 700);
   }
+  w.justAdvanced = false;
 }
 
 /** 再生位置を1単位進めた idx を返す（unit='pitch'|'pa'|'inning'）。 */
@@ -608,7 +610,7 @@ function watchCurrentAb(v, u) {
   // 一球行はコース図ドット/実況一球行と同じ判定色（pc-*）で統一
   for (const p of ab.pitches) box.append(el('div', { class: 'curabpitch ' + watchCallCls(p.call) }, p.text));
   if (ab.result) {
-    box.append(el('div', { class: 'curabresult ' + (ab.result.cls || '') }, ab.result.parts));
+    box.append(el('div', { class: 'curabresult ' + (ab.result.cls || '') + (u.game.watch.justAdvanced ? ' fx' : '') }, ab.result.parts));
     // §16 ユーザー要望: 打席決着で変化した指標を結果直下にぶら下げ表示（既定で開いた折りたたみ）。
     const mdBox = watchMetricDeltaBox(v, u);
     if (mdBox) box.append(mdBox);
@@ -883,21 +885,22 @@ function watchMatchup(v, u) {
 function watchControls(v, u, done) {
   const { el, game, tname } = u;
   const w = game.watch;
-  const ctrl = el('div', { class: 'row watchctrl', style: 'flex-wrap:wrap;margin:8px 0' });
+  // 進行中のみ sticky（試合終了後はノータブル行等で肥大するため固定しない）
+  const ctrl = el('div', { class: 'row' + (done ? '' : ' watchctrl'), style: 'flex-wrap:wrap;margin:8px 0' });
   if (!done) {
-    const adv = (unit) => { w.unit = unit; w.idx = watchAdvanceIdx(w, unit); renderWatchScreen(u); };
+    const adv = (unit) => { w.unit = unit; w.justAdvanced = true; w.idx = watchAdvanceIdx(w, unit); renderWatchScreen(u); };
     ctrl.append(el('button', { class: 'primary', onclick: () => adv('pitch') }, '▶ 1球'));
     ctrl.append(el('button', { onclick: () => adv('pa') }, '▶ 1打席'));
     ctrl.append(el('button', { onclick: () => adv('inning') }, '▶ 1イニング'));
     ctrl.append(el('button', { class: w.auto ? 'primary' : '', onclick: () => { w.auto = !w.auto; renderWatchScreen(u); } }, w.auto ? '⏸ 自動再生を止める' : '▶▶ 自動再生'));
-    ctrl.append(el('button', { onclick: () => { w.auto = false; w.idx = w.events.length; renderWatchScreen(u); } }, '⏩ 最後まで'));
+    ctrl.append(el('button', { onclick: () => { w.auto = false; w.justAdvanced = true; w.idx = w.events.length; renderWatchScreen(u); } }, '⏩ 最後まで'));
   } else {
     ctrl.append(el('div', { class: 'finalscore' }, `試合終了　${tname(v.home)} ${v.scoreH} - ${v.scoreA} ${tname(v.away)}`));
     // 珍記録検出（C4・§54）: ノーヒッター/完全試合/サイクル/猛打賞
     const { notables } = detectGameNotables(w.events);
     for (const n of notables) {
       const head = notableHeadline(n, (id) => u.pname(id), (id) => tname(id));
-      if (head) ctrl.append(el('div', { class: 'newsrow good notable', style: 'width:100%' }, `🎉 ${head}`));
+      if (head) ctrl.append(el('div', { class: 'newsrow good notable' + (w.justAdvanced ? ' fx' : ''), style: 'width:100%' }, `🎉 ${head}`));
     }
     ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ホームへ戻る'));
   }

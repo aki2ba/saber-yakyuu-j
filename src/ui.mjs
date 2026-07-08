@@ -1645,6 +1645,7 @@ function playNextPlayerGame(mode) {
       unit: 'pitch', // 進行単位: 'pitch'|'pa'|'inning'
       auto: false, // 自動再生トグル（UIのみ・状態不変）
       showBench: false, // スタメン/ベンチ・ブルペン残量の折りたたみ
+      justAdvanced: true, // 初回描画で決着済みイベントがあれば1回だけ光る
     };
     renderWatch();
   } else {

@@ -205,11 +205,11 @@ const html = `<!DOCTYPE html>
   .pbpline.ev-err, .curabresult.ev-err, .fieldlabel.ev-err { color:#e8b84b; }
   .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr, .fieldlabel.ev-hr { color:#ff8a76; font-weight:700; }
   /* F4: 得点/HRの瞬間を一目で伝える演出（現在の打席の結果ボックスに一度だけ再生されるパルス。
-     観戦画面は毎回DOMを作り直すため、結果が決着した瞬間の描画で自然に1回だけ再生される）。 */
+     再生位置が進んだ描画(justAdvanced)でのみ .fx を付与＝タブ切替等の再描画では再発火しない）。 */
   @keyframes pulseScore { 0% { box-shadow:0 0 0 0 rgba(255,138,118,.55); } 70% { box-shadow:0 0 0 12px rgba(255,138,118,0); } 100% { box-shadow:0 0 0 0 rgba(255,138,118,0); } }
-  .curabresult.ev-score, .curabresult.ev-hr { animation: pulseScore .9s ease-out; }
+  .curabresult.ev-score.fx, .curabresult.ev-hr.fx { animation: pulseScore .9s ease-out; }
   @keyframes notablePop { 0% { transform:scale(.95); opacity:0; } 100% { transform:scale(1); opacity:1; } }
-  .notable { animation: notablePop .35s ease-out; }
+  .notable.fx { animation: notablePop .35s ease-out; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
   .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }

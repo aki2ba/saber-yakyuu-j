@@ -3,6 +3,57 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G5a 成績タブの列グループ切替＋チーム略称チップ)
+
+**やったこと**（phaseG_spec.md の G5a を実装。G4a/G4b直後の続き）
+- **`statTable` の `opts` 拡張**（G3が足した `emptyMsg` に加え `groups`/`getGroup`/`setGroup`）:
+  `groups` があるとき `getGroup()` が指すグループ定義の**第3要素（列キー配列）の並び順**で `cols` から
+  該当列を1つずつ拾って表示列を決定（`cols` 側の元の並びではなくグループ配列側の並びを使う＝仕様の
+  厳守事項。例: セイバー群は war を末尾に置く）。第3要素が `null` のグループ（'全列'）は `cols` 全体を使う。
+  現在の表示列に無いキーでソート中なら `defaultSort` へフォールバック（グループ切替直後の不整合防止）。
+  `groups` が無いときは従来どおり `wrap`（tablewrap div）単体を返し、あるときは列グループバー
+  （`.colgroups`）＋`wrap` をまとめた外側 div を返す（呼び出し側 `renderBatting`/`renderPitching` は
+  戻り値をそのまま `c.append()` するだけなので変更不要）。
+- **`BAT_COL_GROUPS`/`PIT_COL_GROUPS`** を仕様どおり定義（基本/セイバー/打球/文脈/全列・基本/セイバー/
+  文脈/全列）。UIローカル状態 `batColGroup`/`pitColGroup` は `null`=未初期化とし、初回描画で
+  `game.gs ? 'basic' : 'all'` に一度だけ決定（キャリアモードは基本・クイックシミュレートは分析用途で
+  全列）。`startNewGame` で両方を `null` に戻す一行を追加——同一ブラウザセッション内でクイックシムを
+  一度でも開くと `batColGroup` が非nullのまま固定される（次にキャリアで新規ゲームを始めても'basic'に
+  戻らない）巻き戻りを踏むため、フェーズCの「ニューゲーム＝UI状態も初期化」という既存の暗黙契約に
+  合わせてリセットを追加した（仕様の擬似コードには無い追加だが、smoke一貫実行・実プレイの両方で
+  意図どおりの既定に収束させるために必要と判断）。
+- **team列のチップ表示**: `statTable` 内に `teamCell(d, align)` を新設し、`d.teamId` があれば
+  `tabbr()` 略称＋`border-left:3px solid teamColor` のチップ td（順位表の球団名セルと同じ流儀）、
+  無ければ従来どおり `d.team` の文字列 td にフォールバック。`renderBatting`/`renderPitching`/
+  `renderFielding` の行オブジェクトに `teamId: s.teamId` を追加。
+- CSS: `.colgroups`/`.colgroup`/`.colgroup.active` を `tools/build.mjs` に追加（`.subtabs` より
+  一段軽い見た目＝タブ切替と列フィルタの階層を区別）。
+- **敵対的レビュー的に自己発見して即修正したバグ**: 列グループバーの生成で
+  `barWrap.append(groups.map(...))`（配列をそのまま1個の子として push）と書いてしまい、実ブラウザの
+  `Element.append` も smoke のDOMスタブも配列を個別ノードとして展開しない仕様のため、ボタンが1個も
+  描画されない（`colgroups` バーが空）バグを作っていた。smoke追加分のassert失敗で発覚→
+  `barWrap.append(...groups.map(...))` にスプレッド追加して修正。
+- `tools/smoke-ui.mjs`: ①クイックシミュレート側の犠打/敬遠/代打・xwOBA等の既存列存在アサーション
+  （既定='all'のため実質no-opだが仕様どおり）の直前に「全列」セグメントへの明示クリックを追加、
+  ②キャリアモード側は**シーズン終了後**（規定到達者が並ぶ・G7の月末まで進行後）の C4c セクション
+  （選手モーダル経歴タブの直前）に新規ブロックを追加: 打撃/投手タブとも既定'basic'の `th` 集合が
+  `BAT_COL_GROUPS`/`PIT_COL_GROUPS` の basic 群と一致すること・列グループバーで「基本」がactiveなこと・
+  team列がすべて `TEAM_ABBR` の略称＋`border-left`スタイルであること・「全列」へ切替後に `th` 数が
+  `BAT_COLS.length`/`PIT_COLS.length`（ハードコードせず動的参照）に一致し犠打/xwOBA等の非basic列が
+  現れること、を確認して「基本」へ戻す。ニューゲーム直後（成績タブ初回訪問時点）は0試合消化＝
+  規定未到達で表が空（G3のemptybox）になるため、この位置ではなく全データが揃うシーズン終了後の
+  区画に置いた（仕様の「目印」に囚われず実データの有無で検証位置を選定）。
+- **最終ゲート全PASS**: `npm test`(327件) → `npm run build` → `npm run smoke`(全ブロックPASS) →
+  `npm run verify`(ENGINE identity不変) → `npm run calibrate`(既存30+B20+D2 3+二軍4=PASS57/FAIL0、
+  表示層のみの変更で数値は完全不変)
+- **Playwright実機確認**（モバイル390×844・chromium_headless_shell経由）: ニューゲーム直後の成績タブ
+  打撃/投手で列グループバー（基本/セイバー/打球/文脈/全列、投手は基本/セイバー/文脈/全列）が「基本」
+  active表示で描かれること、ページ例外（pageerror/console error）が皆無なこと、1週間進行後に打撃表の
+  team列が `黒曜`/`翠嶺`/`夜叉`/`雷鳴` 等の略称＋`border-left:3px solid #xxxxxx` のチップで描かれる
+  ことを確認。
+
+**次にやること**: G5b（順位表の詳細トグル＋横スクロールアフォーダンス）。
+
 ## 2026-07-08 (G4b ホームの絞り込み — 9セクション→4＋ヘッダー導線)
 
 **やったこと**（phaseG_spec.md の G4b を実装。G4a直後の続き）

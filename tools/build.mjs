@@ -251,6 +251,10 @@ const html = `<!DOCTYPE html>
   .subtabs { display:flex; gap:6px; margin:8px 0 4px; flex-wrap:wrap; }
   .subtab { padding:5px 14px; font-size:13px; }
   .subtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  /* G5a: 成績タブの列グループ切替（.subtabsより一段軽い見た目＝タブ切替と列フィルタの階層を区別） */
+  .colgroups { display:flex; gap:4px; margin:4px 0 8px; flex-wrap:wrap; }
+  .colgroup { padding:3px 10px; font-size:11px; border-radius:999px; border:1px solid var(--line); background:none; color:var(--muted); }
+  .colgroup.active { border-color:var(--clay); color:var(--clay); font-weight:700; }
   /* F2-4: 二軍サブタブの育成契約バッジ・二軍順位の折りたたみ */
   .devbadge { margin-left:5px; font-size:10px; color:#20160a; background:var(--gold); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
   .farmstandings { margin-top:14px; }

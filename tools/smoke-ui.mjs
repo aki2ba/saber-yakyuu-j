@@ -104,6 +104,8 @@ const textOf = (n) => {
   for (const c of n.children) s += typeof c === 'string' ? c : textOf(c);
   return s;
 };
+// G5a: 成績タブの列グループセグメント（.colgroup）をラベルで取得する小物（appDiv全体から探す）。
+const colGroupBtn = (label) => walk(appDiv).find((n) => n.tag === 'button' && (n.className || '').includes('colgroup') && textOf(n) === label);
 
 // 5) 順位表タブ: リーグ見出し2つ＋6球団×2テーブル＋交流戦列
 const standTab = tabs.find((t) => textOf(t) === '順位表');
@@ -132,14 +134,18 @@ assert.ok(psText.includes('日本シリーズ'), '日本シリーズの結果が
 assert.ok(psText.includes('日本一:'), '日本一チームが表示される');
 
 // 7) 打撃表に SH/IBB/PH 列、投手表に役割（先発/救援）列
+// G5a: クイックシミュレート（game.gs無し）は列グループ既定='全列'。犠打/敬遠/代打等はbasic群に
+//   含まれない列のため、明示的に「全列」セグメントへ切り替えてから検証する（既定なら実質no-op）。
 const battingTab = tabs.find((t) => textOf(t) === '打撃');
 battingTab._onclick();
+colGroupBtn('全列')?._onclick();
 const batThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
 for (const col of ['犠打', '敬遠', '代打']) {
   assert.ok(batThs.some((t) => t.startsWith(col)), `打撃表に${col}列 (${batThs.join(',')})`);
 }
 const pitchingTab = tabs.find((t) => textOf(t) === '投手');
 pitchingTab._onclick();
+colGroupBtn('全列')?._onclick();
 nodes = walk(appDiv);
 const pitThs = nodes.filter((n) => n.tag === 'th').map(textOf);
 assert.ok(pitThs.some((t) => t.startsWith('役割')), '投手表に役割列');
@@ -149,6 +155,7 @@ assert.ok(roleCells.includes('先発') && roleCells.includes('救援'), '役割�
 // --- B3c検証: 新指標列（ツールチップ付き）・モーダルのタブ化・チーム集計タブ ----------
 // 8) リーダーボードに新指標列＋列ツールチップ（初心者への定義説明・th の title）
 battingTab._onclick();
+colGroupBtn('全列')?._onclick();
 const batThNodes = walk(appDiv).filter((n) => n.tag === 'th');
 const batThTexts = batThNodes.map(textOf);
 for (const col of ['xwOBA', 'Barrel%', 'HardHit%', 'WPA', 'Clutch', 'wRC+PF']) {
@@ -156,6 +163,7 @@ for (const col of ['xwOBA', 'Barrel%', 'HardHit%', 'WPA', 'Clutch', 'wRC+PF']) {
 }
 assert.ok(batThNodes.some((n) => n.attrs.title && n.attrs.title.length > 0), '列見出しに定義ツールチップ(title)がある');
 pitchingTab._onclick();
+colGroupBtn('全列')?._onclick();
 const pitThTexts2 = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
 for (const col of ['xFIP', 'SIERA', 'K-BB%', 'LOB%', 'QS', 'WPA', 'ERA-PF', 'FIP-PF']) {
   assert.ok(pitThTexts2.some((t) => t.startsWith(col)), `投手表に新指標列 ${col} (${pitThTexts2.join(',')})`);
@@ -607,6 +615,47 @@ btnByText('ニュース')._onclick();
 // C4c) 選手モーダルの「経歴」タブ（二つ名＋年度別成績＋成長曲線SVG＋受賞履歴）
 btnByText('成績')._onclick();
 btnByText('打撃')._onclick();
+// G5a) 成績タブの列グループ切替（既定=キャリアモードは'basic'）＋球団略称チップ。
+//   シーズン終了済（G7）で規定到達者が並ぶ状態＝列存在の検証に十分なデータがある。
+{
+  const battingBasicThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  const batBasicLabels = vm.runInContext("BAT_COL_GROUPS.find(([k]) => k === 'basic')[2].map((k) => BAT_COLS.find(([ck]) => ck === k)[1])", sandbox);
+  for (const label of batBasicLabels) {
+    assert.ok(battingBasicThs.some((t) => t.startsWith(label)), `打撃タブ既定(basic)に列「${label}」(${battingBasicThs.join(',')})`);
+  }
+  assert.equal(battingBasicThs.length, batBasicLabels.length, `打撃タブ既定(basic)の列数がbasic群と一致 (got ${battingBasicThs.length})`);
+  assert.ok(colGroupBtn('基本') && (colGroupBtn('基本').className || '').includes('active'), '打撃タブの列グループバーで「基本」がactive（既定）');
+  // 球団略称チップ: teamId ありの行はフルネームではなく TEAM_ABBR の略称＋border-leftチップで表示される
+  const teamTds = walk(appDiv).filter((n) => n.tag === 'td' && (n.attrs.style || '').includes('border-left'));
+  assert.ok(teamTds.length > 0, '打撃タブのチーム列がborder-leftチップで描画される');
+  const abbrValues = vm.runInContext('Object.values(TEAM_ABBR)', sandbox);
+  assert.ok(teamTds.every((n) => abbrValues.includes(textOf(n))), `チーム列のセルは球団略称のみ (${teamTds.map(textOf).join(',')})`);
+  // 「全列」へ切替→ th 数が BAT_COLS.length に一致（犠打/敬遠/代打/xwOBA等のbasic外列もここで検証）
+  colGroupBtn('全列')._onclick();
+  const battingAllThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  const batColsLen = vm.runInContext('BAT_COLS.length', sandbox);
+  assert.equal(battingAllThs.length, batColsLen, `打撃タブ「全列」で列数がBAT_COLS.lengthに一致 (got ${battingAllThs.length}, want ${batColsLen})`);
+  for (const col of ['犠打', '敬遠', '代打', 'xwOBA', 'Barrel%', 'HardHit%', 'WPA', 'Clutch', 'wRC+PF']) {
+    assert.ok(battingAllThs.some((t) => t.startsWith(col)), `打撃タブ「全列」に${col}列 (${battingAllThs.join(',')})`);
+  }
+  colGroupBtn('基本')._onclick(); // 既定(basic)へ戻す
+}
+btnByText('投手')._onclick();
+{
+  const pitBasicThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  const pitBasicLabels = vm.runInContext("PIT_COL_GROUPS.find(([k]) => k === 'basic')[2].map((k) => PIT_COLS.find(([ck]) => ck === k)[1])", sandbox);
+  assert.equal(pitBasicThs.length, pitBasicLabels.length, `投手タブ既定(basic)の列数がbasic群と一致 (got ${pitBasicThs.length})`);
+  assert.ok(colGroupBtn('基本') && (colGroupBtn('基本').className || '').includes('active'), '投手タブの列グループバーで「基本」がactive（既定）');
+  colGroupBtn('全列')._onclick();
+  const pitAllThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  const pitColsLen = vm.runInContext('PIT_COLS.length', sandbox);
+  assert.equal(pitAllThs.length, pitColsLen, `投手タブ「全列」で列数がPIT_COLS.lengthに一致 (got ${pitAllThs.length}, want ${pitColsLen})`);
+  for (const col of ['xFIP', 'SIERA', 'K-BB%', 'LOB%', 'QS', 'ERA-PF', 'FIP-PF']) {
+    assert.ok(pitAllThs.some((t) => t.startsWith(col)), `投手タブ「全列」に${col}列 (${pitAllThs.join(',')})`);
+  }
+  colGroupBtn('基本')._onclick(); // 既定(basic)へ戻す
+}
+btnByText('打撃')._onclick(); // 以降のcRow取得のため打撃タブへ戻す（基本群のまま＝name/team/pos/war等は残る）
 const cRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
 assert.ok(cRow, '打撃タブに選手行がある');
 cRow._onclick();

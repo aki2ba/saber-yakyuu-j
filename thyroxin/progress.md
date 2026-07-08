@@ -3,6 +3,43 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G1a 観戦再ゾーニング — コンパクトスコアボード＋タブ4分割＋下部進行バー)
+
+**やったこと**（phaseG_spec.md の G1a を実装。sonnetモデルによる仕様書ベース実装）
+- **共有部品**: `src/generate.mjs` に `TEAM_ABBR`（球団略称・TEAM_NAMESとペア定義、TEAM_COLORSと同じ流儀）を追加し
+  `engine.mjs`→`ui.mjs`（`tabbr()`ヘルパー）→`watchDeps()` の経路で `src/ui/watch.mjs` へ渡るようにした。
+  `test/generate.test.mjs` にドリフト防止テスト（全球団エントリ・12件・非空）を1本追加
+- **`src/ui/watch.mjs` 大改修**: `renderWatchScreen` の組み立てを完成形の順（①スコアバー→②タブ4種→③タブ本体→
+  ④進行バー）に差し替え
+  - `lampRow` を `watchNowPanel`（削除）内のローカル関数からモジュールレベル関数へ切り出し（ReferenceError回避）
+  - 新関数 `watchScorebar`: 常設は「両軍名(`tabbr()`略称)+得点」「回表示/B-S-Oランプ/塁表示」の1本バーのみ。
+    B-S-Oランプ・塁表示は `v.ended` で描画しない（残留点灯/残留表示バグの根治）。▼ボタンで `w.lineOpen` を
+    トグルしラインスコアを展開（既定閉）
+  - 観戦タブを4種（速報/対戦/ボックス/スタメン）に分割。速報=現在の打席（`.curabvs`で打者/投手名を追加＝
+    重大UX欠落の修正）→実況フィード。対戦=盤面(`watchDiamond`から下部アウト円/上部回表示テキストを撤去し
+    塁+走者名だけに)→対戦カード→打球フィールド図（`.duelpanel`常設を廃止し`.dueltab`へ）
+  - `watchControls`: インラインstyle削除・`.finalscore`削除（スコアバーに一本化）・珍記録(notables)検出を
+    `watchFeedTab`側の試合終了時先頭行へ移設・ボタン文言は一切変更せず（§0ルール8）進行中/終了時とも
+    `.watchctrl`クラス常時付与（f4修正5のdone分岐は固定下部バー化に伴い削除）
+- **CSS**（`tools/build.mjs`）: `.scorebar`/`.sbteam`/`.sbmid`/`.sbbso`/`.sbbases`/`.sblinescore`/`.curabvs`/
+  `.dueltab`/下部固定`.watchctrl`/`.watchspacer`/sticky`.wtabs` を追加。`.nowpanel`系・`.duelpanel`系
+  （`.duelcol`は`.fieldcol`併用のため残置）を仕様の削除範囲どおりに撤去。`.bso`/`.lamp`系・`.matchup`/`.curab`
+  は流用のため残置
+- **`tools/smoke-ui.mjs`**: 仕様手順10の全項目を適用（`.nowpanel`系→`.scorebar`系へ置換・トップレベル`diamond`
+  assert削除して対戦タブ切替後へ統合・`.scoreboard`常設assertを`.sbexpand`クリック後の検証に変更・
+  `wtabs`3→4種化・`.finalscore`assert→スコアバーの「試合終了」テキストへ置換・打球図ループの`undefined`
+  安全化・ゾーニング門番（速報タブにdiamond/fieldchart/matchupが出ない・対戦タブに`.pbp`が出ない）を追加・
+  `.curabvs`存在assertを追加
+- **最終ゲート全PASS**: `npm test`(327テスト) → `npm run build` → `npm run smoke`(全PASS) →
+  `npm run verify`(ENGINE identity不変) → `npm run calibrate`(既存30+B追加20+D2の3+二軍4=PASS57/FAIL0)。
+  表示層のみの変更で較正指標は完全不変を確認
+- **Playwright目視確認**（モバイル390×844・chromium_headless_shell）: スコアバー/観戦タブバーがsticky・
+  進行バーが下部fixed1行に収まる・速報タブに`.curabvs`（打者/投手名）が画面上部（スクロール不要な範囲）に
+  表示・対戦タブに盤面/対戦カード/打球図が出て実況フィードは出ない・試合終了時にB-S-Oランプ/塁表示が消え
+  スコアバーに「試合終了」・「最終打席」ラベルに切替・スタメンタブは横はみ出しなし(scrollWidth=390)を確認
+
+**次**: phaseG_spec.md の G1b（打球図の空枠撤去）→G1c（スタメンタブ横はみ出し修正）→G2以降を順次実装
+
 ## 2026-07-08 (F4レビュー指摘1-7を全て修正完了 — sticky解除・演出の再発火防止で仕上げ)
 
 **やったこと**（thyroxin/specs/f4_review_fixes_spec.md、修正1・2・7・3・4は前コミット済み、本ターンで修正5・6を実装）

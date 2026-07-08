@@ -11,11 +11,16 @@
 //     四死球=ev-bb / 失策・盗塁死=ev-err。得点行の行末に現在スコアを付記。
 //   - 対戦カードの打者行: 「今日 X打数Y安打」＋当日打席履歴チップ（三ゴロ・左安…の略記列）。
 // E2ゾーニング改（「野球観戦アプリのように情報を整理してほしい」対応）:
-//   - 情報ゾーニング: 最上部「今の状況」パネル(.nowpanel)＝大スコア＋回/表裏＋アウト＋盤面＋B-S-O
-//     → コンパクトなラインスコア → 進行ボタン群（固定位置） → 「対戦」パネル(.duelpanel)＝
-//     打者/投手カード＋現打席リスト → watch内サブタブ(.wtab)「速報／ボックス／スタメン」。
 //   - 判定の色体系を統一: ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青（pc-*クラス）。
 //     現打席リスト・実況の一球行（全球表示時）で共通。
+// G1a改（phaseG_spec「スポナビ原則への全面改修」対応・タブ切替で1画面完結）:
+//   - 常設はコンパクトスコアボード(.scorebar)のみ（▼でラインスコア.sblinescoreを展開）。
+//     B-S-O/塁表示は v.ended で描画しない（残留点灯/残留表示バグの根治）。
+//   - watch内サブタブ(.wtab)を「速報／対戦／ボックス／スタメン」の4種に分割し、
+//     そのタブの内容だけを画面に出す（旧 .nowpanel/.duelpanel の常設パネルは廃止）。
+//     速報=現在の打席(.curab・打者/投手名込み)→実況フィード。対戦=盤面→対戦カード→打球フィールド図。
+//   - 進行バー(.watchctrl)は下部固定・全幅・1行。試合終了時は「ホームへ戻る」のみ
+//     （最終スコアはスコアバーに一本化・珍記録は速報フィード先頭へ移設）。
 // F2改（ユーザー要望）: コース図（ストライクゾーンプロット・打者の影・球種マーカー・凡例）は撤去。
 //     現在の打席の1球ごとテキスト結果・実況フィード・対戦カードの利き腕タグ（右打/左打/右投/左投）は維持。
 //   - 利き腕表示: 対戦カードに「右打/左打/両打(実効側)」「右投/左投」（bats/throws は公開情報）。
@@ -318,24 +323,24 @@ export function renderWatchScreen(u) {
     el('h2', {}, ['観戦　', el('span', { class: 'muted' }, `${tname(v.away)} vs ${tname(v.home)}`)]),
     el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る')]),
   ]));
-  // 1) 「今の状況」パネル: 大スコア＋回/表裏＋アウト＋B-S-O＋盤面SVG（視覚階層の最上位）
-  root.append(watchNowPanel(v, u));
-  // 2) ラインスコア（イニング別得点＋R/H/E・コンパクトに維持）
-  root.append(watchLineScore(v, u));
-  // 3) 進行コントロール（「今の状況」直下の固定位置: 1球/1打席/1イニング/自動再生/最後まで）
-  root.append(watchControls(v, u, done));
-  // 4) 「対戦」パネル: 打者/投手カード＋現打席リスト（コース図はユーザー要望で撤去）
-  //    ＋ F3: 右カラムに「打球フィールド図」（直近打席の実データ・静的画像・スポナビ風）
-  root.append(el('div', { class: 'duelpanel' }, [
-    el('div', { class: 'duelcol' }, [watchMatchup(v, u), watchCurrentAb(v, u)]),
-    watchFieldChart(v, u),
-  ]));
-  // 5) watch内サブタブ: 速報（実況フィード・既定）／ボックス（両軍当日ライン）／スタメン（＋残量）
-  root.append(el('div', { class: 'wtabs' }, [['live', '速報'], ['box', 'ボックス'], ['lineup', 'スタメン']].map(([k, label]) =>
+  // G1a: ① コンパクトスコアボード（sticky・常設はこれだけ。▼でラインスコア展開）
+  root.append(watchScorebar(v, u, w));
+  // G1a: ② 観戦タブ（速報/対戦/ボックス/スタメンの4種・既定=速報）
+  root.append(el('div', { class: 'wtabs' }, [['live', '速報'], ['duel', '対戦'], ['box', 'ボックス'], ['lineup', 'スタメン']].map(([k, label]) =>
     el('button', { class: 'wtab' + (w.tab === k ? ' active' : ''), onclick: () => { w.tab = k; renderWatchScreen(u); } }, label))));
+  // G1a: ③ タブ本体（そのタブの内容だけ）
   if (w.tab === 'box') watchBoxTab(root, u, w);
   else if (w.tab === 'lineup') watchLineupTab(root, v, u);
-  else watchFeedTab(root, v, u, w);
+  else if (w.tab === 'duel') {
+    // 対戦タブ: 盤面（走者名付き）→ 対戦カード → 打球フィールド図（F3）
+    root.append(el('div', { class: 'dueltab' }, [watchDiamond(v, u), watchMatchup(v, u), watchFieldChart(v, u)]));
+  } else {
+    // 速報タブ（既定）: 現在の打席（打者/投手名込み・球列・結果・指標変化）→ 実況フィード
+    root.append(watchCurrentAb(v, u));
+    watchFeedTab(root, v, u, w);
+  }
+  // G1a: ④ 進行バー（下部固定・全幅・1行。ボタン文言は既存のまま＝§0ルール8）
+  root.append(watchControls(v, u, done));
   // 自動再生（UIのみ・状態不変）: タイマーは再生位置(idx)を1単位進めて再描画するだけ。
   if (!done && w.auto) {
     setTimeout(() => {
@@ -346,6 +351,7 @@ export function renderWatchScreen(u) {
       renderWatchScreen(u);
     }, 700);
   }
+  root.append(el('div', { class: 'watchspacer' })); // 固定下部バーの下敷き（本文がバーに隠れないための余白）
   w.justAdvanced = false;
 }
 
@@ -597,13 +603,25 @@ function watchPaBody(e, lastCall) {
 }
 
 /**
- * 「現在の打席」ボックス（対戦カード直下・E2改）: 現打席の投球を1球目→N球目の正順で表示。
- * 打席が決着したら結果を大きく表示（次の打席開始で更新）。
+ * 「現在の打席」ボックス（G1a: 速報タブ先頭）: 現打席の投球を1球目→N球目の正順で表示。
+ * 打席が決着したら結果を大きく表示（次の打席開始で更新）。先頭に打者/投手名の1行(.curabvs)を持つ。
  */
 function watchCurrentAb(v, u) {
-  const { el } = u;
+  const { el, state, playerLink } = u;
   const box = el('div', { class: 'curab' });
   box.append(el('div', { class: 'curabhead' }, v.ended ? '最終打席' : '現在の打席'));
+  // G1a手順5: 速報タブ既定表示で「誰が打っているか」が分かるよう、打者/投手名を1行追加する
+  // （watchMatchup と同じデータソース・利き腕表記は watchBatsJP を再利用）。試合開始前は省略。
+  if (v.batterId) {
+    const bp = state.byId.get(v.batterId);
+    const pp = v.curPitcherId ? state.byId.get(v.curPitcherId) : null;
+    const d = v.daily.get(v.batterId);
+    const todayTxt = d ? `今日${d.ab}打数${d.h}安打` : '今日第1打席';
+    box.append(el('div', { class: 'curabvs' }, [
+      '打者 ', playerLink(v.batterId), bp ? `（${watchBatsJP(bp, pp)}・${todayTxt}）　` : '　',
+      '投手 ', playerLink(v.curPitcherId), `（球数${v.curPitchCount || 0}）`,
+    ]));
+  }
   const ab = v.curAb;
   if (!ab) { box.append(el('div', { class: 'muted' }, '— 試合開始前 —')); return box; }
   if (!ab.pitches.length && !ab.result) box.append(el('div', { class: 'curabpitch muted' }, '打席開始（第1球を待つ）'));
@@ -687,44 +705,77 @@ function watchCallCls(call) {
 }
 
 /**
- * 「今の状況」パネル: 大きなスコア（チーム名＋得点）＋回/表裏＋アウト＋B-S-Oランプ＋盤面SVG。
- * 視覚階層の最上位（スコア > 回・アウト > 対戦 > 詳細）。
+ * G1a: B-S-Oランプ1行（旧 watchNowPanel 内のローカル関数をモジュールレベルへ切り出し）。
+ * watchScorebar（新）から使う。watchNowPanel は G1a で削除済み。
  */
-function watchNowPanel(v, u) {
-  const { el, game, tname, teamColor } = u;
-  const my = game.gs.playerTeamId;
-  // F4: 球団アクセントカラー（UI表示専用の静的マップ・teamColor）で自チーム/相手チームを一目で判別
-  const teamCol = (tid, score) => el('div', {
-    class: 'nowteam' + (tid === my ? ' nowmy' : ''),
-    style: tid ? `--team-accent:${teamColor(tid)}` : '',
-  }, [
-    el('div', { class: 'nowtname' }, tid ? tname(tid) : '—'),
-    el('div', { class: 'nowtscore' }, String(score)),
-  ]);
-  const lampRow = (label, n, max, cls) => el('div', { class: 'bsorow' }, [
+function lampRow(label, n, max, cls, u) {
+  const { el } = u;
+  return el('div', { class: 'bsorow' }, [
     el('span', { class: 'bsolabel' }, label),
     ...Array.from({ length: max }, (_, i) => el('span', { class: 'lamp ' + cls + (i < n ? ' on' : '') }, '')),
   ]);
-  const mid = el('div', { class: 'nowmid' }, [
-    el('div', { class: 'nowinning' }, v.ended ? '試合終了' : `${v.inning}回${watchHalfJP(v.half)}`),
-    el('div', { class: 'nowouts' }, v.ended ? (v.endInnings > 9 ? `延長${v.endInnings}回` : '') : `${v.outs} アウト`),
-    el('div', { class: 'bso' }, [
-      lampRow('B', Math.min(v.balls, 3), 3, 'lb'),
-      lampRow('S', Math.min(v.strikes, 2), 2, 'ls'),
-      lampRow('O', Math.min(v.outs, 2), 2, 'lo'),
-    ]),
+}
+
+/**
+ * G1a: コンパクトスコアボード（旧 watchNowPanel の置き換え・常設はこれだけ）。
+ * [チーム名 得点] [回表裏/B-S-O/塁表示] [チーム名 得点] [▼展開]。
+ * B-S-Oランプ・塁表示は v.ended のとき描画しない（残留点灯/残留表示バグの根治）。
+ * ▼ボタンで w.lineOpen をトグル（既定false）し、直下にラインスコアを展開する。
+ */
+function watchScorebar(v, u, w) {
+  const { el, game, tname, tabbr, teamColor } = u;
+  const my = game.gs.playerTeamId;
+  const sbTeam = (tid, score, side) => el('div', {
+    class: 'sbteam ' + side + (tid === my ? ' nowmy' : ''),
+    style: tid ? `--team-accent:${teamColor(tid)}` : '',
+  }, [
+    el('span', { class: 'sbname' }, tid ? tabbr(tid) : '—'),
+    el('span', { class: 'sbscore' }, String(score)),
   ]);
-  return el('div', { class: 'nowpanel' }, [
-    el('div', { class: 'nowscore' }, [teamCol(v.away, v.scoreA), mid, teamCol(v.home, v.scoreH)]),
-    watchDiamond(v, u),
+  const midKids = [
+    el('div', { class: 'sbinning' }, v.ended
+      ? '試合終了' + (v.endInnings > 9 ? `　延長${v.endInnings}回` : '')
+      : `${v.inning}回${watchHalfJP(v.half)}`),
+  ];
+  if (!v.ended) {
+    midKids.push(el('div', { class: 'sbbso bso' }, [
+      lampRow('B', Math.min(v.balls, 3), 3, 'lb', u),
+      lampRow('S', Math.min(v.strikes, 2), 2, 'ls', u),
+      lampRow('O', Math.min(v.outs, 2), 2, 'lo', u),
+    ]));
+    midKids.push(el('div', { class: 'sbbases' }, [
+      el('span', { class: 'sbbase b3' + (v.basesPids[2] ? ' on' : '') }, ''),
+      el('span', { class: 'sbbase b2' + (v.basesPids[1] ? ' on' : '') }, ''),
+      el('span', { class: 'sbbase b1' + (v.basesPids[0] ? ' on' : '') }, ''),
+    ]));
+  }
+  const bar = el('div', { class: 'scorebar' }, [
+    sbTeam(v.away, v.scoreA, 'away'),
+    el('div', { class: 'sbmid' }, midKids),
+    sbTeam(v.home, v.scoreH, 'home'),
+    el('button', { class: 'sbexpand link', onclick: () => { w.lineOpen = !w.lineOpen; renderWatchScreen(u); } }, '▼'),
   ]);
+  const wrap = el('div', {}, [bar]);
+  if (w.lineOpen) wrap.append(el('div', { class: 'sblinescore' }, [watchLineScore(v, u)]));
+  return wrap;
 }
 
 /** サブタブ「速報」: 実況フィード（新しい順・既定は打席結果のみ・全球表示トグル）。 */
 function watchFeedTab(root, v, u, w) {
-  const { el } = u;
+  const { el, pname, tname } = u;
   let lines = w.allPitches ? v.lines : v.lines.filter((ln) => ln.kind !== 'pitch' && ln.kind !== 'ab');
   lines = lines.slice(-160).reverse();
+  // G1a手順8: 珍記録（notables）は watchControls から移設し、試合終了時に速報フィードの先頭へ足す。
+  // クラスは 'newsrow good' の金枠スタイルを流用して祝祭感を保つ（.pbpline 単体では枠が無いため必ず併記）。
+  if (v.ended) {
+    const { notables } = detectGameNotables(w.events);
+    const notableLines = [];
+    for (const n of notables) {
+      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id));
+      if (head) notableLines.push({ cls: 'newsrow good notable' + (w.justAdvanced ? ' fx' : ''), text: `🎉 ${head}` });
+    }
+    lines = [...notableLines, ...lines];
+  }
   root.append(el('div', { class: 'pbphead' }, [
     el('span', { class: 'muted' }, '実況（新しい順）'),
     el('button', { class: 'link', onclick: () => { w.allPitches = !w.allPitches; renderWatchScreen(u); } }, `${w.allPitches ? '☑' : '☐'} 全球表示`),
@@ -832,10 +883,8 @@ function watchDiamond(v, u) {
   if (v.basesPids[0]) svg.append(svgText({ x: first[0] + 11, y: first[1] + 4, fill: '#e8b84b', 'font-size': '10' }, nm(v.basesPids[0])));
   if (v.basesPids[1]) svg.append(svgText({ x: second[0], y: second[1] - 13, fill: '#e8b84b', 'font-size': '10', 'text-anchor': 'middle' }, nm(v.basesPids[1])));
   if (v.basesPids[2]) svg.append(svgText({ x: third[0] - 11, y: third[1] + 4, fill: '#e8b84b', 'font-size': '10', 'text-anchor': 'end' }, nm(v.basesPids[2])));
-  // アウトカウント
-  for (let i = 0; i < 3; i++) svg.append(svgEl('circle', { cx: 24 + i * 16, cy: 184, r: 5, fill: i < v.outs ? '#c96a5a' : '#0c3122', stroke: '#c9a06a' }));
-  svg.append(svgText({ x: 64, y: 188, fill: '#9fb8ac', 'font-size': '11' }, `${v.outs} OUT`));
-  svg.append(svgText({ x: cx, y: 16, fill: '#e9e4d0', 'font-size': '12', 'text-anchor': 'middle' }, `${v.inning}回${v.half === 'bottom' ? '裏' : '表'}`));
+  // G1a: アウトカウント円3つ＋「N OUT」テキスト・上部の「N回表」テキストはスコアバーに一本化したため撤去
+  // （塁の菱形＋走者名だけ残す）。
   return svg;
 }
 
@@ -881,12 +930,15 @@ function watchMatchup(v, u) {
   return box;
 }
 
-/** 進行コントロール（1球/1打席/1イニング・自動再生・最後まで／終了時は最終スコア＋珍記録）。 */
+/**
+ * G1a: 進行バー（下部固定・全幅・1行）。ボタン文言は既存のまま変更しない（§0ルール8）。
+ * 進行中: 1球/1打席/1イニング/自動再生/最後まで。試合終了時: ホームへ戻る のみ
+ * （最終スコアはスコアバーが同じ情報を示すため .finalscore は撤去・珍記録は速報フィード側へ移設）。
+ */
 function watchControls(v, u, done) {
-  const { el, game, tname } = u;
+  const { el, game } = u;
   const w = game.watch;
-  // 進行中のみ sticky（試合終了後はノータブル行等で肥大するため固定しない）
-  const ctrl = el('div', { class: 'row' + (done ? '' : ' watchctrl'), style: 'flex-wrap:wrap;margin:8px 0' });
+  const ctrl = el('div', { class: 'row watchctrl' });
   if (!done) {
     const adv = (unit) => { w.unit = unit; w.justAdvanced = true; w.idx = watchAdvanceIdx(w, unit); renderWatchScreen(u); };
     ctrl.append(el('button', { class: 'primary', onclick: () => adv('pitch') }, '▶ 1球'));
@@ -895,13 +947,6 @@ function watchControls(v, u, done) {
     ctrl.append(el('button', { class: w.auto ? 'primary' : '', onclick: () => { w.auto = !w.auto; renderWatchScreen(u); } }, w.auto ? '⏸ 自動再生を止める' : '▶▶ 自動再生'));
     ctrl.append(el('button', { onclick: () => { w.auto = false; w.justAdvanced = true; w.idx = w.events.length; renderWatchScreen(u); } }, '⏩ 最後まで'));
   } else {
-    ctrl.append(el('div', { class: 'finalscore' }, `試合終了　${tname(v.home)} ${v.scoreH} - ${v.scoreA} ${tname(v.away)}`));
-    // 珍記録検出（C4・§54）: ノーヒッター/完全試合/サイクル/猛打賞
-    const { notables } = detectGameNotables(w.events);
-    for (const n of notables) {
-      const head = notableHeadline(n, (id) => u.pname(id), (id) => tname(id));
-      if (head) ctrl.append(el('div', { class: 'newsrow good notable' + (w.justAdvanced ? ' fx' : ''), style: 'width:100%' }, `🎉 ${head}`));
-    }
     ctrl.append(el('button', { class: 'primary', onclick: () => { game.watch = null; u.renderHub(); } }, 'ホームへ戻る'));
   }
   return ctrl;

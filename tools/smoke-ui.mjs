@@ -258,27 +258,27 @@ assert.ok(tendBtns.length >= 8, `采配パネルに方針ボタンがある (got
 tendBtns[0]._onclick(); // 「積極」等を1つ押す→介入登録＋ハブ再描画（例外が出ないこと）
 assert.ok(hasClass('header'), '介入後もハブが再描画される');
 
-// G5) 次の試合へ → 観戦（E2ゾーニング改: 今の状況パネル/対戦パネル/サブタブ/進行切替）
+// G5) 次の試合へ → 観戦（G1a: コンパクトスコアボード＋タブ4分割「速報/対戦/ボックス/スタメン」＋下部進行バー）
 btnByText('次の試合へ')._onclick();
 assert.ok(btnByText('観戦') && btnByText('ダイジェスト') && btnByText('スキップ'), '観戦/ダイジェスト/スキップの選択が出る');
 btnByText('観戦')._onclick();
 assert.ok(allClass('pbpline').length >= 1, '実況ログ（速報タブ既定・開始行から表示）');
-assert.ok(walk(appDiv).some((n) => (n.className || '').includes('diamond')), 'ダイヤモンド盤面SVGが描かれる');
-assert.ok(walk(appDiv).some((n) => (n.className || '').includes('scoreboard')), 'スコアボードが描かれる');
-// E2z-a) 「今の状況」パネル: 大スコア＋回/表裏＋アウト＋B-S-Oランプ＋盤面SVGを1枚に統合
+// G1a) コンパクトスコアボード: 両軍名/得点＋回表示＋B-S-Oランプ＋塁表示を1本のバーに集約（常設はこれだけ）
 {
-  const nowPanel = hasClass('nowpanel');
-  assert.ok(nowPanel, '「今の状況」パネル(.nowpanel)が最上部に描かれる');
-  assert.equal(walk(nowPanel).filter((n) => (n.className || '').includes('nowtscore')).length, 2, '両軍の大きなスコア表示（.nowtscore×2）');
-  const nowTxt = textOf(nowPanel);
-  assert.ok(nowTxt.includes('回'), `パネルに回/表裏 (${nowTxt.slice(0, 60)})`);
-  assert.ok(nowTxt.includes('アウト'), 'パネルにアウトカウント');
-  assert.ok(walk(nowPanel).filter((n) => (n.className || '').includes('lamp')).length >= 7, 'B-S-Oランプ（3+2+2）がパネル内');
-  assert.ok(walk(nowPanel).some((n) => (n.className || '').includes('diamond')), '盤面SVG（走者名）がパネル内');
+  const scorebar = hasClass('scorebar');
+  assert.ok(scorebar, 'コンパクトスコアボード(.scorebar)が最上部に描かれる');
+  assert.equal(walk(scorebar).filter((n) => (n.className || '').includes('sbscore')).length, 2, '両軍のスコア表示（.sbscore×2）');
+  const sbTxt = textOf(scorebar);
+  assert.ok(sbTxt.includes('回'), `スコアバーに回/表裏 (${sbTxt.slice(0, 40)})`);
+  // 'sbbases'（塁ラッパ）も部分一致してしまうため、クラストークンの完全一致で .sbbase の数を数える
+  assert.equal(walk(scorebar).filter((n) => (n.className || '').split(' ').includes('sbbase')).length, 3, '塁表示（.sbbase×3）');
+  assert.ok(walk(scorebar).filter((n) => (n.className || '').includes('lamp')).length >= 7, 'B-S-Oランプ（3+2+2）がスコアバー内');
 }
-// E2a) ラインスコア: 9イニング列＋R/H/E列（「今の状況」直下にコンパクト維持）
+// G1a) ▼展開でラインスコア（イニング別得点＋R/H/E・既定は畳み）が表示される（.sbexpand トグル）
+hasClass('sbexpand')._onclick();
 {
   const sb = hasClass('scoreboard');
+  assert.ok(sb, '▼展開でラインスコア(.scoreboard)が描かれる');
   const sbThs = walk(sb).filter((n) => n.tag === 'th').map(textOf);
   for (const col of ['1', '5', '9', 'R', 'H', 'E']) {
     assert.ok(sbThs.includes(col), `ラインスコアに${col}列 (${sbThs.join(',')})`);
@@ -286,28 +286,47 @@ assert.ok(walk(appDiv).some((n) => (n.className || '').includes('scoreboard')), 
   const sbRows = walk(sb).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
   assert.equal(sbRows.length, 2, 'ラインスコアは両軍2行');
 }
-// E2z-b) 「対戦」パネル: 打者/投手カード＋現打席（F2でコース図は撤去）を1枚に
-const duelPanel = hasClass('duelpanel');
-assert.ok(duelPanel, '「対戦」パネル(.duelpanel)が描かれる');
+hasClass('sbexpand')._onclick(); // 畳んで既定(閉)に戻す
+assert.ok(!hasClass('scoreboard'), '▼を再度押すとラインスコアが畳まれる');
+// G1a) 速報タブに現在の打者/投手名(.curabvs)が出る（速報タブ既定・重大UX欠落の修正）
+{
+  const vs = hasClass('curabvs');
+  assert.ok(vs, '速報タブに現在の打者/投手名(.curabvs)が出る');
+  const vsTxt = textOf(vs);
+  assert.ok(vsTxt.includes('打者') && vsTxt.includes('投手'), `.curabvsに打者/投手の文言 (${vsTxt})`);
+}
+// G1a) ゾーニングの門番: 速報タブでは盤面/対戦カード/打球図が出ない・実況フィードは出る
+assert.ok(!hasClass('diamond'), '速報タブでは盤面(.diamond)が出ない（対戦タブへ移設）');
+assert.ok(!hasClass('matchup'), '速報タブでは対戦カード(.matchup)が出ない（対戦タブへ移設）');
+assert.ok(!hasClass('fieldchart'), '速報タブでは打球フィールド図(.fieldchart)が出ない（対戦タブへ移設）');
+assert.ok(hasClass('pbp'), '速報タブに実況フィードが出る');
+// G1a) 対戦タブ: 盤面（走者名付き）→対戦カード→打球フィールド図。ゾーニング: 実況フィードは出ない
+allClass('wtab').find((n) => textOf(n) === '対戦')._onclick();
+const dueltab = hasClass('dueltab');
+assert.ok(dueltab, '「対戦」タブ(.dueltab)が描かれる');
+assert.ok(walk(dueltab).some((n) => (n.className || '').includes('diamond')), 'ダイヤモンド盤面SVGが対戦タブに描かれる');
 const muBox = hasClass('matchup');
 assert.ok(muBox, '対戦カードが描かれる');
 const muTxt = textOf(muBox);
 assert.ok(muTxt.includes('打者') && muTxt.includes('投手') && muTxt.includes('球数'), `対戦カードに打者/投手/球数 (${muTxt.slice(0, 80)})`);
-assert.ok(!walk(duelPanel).some((n) => (n.className || '').includes('zoneplot')), 'コース図SVG(.zoneplot)は撤去済み（ユーザー要望）');
+assert.ok(!walk(dueltab).some((n) => (n.className || '').includes('zoneplot')), 'コース図SVG(.zoneplot)は撤去済み（ユーザー要望）');
 // 利き腕表示（打者「右打/左打/両打」・投手「右投/左投」）は維持
 assert.ok(/(右打|左打|両打)/.test(muTxt), `対戦カードの打者に利き腕表記 (${muTxt.slice(0, 80)})`);
 assert.ok(/(右投|左投)/.test(muTxt), `対戦カードの投手に利き腕表記 (${muTxt.slice(0, 80)})`);
 assert.ok(walk(muBox).filter((n) => (n.className || '').includes('handtag')).length >= 2, '打者/投手の利き腕タグ(.handtag)が両方出る');
-// F3) 打球フィールド図: 対戦パネル右カラムにSVGが常設される（試合開始直後は打球なし＝枠だけ）
+// F3) 打球フィールド図: 対戦タブにSVGが常設される（試合開始直後は打球なし＝枠だけ）
 {
-  const fieldSvg = walk(duelPanel).find((n) => (n.className || '').includes('fieldchart'));
-  assert.ok(fieldSvg, '打球フィールド図SVG(.fieldchart)が対戦パネルに描かれる');
+  const fieldSvg = walk(dueltab).find((n) => (n.className || '').includes('fieldchart'));
+  assert.ok(fieldSvg, '打球フィールド図SVG(.fieldchart)が対戦タブに描かれる');
   assert.ok((fieldSvg.className || '').includes('empty'), '打球がまだ無い間は枠だけの薄い表示(.empty)');
   const fieldCol = hasClass('fieldcol');
   assert.ok(textOf(fieldCol).includes('打球'), '打球フィールド図に見出し「打球」');
   assert.ok(hasClass('fieldlabel') && textOf(hasClass('fieldlabel')).length > 0, '結果ラベル欄が描かれる');
 }
-// E2c) 進行単位切替: 1球/1打席/1イニング＋自動再生トグル
+assert.ok(!hasClass('pbp'), '対戦タブでは実況フィードが出ない（ゾーニング）');
+// 速報タブへ戻す（以降は現在の打席ボックス(.curab)を使った検証のため）
+allClass('wtab').find((n) => textOf(n) === '速報')._onclick();
+// E2c) 進行単位切替: 1球/1打席/1イニング＋自動再生トグル（進行バーはタブに依存せず常設）
 for (const b of ['1球', '1打席', '1イニング', '自動再生']) {
   assert.ok(btnByText(b), `進行コントロールに「${b}」`);
 }
@@ -316,7 +335,7 @@ for (let k = 0; k < 12 && !allClass('curabpitch').map(textOf).some((t) => t.incl
   btnByText('1球')._onclick();
 }
 // E2改a) 「現在の打席」ボックス: 投球が1球目→N球目の正順・全球にカウントB-S統一表記
-assert.ok(hasClass('curab'), '「現在の打席」ボックスが対戦カード直下に描かれる');
+assert.ok(hasClass('curab'), '「現在の打席」ボックスが速報タブ先頭に描かれる');
 {
   const abPitches = allClass('curabpitch').map(textOf).filter((t) => t.includes('球目'));
   assert.ok(abPitches.length >= 1, `現打席の投球行が出る (${abPitches.join(' | ')})`);
@@ -342,11 +361,11 @@ btnByText('全球表示')._onclick();
     `実況の一球行にも判定色クラスpc-* (${evPitchNodes.slice(0, 3).map((n) => n.className).join(',')})`);
 }
 btnByText('全球表示')._onclick(); // 既定（畳み）へ戻す
-// E2z-d) watch内サブタブ「速報／ボックス／スタメン」の切替
+// G1a) watch内サブタブ「速報／対戦／ボックス／スタメン」の4種切替
 {
   const wtabs = allClass('wtab').filter((n) => n.tag === 'button'); // 'wtabs'コンテナを除外
-  assert.equal(wtabs.length, 3, `観戦サブタブが3種 (got ${wtabs.length})`);
-  assert.deepEqual(wtabs.map(textOf), ['速報', 'ボックス', 'スタメン'], 'サブタブは速報/ボックス/スタメン');
+  assert.equal(wtabs.length, 4, `観戦サブタブが4種 (got ${wtabs.length})`);
+  assert.deepEqual(wtabs.map(textOf), ['速報', '対戦', 'ボックス', 'スタメン'], 'サブタブは速報/対戦/ボックス/スタメン');
   assert.ok(wtabs.find((n) => textOf(n) === '速報').className.includes('active'), '既定は速報タブ');
   // ボックス: ここまでの両軍打者/投手の当日ライン（E4ボックスの列構成）
   wtabs.find((n) => textOf(n) === 'ボックス')._onclick();
@@ -367,18 +386,23 @@ btnByText('全球表示')._onclick(); // 既定（畳み）へ戻す
   allClass('wtab').find((n) => textOf(n) === '速報')._onclick();
   assert.ok(hasClass('pbp'), '速報タブに戻ると実況フィード');
 }
+// btnByText('1打席')／btnByText('1イニング') 後の再描画確認: 速報タブにいるままなので hasClass('curab') で確認
+// （matchup は対戦タブ限定になったため）。
 btnByText('1打席')._onclick();
-assert.ok(hasClass('matchup'), '1打席進行後も観戦画面が再描画される');
+assert.ok(hasClass('curab'), '1打席進行後も観戦画面が再描画される（速報タブのまま）');
 btnByText('1イニング')._onclick();
-assert.ok(hasClass('matchup'), '1イニング進行後も観戦画面が再描画される');
+assert.ok(hasClass('curab'), '1イニング進行後も観戦画面が再描画される（速報タブのまま）');
 // F3) 打球フィールド図: 打球が発生した打席では着弾マーカー1個＋軌跡線1本＋結果ラベル＋EV/飛距離
+// fieldchart は対戦タブでのみ描画されるため対戦タブへ切り替える。fieldSvg が undefined の間も
+// ループを継続できるよう安全化（G1bで.emptyの枠自体を非描画にする変更と整合させるため）。
+allClass('wtab').find((n) => textOf(n) === '対戦')._onclick();
 {
   let fieldSvg = walk(appDiv).find((n) => (n.className || '').includes('fieldchart'));
-  for (let k = 0; k < 30 && (fieldSvg.className || '').includes('empty'); k++) {
+  for (let k = 0; k < 30 && (!fieldSvg || (fieldSvg.className || '').includes('empty')); k++) {
     btnByText('1打席')._onclick();
     fieldSvg = walk(appDiv).find((n) => (n.className || '').includes('fieldchart'));
   }
-  assert.ok(!(fieldSvg.className || '').includes('empty'), '打球が発生すると枠だけ表示(.empty)が解除される');
+  assert.ok(fieldSvg && !(fieldSvg.className || '').includes('empty'), '打球が発生すると枠だけ表示(.empty)が解除される');
   const marks = walk(fieldSvg).filter((n) => (n.className || '').includes('fieldmark'));
   assert.equal(marks.length, 1, `着弾マーカーは1個 (got ${marks.length})`);
   const trajs = walk(fieldSvg).filter((n) => (n.className || '').includes('fieldtraj'));
@@ -389,6 +413,8 @@ assert.ok(hasClass('matchup'), '1イニング進行後も観戦画面が再描�
   assert.ok(/EV\d+km\/h/.test(sub) && /\d+m/.test(sub), `EV/飛距離が表示される (${sub})`);
 }
 // §16) 打席ごとの指標変化: 「▼ 指標の変化」折りたたみ（既定で開く・結果ボックス直下）＋矢印/差分の表記
+// .curabresult/.metricdelta は速報タブの現在の打席ボックス内にあるため速報タブへ戻す。
+allClass('wtab').find((n) => textOf(n) === '速報')._onclick();
 {
   const md = hasClass('metricdelta');
   assert.ok(md, '指標変化セクション(.metricdelta)が存在する（直前の打球ありの打席で確認）');
@@ -424,9 +450,11 @@ assert.ok(btnByText('止める'), '自動再生ONで停止ボタンに変わる'
 btnByText('止める')._onclick();
 assert.ok(btnByText('自動再生'), '自動再生OFFに戻る');
 btnByText('最後まで')._onclick();
-assert.ok(hasClass('finalscore'), '最後まで進めると最終スコアが出る');
-const finalTxt = textOf(hasClass('finalscore'));
-assert.ok(finalTxt.includes('試合終了'), `観戦の最終スコア表示 (${finalTxt})`);
+// G1a) .finalscore は削除（スコアバーが同じ情報を示す）→ スコアバーのテキストに「試合終了」を確認
+{
+  const sb = hasClass('scorebar');
+  assert.ok(sb && textOf(sb).includes('試合終了'), `最後まで進めるとスコアバーに「試合終了」 (${sb ? textOf(sb) : ''})`);
+}
 // E2改d) 結果行の色分けクラス＋得点行の現在スコア付記（1試合分の実況が出そろった時点で検証）
 {
   const pls = allClass('pbpline');
@@ -438,7 +466,11 @@ assert.ok(finalTxt.includes('試合終了'), `観戦の最終スコア表示 (${
     assert.ok(scoreLines.every((n) => /（.+ \d+-\d+ .+）/.test(textOf(n))), `得点行の行末に現在スコア（チーム X-Y チーム） (${textOf(scoreLines[0])})`);
   }
 }
+// G1a手順8) 珍記録（notables）は試合終了時に速報フィードの先頭へ移設（存在すれば .notable が出る）
+assert.ok(hasClass('pbpline'), '試合終了後の速報タブにも実況フィードが出る');
 // E2改e) 対戦カード: 「今日 X打数Y安打」表記＋当日打席履歴チップ（試合終了時点の最終打者で検証）
+// 試合終了時の対戦カード検証は対戦タブへ切り替えてから行う。
+allClass('wtab').find((n) => textOf(n) === '対戦')._onclick();
 {
   const muEnd = textOf(hasClass('matchup'));
   assert.ok(muEnd.includes('打数') && muEnd.includes('安打'), `対戦カードが「今日 X打数Y安打」表記 (${muEnd.slice(0, 80)})`);
@@ -759,7 +791,7 @@ console.log('UI smoke OK (E3編成): リザルト→ストーブリーグ(FA市�
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
-console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアボード/ダイヤモンド/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');
-console.log('UI smoke OK (E2観戦・ゾーニング改): 今の状況パネル(大スコア/回/アウト/B-S-O/盤面)→ラインスコア(9回+R/H/E)→対戦パネル(打者/投手カード+現打席正順・pc-色統一)→サブタブ(速報/ボックス/スタメン切替)→実況畳み(結果1行+[N回表裏]+色分け+得点行スコア付記)→全球表示トグル(一球行もpc-色)→進行切替(1球/1打席/1イニング/自動再生)、例外なし');
+console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアバー/盤面/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');
+console.log('UI smoke OK (G1a観戦再ゾーニング): コンパクトスコアボード(▼でラインスコア9回+R/H/E展開・B-S-O/塁表示)→タブ4分割(速報:現在の打者/投手名+現打席正順・pc-色統一/対戦:盤面+対戦カード+打球図/ボックス/スタメン)→ゾーニング門番→実況畳み(結果1行+[N回表裏]+色分け+得点行スコア付記+終了時notable)→全球表示トグル(一球行もpc-色)→進行切替(1球/1打席/1イニング/自動再生・下部固定バー)、例外なし');
 console.log('UI smoke OK (F2コース表示撤去): コース図SVG(.zoneplot/.batshadow/.pdot/.pnum/.zonelegend)は撤去・利き腕表示(右打/左打/両打・右投/左投・.handtag)と現打席の1球ごとテキスト結果は維持、例外なし');
 console.log('UI smoke OK (E4動線): タブ整理(ホーム/チーム/日程・結果/順位/成績サブタブ/ニュース/記録)→日程・結果(月別/勝敗/先発link)→試合クリック→簡易ボックススコア(ラインスコアR/H/E+両軍打者/投手ライン)→ニュースタブ(選手の活躍→playerLink→モーダル)、例外なし');

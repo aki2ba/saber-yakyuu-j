@@ -10,7 +10,7 @@ import {
   createConfig, generateLeague, simulateSeason, deriveLeagueConstants,
   playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct, gamesBehind, pythag,
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
-  leagueBatting, leaguePitching, makeRng, hashSeed, TEAM_COLORS,
+  leagueBatting, leaguePitching, makeRng, hashSeed, TEAM_COLORS, TEAM_ABBR,
   createPlayerSeason, // E1: 育成/未出場選手のモーダル用の空観測ライン
 } from './engine.mjs';
 // フェーズC1 ゲーム層API（配布バンドルではグローバル・開発時Node解決用に import も書く）。
@@ -1009,6 +1009,8 @@ const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 // 球団アクセントカラー（UI表示専用）は generate.mjs の TEAM_NAMES とペアで定義され、
 // engine.mjs 経由で import 済み（TEAM_COLORS）。ここでは参照ヘルパーのみ。
 const teamColor = (id) => TEAM_COLORS[tname(id)] || 'var(--clay)';
+// G1a: 球団略称（スコアボード/狭幅テーブル用）。TEAM_ABBR は generate.mjs で TEAM_NAMES とペア定義済み。
+const tabbr = (id) => TEAM_ABBR[tname(id)] || tname(id);
 // ゲーム差の表記（首位行のみ「-」。同率2位の0.0や負のゲーム差はそのまま数値表示＝首位と区別する）
 const gbText = (i, gb) => (i === 0 ? '-' : gb.toFixed(1));
 
@@ -1701,7 +1703,7 @@ function renderWatch() {
  */
 function watchDeps() {
   return {
-    el, td, state, game, tname, pname, posJP, playerLink, teamColor,
+    el, td, state, game, tname, pname, posJP, playerLink, teamColor, tabbr,
     svgEl, svgText, fmt3, f2, refreshRes, renderHub,
   };
 }

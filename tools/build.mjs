@@ -280,26 +280,9 @@ const html = `<!DOCTYPE html>
   .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
   .lineupcol { flex:1; min-width:230px; }
-  /* E2ゾーニング改: 「今の状況」パネル（スコア>回・アウト>対戦>詳細の視覚階層・最上位） */
-  .nowpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:space-between;
-              border:1px solid var(--clay); border-radius:10px; background:#0d3526; padding:10px 16px; margin:10px 0 8px; }
-  .nowscore { flex:1; min-width:260px; display:flex; gap:18px; align-items:center; justify-content:center; }
-  /* F4: 球団アクセントカラー（--team-accent はJS側で teamColor() からインライン指定） */
-  .nowteam { text-align:center; min-width:84px; border-top:3px solid var(--team-accent, transparent); padding-top:4px; }
-  .nowtname { font-size:14px; font-weight:600; color:var(--chalk); }
-  .nowteam.nowmy .nowtname { color:var(--gold); }
-  .nowtscore { font-size:38px; font-weight:800; line-height:1.15; }
-  .nowmid { text-align:center; }
-  .nowinning { font-size:18px; font-weight:700; color:var(--gold); }
-  .nowouts { font-size:13px; color:var(--muted); margin:2px 0; }
-  .nowpanel .bso { justify-content:center; margin:4px 0 0; gap:10px; }
-  .nowpanel svg.diamond { width:230px; max-width:100%; }
-  /* E2ゾーニング改: 「対戦」パネル（打者/投手カード＋現打席・F2でコース図は撤去し1カラムに） */
-  .duelpanel { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start;
-               border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:10px 12px; margin:10px 0; }
+  /* E2ゾーニング改の常設パネルは G1a でスコアバー(.scorebar)＋タブ本体に置換済み（下方のG1a追記ブロック参照）。
+     .duelcol は watchFieldChart の .fieldcol が併用するため残す（対戦タブでも使用中）。 */
   .duelcol { flex:1; min-width:250px; display:flex; flex-direction:column; gap:10px; }
-  .duelpanel .matchup { border:none; background:none; padding:0; min-width:0; flex:none; }
-  .duelpanel .curab { background:#0d3526; }
   .handtag { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; white-space:nowrap; }
   /* F3: 打球フィールド図（対戦パネル右カラム・直近打席1件の実データ・静的画像・スポナビ風） */
   .fieldcol { align-items:center; text-align:center; flex:none; min-width:200px; }
@@ -315,7 +298,7 @@ const html = `<!DOCTYPE html>
   .pc-whiff, .pbpline.pc-whiff, .curabpitch.pc-whiff { color:#e06d6d; fill:#e06d6d; }
   .pc-foul, .pbpline.pc-foul, .curabpitch.pc-foul { color:#e8b84b; fill:#e8b84b; }
   .pc-inplay, .pbpline.pc-inplay, .curabpitch.pc-inplay { color:#8fc7ff; fill:#8fc7ff; }
-  /* E2ゾーニング改: watch内サブタブ（速報/ボックス/スタメン） */
+  /* E2ゾーニング改: watch内サブタブ（速報/対戦/ボックス/スタメン・G1aで4分割） */
   .wtabs { display:flex; gap:6px; margin:12px 0 4px; flex-wrap:wrap; }
   .wtab { padding:5px 16px; font-size:13px; }
   .wtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
@@ -329,19 +312,48 @@ const html = `<!DOCTYPE html>
   /* E4: 日程・結果タブ＋簡易ボックススコア */
   .schedfuture td { color:var(--muted); }
   .modal.boxmodal { max-width:760px; }
+  /* G1a: 観戦コンパクトスコアボード（常設はこれだけ・sticky） */
+  .scorebar { position:sticky; top:0; z-index:6; display:flex; align-items:center; justify-content:space-between;
+              gap:8px; background:#0d3526; border:1px solid var(--clay); border-radius:10px; padding:6px 10px; margin:8px 0; }
+  .sbteam { display:flex; align-items:baseline; gap:8px; min-width:0;
+            border-top:3px solid var(--team-accent, transparent); padding-top:2px; }
+  .sbname { font-size:13px; font-weight:700; color:var(--chalk); white-space:nowrap; }
+  .sbteam.nowmy .sbname { color:var(--gold); }
+  .sbscore { font-size:26px; font-weight:800; line-height:1; }
+  .sbmid { text-align:center; flex:1; }
+  .sbinning { font-size:14px; font-weight:700; color:var(--gold); }
+  .sbmid .bso { justify-content:center; gap:8px; margin:2px 0 0; }
+  .sbmid .bsorow { gap:3px; } .sbmid .lamp { width:9px; height:9px; }
+  .sbbases { display:flex; justify-content:center; gap:10px; margin-top:3px; }
+  .sbbase { width:9px; height:9px; transform:rotate(45deg); background:#0c3122; border:1px solid var(--clay); display:inline-block; }
+  .sbbase.on { background:var(--gold); border-color:var(--gold); }
+  .sblinescore { margin:0 0 8px; }
+  .curabvs { font-size:12px; color:var(--chalk); margin-bottom:4px; }
+  .dueltab { display:flex; flex-direction:column; gap:10px; align-items:center; margin-top:8px; }
+  .dueltab .matchup { width:100%; }
+  .dueltab .curab { background:#0d3526; } /* 旧 .duelpanel .curab の背景を引き継ぐ（対戦タブでは curab は使わないが将来の統一のため） */
+  /* G1a: 進行バーを下部固定（親指到達域）。文言は変えずCSSだけで1行に収める */
+  .watchctrl { position:fixed; left:0; right:0; bottom:0; z-index:8; display:flex; gap:4px; flex-wrap:nowrap;
+               background:var(--bg); border-top:1px solid var(--line); padding:8px; margin:0;
+               box-shadow:0 -6px 8px -6px rgba(0,0,0,.5); }
+  .watchctrl button { flex:1; min-height:44px; min-width:0; padding:6px 1px; font-size:11px; white-space:nowrap; }
+  .watchspacer { height:68px; }
+  /* G1a: 観戦タブバー(.wtabs)もスコアバー直下にsticky化（ハブの.tabs同様・スクロール中も切替を失わない） */
+  .wtabs { position:sticky; top:56px; z-index:5; background:var(--bg); padding:4px 0; flex-wrap:nowrap; overflow-x:auto; }
+  @media (min-width:900px) {
+    /* デスクトップでは対戦タブを2カラム横並びに戻す・進行バー/フッターのボタンを肥大させない */
+    .dueltab { flex-direction:row; align-items:flex-start; justify-content:center; }
+    .dueltab .matchup { width:auto; flex:1; max-width:520px; }
+    .watchctrl { justify-content:center; }
+    .watchctrl button { flex:none; min-width:110px; }
+  }
   /* E4: 狭幅（スマホ想定）の縦積みレイアウト。表は .tablewrap が横スクロールを受け持つ */
   @media (max-width: 640px) {
     body { padding:8px; }
     .header { flex-direction:column; align-items:flex-start; gap:6px; }
     .kvgrid { grid-template-columns:repeat(3,1fr); }
     .abilities { grid-template-columns:1fr; }
-    .nowpanel, .duelpanel, .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
-    /* F4: 観戦画面の「1画面に収める」対応。盤面を縮小し、進行ボタンを画面上部に固定、
-       ラインスコアの余白を詰めてR/H/Eまで横スクロール無しで収まりやすくする。 */
-    .nowpanel svg.diamond { width:170px; }
-    .nowscore { min-width:0; width:100%; }
-    .nowtscore { font-size:30px; }
-    .watchctrl { position:sticky; top:0; z-index:5; background:var(--bg); padding:6px 0; margin:0 0 6px; box-shadow:0 6px 8px -6px rgba(0,0,0,.5); }
+    .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
     table.scoreboard th, table.scoreboard td { padding:3px 4px; font-size:11px; }
     .reccols { flex-direction:column; }
     .overlay { padding:8px; }

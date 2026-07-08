@@ -1,7 +1,7 @@
 // 架空選手ジェネレータ（0-6）の単体テスト。決定論・編成・三層の器・値域を固定する。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateLeague, generatePitcher, generateFielder, TEAM_COLORS } from '../src/generate.mjs';
+import { generateLeague, generatePitcher, generateFielder, TEAM_COLORS, TEAM_ABBR } from '../src/generate.mjs';
 import { validatePlayer } from '../src/model/player.mjs';
 import { makeRng } from '../src/rng.mjs';
 import { createConfig } from '../src/config.mjs';
@@ -24,6 +24,14 @@ test('TEAM_COLORS covers all generated team names', () => {
   const league = generateLeague(1, cfg);
   for (const t of league.teams) assert.ok(TEAM_COLORS[t.name], `color missing for ${t.name}`);
   assert.equal(Object.keys(TEAM_COLORS).length, 12);
+});
+
+// G1a: TEAM_ABBR も TEAM_COLORS と同じドリフト防止（改名時に略称マップだけ取り残されないこと）。
+test('TEAM_ABBR covers all generated team names', () => {
+  const league = generateLeague(1, cfg);
+  for (const t of league.teams) assert.ok(TEAM_ABBR[t.name], `abbr missing for ${t.name}`);
+  assert.equal(Object.keys(TEAM_ABBR).length, 12);
+  for (const v of Object.values(TEAM_ABBR)) assert.ok(v && v.length > 0, 'abbr should be non-empty');
 });
 
 test('別masterSeedは別リーグ', () => {

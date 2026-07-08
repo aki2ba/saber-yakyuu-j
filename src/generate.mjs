@@ -53,6 +53,13 @@ const TEAM_ACCENTS = [
 ];
 export const TEAM_COLORS = Object.fromEntries(TEAM_NAMES.map((n, i) => [n, TEAM_ACCENTS[i]]));
 
+// 球団略称（UI表示専用・スコアボード/狭幅テーブル用）。TEAM_NAMES とインデックス対応（G1a）。
+const TEAM_ABBRS = [
+  '白鷺', '疾風', '蒼波', '紅蓮', '雷鳴', '黒曜',
+  '翠嶺', '金獅子', '銀翼', '暁', '嵐山', '夜叉',
+];
+export const TEAM_ABBR = Object.fromEntries(TEAM_NAMES.map((n, i) => [n, TEAM_ABBRS[i]]));
+
 function draw(rng, mean = 50, sd = 10) {
   return clampRating(rng.normal(mean, sd));
 }

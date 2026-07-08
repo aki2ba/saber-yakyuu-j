@@ -317,7 +317,7 @@ function signDevelopment(league, cfg, undrafted, order) {
  * @param {Object} d 育成選手
  * @param {?Object} obs 当年の二軍 statline（{batting,pitching}・careerFarmStats 由来）
  */
-function farmPerfBonus(d, obs, cfg) {
+export function farmPerfBonus(d, obs, cfg) {
   if (!obs) return 0;
   const f = cfg.tuning.market.farm;
   if (d.role === 'fielder') {

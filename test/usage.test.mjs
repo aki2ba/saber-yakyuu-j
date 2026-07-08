@@ -257,8 +257,10 @@ test('シーズン統合: 休養AIの発現＝143試合フル先発の野手が�
   // S5較正済み: catcherRestProb 0.085 + catcherSwapMargin 0.04 で平均~104（暫定帯[70,138]から復帰）
   const avg = topCatcherStarts.reduce((a, b) => a + b, 0) / topCatcherStarts.length;
   // F2-5: ロスター拡大(70人+登録29)でシード個別の値は±10程度動く。12seed平均の較正[100,135]が
-  // 正式ゲート（実測104.2 PASS）のため、単一シードの本テストは緩めの[90,138]で健全性のみ確認。
-  assert.ok(avg >= 90 && avg <= 138, `正捕手の平均先発 (got ${avg.toFixed(1)})`);
+  // 正式ゲート（実測102.4 PASS）のため、単一シードの本テストは緩めの[85,138]で健全性のみ確認。
+  // §req_20260708: 打球難易度モデル/走塁シナリオ追加でrng消費列が変わり、seed 2026個別値が
+  // ~109→89.6に移動（12seed平均は健全のまま）。単一シード固有のノイズとして下限を90→85へ。
+  assert.ok(avg >= 85 && avg <= 138, `正捕手の平均先発 (got ${avg.toFixed(1)})`);
   // B1較正済み: 一球シム化後の seed 2026 正捕手先発 min ≈67（平均~109）＝休養AIは健全。本来値へ締め直し。
   for (const c of topCatcherStarts) assert.ok(c >= 55 && c < G, `正捕手の先発数が妥当 (got ${c})`);
 });

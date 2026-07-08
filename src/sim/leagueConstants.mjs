@@ -107,14 +107,28 @@ export function deriveLeagueConstants(res, cfg = null) {
   }
   const lgArmRunPerOpp = totArmOpp ? totArmRuns / totArmOpp : 0;
 
-  // 追加進塁リーグ率（UBRの基準・§6）
+  // 追加進塁リーグ率（UBRの基準・§6／§req_20260708強化）。
+  // 実際のUBR/EqBRR（Fangraphs/Baseball Prospectus）はシナリオ別（単打での二塁走者本塁突入・
+  // 二塁打での一塁走者本塁突入・単打での一塁走者三塁進塁・タッグアップ等）にRE24分解して評価する。
+  // lgAdvRateは後方互換の全シナリオ合算（XBT%表示用）、各シナリオ別のリーグ率を別途算出する。
   let totAdv = 0;
   let totAdvOpp = 0;
+  const scenarioTotals = { adv2h1b: [0, 0], adv1h2b: [0, 0], adv1t3b: [0, 0], tag: [0, 0] };
   for (const ps of res.playerSeasons) {
-    totAdv += ps.baserunning.advTaken;
-    totAdvOpp += ps.baserunning.advOpp;
+    const br = ps.baserunning;
+    totAdv += br.advTaken;
+    totAdvOpp += br.advOpp;
+    for (const k of Object.keys(scenarioTotals)) {
+      scenarioTotals[k][0] += br[`${k}Taken`] || 0;
+      scenarioTotals[k][1] += br[`${k}Opp`] || 0;
+    }
   }
   const lgAdvRate = totAdvOpp ? totAdv / totAdvOpp : 0;
+  const lgAdvRateByScenario = {};
+  for (const k of Object.keys(scenarioTotals)) {
+    const [taken, opp] = scenarioTotals[k];
+    lgAdvRateByScenario[k] = opp ? taken / opp : 0;
+  }
 
   // wSB中心化の基準（監査C1・§6）: リーグの盗塁/盗塁死と、盗塁母数=一塁到達(1B+BB+HBP-IBB)。
   // metrics側で lgwSB = (ΣSB×runSB+ΣCS×runCS)/Σ機会 を作り、走者の機会分だけ基準控除する。
@@ -152,6 +166,7 @@ export function deriveLeagueConstants(res, cfg = null) {
     lgDPRate,
     lgArmRunPerOpp,
     lgAdvRate,
+    lgAdvRateByScenario,
     lgSB,
     lgCS,
     lgSBOpp,

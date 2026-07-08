@@ -135,11 +135,21 @@ export function createPitchingLine() {
   };
 }
 
-/** 走塁（盗塁以外の進塁。§6 UBR/wGDPの素）。盗塁数自体は打撃側にも計上。 */
+/**
+ * 走塁（盗塁以外の進塁。§6 UBR/wGDPの素）。盗塁数自体は打撃側にも計上。
+ * §req_20260708: 実際のUBR/EqBRR（Fangraphs/Baseball Prospectus）はシナリオ別（単打での二塁走者
+ * 生還・二塁打での一塁走者生還・単打での一塁走者三塁進塁・タッグアップ等）にRE24分解して評価する。
+ * advOpp/advTakenは後方互換の全シナリオ合計（XBT%表示用）とし、シナリオ別カウンタを別途持つ。
+ */
 export function createBaserunningLine() {
   return {
-    advOpp: 0, // 進塁機会（単打で2→本 / 二塁打で1→本 の判断が発生した回数。UBRの分母）
-    advTaken: 0, // うち追加進塁（生還）を取った回数
+    advOpp: 0, // 進塁機会の合計（全シナリオ・UBRの分母・後方互換）
+    advTaken: 0, // うち追加進塁を取った回数の合計
+    // --- シナリオ別内訳（§req_20260708 UBR強化） ---
+    adv2h1bOpp: 0, adv2h1bTaken: 0, // 単打での二塁走者本塁突入
+    adv1h2bOpp: 0, adv1h2bTaken: 0, // 二塁打での一塁走者本塁突入
+    adv1t3bOpp: 0, adv1t3bTaken: 0, // 単打での一塁走者三塁進塁（NEW）
+    tagOpp: 0, tagTaken: 0, // 犠飛以外のタッグアップ進塁（外野フライで2塁→3塁等・NEW）
     outsOnBase: 0, // 走塁死
     gdpOpp: 0, // 併殺機会（wGDPの分母）
     // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2）: 盗塁/追加進塁は走者へ ΔRE/ΔWE を付与 ---

@@ -22,11 +22,12 @@
 //   - ニュース: 入替は rt.rosterMoves に記録され step.rosterMoves でも返る（週次ダイジェスト/
 //     ハブの素材。§17: 集計値・当該シーズンのみ＝save 非対象、replay で再構築）。
 // ============================================================================
-import { hashSeed } from '../rng.mjs';
-import { buildDepthChart } from '../sim/team.mjs';
+import { makeRng, hashSeed } from '../rng.mjs';
+import { buildDepthChart, starterScore } from '../sim/team.mjs';
 import { createUsageState, blendedWoba, isInjured } from '../sim/usage.mjs';
 import { observedWoba } from '../sim/manager.mjs';
-import { teamEvalProfile, evaluateProspect } from './market.mjs';
+import { teamEvalProfile, evaluateProspect, overallRating, farmPerfBonus } from './market.mjs';
+import { releaseScore } from './transactions.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
 function byId(a, b) {
@@ -272,7 +273,7 @@ function processPerfSwaps(rt, teamId, day, out) {
   }
 
   // --- 投手: ローテ外の観測RA9最悪から順に、二軍の観測RA9最良と比較 ---
-  const rot = new Set(rt.chartsByTeam.get(teamId).dh.rotation); // ローテは中6日の継続性を優先し対象外
+  const rot = new Set(rt.chartsByTeam.get(teamId).dh.rotation); // ローテは以下の別ループで扱うので対象外
   const downPitchers = activeRosterOf(rt, teamId)
     .filter((p) => p.role === 'pitcher' && !rot.has(p.id) && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
     .map((p) => ({ p, line: rt.stats.getPitch(p.id) }))
@@ -288,6 +289,101 @@ function processPerfSwaps(rt, teamId, day, out) {
       break; // 1レビュー1件まで
     }
   }
+
+  // --- 投手(ローテ): 観測RA9が長期に悪い先発を、二軍の先発適性ある好投手と入替（§req_20260708）。
+  //     旧実装はローテ投手を一切入替対象にしておらず「ERAが高い投手が居座る」構造的欠陥だった。
+  //     rotationMinBF/rotationSwapRA9 は救援より緩衝を大きく取り、数試合の不調では動かさない
+  //     （実際の運用でも先発は簡単には外されない・§req_20260708ユーザー指摘）。
+  const downStarters = activeRosterOf(rt, teamId)
+    .filter((p) => p.role === 'pitcher' && rot.has(p.id) && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
+    .map((p) => ({ p, line: rt.stats.getPitch(p.id) }))
+    .filter(({ line }) => line.bf >= mv.rotationMinBF && obsRA9(line) != null)
+    .sort((a, b) => obsRA9(b.line) - obsRA9(a.line) || byId(a.p, b.p));
+  for (const { p, line } of downStarters) {
+    const cands = farmCandidates(rt, teamId, p, day).filter((q) => (rt.farm.stats.getPitch(q.id).outs ?? 0) >= mv.farmPitchMinOuts);
+    // 先発適性（starterScore=真値）を軽く加点した観測評価で選ぶ（編成時のローテ選抜と同じ物差しを併用）。
+    const best = bestBy(cands, (q) => callupScore(rt, teamId, q, cfg) + starterScore(q) * mv.rotationStarterScoreW);
+    if (!best) continue;
+    if (obsRA9(line) - (obsRA9(rt.farm.stats.getPitch(best.id)) + mv.farmGapRA9) > mv.rotationSwapRA9) {
+      swapRegistration(rt, teamId, best, p, day);
+      logMove(rt, out, { day, teamId, type: 'perfSwap', up: best, down: p });
+      break; // 1レビュー1件まで（野手/救援枠とは独立）
+    }
+  }
+}
+
+/**
+ * (4) 育成→支配下の季節中昇格（§req_20260708・NPB実務: 支配下登録は例年7月末までシーズン中随時
+ * 可能。旧実装は年1回のオフシーズンのみ＋自球団の同型引退枠待ちで、育成の好成績が塩漬けになる
+ * 欠陥があった）。同型(role,primaryPos)の支配下のうち一軍登録外で観測不振な選手と1:1で入れ替える
+ * （支配下70人枠を常に不変に保つ・releaseの代わりに育成契約へ落とす簡略化。実際のNPBでも新規の
+ * 支配下登録には既存選手の育成契約化/自由契約などで枠を空ける必要がある）。
+ */
+function processFarmPromotions(rt, teamId, day, out) {
+  const cfg = rt.cfg;
+  const mv = cfg.tuning.moves;
+  const mk = cfg.tuning.market.farm;
+  if (day > rt.finalDay * mv.farmPromoteDeadlineFrac) return; // 実務の7/31相当の昇格期限
+
+  const candidates = rt.league.farm.filter((d) => d.teamId === teamId && !inCooldown(rt, d.id, day));
+  if (!candidates.length) return;
+  let best = null;
+  let bestScore = -Infinity;
+  for (const d of candidates.slice().sort(byId)) {
+    const r = makeRng(hashSeed(rt.masterSeed, 'inseasonPromote', rt.season, day, d.id));
+    const obs = d.role === 'fielder' ? { batting: rt.farm.stats.getBat(d.id) } : { pitching: rt.farm.stats.getPitch(d.id) };
+    const score = overallRating(d) + mk.promoteObsBias + r.normal(0, mk.promoteObsNoiseSd) + farmPerfBonus(d, obs, cfg);
+    if (score > bestScore) {
+      bestScore = score;
+      best = d;
+    }
+  }
+  if (!best || bestScore < mk.promoteThreshold) return;
+
+  // 交換相手: 同型(role,primaryPos)の支配下・一軍登録外（登録メンバー構成は乱さない）で
+  // 当季観測が最も振るわない選手（transactions.mjs releaseScore と同じ物差し・当季観測のみ）。
+  const reg = rt.registeredByTeam.get(teamId);
+  const sameType = rt.league.players.filter(
+    (p) => p.teamId === teamId && !reg.has(p.id) && p.role === best.role &&
+      (best.role === 'pitcher' || p.primaryPos === best.primaryPos) && !inCooldown(rt, p.id, day),
+  );
+  if (!sameType.length) return; // 交換相手が居ない（枠を崩せない・稀）
+  const obsMap = { get: (pid) => ({ batting: rt.stats.getBat(pid), pitching: rt.stats.getPitch(pid) }) };
+  const worst = bestBy(sameType, (p) => -(releaseScore(p, obsMap, cfg) ?? Infinity));
+  if (!worst) return;
+
+  applyFarmPromotionSwap(rt.league, best.id, worst.id);
+  const until = day + cfg.tuning.moves.swapCooldownDays;
+  rt.moves.cooldownUntil.set(best.id, until);
+  rt.moves.cooldownUntil.set(worst.id, until);
+  // §req_20260708: league.players/farmの直接変更はsaveに含まれず、過去年はoffseasonTransitionのみの
+  // replay近道で再構築される（day単位の再シムをしない）ため、このログをGameState側で年ごとに畳み込み、
+  // load時にreplay適用する（index.mjs load()を参照）。rt.farmPromotionLogは当該シーズンのみ（年ごとに
+  // 新規作成）で、状態自体は決定論的に同一入替を再現するが、このログが無いと過去完了年の再構築時に
+  // league.players/farmの構成が食い違う（verifyStandingsが検出）。
+  rt.farmPromotionLog.push({ day, teamId, upId: best.id, downId: worst.id });
+  logMove(rt, out, { day, teamId, type: 'farmPromote', up: best, down: worst });
+}
+
+/**
+ * 育成⇄支配下のロースター状態を1:1で入れ替える（population不変・§req_20260708）。
+ * processFarmPromotions（当季の決定）と index.mjs load()（過去完了年のログreplay適用）の
+ * 両方から呼ばれる共有ロジック。
+ * @returns {boolean} 入替を実行できたか（upId/downIdが見つからなければfalse・安全弁）
+ */
+export function applyFarmPromotionSwap(league, upId, downId) {
+  const up = league.farm.find((d) => d.id === upId);
+  const down = league.players.find((p) => p.id === downId);
+  if (!up || !down) return false;
+  up.rosterStatus = 'active';
+  down.rosterStatus = 'minor';
+  const fi = league.farm.findIndex((d) => d.id === up.id);
+  if (fi >= 0) league.farm.splice(fi, 1);
+  league.players.push(up);
+  const pi = league.players.findIndex((p) => p.id === down.id);
+  if (pi >= 0) league.players.splice(pi, 1);
+  league.farm.push(down);
+  return true;
 }
 
 /**
@@ -301,11 +397,12 @@ export function applyRosterMovesForDay(rt, day) {
   for (const team of rt.league.teams) {
     processIlReturns(rt, team.id, day, out);
     processIlReplacements(rt, team.id, day, out);
-    // 成績入替はチーム消化試合が reviewInterval を跨ぐたびに1回（既存25試合レビューの拡張）
+    // 成績入替/育成昇格はチーム消化試合が reviewInterval を跨ぐたびに1回（既存25試合レビューの拡張）
     const reviewIdx = Math.floor(rt.usageByTeam.get(team.id).games / rt.cfg.tuning.moves.reviewInterval);
     if (reviewIdx > (rt.moves.lastReviewIdx.get(team.id) ?? 0)) {
       rt.moves.lastReviewIdx.set(team.id, reviewIdx);
       processPerfSwaps(rt, team.id, day, out);
+      processFarmPromotions(rt, team.id, day, out); // §req_20260708: 育成→支配下の季節中昇格
     }
   }
   return out;

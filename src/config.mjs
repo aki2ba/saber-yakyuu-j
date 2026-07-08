@@ -506,6 +506,13 @@ export const TUNING_DEFAULT = {
     callupRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
     callupTrustPA: 80, // 二軍観測の信頼度半飽和PA（野手・少PAはスカウト評価優位）
     callupTrustOuts: 90, // 同（投手・アウト数）
+    // --- §req_20260708: ローテ投手の成績入替（旧実装はローテ全除外＝不振先発が固定化する欠陥） ---
+    rotationMinBF: 100, // ローテ投手の判定に要する最低対戦打者数（救援pitchMinBF=40より緩衝を厚く＝数試合の不調では動かさない）
+    rotationSwapRA9: 1.8, // ローテ入替に要するRA9差（救援pitchSwapRA9=1.2より大きく＝先発は簡単には外さない）
+    rotationStarterScoreW: 0.02, // 昇格候補選定でstarterScore(先発適性・真値)を軽く加点する重み
+    // --- §req_20260708: 育成→支配下の季節中昇格（旧実装は年1回オフのみ＋同型引退枠待ちで塩漬け）。
+    //     NPB実務（支配下登録期限=例年7/31）に合わせ、シーズンの一定割合を過ぎたら昇格を締め切る。
+    farmPromoteDeadlineFrac: 0.72, // 昇格を受け付ける season日数の割合（開幕からこの割合まで）
   },
 
   // 編成・打順（S1 buildDepthChart v2。§S1-3）
@@ -530,13 +537,24 @@ export const TUNING_DEFAULT = {
     gateStrong2OutLogit: 0.8, // 2死×強打者（観測wOBA上位）での自重logit減
   },
   // 走塁 run値（§6）。NPB寄り: SB≈+0.19 / CS≈−0.38。UBRは走者Speed/IQで進塁確率を上下（2-5）。
-  run: { runSB: 0.19, runCS: -0.38, ubrSlope: 0.007, runUBR: 0.36 }, // ubr系はS5較正（BsR裾）
+  // ubr系はS5較正（BsR裾）。runUBR1t3b/runUBRTakerTagは§req_20260708新設シナリオの
+  // run価値（文献のRE24差分実測例~0.2-0.3runsを参考にrunUBR=0.36よりやや低めで開始）。
+  run: {
+    runSB: 0.19, runCS: -0.38, ubrSlope: 0.007, runUBR: 0.36,
+    runUBR1t3b: 0.28, // 単打での一塁→三塁進塁（成功時の限界価値）
+    runUBRTag: 0.28, // タッグアップでの二塁→三塁進塁
+  },
   // 併殺（2-6 wGDP, §6）: GBアウト×走者一塁×2アウト未満で併殺成立。打者の足で回避。
   gdp: { base: 0.42, speedW: 0.007, runGDP: -0.42 }, // speedWはS5較正（足↔併殺回避の結線を統計的に頑健へ）
 
   // 守備（2-7/2-8, §7）: 野手個人のRangeを期待アウトに接続し、OAAに個人スキルを乗せる。
   field: {
-    rangePerRating: 0.0015, // Range 1pt → 実効被安打率をこれだけ下げる（OAAの個人シグナル）※S5較正（UZR裾。0.0016→0.0015）
+    // Range個人差はlogit空間でシフトする（UZR/DRS/Statcast OAAが確率バケット方式で暗黙に
+    // 持つ「五分五分の難しいプレーほど巧拙が効く／簡単・絶望的なプレーでは効きにくい」性質の近似。
+    // §req_20260708 守備指標再設計）。rangeLogitSlope×(rating-50)/10 をpHitのlogitへ加減する
+    // （ratingDelta関数と同じ変換）。p=0.5近辺では旧rangePerRating=0.0015と同等の効きになるよう
+    // 0.06へ換算（勾配0.25倍＝0.0015/0.25=0.006、ratingDelta内の/10を戻すと0.06）※S5較正対象。
+    rangeLogitSlope: 0.06,
     wRange: { positioningIQ: 0.45, reaction: 0.3, speed: 0.25 }, // Range合成重み（§7.1）
     runPerOutInfield: 0.75, // OAA→run換算（内野・Statcast FRV）
     runPerOutOutfield: 0.9, // 外野
@@ -616,9 +634,9 @@ export const TUNING_DEFAULT = {
     hrFenceHeightBase: 4, // 実効距離ペナルティの基準フェンス高(m)。中立と同じ＝差0
     hrFenceHeightW: 1.5, // フェンス高1m超過あたりの実効フェンス距離加算(m)
     // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
-    hitGB: 0.210, // ※S5較正（F2-5: 0.2195→0.210。BB%回復(+1.4pt)で膨らんだ得点環境をBABIP側で相殺しERA≤3.9へ）
-    hitLD: 0.672, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束
-    hitFB: 0.131, // ※S5較正
+    hitGB: 0.206, // ※S5較正（F2-5: 0.2195→0.210。BB%回復(+1.4pt)で膨らんだ得点環境をBABIP側で相殺しERA≤3.9へ。§req_20260708: ERA残差の最終微調整）
+    hitLD: 0.668, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束。§req_20260708: timeDifficultyAdj新設ぶんを軽く相殺
+    hitFB: 0.127, // ※S5較正。§req_20260708: ERA残差(3.95→3.9目標)の微調整
     hitPU: 0.02,
     evHitW: 0.003, // (evKmh-140)×これ を hit率に加算 ※S5較正（BABIP裾＝打率王≤.355）
     gapDistM: 86.0, // 単打/二塁打の境界（外野手到達圏）。これ未満の空中安打は単打（監査B1で84→90、S5較正でSLG帯確保のため85.5へ。F2-5: →86.0＝ERA再収束の微調整。fbHitBonusM=84より上を維持）
@@ -626,14 +644,31 @@ export const TUNING_DEFAULT = {
     tripleDistM: 94, // 二塁打/三塁打候補の深さ。これ以上の深いギャップ/ライン際球が三塁打になりうる（監査B1）
     tripleBase: 0.32, // 深いギャップ球の三塁打基本率（打者speedで上下）※較正済み
     tripleSpeedW: 0.007, // 打者speed(50中心)→三塁打率への寄与
+    // 滞空時間ベースの難易度（§req_20260708 守備指標再設計。Statcast OAA/DRSの「到達可能時間」の近似）:
+    //   守備者の初期位置は持たないため、担当ポジションの定位置(typicalDepthM)との落下点ギャップを
+    //   滞空時間(hangTimeS)で割り「間に合わせるのに要する速度」とし、これが大きいほどヒット寄りにpHitを
+    //   加点する（浅すぎる/深すぎる=定位置から離れた打球ほど難しい＝no man's land・グラウンダー(hangTimeS=0)は対象外）。
+    //   ※初回較正でBABIP暴騰(0.391)が発覚: LD(10-25°)はassignFielderの45m閾値超で外野判定される
+    //   ため、FB定位置(95-100m)を基準にすると「外野扱いされる浅いライナー」ほぼ全てが大ギャップ＝
+    //   高難度になり系統的に偏った。ライナーは外野手が定位置より前で処理する前提でoutfieldLDTypicalDepthMを
+    //   別基準に分離＋重み/上限も大幅に引き下げて再較正。
+    // ※12seed較正でAVG/OPS/ERAがなお全面超過(AVG.275/ERA4.45)と判明し、さらに引き下げ。
+    timeDifficultyW: 0.0007, // 上記「要求速度(m/s)」→pHit加点の換算 ※S5較正対象
+    timeDifficultyCap: 0.06, // 加点の上限（暴走防止）
+    posTypicalDepthM: { '1B': 30, '2B': 38, '3B': 35, SS: 40, LF: 95, CF: 100, RF: 95, C: 5 },
+    outfieldLDTypicalDepthM: { LF: 65, CF: 68, RF: 65 }, // ライナーは定位置より前寄りで処理する（FBの定位置とは別基準）
     // 失策（ROE・§7 Hands）。インプレーのアウトが確率 errBase−(Hands−50)×errHandsW で失策になる。
     // 失策以降その回の得点は非自責（ERA<失点 の差＝未自責点を生む・較正の整合に必須）。
     errBase: 0.023,
     errHandsW: 0.0006,
-    // 走者進塁の確率（Phase1簡易。UBRの精緻化は2-5）
-    singleScore2: 0.54, // 単打で二塁走者が生還する確率（残りは三塁止まり）※S5較正（得点環境・rpw）
-    //   F2-5: 0.6→0.54（率系(AVG/OBP/SLG)に触れず総得点だけ下げるERA再収束ノブ）
-    doubleScore1: 0.46, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束。F2-5: 0.50→0.46・同上）
+    // 走者進塁の確率（UBR/EqBRR文献のシナリオ別RE24分解に準拠・§req_20260708強化）
+    singleScore2: 0.51, // 単打で二塁走者が生還する確率（残りは三塁止まり）※S5較正（得点環境・rpw）
+    //   F2-5: 0.6→0.54（率系(AVG/OBP/SLG)に触れず総得点だけ下げるERA再収束ノブ）。
+    //   §req_20260708: 新設の1塁→3塁/タッグアップ分だけ得点機会が増えたぶんをさらに0.54→0.51で相殺
+    doubleScore1: 0.44, // 二塁打で一塁走者が生還する確率（残りは三塁止まり）※較正済み（監査B後の得点環境再収束。F2-5: 0.50→0.46・同上。§req_20260708: 0.46→0.44でERA残差を相殺）
+    // ※12seed較正でrpw/ERA/runs帯を大幅超過(4.77 vs [3.9,4.3])と判明。文献値の下限側へ寄せて引き下げ。
+    singleScore1to3: 0.10, // 単打で一塁走者が三塁まで進む確率（残りは二塁止まり・文献の実測値~25-40%帯・NEW）
+    tagBase: 0.14, // 外野フライ(2アウト未満)で二塁走者が三塁までタッグアップする確率・NEW
   },
 
   // ==========================================================================

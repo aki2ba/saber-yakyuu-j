@@ -91,6 +91,17 @@ function watchExpOut(e, cfg) {
   const base = e.battedType === 'GB' ? g.hitGB : e.battedType === 'LD' ? g.hitLD : e.battedType === 'FB' ? g.hitFB : g.hitPU;
   let pHit = base + (e.bb.evKmh - 140) * g.evHitW;
   if (e.battedType === 'FB' && e.bb.distanceM >= g.fbHitBonusM) pHit += 0.15;
+  // 滞空時間ベースの難易度（resolveBattedBall と同じ式・§req_20260708）。
+  const hangTimeS = e.bb.hangTimeS || 0;
+  const typical = e.fielderPos
+    ? (e.battedType === 'LD' && g.outfieldLDTypicalDepthM[e.fielderPos] != null
+        ? g.outfieldLDTypicalDepthM[e.fielderPos]
+        : g.posTypicalDepthM[e.fielderPos])
+    : null;
+  if (hangTimeS > 0 && typical != null) {
+    const reqSpeed = Math.abs(e.bb.distanceM - typical) / hangTimeS;
+    pHit += Math.min(g.timeDifficultyCap, Math.max(0, reqSpeed * g.timeDifficultyW));
+  }
   pHit = Math.min(0.97, Math.max(0.01, pHit));
   return 1 - pHit;
 }

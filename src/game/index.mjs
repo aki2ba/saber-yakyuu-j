@@ -23,6 +23,7 @@ import { applyInjuries } from './injury.mjs';
 import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
 import { runMarket, teamEvalProfile } from './market.mjs';
+import { applyFarmPromotionSwap } from './roster_moves.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './transactions.mjs';
 import { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
@@ -200,6 +201,9 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
     pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
+    // 育成→支配下の季節中昇格ログ（§req_20260708・完了年ぶんのみ蓄積。save/replayで再現。
+    // 当年ぶんは state.rt.farmPromotionLog にあり、advanceYear で年ごとに畳み込む）。
+    farmPromotionLog: [],
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -369,6 +373,9 @@ export function advanceYear(state) {
   //   完了シーズンの観測成績/WAR から表彰を選定する（決定論・純関数）。
   const awardsById = new Map(state.league.players.map((p) => [p.id, p]));
   const completedYear = state.year;
+  // §req_20260708: 完了年ぶんの育成→支配下季節中昇格ログを永続配列へ畳み込む（load時はこのログから
+  // replay適用し、league.players/farmを動かす day 単位の再シムを不要にする＝index.mjs load() 参照）。
+  for (const m of state.rt.farmPromotionLog) state.farmPromotionLog.push({ year: state.yearIndex, ...m });
   const off = offseasonTransition(state.league, state.cfg, {
     masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
@@ -460,6 +467,7 @@ export function save(state) {
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
+    farmPromotionLog: state.farmPromotionLog, // 育成→支配下季節中昇格ログ（完了年ぶん・§req_20260708）
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -512,6 +520,7 @@ export function load(blob, options = {}) {
     retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
+    farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
     rt: null,
   };
@@ -521,6 +530,12 @@ export function load(blob, options = {}) {
   // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
   let lastOff = null;
   for (let y = 0; y < state.yearIndex; y++) {
+    // §req_20260708: league.players/farmを直接動かす育成→支配下の季節中昇格は、day単位の再シムを
+    // しないこの過去年replayでは再現できないため、完了年ぶんのログから直接適用する
+    // （offseasonTransition＝引退/ドラフト等より前＝そのシーズン終了時点の状態に復元してから渡す）。
+    for (const m of state.farmPromotionLog) {
+      if (m.year === y) applyFarmPromotionSwap(state.league, m.upId, m.downId);
+    }
     const off = offseasonTransition(state.league, cfg, {
       masterSeed: state.masterSeed,
       yearIndex: y,

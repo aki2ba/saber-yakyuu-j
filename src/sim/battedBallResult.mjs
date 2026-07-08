@@ -10,6 +10,7 @@
 // ============================================================================
 import { fenceDistanceAt, NEUTRAL_PARK } from '../model/battedball.mjs';
 import { clamp } from '../model/util.mjs';
+import { logit, expit, ratingDelta } from './rates.mjs';
 
 const G = 9.8;
 
@@ -66,6 +67,25 @@ export function assignFielder(bb, type) {
 function baseHitProb(type, cfg) {
   const bb = cfg.tuning.bb;
   return type === 'GB' ? bb.hitGB : type === 'LD' ? bb.hitLD : type === 'FB' ? bb.hitFB : bb.hitPU;
+}
+
+/**
+ * 滞空時間ベースの難易度加点（§req_20260708・UZR/DRS/Statcast OAAの「到達可能時間」の近似）。
+ * 守備者の初期位置は持たないため、担当ポジションの定位置(posTypicalDepthM)と落下点の距離ギャップを
+ * 滞空時間で割り「間に合わせるのに要する速度」とする。ゴロ(hangTimeS=0)は対象外＝0。
+ * 外野に割り当てられたライナー(LD)はフライ(FB)より手前の定位置(outfieldLDTypicalDepthM)を使う
+ * （assignFielderの45m閾値超で外野判定される浅いライナーがFB定位置比で軒並み高難度化する偏りを回避）。
+ */
+function timeDifficultyAdj(fielderPos, type, distanceM, hangTimeS, cfg) {
+  if (!(hangTimeS > 0)) return 0;
+  const g = cfg.tuning.bb;
+  const typical = (type === 'LD' && g.outfieldLDTypicalDepthM[fielderPos] != null)
+    ? g.outfieldLDTypicalDepthM[fielderPos]
+    : g.posTypicalDepthM[fielderPos];
+  if (typical == null) return 0;
+  const gapM = Math.abs(distanceM - typical);
+  const reqSpeed = gapM / hangTimeS; // m/s相当
+  return clamp(reqSpeed * g.timeDifficultyW, 0, g.timeDifficultyCap);
 }
 
 /** 安打種別を落下点から決める（監査B1: 単打/二塁打境界＝gapDistM、深いギャップ球は打者脚力で三塁打化） */
@@ -146,12 +166,14 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
   }
 
   // --- インプレー: ポジション平均の期待アウト率で安打/アウト ---
-  let pHit = baseHitProb(type, cfg) + (bb.evKmh - 140) * cfg.tuning.bb.evHitW;
-  if (type === 'FB' && bb.distanceM >= cfg.tuning.bb.fbHitBonusM) pHit += 0.15; // 警告帯FBの被安打（BABIP環境維持のため二塁打境界と別閾値）
-  pHit = clamp(pHit, 0.01, 0.97);
-
   const fielderPos = assignFielder(bb, type);
   bb.fielderPos = fielderPos;
+  let pHit = baseHitProb(type, cfg) + (bb.evKmh - 140) * cfg.tuning.bb.evHitW;
+  if (type === 'FB' && bb.distanceM >= cfg.tuning.bb.fbHitBonusM) pHit += 0.15; // 警告帯FBの被安打（BABIP環境維持のため二塁打境界と別閾値）
+  // 滞空時間ベースの難易度（§req_20260708）: 担当ポジションの定位置から離れた落下点（浅すぎ/深すぎ＝
+  // no man's land）ほど、滞空時間に対して間に合わせにくくヒット寄りに加点。
+  pHit += timeDifficultyAdj(fielderPos, type, bb.distanceM, bb.hangTimeS, cfg);
+  pHit = clamp(pHit, 0.01, 0.97);
   const expOut = 1 - pHit; // リーグ平均基準（OAAのベースライン・ポジション中立）
 
   // 期待塁打分布（§B3a）: 防御中立の pHit × decideBases 確率版。rng を消費しない（決定論不変）。
@@ -161,8 +183,11 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
   const xB3 = pHit * eb.p3;
 
   // 守備者個人のRangeで実効被安打率を上下（good fielder→outを増やす）。OAAの個人シグナル源。
+  // logit空間でシフト（§req_20260708・UZR/DRS/OAAの確率バケット方式が暗黙に持つ「五分五分の
+  // プレーほど巧拙が効き、簡単/絶望的なプレーでは効きにくい」性質の近似。線形シフトだと極端な
+  // pHitでも一律に効いてしまい非現実的だった）。
   const rangeR = fielderRangeFor ? fielderRangeFor(fielderPos) : 50;
-  const effPHit = clamp(pHit - (rangeR - 50) * cfg.tuning.field.rangePerRating, 0.01, 0.99);
+  const effPHit = clamp(expit(logit(pHit) - ratingDelta(rangeR, cfg.tuning.field.rangeLogitSlope)), 0.01, 0.99);
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';

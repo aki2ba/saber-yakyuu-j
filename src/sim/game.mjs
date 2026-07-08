@@ -64,9 +64,17 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
 
   if (result === 'out') {
     // 犠飛: 空中アウト・2アウト未満・三塁走者 → 生還
-    if (isAirOut && outs < 2 && b3) {
-      runs++;
-      bases[2] = null;
+    if (isAirOut && outs < 2) {
+      if (b3) {
+        runs++;
+        bases[2] = null;
+      }
+      // タッグアップ（§req_20260708 UBR強化・NEW）: 二塁走者が三塁が空いていれば進塁を狙う
+      // （EqGAR/タッグアップ系シナリオの近似。走者Speed/IQ依存）。
+      if (b2 && !bases[2] && resolveAdv(b2, cfg ? cfg.tuning.bb.tagBase : 0.4, ctx, cfg, rng, 'tag')) {
+        bases[2] = b2;
+        bases[1] = null;
+      }
     }
     return runs; // それ以外は走者そのまま（併殺/進塁打は wGDP/UBR で後日）
   }
@@ -74,12 +82,20 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
   if (result === '1B') {
     const nb = [null, null, null];
     if (b3) runs++; // 三塁は生還
+    let thirdTaken = false;
     if (b2) {
       // 二塁走者の生還（走者Speed/IQ依存＝UBR, 2-5）
-      if (resolveAdv(b2, cfg ? cfg.tuning.bb.singleScore2 : 0.55, ctx, cfg, rng)) runs++;
-      else nb[2] = b2; // 三塁止まり
+      if (resolveAdv(b2, cfg ? cfg.tuning.bb.singleScore2 : 0.55, ctx, cfg, rng, 'adv2h1b')) runs++;
+      else { nb[2] = b2; thirdTaken = true; } // 三塁止まり
     }
-    if (b1) nb[1] = b1; // 一塁→二塁（station to station）
+    if (b1) {
+      // 一塁走者の三塁進塁（§req_20260708 UBR強化・NEW）: 三塁が空いていれば走者Speed/IQで狙う
+      if (!thirdTaken && resolveAdv(b1, cfg ? cfg.tuning.bb.singleScore1to3 : 0.3, ctx, cfg, rng, 'adv1t3b')) {
+        nb[2] = b1; // 一塁→三塁
+      } else {
+        nb[1] = b1; // 一塁→二塁（station to station）
+      }
+    }
     nb[0] = batterId; // 打者→一塁
     bases[0] = nb[0];
     bases[1] = nb[1];
@@ -91,7 +107,7 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
     if (b3) runs++;
     if (b2) runs++;
     if (b1) {
-      if (resolveAdv(b1, cfg ? cfg.tuning.bb.doubleScore1 : 0.45, ctx, cfg, rng)) runs++; // 一塁→生還
+      if (resolveAdv(b1, cfg ? cfg.tuning.bb.doubleScore1 : 0.45, ctx, cfg, rng, 'adv1h2b')) runs++; // 一塁→生還
       else nb[2] = b1; // 三塁止まり
     }
     nb[1] = batterId; // 打者→二塁
@@ -121,10 +137,13 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
 }
 
 /**
- * 追加進塁（生還）の判定（§6 UBR, 2-5）。走者Speed/走塁IQで基準確率を上下し、
- * ctx があれば進塁機会(advOpp)と成否(advTaken)を走者に記録する。ctxなし=能力非依存（テスト互換）。
+ * 追加進塁の判定（§6 UBR, 2-5／§req_20260708強化）。走者Speed/走塁IQで基準確率を上下し、
+ * ctx があれば進塁機会(advOpp)と成否(advTaken)を走者に記録する（ctxなし=能力非依存・テスト互換）。
+ * @param {string} scenario シナリオ別内訳キー（'adv2h1b'|'adv1h2b'|'adv1t3b'|'tag'）。
+ *   全シナリオ合算のadvOpp/advTakenに加え、statline.mjsの${scenario}Opp/${scenario}Takenへも計上し、
+ *   UBRのリーグ基準をシナリオごとに正しく分離できるようにする（Fangraphs UBR/BP EqBRR準拠）。
  */
-function resolveAdv(pid, baseProb, ctx, cfg, rng) {
+function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
   let p = baseProb;
   if (ctx) {
     const t = ctx.byId.get(pid).trueAbility;
@@ -132,8 +151,12 @@ function resolveAdv(pid, baseProb, ctx, cfg, rng) {
     p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope, 0.05, 0.95);
     const bs = ctx.statFor(pid, ctx.teamId).baserunning;
     bs.advOpp++;
+    bs[`${scenario}Opp`]++;
     const took = (rng ? rng.next() : 1) < p;
-    if (took) bs.advTaken++;
+    if (took) {
+      bs.advTaken++;
+      bs[`${scenario}Taken`]++;
+    }
     return took;
   }
   return (rng ? rng.next() : 1) < baseProb;
@@ -748,7 +771,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         batScore: batting.score,
         fldScore: fielding.score,
         bb: battedBall
-          ? { evKmh: battedBall.evKmh, laDeg: battedBall.laDeg, sprayDeg: battedBall.sprayDeg, distanceM: battedBall.distanceM }
+          ? { evKmh: battedBall.evKmh, laDeg: battedBall.laDeg, sprayDeg: battedBall.sprayDeg, distanceM: battedBall.distanceM, hangTimeS: battedBall.hangTimeS }
           : null,
         // 守備帰属（UI観戦の指標変化表示用・§16）: 打球を処理した野手（hitFielderPosは既存のARM用と同一値を再利用）。
         // 三振/四球等（打球なし）は null。新規乱数消費なし・既存の担当ポジション/選手IDをそのまま渡すだけ。

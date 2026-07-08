@@ -220,6 +220,10 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     // 出場登録入替（F2-3）: enableMoves（=2年目以降のゲーム層のみ）かつ farm 成立時のみ作動。
     moves: createMovesState(league, { enableMoves, masterSeed: masterSeed ?? seed, season, farm }),
     rosterMoves: [], // 当該シーズンの昇降格ニュースログ（§17: 当該シーズンのみ・replayで再構築）
+    // 育成→支配下の季節中昇格ログ（§req_20260708）: league.players/farmを直接動かすため、過去年は
+    // offseasonTransitionのみのreplay近道が効かない。年末にGameState.farmPromotionLogへ畳み込んで
+    // 永続化し、load時は「その年の分」をこのログからreplay適用する（day単位の再シムは不要）。
+    farmPromotionLog: [],
     schedule,
     standings,
     stats,

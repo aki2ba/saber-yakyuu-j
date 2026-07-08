@@ -178,8 +178,21 @@ export function playerBatting(ps, lc) {
 }
 
 /**
- * 走塁指標（§6）。現状 wSB のみ実装（UBR/wGDPは2-5/2-6で追加）。
- * BsR = wSB + UBR + wGDP。
+ * UBRのシナリオ別内訳1件ぶんのrun価値（§req_20260708・Fangraphs UBR/BP EqBRRのRE24分解準拠）。
+ * シナリオごとにリーグ平均進塁率で中心化し、run/機会の重み(runW)を掛ける（リーグΣ≈0）。
+ */
+function ubrScenario(br, lc, key, runW) {
+  const opp = br[`${key}Opp`] || 0;
+  if (!opp) return 0;
+  const rate = lc && lc.lgAdvRateByScenario ? lc.lgAdvRateByScenario[key] || 0 : 0;
+  return ((br[`${key}Taken`] || 0) - rate * opp) * runW;
+}
+
+/**
+ * 走塁指標（§6／§req_20260708強化）。BsR = wSB + UBR + wGDP。
+ * UBR はシナリオ別（単打での二塁走者本塁突入・二塁打での一塁走者本塁突入・単打での一塁走者
+ * 三塁進塁・タッグアップ）にRE24分解して合算する（Fangraphs UBR/Baseball Prospectus EqBRR準拠。
+ * 単一の全シナリオ合算率で中心化する旧方式は、進塁機会ごとに基準確率が異なるため偏りがあった）。
  */
 export function playerBaserunning(ps, cfg, lc) {
   const b = ps.batting;
@@ -194,10 +207,13 @@ export function playerBaserunning(ps, cfg, lc) {
   const gdpOpp = br.gdpOpp || 0;
   const wGDP =
     lc && lc.lgGDPrate != null ? (lc.lgGDPrate * gdpOpp - (b.gdp || 0)) * Math.abs(cfg.tuning.gdp.runGDP) : 0;
-  // UBR: 追加進塁を平均より多く取った分がプラス（走者Speed/IQ）。§6
-  const advOpp = br.advOpp || 0;
+  // UBR: シナリオ別に中心化して合算（走者Speed/IQ）。§6／§req_20260708
+  const rw = cfg.tuning.run;
   const ubr =
-    lc && lc.lgAdvRate != null ? ((br.advTaken || 0) - lc.lgAdvRate * advOpp) * cfg.tuning.run.runUBR : 0;
+    ubrScenario(br, lc, 'adv2h1b', rw.runUBR) +
+    ubrScenario(br, lc, 'adv1h2b', rw.runUBR) +
+    ubrScenario(br, lc, 'adv1t3b', rw.runUBR1t3b) +
+    ubrScenario(br, lc, 'tag', rw.runUBRTag);
   return {
     sb: b.sb,
     cs: b.cs,

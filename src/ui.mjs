@@ -10,7 +10,7 @@ import {
   createConfig, generateLeague, simulateSeason, deriveLeagueConstants,
   playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct, gamesBehind, pythag,
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
-  leagueBatting, leaguePitching, makeRng, hashSeed,
+  leagueBatting, leaguePitching, makeRng, hashSeed, TEAM_COLORS,
   createPlayerSeason, // E1: 育成/未出場選手のモーダル用の空観測ライン
 } from './engine.mjs';
 // フェーズC1 ゲーム層API（配布バンドルではグローバル・開発時Node解決用に import も書く）。
@@ -1006,22 +1006,8 @@ const pname = (id) => (state.byId.get(id) ? state.byId.get(id).name : id);
 const tname = (id) => state.teamName.get(id) || id;
 const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 
-// 球団アクセントカラー（UI表示専用・generate.mjs の固定12球団名に対する静的マップ。
-// エンジン/球団モデルは一切変更しない＝表示レイヤーのみの識別色）。
-const TEAM_COLORS = {
-  '白鷺ホワイトス': '#e9e4d0',
-  '疾風ゲイルズ': '#5ecbe0',
-  '蒼波ブルーズ': '#4f8fe0',
-  '紅蓮フレイムス': '#e0574a',
-  '雷鳴サンダー': '#e8c93a',
-  '黒曜オブシディアン': '#9b8cd9',
-  '翠嶺グリーンズ': '#5fd694',
-  '金獅子ライオネル': '#d9a13d',
-  '銀翼シルバーズ': '#b8c4c9',
-  '暁アヴローラ': '#e0895a',
-  '嵐山ストームズ': '#8898a8',
-  '夜叉ナイツ': '#c65a86',
-};
+// 球団アクセントカラー（UI表示専用）は generate.mjs の TEAM_NAMES とペアで定義され、
+// engine.mjs 経由で import 済み（TEAM_COLORS）。ここでは参照ヘルパーのみ。
 const teamColor = (id) => TEAM_COLORS[tname(id)] || 'var(--clay)';
 // ゲーム差の表記（首位行のみ「-」。同率2位の0.0や負のゲーム差はそのまま数値表示＝首位と区別する）
 const gbText = (i, gb) => (i === 0 ? '-' : gb.toFixed(1));

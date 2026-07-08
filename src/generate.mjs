@@ -44,6 +44,15 @@ const TEAM_NAMES = [
   '銀翼シルバーズ', '暁アヴローラ', '嵐山ストームズ', '夜叉ナイツ',
 ];
 
+// 球団アクセントカラー（UI表示専用の識別色）。TEAM_NAMES とインデックス対応で定義し、
+// 改名時に色マップだけ取り残される乖離を構造的に防ぐ。エンジンのロジックはこれを読まない。
+const TEAM_ACCENTS = [
+  '#e9e4d0', '#5ecbe0', '#4f8fe0', '#e0574a',
+  '#e8c93a', '#9b8cd9', '#5fd694', '#d9a13d',
+  '#b8c4c9', '#e0895a', '#8898a8', '#c65a86',
+];
+export const TEAM_COLORS = Object.fromEntries(TEAM_NAMES.map((n, i) => [n, TEAM_ACCENTS[i]]));
+
 function draw(rng, mean = 50, sd = 10) {
   return clampRating(rng.normal(mean, sd));
 }

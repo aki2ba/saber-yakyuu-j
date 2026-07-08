@@ -755,7 +755,12 @@ function watchScorebar(v, u, w) {
     sbTeam(v.home, v.scoreH, 'home'),
     el('button', { class: 'sbexpand link', onclick: () => { w.lineOpen = !w.lineOpen; renderWatchScreen(u); } }, '▼'),
   ]);
-  const wrap = el('div', {}, [bar]);
+  // G1a修正: このラップdivがブロックボックスを生成すると、.scorebarのposition:stickyの
+  // 効く範囲（containing block=このwrap自身の高さ）がbar本体とほぼ同じ高さになり、
+  // 実質1pxもスクロール位置に貼り付かなくなる（sticky不具合）。display:contentsで
+  // ボックス生成を止め、barを親(root)の直接の子であるかのように扱わせることで、
+  // .wtabs（rootへ直接append）と同じ土俵でstickyが機能するようにする。
+  const wrap = el('div', { class: 'scorebarwrap' }, [bar]);
   if (w.lineOpen) wrap.append(el('div', { class: 'sblinescore' }, [watchLineScore(v, u)]));
   return wrap;
 }

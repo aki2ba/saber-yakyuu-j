@@ -313,6 +313,9 @@ const html = `<!DOCTYPE html>
   .schedfuture td { color:var(--muted); }
   .modal.boxmodal { max-width:760px; }
   /* G1a: 観戦コンパクトスコアボード（常設はこれだけ・sticky） */
+  /* wrap(.scorebarwrap)がブロックボックスを生成すると.scorebarのsticky有効範囲(containing block)が
+     bar自身の高さとほぼ同一になり貼り付かなくなるため、display:contentsでボックス生成を回避する。 */
+  .scorebarwrap { display:contents; }
   .scorebar { position:sticky; top:0; z-index:6; display:flex; align-items:center; justify-content:space-between;
               gap:8px; background:#0d3526; border:1px solid var(--clay); border-radius:10px; padding:6px 10px; margin:8px 0; }
   .sbteam { display:flex; align-items:baseline; gap:8px; min-width:0;
@@ -338,8 +341,11 @@ const html = `<!DOCTYPE html>
                box-shadow:0 -6px 8px -6px rgba(0,0,0,.5); }
   .watchctrl button { flex:1; min-height:44px; min-width:0; padding:6px 1px; font-size:11px; white-space:nowrap; }
   .watchspacer { height:68px; }
-  /* G1a: 観戦タブバー(.wtabs)もスコアバー直下にsticky化（ハブの.tabs同様・スクロール中も切替を失わない） */
-  .wtabs { position:sticky; top:56px; z-index:5; background:var(--bg); padding:4px 0; flex-wrap:nowrap; overflow-x:auto; }
+  /* G1a: 観戦タブバー(.wtabs)もスコアバー直下にsticky化（ハブの.tabs同様・スクロール中も切替を失わない）。
+     top値は.scorebarの実測高さに合わせる。試合進行中はB-S-Oランプ・塁表示分だけ.scorebarが
+     高くなり実測67px（v.ended時は塁表示等が無く約46px）。67pxに合わせておけば、どちらの状態でも
+     stickyで重なる（wtabsがscorebarの下にめり込む）ことはない。実測値が変わったらここも要再調整。 */
+  .wtabs { position:sticky; top:67px; z-index:5; background:var(--bg); padding:4px 0; flex-wrap:nowrap; overflow-x:auto; }
   @media (min-width:900px) {
     /* デスクトップでは対戦タブを2カラム横並びに戻す・進行バー/フッターのボタンを肥大させない */
     .dueltab { flex-direction:row; align-items:flex-start; justify-content:center; }

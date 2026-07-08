@@ -129,7 +129,11 @@ const html = `<!DOCTYPE html>
     .hubfooter { justify-content:center; }
     .hubfooter button { flex:none; min-width:140px; }
   }
-  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; position:relative; }
+  /* G5b: 表の右にまだ列がある気配（初期表示時のヒント。スクロール後の追従は保証しない＝仕様） */
+  .tablewrap::after { content:''; position:absolute; top:0; right:0; bottom:0; width:14px;
+    background:linear-gradient(270deg, rgba(0,0,0,.35), transparent); pointer-events:none;
+    border-radius:0 8px 8px 0; }
   .emptybox { text-align:center; padding:24px 8px; color:var(--muted); }
   table.stat { border-collapse:collapse; width:100%; font-size:13px; white-space:nowrap; }
   table.stat th { position:sticky; top:0; background:#0c3122; color:var(--chalk); padding:6px 8px;

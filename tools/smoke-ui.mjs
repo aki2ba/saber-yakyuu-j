@@ -270,6 +270,17 @@ for (const tabName of ['順位', '日程・結果', 'ニュース', 'チーム',
   assert.ok(t, `ハブに「${tabName}」タブがある`);
   t._onclick();
 }
+
+// G5b) 順位表の詳細トグル（キャリアモードは既定OFF）: OFF時は交流戦列が無く、トグルONで現れる
+btnByText('順位')._onclick();
+assert.ok(!walk(appDiv).some((n) => n.tag === 'th' && textOf(n) === '交流戦'), 'G5b: キャリアモード既定では順位表に交流戦列が無い');
+const detailToggle = btnByText('▶ 詳細列');
+assert.ok(detailToggle, 'G5b: 順位表に詳細列トグルボタンがある');
+detailToggle._onclick();
+assert.ok(walk(appDiv).some((n) => n.tag === 'th' && textOf(n) === '交流戦'), 'G5b: トグルONで交流戦列が現れる');
+assert.ok(btnByText('▼ 詳細列'), 'G5b: トグルON後はラベルが「▼ 詳細列…を閉じる」に変わる');
+btnByText('▼ 詳細列')._onclick(); // 畳んで戻す（既定状態=OFFに揃える。後続テストへ影響させない）
+assert.ok(!walk(appDiv).some((n) => n.tag === 'th' && textOf(n) === '交流戦'), 'G5b: 再度OFFにすると交流戦列が消える');
 // E4) 成績タブはサブタブ集約（打撃/投手/守備/WAR/球団比較）
 btnByText('成績')._onclick();
 for (const sub of ['投手', '守備', 'WAR', '球団比較', '打撃']) {

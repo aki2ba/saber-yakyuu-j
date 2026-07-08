@@ -210,13 +210,22 @@ function renderWAR(c) {
   )));
 }
 
-// --- 順位表（S4: 2リーグ分割＋交流戦成績＋ポストシーズンパネル） -------------
+// G5b: 順位表の詳細列トグル（UIローカル状態・null=未初期化）。
+//   キャリアモードは既定OFF（基本列のみ）・クイックシミュレート（game.gs===null＝分析用途）は既定ON。
+//   一軍・二軍の順位表で共有する（トグルは1つ）。G5aの列グループ既定と同じ判定基準。
+let standingsDetail = null;
 function renderStandings(c) {
+  if (standingsDetail === null) standingsDetail = !game.gs;
   const leagues = state.cfg.league.leagues ?? [];
   const byLg = state.res.standingsByLeague ?? {};
   const blocks = leagues.length
     ? leagues.map((l) => ({ title: `${l.name}（DH${l.dh ? '有' : '無'}）`, rows: byLg[l.id] ?? [] }))
     : [{ title: '総合', rows: state.res.standings }];
+  const toggle = el('button', {
+    class: 'link',
+    onclick: () => { standingsDetail = !standingsDetail; c.innerHTML = ''; renderStandings(c); },
+  }, standingsDetail ? '▼ 詳細列（得失点・期待勝率・運・交流戦）を閉じる' : '▶ 詳細列（得失点・期待勝率・運・交流戦）');
+  c.append(toggle);
   for (const blk of blocks) {
     const leader = blk.rows[0];
     const rows = blk.rows.map((t, i) => {
@@ -224,19 +233,26 @@ function renderStandings(c) {
       const luck = Math.round(py.luck);
       // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。首位行は0=表記「-」）
       const gb = gamesBehind(leader, t);
-      return el('tr', {}, [
+      const cells = [
         td(i + 1),
         el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
         td(t.w), td(t.l), td(t.t),
         td(fmt3(winPct(t))), td(gbText(i, gb)),
-        td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-        td(fmt3(py.expWinPct)), td((luck > 0 ? '+' : '') + luck),
-        td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
-      ]);
+      ];
+      if (standingsDetail) {
+        cells.push(
+          td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+          td(fmt3(py.expWinPct)), td((luck > 0 ? '+' : '') + luck),
+          td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
+        );
+      }
+      return el('tr', {}, cells);
     });
     c.append(el('h3', { class: 'leaguename' }, blk.title));
     // 期待勝率=得失点からのピタゴラス実力勝率 / 運=実勝率−期待勝率を勝数換算（+は接戦強い/幸運）
-    c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差', '得点', '失点', '得失点差', '期待勝率', '運', '交流戦'], rows));
+    const head = ['順', '球団', '勝', '敗', '分', '勝率', '差'];
+    if (standingsDetail) head.push('得点', '失点', '得失点差', '期待勝率', '運', '交流戦');
+    c.append(table(head, rows));
   }
   renderPostseasonPanel(c);
   renderFarmStandings(c); // F2-4: 二軍リーグ順位（キャリアモードのみ・折りたたみ）
@@ -261,12 +277,17 @@ function renderFarmStandings(c) {
       if (!lgRows.length) continue;
       body.append(el('h3', { class: 'leaguename' }, `${l.name}（二軍・DH${l.dh ? '有' : '無'}）`));
       const leader = lgRows[0];
-      body.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差', '得点', '失点', '得失点差'], lgRows.map((t, i) => {
+      // G5b: 一軍と同じ standingsDetail トグルを二軍にも適用（得点/失点/得失点差の3列）
+      const head = ['順', '球団', '勝', '敗', '分', '勝率', '差'];
+      if (standingsDetail) head.push('得点', '失点', '得失点差');
+      body.append(table(head, lgRows.map((t, i) => {
         const gb = gamesBehind(leader, t);
-        return el('tr', { class: t.teamId === game.gs.playerTeamId ? 'myteam' : '' }, [
+        const cells = [
           td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
-          td(fmt3(winPct(t))), td(gbText(i, gb)), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-        ]);
+          td(fmt3(winPct(t))), td(gbText(i, gb)),
+        ];
+        if (standingsDetail) cells.push(td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)));
+        return el('tr', { class: t.teamId === game.gs.playerTeamId ? 'myteam' : '' }, cells);
       })));
     }
     body.append(el('div', { class: 'muted' }, '二軍は出場登録外の支配下＋育成選手によるファームリーグ（優勝争いは一軍と独立）。'));
@@ -1199,6 +1220,8 @@ function startNewGame(seed, teamId) {
   //   既に'all'へ初期化されていた場合の巻き戻り対策。次回 renderBatting/Pitching で再初期化される）。
   batColGroup = null;
   pitColGroup = null;
+  // G5b: 順位表の詳細トグルも同様にキャリアモード既定(OFF)へ巻き戻す。
+  standingsDetail = null;
   autoSave();
   renderHub();
 }

@@ -1228,8 +1228,8 @@ function renderHubHome(c) {
     el('div', { class: 'muted' }, '進行'),
     el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
       el('button', { class: 'primary', onclick: () => showNextGameChoices() }, '▶ 次の試合へ'),
-      el('button', { onclick: () => { advanceChunk('weekEnd'); renderHub(); } }, '1週間'),
-      el('button', { onclick: () => { advanceChunk('monthEnd'); renderHub(); } }, '月末まで'),
+      el('button', { onclick: () => runAdvanceWithProgress('weekEnd') }, '1週間'),
+      el('button', { onclick: () => runAdvanceWithProgress('monthEnd') }, '月末まで'),
       el('button', { onclick: () => runToSeasonEnd() }, 'シーズン終了まで'),
     ]),
   ]));
@@ -1660,9 +1660,39 @@ function indexOfFirstAtbat(events) {
   return i < 0 ? events.length : i + 1;
 }
 
-function advanceChunk(until) {
-  advanceTo(game.gs, until);
-  autoSave();
+// G2: 週/月の進行を日次分割で実行（runToSeasonEnd と同じチャンク進行パターン・決定論は advanceDay の逐次で不変）。
+// until: 'weekEnd' | 'monthEnd'。advanceTo（src/game/index.mjs）と同じ境界計算で停止条件を span 単位に再現する
+// （エンジン非改変＝計算式そのものを advanceTo からコピーしているだけで、エンジンのロジックには触れない）。
+function runAdvanceWithProgress(until) {
+  const gs = game.gs;
+  const span = until === 'weekEnd' ? gs.cfg.game.daysPerWeek : gs.cfg.game.daysPerMonth;
+  const startDay = pendingDayOf(gs.rt) - 1; // 0始まりの現在day
+  const targetDay = Math.floor(startDay / span) * span + span; // 次の span 境界（advanceTo と同義）
+  const heading = until === 'weekEnd' ? '1週間を進行中…' : '月末まで進行中…';
+  const overlay = el('div', { class: 'overlay' });
+  const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
+  const barText = el('div', { class: 'muted' }, '0%');
+  overlay.append(el('div', { class: 'modal' }, [
+    el('h2', {}, heading),
+    el('div', { class: 'pbtrack' }, [barFill]),
+    barText,
+  ]));
+  document.getElementById('app').append(overlay);
+  const step = () => {
+    advanceDay(gs);
+    const cur = pendingDayOf(gs.rt) - 1;
+    const pct = Math.min(100, Math.round(((cur - startDay) / (targetDay - startDay)) * 100));
+    barFill.setAttribute('style', `width:${pct}%`);
+    barText.textContent = pct + '%';
+    if (gs.rt.finished || cur >= targetDay) {
+      autoSave();
+      overlay.remove();
+      if (gs.rt.finished) renderSeasonResult(); else renderHub();
+    } else {
+      setTimeout(step, 0);
+    }
+  };
+  step();
 }
 
 // 「シーズン終了まで」: UIを凍らせないチャンク進行（節を小分けに消化＋プログレスバー）。

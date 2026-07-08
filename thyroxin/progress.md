@@ -3,6 +3,32 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G2 「1週間・月末まで」のフリーズ解消 — 日次分割進行＋プログレスバー)
+
+**やったこと**（phaseG_spec.md の G2 を実装。G1c直後の続き）
+- `src/ui.mjs`: 同期実行だった `advanceChunk(until)`（`advanceTo(gs, until)` を一括同期実行→二軍込みで
+  数十秒UIが固まる）を廃止し、`runAdvanceWithProgress(until)` を新設。`advanceDay(gs)` を1日ずつ
+  `setTimeout(step, 0)` チャンクで進め、`.overlay > .modal`（見出し+`.pbtrack`/`.pbfill`+進捗%）を表示。
+  週/月の境界計算は `src/game/index.mjs` の `advanceTo`（`Math.floor(pendingDay/span)*span+span`）と
+  同一の式をUI側にコピーして再現（エンジンは非改変・ロジックには触れず計算式だけ踏襲）。完了時は
+  `rt.finished` なら `renderSeasonResult()`、それ以外は `renderHub()` へ（決定論は `advanceDay` の逐次実行で不変＝
+  `runToSeasonEnd` と同じパターン）。ホームの「1週間」「月末まで」ボタンの onclick をこれに差し替え
+  （文言は一切変更せず）
+- `tools/smoke-ui.mjs`: 「月末まで」クリック直後の2箇所（G7ブロック／2年目昇降格ニュースループ）に
+  シークベースの `flushTimers()`（`while (timers.length) timers.shift()()`）を追加してタイマーを全消化。
+  実装中に**敵対的でない実測で本物のバグを1つ発見**: 冒頭のクイックシミュレート実行を消化していた
+  `timers.forEach((fn) => fn())` は非破壊的走査のため、実行済みコールバックが `timers` 配列に**残存**していた。
+  旧実装ではその後 `timers.length = 0` で明示的に破棄していたため無害だったが、仕様書どおりに
+  `timers.length = 0` を `flushTimers()`（shiftベース）へ置き換えると、その残存コールバックが
+  シフトされて**再実行**され、クイックシミュレートの `state.byId`/`state.res` でキャリアモードの状態を
+  上書きしてしまい、後続の打撃タブ描画が `p.role of undefined` で例外落ちした。根治として冒頭の
+  `timers.forEach` も同じ `flushTimers()`（shiftベース）に統一し、実行済みコールバックを配列から
+  必ず取り除くようにした（`flushTimers` ヘルパーを `timers` 宣言直後に定義し直して全箇所で共用）
+- `npm test`（327件PASS）→`npm run smoke`（全ブロックPASS）→`npm run verify`（ENGINE identity不変）→
+  `npm run calibrate`（既存30+B20+D2 3+二軍4 全PASS、数値は不変＝UIのみの変更どおり）を確認
+
+**次**: G3（成績タブの規定閾値を消化試合比例に＋空状態メッセージ）
+
 ## 2026-07-08 (G1c スタメンタブのモバイル横はみ出しバグ修正)
 
 **やったこと**（phaseG_spec.md の G1c を実装。G1b直後の続き）

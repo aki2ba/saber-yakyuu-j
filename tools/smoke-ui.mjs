@@ -42,6 +42,10 @@ function byId(id) {
   return appDiv.attrs.id === id ? appDiv : new El('stub');
 }
 const timers = [];
+// G2: 予約された setTimeout を全消化する（shift ベース＝実行済みコールバックを配列に残さない。
+// forEach 等の非破壊的走査で残すと、後続の別フラッシュが「実行済みだが未削除」の古い
+// コールバックを再実行してしまう＝クイックシミュレート等の残渣が career モードの state を汚染する）。
+const flushTimers = () => { let n = 0; while (timers.length && n++ < 100000) timers.shift()(); };
 const sandbox = {
   Math, JSON, Number, String, Boolean, Array, Object, isNaN, parseInt, parseFloat, Date: undefined,
   console: { log: () => {}, error: (...a) => console.error(...a) },
@@ -68,7 +72,9 @@ assert.ok(simBtn, 'シミュレートボタンが描画される');
 // 2) シミュレート実行（setTimeout をフラッシュ）
 simBtn._onclick();
 assert.ok(timers.length > 0, 'シーズン処理が予約される');
-timers.forEach((fn) => fn());
+// G2: shift ベースで消化する（forEach 等の非破壊的走査だと実行済みコールバックが配列に残り、
+// 後続の別フラッシュ（月末まで等）がそれを再実行してクイックシミュレートの state を巻き戻してしまう）。
+flushTimers();
 
 // 3) 全タブを描画（WAR/順位表/打撃/投手/守備/チーム・B3c）— 例外が出ないこと
 // modaltabs は class 'mtab' で 'tab' 始まりでない＝メインタブのみが拾われる。
@@ -491,12 +497,11 @@ assert.ok(hasClass('header'), 'ロード後にハブが描画される（決定�
 assert.equal(daySig(), beforeSave, 'ロードでセーブ時点の日付/成績に戻る');
 
 // G7) 進行（月末まで）→ シーズン終了まで（チャンク進行・プログレス）→ リザルト（日本一）
-btnByText('月末まで')._onclick();
+btnByText('月末まで')._onclick(); // G2: 日次分割＋setTimeoutチャンク進行（同期フリーズ解消）
+flushTimers(); // 月末までの日次チャンクを全消化
 assert.ok(hasClass('header'), '月末進行後もハブが描画される');
-timers.length = 0; // 旧クイックシミュレートの setTimeout 残渣を破棄（チャンク進行のみを消化する）
 btnByText('シーズン終了まで')._onclick();
-let flush = 0;
-while (timers.length && flush++ < 100000) { const fn = timers.shift(); fn(); } // チャンク進行の setTimeout を全消化
+flushTimers(); // チャンク進行の setTimeout を全消化
 assert.ok(hasClass('championbanner'), 'シーズンリザルトに日本一バナーが出る');
 assert.ok(textOf(hasClass('championbanner')).includes('日本一'), '日本一の球団名が表示される');
 const resultTables = walk(appDiv).filter((n) => n.tag === 'table');
@@ -749,7 +754,8 @@ assert.ok(walk(fOverlay).some((n) => textOf(n).includes('一軍出場はあり�
 btnByText('ホーム')._onclick();
 let movesFound = false;
 for (let mth = 0; mth < 5 && !movesFound; mth++) {
-  btnByText('月末まで')._onclick(); // 同期チャンク進行（IL補充・25試合レビューの成績入替が発生し得る）
+  btnByText('月末まで')._onclick(); // G2: 日次分割進行（IL補充・25試合レビューの成績入替が発生し得る）
+  flushTimers(); // 月末までの日次チャンクを全消化
   btnByText('ニュース')._onclick();
   const feedTxt = textOf(appDiv);
   movesFound = feedTxt.includes('登録抹消') || feedTxt.includes('を昇格');

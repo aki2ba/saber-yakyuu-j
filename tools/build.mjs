@@ -288,7 +288,6 @@ const html = `<!DOCTYPE html>
   .fieldcol { align-items:center; text-align:center; flex:none; min-width:200px; }
   .duelhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:2px; align-self:flex-start; }
   svg.fieldchart { width:200px; max-width:100%; background:#0c3122; border-radius:8px; }
-  svg.fieldchart.empty { opacity:0.55; }
   .fieldlabel { margin-top:6px; font-size:13px; font-weight:700; }
   .fieldsub { font-size:11px; margin-top:2px; }
   /* 一球判定の統一色（現打席リスト・実況一球行に適用）:

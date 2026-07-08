@@ -193,7 +193,6 @@
   .fieldcol { align-items:center; text-align:center; flex:none; min-width:200px; }
   .duelhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:2px; align-self:flex-start; }
   svg.fieldchart { width:200px; max-width:100%; background:#0c3122; border-radius:8px; }
-  svg.fieldchart.empty { opacity:0.55; }
   .fieldlabel { margin-top:6px; font-size:13px; font-weight:700; }
   .fieldsub { font-size:11px; margin-top:2px; }
   /* 一球判定の統一色（現打席リスト・実況一球行に適用）:
@@ -12605,8 +12604,8 @@ function watchBallColor(res) {
  * 直近の 'pa' イベント（v.lastPA・watchReconstruct が再生済みイベントから記録）の打球データを
  * 1件だけ描画する。sprayChart（ui.mjs）と同じ座標変換（ファウルライン±45°・内野目安円・本塁）を
  * 流用し、着弾点は1つの大きめマーカー、本塁からの軌跡は laDeg 帯で弧の高さを変えて視覚的に区別する
- * （物理シミュレーションではなく見た目の区別のみ）。打球のない打席（三振/四球等）は枠だけの薄い図＋
- * 結果テキストのみを表示する。
+ * （物理シミュレーションではなく見た目の区別のみ）。打球のない打席（三振/四球等）は図の枠自体を描画せず
+ * （G1b）、結果テキスト（打席前は「まだ打球なし」）のみを表示する。
  */
 function watchFieldChart(v, u) {
   const { el, svgEl } = u;
@@ -12619,13 +12618,13 @@ function watchFieldChart(v, u) {
     return [hx + dist * scale * Math.sin(r), hy - dist * scale * Math.cos(r)];
   };
   const hasBb = !!(p && p.bb);
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fieldchart' + (hasBb ? '' : ' empty') });
-  const [lx, ly] = pt(-45, 125); const [rx, ry] = pt(45, 125);
-  svg.append(svgEl('path', { d: `M ${hx} ${hy} L ${lx} ${ly} A ${125 * scale} ${125 * scale} 0 0 1 ${rx} ${ry} Z`, fill: '#123d2a', stroke: '#2f6b4a' }));
-  const [b2x, b2y] = pt(0, 38);
-  svg.append(svgEl('circle', { cx: b2x, cy: b2y, r: 3, fill: '#c9a06a' }));
-  svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, fill: '#fff' }));
   if (hasBb) {
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fieldchart' });
+    const [lx, ly] = pt(-45, 125); const [rx, ry] = pt(45, 125);
+    svg.append(svgEl('path', { d: `M ${hx} ${hy} L ${lx} ${ly} A ${125 * scale} ${125 * scale} 0 0 1 ${rx} ${ry} Z`, fill: '#123d2a', stroke: '#2f6b4a' }));
+    const [b2x, b2y] = pt(0, 38);
+    svg.append(svgEl('circle', { cx: b2x, cy: b2y, r: 3, fill: '#c9a06a' }));
+    svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, fill: '#fff' }));
     const bb = p.bb;
     const [ex, ey] = pt(bb.sprayDeg, Math.min(bb.distanceM, 130));
     // 軌跡: laDeg帯で弧の高さを変える（<10=ゴロ気味の直線／10-25=浅い弧／25+=山なり）
@@ -12639,13 +12638,13 @@ function watchFieldChart(v, u) {
       cx: ex.toFixed(1), cy: ey.toFixed(1), r: p.result === 'HR' ? 6.5 : 5.5, class: 'fieldmark',
       fill: watchBallColor(p.result), stroke: '#0c3122', 'stroke-width': '1.5',
     }));
-  }
-  col.append(svg);
-  if (!p) {
+    col.append(svg);
+    col.append(el('div', { class: 'fieldlabel ' + (p.cls || '') }, p.resultText));
+    col.append(el('div', { class: 'fieldsub muted' }, `EV${Math.round(p.bb.evKmh)}km/h ${Math.round(p.bb.distanceM)}m`));
+  } else if (!p) {
     col.append(el('div', { class: 'fieldlabel muted' }, 'まだ打球なし'));
   } else {
     col.append(el('div', { class: 'fieldlabel ' + (p.cls || '') }, p.resultText));
-    if (hasBb) col.append(el('div', { class: 'fieldsub muted' }, `EV${Math.round(p.bb.evKmh)}km/h ${Math.round(p.bb.distanceM)}m`));
   }
   return col;
 }

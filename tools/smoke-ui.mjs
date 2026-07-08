@@ -314,14 +314,15 @@ assert.ok(!walk(dueltab).some((n) => (n.className || '').includes('zoneplot')), 
 assert.ok(/(右打|左打|両打)/.test(muTxt), `対戦カードの打者に利き腕表記 (${muTxt.slice(0, 80)})`);
 assert.ok(/(右投|左投)/.test(muTxt), `対戦カードの投手に利き腕表記 (${muTxt.slice(0, 80)})`);
 assert.ok(walk(muBox).filter((n) => (n.className || '').includes('handtag')).length >= 2, '打者/投手の利き腕タグ(.handtag)が両方出る');
-// F3) 打球フィールド図: 対戦タブにSVGが常設される（試合開始直後は打球なし＝枠だけ）
+// G1b) 打球フィールド図: 打球なし時は.fieldchartの枠ごと非描画＋fieldlabelのみ（試合開始直後＝まだ打球なし）
 {
   const fieldSvg = walk(dueltab).find((n) => (n.className || '').includes('fieldchart'));
-  assert.ok(fieldSvg, '打球フィールド図SVG(.fieldchart)が対戦タブに描かれる');
-  assert.ok((fieldSvg.className || '').includes('empty'), '打球がまだ無い間は枠だけの薄い表示(.empty)');
+  assert.ok(!fieldSvg, '打球なし時は打球フィールド図(.fieldchart)の枠自体が描かれない');
   const fieldCol = hasClass('fieldcol');
-  assert.ok(textOf(fieldCol).includes('打球'), '打球フィールド図に見出し「打球」');
-  assert.ok(hasClass('fieldlabel') && textOf(hasClass('fieldlabel')).length > 0, '結果ラベル欄が描かれる');
+  assert.ok(textOf(fieldCol).includes('打球'), '打球フィールド図欄に見出し「打球」');
+  const fieldLabel = hasClass('fieldlabel');
+  assert.ok(fieldLabel && textOf(fieldLabel).length > 0, '結果ラベル欄が描かれる');
+  assert.ok(textOf(fieldLabel).includes('まだ打球なし'), '打席前は「まだ打球なし」の1行表示');
 }
 assert.ok(!hasClass('pbp'), '対戦タブでは実況フィードが出ない（ゾーニング）');
 // 速報タブへ戻す（以降は現在の打席ボックス(.curab)を使った検証のため）

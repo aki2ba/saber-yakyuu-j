@@ -3,6 +3,21 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G1c スタメンタブのモバイル横はみ出しバグ修正)
+
+**やったこと**（phaseG_spec.md の G1c を実装。G1b直後の続き）
+- 原因: `@media(max-width:640px)` で `.lineupbody` が `flex-direction:column` になるが `flex-wrap:wrap` が
+  残るため、CSS仕様（column+wrap は交差軸=幅が内容サイズ）により `.lineupcol` が「今日」列 nowrap 文字列
+  の幅へ広がり、`.tablewrap` の横スクロールが機能せず画面全体がはみ出していた
+- `tools/build.mjs` の該当 media クエリ内に `.lineupbody { flex-wrap:nowrap; }` `.lineupcol { min-width:0;
+  width:100%; }` `.benchbox { min-width:0; width:100%; }` を追加
+- Playwright（chromium_headless_shell, playwright-core経由）でモバイル幅390pxの観戦画面・試合終了直後の
+  スタメンタブを実測: `document.body.scrollWidth` が修正前 **454px→修正後 390px** に改善（横はみ出し解消）。
+  残る内側の `.tablewrap` 内テーブル幅超過は仕様どおり横スクロールで受け持つ想定内の挙動
+- `npm test`（327件PASS）→`npm run smoke`（全ブロックPASS）を確認
+
+**次**: G2（「1週間・月末まで」のフリーズ解消＝日次分割進行＋プログレスバー）
+
 ## 2026-07-08 (G1b 打球図の空枠を撤去 — 打球なし打席は1行表示)
 
 **やったこと**（phaseG_spec.md の G1b を実装。G1a直後の続き）

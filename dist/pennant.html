@@ -258,6 +258,10 @@
     .kvgrid { grid-template-columns:repeat(3,1fr); }
     .abilities { grid-template-columns:1fr; }
     .lineupbody, .sprayrow, .awardtop { flex-direction:column; }
+    /* G1c: column+wrap は交差軸(幅)が内容サイズへ広がるため nowrap にし、列幅を親に合わせる */
+    .lineupbody { flex-wrap:nowrap; }
+    .lineupcol { min-width:0; width:100%; }
+    .benchbox { min-width:0; width:100%; }
     table.scoreboard th, table.scoreboard td { padding:3px 4px; font-size:11px; }
     .reccols { flex-direction:column; }
     .overlay { padding:8px; }

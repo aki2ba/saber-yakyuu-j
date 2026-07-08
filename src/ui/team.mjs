@@ -300,7 +300,9 @@ function teamRosterTable(data, cols, sort, u) {
         render();
       },
     }, label + (key === k ? (dir < 0 ? ' ▼' : ' ▲') : ''))));
-    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => u.openModal(d.id) },
+    // G9: 表示中テーブルのソート済みID配列をモーダルの前後ナビに渡す。
+    const navIds = sorted.map((d) => d.id);
+    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => u.openModal(d.id, navIds) },
       cols.map(([k, , align]) => {
         const cell = teamRosterCell(k, d, u);
         // 要素セル（育成バッジ付き名前）は td 文字列化を避けて直接収める。

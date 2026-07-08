@@ -3,6 +3,35 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G9 選手モーダル磨き — stickyヘッダー・タブ1行化・前後ナビ)
+
+**やったこと**（phaseG_spec.md の G9 を実装）
+- `.modal` に `max-height:92vh; overflow:auto;`、`.modalhead` に `position:sticky; top:0;` を付与し、
+  長い成分（打球SVG・経歴タブ等）でも✕ボタンが常に見えるようにした。
+- `.modaltabs` を `flex-wrap:nowrap; overflow-x:auto;`、`.mtab` を `white-space:nowrap; flex:none;` にして
+  タブ行の2行折返しを解消（横スクロール1行）。
+- `openModal(playerId, navIds?)` に省略可の第2引数を追加。渡されたときだけ `modalHeader` に◀/▶の前後ナビ
+  ボタン（`.modalnavwrap`/`.modalnav`。端では `disabled`）が出る。ナビ時は overlay を作り直さず
+  `overlay.remove()` → `openModal(隣のid, navIds)` で再構築する単純な方式（タブ選択状態は引き継がない）。
+  呼び出し側で `navIds`（表示中テーブルのソート済みID配列）を渡すのは仕様どおり3箇所:
+  `statTable`（打撃/投手/守備等のリーダーボード）・`renderWAR`（WARカード）・`teamRosterTable`（チームタブ）。
+- smoke: 打撃表からモーダルを開き▶で隣の選手のpnameへ変化→◀で元に戻ることを assert する新ブロックを追加。
+- **検証**: `npm test`(327)PASS・`npm run smoke`PASS・`npm run verify`(identity不変)PASS・`npm run calibrate`
+  (30+20+3+4件 全PASS)——いずれも下記の運用理由により**隔離した git worktree**（コミット元HEAD基準）で実行。
+
+**運用メモ（重要・同一リポジトリでの並行自走セッション衝突）**: 作業中、同一ワーキングディレクトリで
+別の自走セッションが phaseG の G6/G7/G8 を並行して未コミットのまま編集していることが判明した
+（前提として渡された「G6・G7・G8完了済み」は誤りで、実際の直前コミットはG5b止まりだった）。
+一度は自分の未コミット編集（src/ui.mjs 等）が相手側の git stash 操作で消える事故が発生したが、
+Edit履歴から全て再現可能だったため復旧。その後 `git worktree add --detach` で隔離コピーを作り、
+自分の4ファイル（src/ui.mjs / src/ui/team.mjs / tools/build.mjs / tools/smoke-ui.mjs）だけをコミット
+済みHEAD（相手のG6/G7/G8変更はこれらのファイルにも同時に混在中）に当てて上記ゲートを独立実行・
+全PASSを確認した。ライブディレクトリへは、隔離コピーとの差分から**自分のフックだけを含む手作りパッチ**
+（`diff -u --label a/... --label b/...`）を `git apply --cached` でインデックスにのみ適用し
+（作業ツリー上の相手の未コミットWIPには一切触れずに済む）、その状態のままコミットした。
+`dist/pennant.html` は相手のG6/G7/G8 WIP込みでビルドされる状態のため、直前のRBI修正コミット
+（e9dc9cc）と同じ理由で今回もコミット対象外＝次に誰かが揃ってビルドするタイミングで正式反映される。
+
 ## 2026-07-08 (ユーザー疑問9件の検証＋軽微な指摘4件を修正 — req_20260708.md)
 
 **やったこと**（ユーザーの疑問形式の指摘9件を並行調査エージェント5体＋直接コード確認で検証→「軽微な修正から全部」の指示で6・7・8・9番を実装）

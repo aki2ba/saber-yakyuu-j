@@ -174,8 +174,28 @@ battingTab._onclick();
 const batRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
 assert.ok(batRow, '打撃表にクリック可能な選手行がある');
 batRow._onclick();
-const overlay = walk(appDiv).find((n) => (n.className || '').includes('overlay'));
+let overlay = walk(appDiv).find((n) => (n.className || '').includes('overlay'));
 assert.ok(overlay, '選手モーダルのオーバーレイが開く');
+
+// G9: 選手モーダルの前後ナビ（◀/▶）— 打撃表(statTable)から開いたので navIds 付き。隣の選手へ移ると pname が変わる。
+{
+  const pnameOf = (ov) => textOf(walk(ov).find((n) => (n.className || '').includes('pname')));
+  const origName = pnameOf(overlay);
+  const navBtnOf = (ov, label) => walk(ov).find((n) => n.tag === 'button' && (n.className || '').includes('modalnav') && textOf(n) === label);
+  const nextBtn = navBtnOf(overlay, '▶');
+  assert.ok(nextBtn, 'G9: navIds付きで開いた選手モーダルに▶ナビボタンがある');
+  assert.ok(nextBtn._onclick, 'G9: 先頭でなければ▶は有効（onclickがある）');
+  nextBtn._onclick();
+  overlay = walk(appDiv).filter((n) => (n.className || '').includes('overlay')).pop();
+  const nextName = pnameOf(overlay);
+  assert.notEqual(nextName, origName, `G9: ▶で隣の選手のモーダルに切り替わる（pname変化） (${origName} -> ${nextName})`);
+  const prevBtn = navBtnOf(overlay, '◀');
+  assert.ok(prevBtn && prevBtn._onclick, 'G9: ▶で移動後は◀も有効');
+  prevBtn._onclick();
+  overlay = walk(appDiv).filter((n) => (n.className || '').includes('overlay')).pop();
+  assert.equal(pnameOf(overlay), origName, 'G9: ◀で元の選手のモーダルに戻る');
+}
+
 const mtabsOf = () => walk(overlay).filter((n) => n.tag === 'button' && (n.className || '').includes('mtab'));
 const batMtabs = mtabsOf().map(textOf);
 for (const t of ['基本', '打球', 'スプリット', '文脈', '守備成分']) {

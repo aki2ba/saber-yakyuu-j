@@ -149,9 +149,14 @@ const html = `<!DOCTYPE html>
   tr.clickable:hover td:first-child { background:#174a34; }
   .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
+  /* G9: モーダルは長い成分（打球SVG・経歴等）でも画面内に収まるようスクロール化。ヘッダーは常に見える */
   .modal { background:var(--panel); border:1px solid var(--clay); border-radius:10px; padding:16px;
-           max-width:560px; width:100%; --sticky-bg:var(--panel); }
-  .modalhead { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+           max-width:560px; width:100%; --sticky-bg:var(--panel); max-height:92vh; overflow:auto; }
+  .modalhead { display:flex; justify-content:space-between; align-items:center;
+               position:sticky; top:0; background:var(--panel); z-index:2; padding:4px 0; margin:-4px 0 10px; }
+  .modalnavwrap { display:flex; align-items:center; gap:4px; }
+  .modalnav { padding:4px 9px; font-size:14px; line-height:1; }
+  .modalnav:disabled { opacity:.3; cursor:default; }
   .pname { font-size:18px; font-weight:700; }
   .kvgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
   .kv { background:#0c3122; border-radius:6px; padding:6px; text-align:center; }
@@ -166,8 +171,10 @@ const html = `<!DOCTYPE html>
   svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
   svg.evla { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
   .sprayrow { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; align-items:flex-start; margin-top:8px; }
-  .modaltabs { display:flex; gap:6px; margin:8px 0 12px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:8px; }
-  .mtab { padding:4px 12px; font-size:12px; }
+  /* G9: モーダルのタブ行は折返しせず横スクロール1行に（多タブ選手モーダルの2行化を解消） */
+  .modaltabs { display:flex; gap:6px; margin:8px 0 12px; flex-wrap:nowrap; overflow-x:auto;
+               border-bottom:1px solid var(--line); padding-bottom:8px; }
+  .mtab { padding:4px 12px; font-size:12px; white-space:nowrap; flex:none; }
   .mtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
   .modalbody { min-height:40px; }
   h4.teamsub { font-size:12px; color:var(--muted); margin:8px 0 3px; font-weight:600; }

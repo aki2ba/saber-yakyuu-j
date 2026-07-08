@@ -198,8 +198,9 @@ function renderWAR(c) {
     .sort((a, b) => b.war - a.war)
     .slice(0, 50);
   c.append(el('div', { class: 'muted', style: 'margin:4px 0' }, 'WAR = 打撃(wRAA)＋走塁(BsR)＋守備(UZR)＋位置補正 の総合。行タップで詳細。'));
+  const navIds = rows.map((r) => r.id); // G9: モーダルの前後ナビ用
   c.append(el('div', { class: 'warlist' }, rows.map((r, i) =>
-    el('div', { class: 'warcard clickable', onclick: () => openModal(r.id) }, [
+    el('div', { class: 'warcard clickable', onclick: () => openModal(r.id, navIds) }, [
       el('span', { class: 'warrank' }, String(i + 1)),
       el('span', { class: 'warval' }, r.war.toFixed(1)),
       el('span', { class: 'warname' }, [
@@ -464,7 +465,9 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     const head = el('tr', {}, curCols.map(([k, label, align]) =>
       el('th', { class: (align || '') + (state.sort.key === k ? ' sorted' : ''), title: TIP[k] || '', onclick: () => { state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : -1 }; render(); } }, label + (state.sort.key === k ? (dir < 0 ? ' ▼' : ' ▲') : '')),
     ));
-    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id) }, curCols.map(([k, , align]) => {
+    // G9: 表示中テーブルのソート済みID配列をモーダルの前後ナビに渡す。
+    const navIds = sorted.map((d) => d.id);
+    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id, navIds) }, curCols.map(([k, , align]) => {
       if (k === 'team') return teamCell(d, align); // G5a: 略称チップ（teamIdが無ければ文字列フォールバック）
       let v = d[k];
       if (typeof v === 'number') {
@@ -505,7 +508,10 @@ function teamCell(d, align) {
 // --- 選手モーダル（タブ化・§B3 UI）----------------------------------------
 // 打者: 基本 / 打球(スプレー+EV/LA+Barrel%) / スプリット(対左右/RISP/home-away) / 文脈(WPA/RE24/Clutch/LI) / 守備成分
 // 投手: 基本 / 投球(xFIP/SIERA/被打球) / 文脈(WPA/pLI/gmLI/SD/MD)
-function openModal(playerId) {
+// G9: navIds は「表示中テーブルのソート済みID配列」（省略可）。渡されたときだけ modalhead に
+//   前後ナビ（◀/▶）が出る。ナビ時は overlay を作り直さず一旦 remove() して openModal を呼び直す
+//   （最も単純な再構築＝タブ選択状態はナビをまたいで保持しない仕様）。
+function openModal(playerId, navIds = null) {
   const p = state.byId.get(playerId);
   if (!p) return;
   const isPitcher = p.role === 'pitcher';
@@ -516,7 +522,7 @@ function openModal(playerId) {
   if (!s) s = createPlayerSeason(playerId, state.res ? state.res.season : 0);
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
-  box.append(modalHeader(p, isPitcher, overlay));
+  box.append(modalHeader(p, isPitcher, overlay, playerId, navIds));
   const modalTabs = !hasStats
     ? [['basic', '基本']]
     : isPitcher
@@ -549,8 +555,9 @@ function openModal(playerId) {
 /**
  * モーダルヘッダ（E1整備）: 名前＋二つ名（キャリア時）／所属（一軍支配下・育成二軍）・位置・
  * 年齢・利き手／受賞歴（キャリア時・直近3件＋件数）。三層構造: 二つ名も受賞も観測ベース。
+ * G9: navIds が渡されたときは◀/▶の前後ナビボタンを右側（✕の隣）に足す（端は disabled）。
  */
-function modalHeader(p, isPitcher, overlay) {
+function modalHeader(p, isPitcher, overlay, playerId, navIds) {
   const gs = game.gs;
   const left = el('div', {});
   const nameRow = el('div', {}, [el('span', { class: 'pname' }, p.name)]);
@@ -568,7 +575,21 @@ function modalHeader(p, isPitcher, overlay) {
       left.append(el('div', { class: 'headawards' }, `🏅 ${recent}${hist.length > 3 ? ` 他${hist.length - 3}件` : ''}`));
     }
   }
-  return el('div', { class: 'modalhead' }, [left, el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]);
+  const right = el('div', { class: 'modalnavwrap' });
+  if (navIds && navIds.length > 1) {
+    const idx = navIds.indexOf(playerId);
+    const prevId = idx > 0 ? navIds[idx - 1] : null;
+    const nextId = idx >= 0 && idx < navIds.length - 1 ? navIds[idx + 1] : null;
+    const navBtn = (label, id) => {
+      const attrs = { class: 'link modalnav' };
+      if (id == null) attrs.disabled = true;
+      else attrs.onclick = () => { overlay.remove(); openModal(id, navIds); };
+      return el('button', attrs, label);
+    };
+    right.append(navBtn('◀', prevId), navBtn('▶', nextId));
+  }
+  right.append(el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'));
+  return el('div', { class: 'modalhead' }, [left, right]);
 }
 
 // 基本タブ: 成績サマリ＋（打者）WAR内訳/対球種 ＋能力バー

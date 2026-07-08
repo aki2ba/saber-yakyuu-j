@@ -3,6 +3,29 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (phaseG 総仕上げ敵対的レビュー対応 — G6/G7/G8/G10の未コミットWIPをコミット)
+
+**やったこと**: phaseG P2/全体実装への敵対的レビューでF1(blocker/major)を検出。「`git diff 9d84b57..HEAD`
+にはG9(c040dab)とRBI修正(e9dc9cc)のみが含まれ、G6（進行後差分ダイジェスト・showAdvanceDigest・
+leagueRankOf）/G7（日程タブのdetails折りたたみ・次戦ジャンプ）/G8（表彰details・日本シリーズ表形式・
+リザルトヘッダー整理）/G10（用語集モーダル）は作業ツリーの未コミット変更としてのみ存在し、他セッション
+の操作等で失われるリスクがある」という指摘。G9エントリに記録した並行自走セッション衝突の残骸（相手側の
+G6/G7/G8/G10 WIP）がまさにこの状態のまま残っていたことを確認した。
+
+**対応**: `git status`/`git diff`で該当6ファイル（src/ui.mjs, src/ui/schedule.mjs, src/ui/watch.mjs,
+tools/build.mjs, tools/smoke-ui.mjs, dist/pennant.html・計607行差分）の内容を精査し、phaseG_spec.mdの
+G6/G7/G8/G10仕様と一致すること、smoke-ui.mjsに対応する検証ブロック（ダイジェストoverlay・日程details・
+日本シリーズtable列・用語集dt/dd）が既に組み込まれていることを確認。誤検知ではなく正当な指摘と判断し、
+`npm test`(327 PASS)→`npm run verify`(identity不変)→`npm run smoke`(全PASS)→`npm run calibrate`
+(30+20+3+4 PASS)を再実行して全PASSを確認後、そのままコミット(7deea37)。これで`f5c359f..HEAD`に
+G1a〜G10全項目が揃った。
+
+**メモ**: 今後同一リポジトリで並行自走セッションを走らせる場合はブランチ分離かworktree運用を徹底する
+（G9エントリの事故と今回のF1指摘は同一原因＝並行編集の未コミット放置）。
+
+**次にやること**: phaseG_spec.mdのG1a〜G10は今回で全項目コミット済み。残るはD5（全国対戦BaaS）・
+Capacitor化（プラットフォーム展開）。
+
 ## 2026-07-08 (G9 選手モーダル磨き — stickyヘッダー・タブ1行化・前後ナビ)
 
 **やったこと**（phaseG_spec.md の G9 を実装）

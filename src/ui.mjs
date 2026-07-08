@@ -8,7 +8,7 @@
 // ============================================================================
 import {
   createConfig, generateLeague, simulateSeason, deriveLeagueConstants,
-  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct, pythag,
+  playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, winPct, gamesBehind, pythag,
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
   leagueBatting, leaguePitching, makeRng, hashSeed,
   createPlayerSeason, // E1: 育成/未出場選手のモーダル用の空観測ライン
@@ -223,12 +223,12 @@ function renderStandings(c) {
       const py = pythag(t); // ピタゴラス期待勝率＋幸運度（得失点から見た実力勝率と実勝率の差）
       const luck = Math.round(py.luck);
       // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。首位行は0=表記「-」）
-      const gb = leader ? ((leader.w - t.w) + (t.l - leader.l)) / 2 : 0;
+      const gb = gamesBehind(leader, t);
       return el('tr', {}, [
         td(i + 1),
         el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
         td(t.w), td(t.l), td(t.t),
-        td(fmt3(winPct(t))), td(gb <= 0 ? '-' : gb.toFixed(1)),
+        td(fmt3(winPct(t))), td(gbText(i, gb)),
         td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
         td(fmt3(py.expWinPct)), td((luck > 0 ? '+' : '') + luck),
         td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
@@ -260,11 +260,14 @@ function renderFarmStandings(c) {
       const lgRows = rows.filter((r) => r.league === l.id);
       if (!lgRows.length) continue;
       body.append(el('h3', { class: 'leaguename' }, `${l.name}（二軍・DH${l.dh ? '有' : '無'}）`));
-      body.append(table(['順', '球団', '勝', '敗', '分', '勝率', '得点', '失点', '差'], lgRows.map((t, i) =>
-        el('tr', { class: t.teamId === game.gs.playerTeamId ? 'myteam' : '' }, [
+      const leader = lgRows[0];
+      body.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差', '得点', '失点', '得失点差'], lgRows.map((t, i) => {
+        const gb = gamesBehind(leader, t);
+        return el('tr', { class: t.teamId === game.gs.playerTeamId ? 'myteam' : '' }, [
           td(i + 1), td(t.name, 'left'), td(t.w), td(t.l), td(t.t),
-          td(fmt3(winPct(t))), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
-        ]))));
+          td(fmt3(winPct(t))), td(gbText(i, gb)), td(t.rs), td(t.ra), td((t.rs - t.ra > 0 ? '+' : '') + (t.rs - t.ra)),
+        ]);
+      })));
     }
     body.append(el('div', { class: 'muted' }, '二軍は出場登録外の支配下＋育成選手によるファームリーグ（優勝争いは一軍と独立）。'));
   };
@@ -1020,6 +1023,8 @@ const TEAM_COLORS = {
   '夜叉ナイツ': '#c65a86',
 };
 const teamColor = (id) => TEAM_COLORS[tname(id)] || 'var(--clay)';
+// ゲーム差の表記（首位行のみ「-」。同率2位の0.0や負のゲーム差はそのまま数値表示＝首位と区別する）
+const gbText = (i, gb) => (i === 0 ? '-' : gb.toFixed(1));
 
 /** ゲーム層の共有コンテキスト（stat 描画が参照する state.* をゲーム状態から張る）。 */
 function bindGameContext(gs) {
@@ -1294,11 +1299,11 @@ function renderHubHome(c) {
   c.append(el('h3', { class: 'leaguename' }, `${leagueNameOf(gs.cfg, myLg)} 順位`));
   c.append(table(['順', '球団', '勝', '敗', '分', '勝率', '差'], lgRows.map((t, i) => {
     // ゲーム差（NPB慣例の「差」＝首位との勝敗差の平均。以前は誤って得失点差を表示していた）
-    const gb = lgLeader ? ((lgLeader.w - t.w) + (t.l - lgLeader.l)) / 2 : 0;
+    const gb = gamesBehind(lgLeader, t);
     return el('tr', { class: t.teamId === gs.playerTeamId ? 'myteam' : '' }, [
       td(i + 1),
       el('td', { class: 'left', style: `border-left:3px solid ${teamColor(t.teamId)}` }, t.name),
-      td(t.w), td(t.l), td(t.t), td(fmt3(winPct(t))), td(gb <= 0 ? '-' : gb.toFixed(1)),
+      td(t.w), td(t.l), td(t.t), td(fmt3(winPct(t))), td(gbText(i, gb)),
     ]);
   })));
 

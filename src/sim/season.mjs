@@ -460,3 +460,8 @@ export function winPct(t) {
   const dec = t.w + t.l;
   return dec === 0 ? 0 : t.w / dec;
 }
+
+/** ゲーム差（NPB慣例: 首位との勝敗差の平均。首位行の「-」表記は表示側で行う）。負値もそのまま返す。 */
+export function gamesBehind(leader, t) {
+  return leader ? ((leader.w - t.w) + (t.l - leader.l)) / 2 : 0;
+}

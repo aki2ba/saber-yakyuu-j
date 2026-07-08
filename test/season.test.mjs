@@ -5,7 +5,7 @@ import { createConfig } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
 import { buildDepthChart, hitScore, obpScore, powerScore } from '../src/sim/team.mjs';
 import { advanceRunners } from '../src/sim/game.mjs';
-import { simulateSeason, buildSchedule, winPct } from '../src/sim/season.mjs';
+import { simulateSeason, buildSchedule, winPct, gamesBehind } from '../src/sim/season.mjs';
 import { leagueSummaryByLeague } from '../src/sim/leagueStats.mjs';
 import { makeRng } from '../src/rng.mjs';
 import { FIELD_POSITIONS } from '../src/model/positions.mjs';
@@ -270,6 +270,12 @@ test('リーグ別集計（leagueSummaryByLeague）とDH規則別の得点集計
   assert.equal(res.runSplit.dh.games + res.runSplit.noDh.games, 858, '全試合が二分される');
   assert.equal(res.runSplit.dh.games, 429, 'DH有試合 = L2主催429試合');
   assert.ok(res.runSplit.dh.runs > 0 && res.runSplit.noDh.runs > 0);
+});
+
+test('gamesBehind: 首位との勝敗差の平均・同率0・首位nullで0', () => {
+  assert.equal(gamesBehind({ w: 10, l: 4 }, { w: 12, l: 5 }), -0.5, '首位より貯金が多い＝負のゲーム差');
+  assert.equal(gamesBehind({ w: 10, l: 4 }, { w: 10, l: 4 }), 0, '同率は0');
+  assert.equal(gamesBehind(null, { w: 1, l: 0 }), 0, '首位nullで0');
 });
 
 test('交流戦成績: 各チーム18試合が il に計上され総勝=総敗（S4）', () => {

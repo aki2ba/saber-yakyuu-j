@@ -9,6 +9,7 @@
 // 決定論: すべて入力（イベント列/試合ログ/順位表）の純関数。乱数非使用（onEvent は乱数非消費＝
 //   検出の有無は試合結果に一切影響しない＝既存50較正が不変）。生イベントは当該シーズンのみ（§17）。
 // ============================================================================
+import { gamesBehind } from '../sim/season.mjs';
 
 const HIT_RESULTS = new Set(['1B', '2B', '3B', 'HR']);
 /** 出塁（安打＋四死球＋失策）。完全試合の判定に使う（走者を一人も出さない）。 */
@@ -109,7 +110,7 @@ function rankAndGb(standings, teamId) {
   lg.sort((a, b) => (b.w - b.l) - (a.w - a.l) || (b.rs - b.ra) - (a.rs - a.ra));
   const rank = lg.findIndex((r) => r.teamId === teamId) + 1;
   const top = lg[0];
-  const gb = ((top.w - row.w) + (row.l - top.l)) / 2; // 標準的なゲーム差
+  const gb = gamesBehind(top, row); // 標準的なゲーム差
   const gp = row.w + row.l + (row.t || 0); // 消化試合数（開幕直後の「首位快走」誤発火を防ぐガード用）
   return { rank, gb, total: lg.length, gp };
 }

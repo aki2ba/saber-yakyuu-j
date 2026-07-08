@@ -33,7 +33,7 @@ import {
   chooseReliever, starterPitchLimit,
 } from './sim/manager.mjs';
 import { simulateGame, advanceRunners } from './sim/game.mjs';
-import { simulateSeason, buildSchedule, winPct } from './sim/season.mjs';
+import { simulateSeason, buildSchedule, winPct, gamesBehind } from './sim/season.mjs';
 import { makeDeriveContext, makeAccumulateContext, deriveTables, gameOverAfter } from './sim/context.mjs';
 import {
   createUsageState, blendedWoba, selectStarter, selectLineup, bullpenAvailable,
@@ -70,7 +70,7 @@ export {
   buntAttemptProb, ibbProb, choosePinchHitter, choosePinchRunner, chooseDefensiveSub,
   chooseReliever, starterPitchLimit,
   simulateGame, advanceRunners,
-  simulateSeason, buildSchedule, winPct,
+  simulateSeason, buildSchedule, winPct, gamesBehind,
   makeDeriveContext, makeAccumulateContext, deriveTables, gameOverAfter,
   createUsageState, blendedWoba, selectStarter, selectLineup, bullpenAvailable,
   recordGameUsage, reviewAssignments,

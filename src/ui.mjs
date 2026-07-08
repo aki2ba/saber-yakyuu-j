@@ -1709,7 +1709,12 @@ function renderGlossary() {
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '用語集・凡例'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
   const dl = el('dl', { class: 'glossarylist' });
   for (const k of Object.keys(TIP)) {
-    dl.append(el('dt', {}, k), el('dd', {}, TIP[k]));
+    // TIP の値は "指標名: 説明文" 形式（例: 'WAR: 打撃/走塁/守備/位置を...'）。
+    // 内部キー(kbbPct等のcamelCase)をそのまま見出しに出さず、先頭の指標名を dt に、残りを dd に振り分ける。
+    const sep = TIP[k].indexOf(': ');
+    const label = sep >= 0 ? TIP[k].slice(0, sep) : k;
+    const desc = sep >= 0 ? TIP[k].slice(sep + 2) : TIP[k];
+    dl.append(el('dt', {}, label), el('dd', {}, desc));
   }
   box.append(dl);
   box.append(el('h4', { class: 'teamsub' }, '観戦の色凡例'));
@@ -1865,7 +1870,9 @@ function runAdvanceWithProgress(until) {
   const targetDay = Math.floor(startDay / span) * span + span; // 次の span 境界（advanceTo と同義）
   const heading = until === 'weekEnd' ? '1週間を進行中…' : '月末まで進行中…';
   // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
-  const digestSnap = { startDay, heading, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
+  // digestTitle は heading とは独立に持つ（文字列のreplace合成だと「1週間を結果」のように助詞が崩れるため）。
+  const digestTitle = until === 'weekEnd' ? '1週間の結果' : '月末までの結果';
+  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -1937,7 +1944,7 @@ function showAdvanceDigest(gs, snap) {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [
-    el('span', { class: 'pname' }, `${snap.heading.replace('進行中…', '')}結果`),
+    el('span', { class: 'pname' }, snap.digestTitle),
     el('button', { class: 'link', onclick: close }, '✕'),
   ]));
   box.append(el('div', {}, `期間戦績: ${w}勝${l}敗${t}分`));

@@ -325,7 +325,8 @@ for (const sub of ['投手', '守備', 'WAR', '球団比較', '打撃']) {
   assert.ok(glossBtn, '成績タブに「📖 用語集」リンクがある');
   glossBtn._onclick();
   const dts = allClass('glossarylist').flatMap((n) => walk(n)).filter((n) => n.tag === 'dt').map(textOf);
-  assert.ok(dts.includes('war') && dts.includes('woba'), `用語集にTIP項目のdt (${dts.slice(0, 5).join(',')})`);
+  // dt には内部キー(camelCase)ではなくTIP文字列先頭の指標名（"WAR: ..."→"WAR"）が入る（タッチ端末でも読める見出し）
+  assert.ok(dts.includes('WAR') && dts.includes('wOBA'), `用語集にTIP項目の読める見出し (${dts.slice(0, 5).join(',')})`);
   const legendTxt = textOf(hasClass('glossarylegend'));
   assert.ok(legendTxt.includes('球判定') && legendTxt.includes('結果') && legendTxt.includes('ランプ'), `観戦の色凡例が表示される (${legendTxt.slice(0, 60)})`);
   btnByText('✕')._onclick(); // モーダルを閉じる

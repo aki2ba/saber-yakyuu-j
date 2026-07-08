@@ -115,7 +115,11 @@ let nodes = walk(appDiv);
 const leagueHeads = nodes.filter((n) => (n.className || '').includes('leaguename')).map(textOf);
 assert.ok(leagueHeads.filter((t) => t.includes('リーグ')).length >= 2, `2リーグの見出しが描画される (${leagueHeads.join('/')})`);
 assert.ok(leagueHeads.some((t) => t.includes('DH有')) && leagueHeads.some((t) => t.includes('DH無')), 'DH規則の表記');
-const standTables = nodes.filter((n) => n.tag === 'table');
+// G8: ポストシーズンパネル(.pspanel)が日本シリーズ戦績を table 化したため、appDiv全体の<table>数には
+// 順位表2つに加えてそのtableも含まれうる（quicksimも postseason を含む）。順位表そのものは
+// .pspanel より前（document順）に描かれる2テーブルなので、pspanel出現位置より前に絞って数える。
+const psPanelIdx = nodes.findIndex((n) => (n.className || '').includes('pspanel'));
+const standTables = nodes.filter((n, i) => n.tag === 'table' && (psPanelIdx === -1 || i < psPanelIdx));
 assert.equal(standTables.length, 2, `順位表は2リーグ分割 (found ${standTables.length})`);
 for (const tbl of standTables) {
   const dataRows = walk(tbl).filter((n) => n.tag === 'tr' && n.children.some((c) => c.tag === 'td'));
@@ -132,6 +136,13 @@ assert.ok(psText.includes('CSファースト'), 'CSファーストの結果が�
 assert.ok(psText.includes('CSファイナル'), 'CSファイナルの結果が表示される');
 assert.ok(psText.includes('日本シリーズ'), '日本シリーズの結果が表示される');
 assert.ok(psText.includes('日本一:'), '日本一チームが表示される');
+// G8: 日本シリーズ戦績が表形式（戦/ホーム/スコア/ビジター/延長）で描画される
+{
+  const jsTable = walk(psPanel).find((n) => n.tag === 'table');
+  assert.ok(jsTable, 'G8: 日本シリーズ戦績が<table>で描画される（旧: 長文1行）');
+  const jsThs = walk(jsTable).filter((n) => n.tag === 'th').map(textOf);
+  assert.deepEqual(jsThs, ['戦', 'ホーム', 'スコア', 'ビジター', '延長'], `G8: 日本シリーズ表の列 (${jsThs.join(',')})`);
+}
 
 // 7) 打撃表に SH/IBB/PH 列、投手表に役割（先発/救援）列
 // G5a: クイックシミュレート（game.gs無し）は列グループ既定='全列'。犠打/敬遠/代打等はbasic群に
@@ -308,6 +319,17 @@ for (const sub of ['投手', '守備', 'WAR', '球団比較', '打撃']) {
   assert.ok(s, `成績タブに「${sub}」サブタブがある`);
   s._onclick();
 }
+// G10) 成績タブの subtabs 行末尾に用語集リンク。モーダルにTIP項目＋観戦色凡例のdt/ddが出る
+{
+  const glossBtn = btnByText('📖 用語集');
+  assert.ok(glossBtn, '成績タブに「📖 用語集」リンクがある');
+  glossBtn._onclick();
+  const dts = allClass('glossarylist').flatMap((n) => walk(n)).filter((n) => n.tag === 'dt').map(textOf);
+  assert.ok(dts.includes('war') && dts.includes('woba'), `用語集にTIP項目のdt (${dts.slice(0, 5).join(',')})`);
+  const legendTxt = textOf(hasClass('glossarylegend'));
+  assert.ok(legendTxt.includes('球判定') && legendTxt.includes('結果') && legendTxt.includes('ランプ'), `観戦の色凡例が表示される (${legendTxt.slice(0, 60)})`);
+  btnByText('✕')._onclick(); // モーダルを閉じる
+}
 btnByText('ホーム')._onclick();
 
 // G4b) 采配は チームタブの采配サブタブへ移設: おまかせトグル＋方針ボタン。
@@ -332,6 +354,14 @@ btnByText('次の試合へ')._onclick();
 assert.ok(btnByText('観戦') && btnByText('ダイジェスト') && btnByText('スキップ'), '観戦/ダイジェスト/スキップの選択が出る');
 btnByText('観戦')._onclick();
 assert.ok(allClass('pbpline').length >= 1, '実況ログ（速報タブ既定・開始行から表示）');
+// G10) 観戦ヘッダーに用語集「?」リンク（タッチ端末では th の title が出せないための導線）
+{
+  const glossBtn = btnByText('?');
+  assert.ok(glossBtn, '観戦ヘッダーに「?」用語集リンクがある');
+  glossBtn._onclick();
+  assert.ok(hasClass('glossarylist'), '観戦から開いた用語集モーダルにTIP一覧(.glossarylist)が出る');
+  btnByText('✕')._onclick(); // モーダルを閉じる（観戦画面の描画に戻る）
+}
 // G1a) コンパクトスコアボード: 両軍名/得点＋回表示＋B-S-Oランプ＋塁表示を1本のバーに集約（常設はこれだけ）
 {
   const scorebar = hasClass('scorebar');
@@ -565,6 +595,10 @@ assert.equal(daySig(), beforeSave, 'ロードでセーブ時点の日付/成績�
 // G7) 進行（月末まで）→ シーズン終了まで（チャンク進行・プログレス）→ リザルト（日本一）
 btnByText('月末まで')._onclick(); // G2: 日次分割＋setTimeoutチャンク進行（同期フリーズ解消）
 flushTimers(); // 月末までの日次チャンクを全消化
+// G6) rt.finished でなければ進行後の差分ダイジェスト（overlayモーダル）が挟まる
+assert.ok(hasClass('overlay'), 'G6: 月末進行後（未終了）に差分ダイジェストのoverlayが出る');
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('期間戦績')), 'G6: ダイジェストに期間戦績が表示される');
+btnByText('閉じる')._onclick(); // G6: 「閉じる」でrenderHub()へ
 assert.ok(hasClass('header'), '月末進行後もハブが描画される');
 btnByText('シーズン終了まで')._onclick();
 flushTimers(); // チャンク進行の setTimeout を全消化
@@ -863,6 +897,7 @@ let movesFound = false;
 for (let mth = 0; mth < 5 && !movesFound; mth++) {
   btnByText('月末まで')._onclick(); // G2: 日次分割進行（IL補充・25試合レビューの成績入替が発生し得る）
   flushTimers(); // 月末までの日次チャンクを全消化
+  if (hasClass('overlay')) btnByText('閉じる')._onclick(); // G6: 差分ダイジェストが出ていれば閉じてhubへ
   btnByText('ニュース')._onclick();
   const feedTxt = textOf(appDiv);
   movesFound = feedTxt.includes('登録抹消') || feedTxt.includes('を昇格');

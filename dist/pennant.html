@@ -19,6 +19,7 @@
   input { background:#0c3122; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:5px; }
   .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
   .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
+  .header .row { flex-wrap:wrap; }
   /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設 */
   .tabs { display:flex; gap:6px; position:sticky; top:0; z-index:6; background:var(--bg); padding:6px 0;
           margin:6px 0; flex-wrap:nowrap; overflow-x:auto; }
@@ -54,9 +55,14 @@
   tr.clickable:hover td:first-child { background:#174a34; }
   .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
+  /* G9: モーダルは長い成分（打球SVG・経歴等）でも画面内に収まるようスクロール化。ヘッダーは常に見える */
   .modal { background:var(--panel); border:1px solid var(--clay); border-radius:10px; padding:16px;
-           max-width:560px; width:100%; --sticky-bg:var(--panel); }
-  .modalhead { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+           max-width:560px; width:100%; --sticky-bg:var(--panel); max-height:92vh; overflow:auto; }
+  .modalhead { display:flex; justify-content:space-between; align-items:center;
+               position:sticky; top:0; background:var(--panel); z-index:2; padding:4px 0; margin:-4px 0 10px; }
+  .modalnavwrap { display:flex; align-items:center; gap:4px; }
+  .modalnav { padding:4px 9px; font-size:14px; line-height:1; }
+  .modalnav:disabled { opacity:.3; cursor:default; }
   .pname { font-size:18px; font-weight:700; }
   .kvgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
   .kv { background:#0c3122; border-radius:6px; padding:6px; text-align:center; }
@@ -71,12 +77,19 @@
   svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
   svg.evla { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
   .sprayrow { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; align-items:flex-start; margin-top:8px; }
-  .modaltabs { display:flex; gap:6px; margin:8px 0 12px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:8px; }
-  .mtab { padding:4px 12px; font-size:12px; }
+  /* G9: モーダルのタブ行は折返しせず横スクロール1行に（多タブ選手モーダルの2行化を解消） */
+  .modaltabs { display:flex; gap:6px; margin:8px 0 12px; flex-wrap:nowrap; overflow-x:auto;
+               border-bottom:1px solid var(--line); padding-bottom:8px; }
+  .mtab { padding:4px 12px; font-size:12px; white-space:nowrap; flex:none; }
   .mtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
   .modalbody { min-height:40px; }
   h4.teamsub { font-size:12px; color:var(--muted); margin:8px 0 3px; font-weight:600; }
   h3.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); }
+  /* G7: 日程タブの月見出しは summary（<details class="schedmonth">内）でも同じ見た目にする */
+  summary.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); cursor:pointer; }
+  .schedmonth { margin:4px 0; }
+  .nextjump { margin:6px 0; }
+  .schednext { outline:1px solid var(--gold); }
   .pspanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:12px; background:var(--panel); }
   .psrow { display:flex; gap:8px; font-size:13px; margin:3px 0; flex-wrap:wrap; }
   .pslabel { color:var(--muted); min-width:190px; }
@@ -144,6 +157,10 @@
   .newsrow.info { border-left-color:#5aa9e6; }
   .awardpanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:var(--panel); }
   .awardlgname { color:var(--gold); font-weight:700; border-bottom:1px solid var(--line); padding-bottom:4px; margin-bottom:6px; }
+  /* G8: 表彰パネルをリーグ単位で折りたたみ */
+  .awarddetails { margin:8px 0; }
+  .awarddetails > summary { cursor:pointer; }
+  .awarddetails .awardpanel { margin-top:6px; }
   .awardtop { display:flex; flex-wrap:wrap; gap:10px; }
   .awardbig { flex:1; min-width:160px; background:#0c3122; border-radius:6px; padding:8px; }
   .awardbigk { display:block; font-size:11px; color:var(--muted); }
@@ -294,6 +311,27 @@
     .modal { padding:12px; }
     .pslabel { min-width:0; }
   }
+  /* G10: 用語集モーダル（TIP全項目のdt/dd＋観戦の色凡例） */
+  .glossarylist { margin:0; }
+  .glossarylist dt { font-weight:700; color:var(--gold); margin-top:8px; font-size:13px; }
+  .glossarylist dd { margin:2px 0 0; font-size:12px; color:var(--chalk); }
+  .glossarylegend { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+  .legendrow { display:flex; flex-wrap:wrap; gap:6px; }
+  /* 既存の pc-*/ev-*/lb・ls・lo は他クラスとの併記が前提の色指定なので、凡例チップは独立した配色を持つ */
+  .legendchip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid var(--line); color:var(--chalk); }
+  .legendchip.pc-ball { color:#f4f1e6; border-color:#f4f1e6; }
+  .legendchip.pc-called { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.pc-whiff { color:#e06d6d; border-color:#e06d6d; }
+  .legendchip.pc-foul { color:#e8b84b; border-color:#e8b84b; }
+  .legendchip.pc-inplay { color:#8fc7ff; border-color:#8fc7ff; }
+  .legendchip.ev-hit { color:#8fc7ff; border-color:#8fc7ff; }
+  .legendchip.ev-hr { color:#ff8a76; border-color:#ff8a76; font-weight:700; }
+  .legendchip.ev-k { color:var(--muted); border-color:var(--muted); }
+  .legendchip.ev-bb { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.ev-err { color:#e8b84b; border-color:#e8b84b; }
+  .legendchip.lamplegend.lb { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.lamplegend.ls { color:var(--gold); border-color:var(--gold); }
+  .legendchip.lamplegend.lo { color:#c96a5a; border-color:#c96a5a; }
 </style>
 </head>
 <body>
@@ -5034,6 +5072,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     // 打席プレー全体の得点として一括計上し、文脈指標(gc)へも合算で渡す（RE24/WPAの telescoping を保つ）。
     const runs = advRuns + wpRuns;
 
+    let gbDp = false;
     if (result === 'out') {
       if (isAirOut && runs > 0) {
         // 犠飛: ABを取り消してSF計上
@@ -5067,11 +5106,12 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           if (dpS) statFor(dpS, fielding.teamId).fielding.dpTurned++;
         }
       }
+      gbDp = outs - outsBefore >= 2;
     }
     if (runs > 0) {
       batting.score += runs;
-      // 打点は打撃結果の得点(advRuns)のみ・失策は打点なし。暴投/捕逸(wpRuns)は打点対象外。
-      if (result !== 'E') bStat.batting.rbi += advRuns;
+      // 打点は打撃結果の得点(advRuns)のみ・失策と併殺ゴロ間の得点は打点なし（公式準拠・boxscore.mjsと同基準）。
+      if (result !== 'E' && !gbDp) bStat.batting.rbi += advRuns;
       pStat.pitching.r += runs;
       pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
       fielding.cur.runs += runs;
@@ -7407,6 +7447,7 @@ function playerWAR(player, ps, cfg, lc) {
 //
 // このファイルが「唯一の真実のソース」。
 //   - Node（ヘッドレス実走 / テスト / 較正）  : そのまま 
+
 
 
 
@@ -10955,11 +10996,14 @@ function schedWl(rec, myId) {
 
 /** 「日程・結果」タブ本体。c=コンテンツ要素、u=ui.mjs の共有ヘルパー束（scheduleDeps()）。 */
 function renderScheduleTab(c, u) {
-  const { el, td, game, tname } = u;
+  const { el, td, game, tname, pendingDayOf } = u;
   const gs = game.gs;
   const rt = gs.rt;
   const myId = gs.playerTeamId;
   const dpm = gs.cfg.game.daysPerMonth ?? 26;
+  // G7: 現在月（次にプレイされる日を含む月）だけ既定で開く。
+  const curDay = pendingDayOf(rt) - 1;
+  const curMonth = Math.floor(curDay / dpm);
   // 自チーム全日程: schedule 順に走査し、消化済み（gi < cursor）は playerGameLog の対応行を引く
   // （playerGameLog は自チーム試合の消化順＝schedule 内の自チーム試合と 1:1 対応）。
   const rows = [];
@@ -10979,6 +11023,14 @@ function renderScheduleTab(c, u) {
   }
   c.append(el('div', { class: 'muted', style: 'margin:4px 0' },
     `自チームの全${rows.length}試合（消化 ${W + L + T}試合: ${W}勝${L}敗${T}分）。試合行のクリックで簡易ボックススコア。`));
+  // G7: 次戦（未消化の最初の1試合）へのジャンプリンク。
+  const nextRow = rows.find((r) => !r.rec);
+  c.append(el('div', { class: 'nextjump' }, [
+    el('button', {
+      class: 'link',
+      onclick: () => document.getElementById('schednext')?.scrollIntoView?.({ block: 'center' }),
+    }, '▼ 次の試合へ'),
+  ]));
   // 月別グループ
   const months = new Map();
   for (const r of rows) {
@@ -10994,27 +11046,34 @@ function renderScheduleTab(c, u) {
       if (wl === 'w') w++; else if (wl === 'l') l++; else t++;
     }
     const rec = w + l + t ? `　${w}勝${l}敗${t}分` : '';
-    c.append(el('h3', { class: 'leaguename' }, `${schedMonthLabel(m)}（${list.length}試合）${rec}`));
-    const trs = list.map((r) => schedGameRow(r, u, myId));
-    c.append(el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
+    const trs = list.map((r) => schedGameRow(r, u, myId, r === nextRow));
+    const table = el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
       el('thead', {}, el('tr', {}, [
         el('th', {}, '節'), el('th', { class: 'left' }, '相手'), el('th', {}, 'スコア'),
         el('th', {}, '勝敗'), el('th', { class: 'left' }, '先発'), el('th', { class: 'left' }, '相手先発'),
       ])),
       el('tbody', {}, trs),
-    ])]));
+    ])]);
+    // G7: 月ブロックを折りたたみ化。現在月（次戦を含む月）だけ既定で開く。
+    const detailsAttrs = { class: 'schedmonth' };
+    if (m === curMonth) detailsAttrs.open = '';
+    c.append(el('details', detailsAttrs, [
+      el('summary', { class: 'leaguename' }, `${schedMonthLabel(m)}（${list.length}試合）${rec}`),
+      table,
+    ]));
   }
 }
 
 /** 日程1試合ぶんの行（過去=結果＋クリックでボックススコア／未来=予定）。 */
-function schedGameRow(r, u, myId) {
+function schedGameRow(r, u, myId, isNext = false) {
   const { el, td, tname, playerLink } = u;
   const { g, rec } = r;
   const isHome = g.home === myId;
   const oppId = isHome ? g.away : g.home;
   const oppCell = `${isHome ? 'vs' : '@'} ${tname(oppId)}`;
+  const rowAttrs = isNext ? { id: 'schednext', class: 'schednext' } : {};
   if (!rec) {
-    return el('tr', { class: 'schedfuture' }, [
+    return el('tr', { ...rowAttrs, class: `${rowAttrs.class ? rowAttrs.class + ' ' : ''}schedfuture` }, [
       td(g.day + 1), td(oppCell, 'left'), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
     ]);
   }
@@ -11026,7 +11085,7 @@ function schedGameRow(r, u, myId) {
   const b = rec.box;
   const mySt = b ? (isHome ? b.starters.home : b.starters.away) : null;
   const oppSt = b ? (isHome ? b.starters.away : b.starters.home) : null;
-  return el('tr', { class: 'clickable', onclick: () => schedOpenBox(rec, u) }, [
+  return el('tr', { ...rowAttrs, class: `${rowAttrs.class ? rowAttrs.class + ' ' : ''}clickable`, onclick: () => schedOpenBox(rec, u) }, [
     td(g.day + 1),
     td(oppCell, 'left'),
     td(`${my}-${opp}${ext}`),
@@ -11992,7 +12051,9 @@ function teamRosterTable(data, cols, sort, u) {
         render();
       },
     }, label + (key === k ? (dir < 0 ? ' ▼' : ' ▲') : ''))));
-    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => u.openModal(d.id) },
+    // G9: 表示中テーブルのソート済みID配列をモーダルの前後ナビに渡す。
+    const navIds = sorted.map((d) => d.id);
+    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => u.openModal(d.id, navIds) },
       cols.map(([k, , align]) => {
         const cell = teamRosterCell(k, d, u);
         // 要素セル（育成バッジ付き名前）は td 文字列化を避けて直接収める。
@@ -12104,18 +12165,19 @@ function watchExpOut(e, cfg) {
 }
 
 /**
- * 1打席(pa/bunt)の打者側 生カウント差分（ab/h/b1/b2/b3/hr/bb/hbp/sf）。
- * game.mjs のスプリット計上（§B3b bumpSplit 呼び出し箇所）と同じ分岐を再現する（乱数非消費）。
+ * 1打席(pa/bunt)の打者側 生カウント差分（ab/h/b1/b2/b3/hr/bb/hbp/sf ＋ §16b wRC+/wRAA/Hard%用に
+ * pa/so/ibb/hardHits/bbEvents を追加）。game.mjs のスプリット計上（§B3b bumpSplit 呼び出し箇所）と
+ * 同じ分岐を再現する（乱数非消費・cfgはHardHit閾値の読み取りのみに使用）。
  */
-function watchBattingDelta(e) {
-  const d = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0 };
+function watchBattingDelta(e, cfg) {
+  const d = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0, pa: 1, so: 0, ibb: 0, hardHits: 0, bbEvents: 0 };
   if (e.type === 'bunt') {
     if (e.outcome === 'hit') { d.ab = 1; d.h = 1; d.b1 = 1; }
     else if (e.outcome === 'fail') { d.ab = 1; }
     return d; // 'success'（送りバント成功）は打数に含めない
   }
   const sacFly = e.result === 'out' && e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB';
-  if (e.outcome === 'BB') d.bb = 1;
+  if (e.outcome === 'BB') { d.bb = 1; if (e.isIBB) d.ibb = 1; }
   else if (e.outcome === 'HBP') d.hbp = 1;
   else if (e.result === '1B') { d.ab = 1; d.h = 1; d.b1 = 1; }
   else if (e.result === '2B') { d.ab = 1; d.h = 1; d.b2 = 1; }
@@ -12124,6 +12186,11 @@ function watchBattingDelta(e) {
   else if (e.result === 'E') d.ab = 1;
   else if (sacFly) d.sf = 1;
   else d.ab = 1;
+  if (e.outcome === 'K') d.so = 1;
+  if (cfg && e.bb && e.battedType) {
+    d.bbEvents = 1;
+    if (e.bb.evKmh >= cfg.tuning.metrics.hardHitKmh) d.hardHits = 1;
+  }
   return d;
 }
 
@@ -12162,12 +12229,15 @@ function computeGameEventTotals(events, cfg) {
   for (const e of events) {
     if (e.type === 'atbat') { curPitcherId = e.pitcherId; curOuts = e.outs; }
     else if (e.type === 'pa' || e.type === 'bunt') {
-      const bd = watchBattingDelta(e);
+      const bd = watchBattingDelta(e, cfg);
       bumpCounts(bat, e.batterId, bd);
       const runs = watchRunsOnPlay(e, lastScore);
       lastScore.set(e.batTeam, e.batScore);
       const outsAfter = e.outsAfter != null ? e.outsAfter : curOuts;
-      bumpCounts(pit, curPitcherId, { outs: outsAfter - curOuts, h: bd.h, bb: bd.bb, er: runs });
+      bumpCounts(pit, curPitcherId, {
+        outs: outsAfter - curOuts, h: bd.h, bb: bd.bb, er: runs,
+        so: bd.so, ibb: bd.ibb, hbp: bd.hbp, hr: e.result === 'HR' ? 1 : 0, bf: 1, bbFB: e.battedType === 'FB' ? 1 : 0,
+      });
       curOuts = outsAfter;
       const fd = watchFieldingDelta(e, cfg);
       if (fd) bumpCounts(fld, fd.pid, { oaaOuts: fd.oaaDelta });
@@ -12198,10 +12268,14 @@ function computeBeforeGame(events, state) {
         b1: (sb ? sb.b1 : 0) - (gb.b1 || 0), b2: (sb ? sb.b2 : 0) - (gb.b2 || 0), b3: (sb ? sb.b3 : 0) - (gb.b3 || 0),
         hr: (sb ? sb.hr : 0) - (gb.hr || 0), bb: (sb ? sb.bb : 0) - (gb.bb || 0),
         hbp: (sb ? sb.hbp : 0) - (gb.hbp || 0), sf: (sb ? sb.sf : 0) - (gb.sf || 0),
+        pa: (sb ? sb.pa : 0) - (gb.pa || 0), so: (sb ? sb.so : 0) - (gb.so || 0), ibb: (sb ? sb.ibb : 0) - (gb.ibb || 0),
+        hardHits: (sb ? sb.hardHits : 0) - (gb.hardHits || 0), bbEvents: (sb ? sb.bbEvents : 0) - (gb.bbEvents || 0),
       },
       pitching: {
         outs: (sp ? sp.outs : 0) - (gp.outs || 0), h: (sp ? sp.h : 0) - (gp.h || 0),
         bb: (sp ? sp.bb : 0) - (gp.bb || 0), er: (sp ? sp.er : 0) - (gp.er || 0),
+        so: (sp ? sp.so : 0) - (gp.so || 0), ibb: (sp ? sp.ibb : 0) - (gp.ibb || 0), hbp: (sp ? sp.hbp : 0) - (gp.hbp || 0),
+        hr: (sp ? sp.hr : 0) - (gp.hr || 0), bf: (sp ? sp.bf : 0) - (gp.bf || 0), bbFB: (sp ? sp.bbFB : 0) - (gp.bbFB || 0),
       },
       fielding: { oaaOuts: (sfl ? sfl.oaaOuts : 0) - (gf.oaaOuts || 0) },
     });
@@ -12209,19 +12283,46 @@ function computeBeforeGame(events, state) {
   return before;
 }
 
-/** 生カウント→AVG/OBP/SLG/OPS（打者側・簡易スラッシュライン）。 */
-function watchSlash(b) {
+/**
+ * 生カウント→AVG/OBP/SLG/OPS＋wRAA/wRC+/Hard%（打者側）。lc（リーグ定数）が無ければ
+ * wRAA/wRC+は0/100・Hard%は0のまま返す（観戦開始直後などlc未確定時のフォールバック）。
+ */
+function watchSlash(b, lc) {
   const tb = b.b1 + 2 * b.b2 + 3 * b.b3 + 4 * b.hr;
   const avg = b.ab ? b.h / b.ab : 0;
   const obpDen = b.ab + b.bb + b.hbp + b.sf;
   const obp = obpDen ? (b.h + b.bb + b.hbp) / obpDen : 0;
   const slg = b.ab ? tb / b.ab : 0;
-  return { avg, obp, slg, ops: obp + slg };
+  const pa = b.pa || obpDen;
+  let wraa = 0; let wrcPlus = 100;
+  if (lc) {
+    const raw = rawRunValuePerPA(b, lc.linearWeights);
+    wraa = (raw - (lc.lgRawPerPA || 0)) * pa;
+    wrcPlus = lc.lgRunsPerPA && pa ? ((wraa / pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+  }
+  const hardHitPct = b.bbEvents ? b.hardHits / b.bbEvents : 0;
+  return { avg, obp, slg, ops: obp + slg, wraa, wrcPlus, hardHitPct };
 }
-/** 生カウント→ERA/WHIP（投手側・簡易）。 */
-function watchPitchLine(p) {
+/**
+ * 生カウント→ERA/WHIP＋xFIP/kwERA/K-BB%（投手側）。xFIPはlc（lgHRFB/fipConstant）必須、
+ * 未確定時は0を返す（watchSlash同様のフォールバック）。
+ */
+function watchPitchLine(p, lc, cfg) {
   const ip = p.outs / 3;
-  return { era: ip ? (p.er * 9) / ip : 0, whip: ip ? (p.h + p.bb) / ip : 0 };
+  const era = ip ? (p.er * 9) / ip : 0;
+  const whip = ip ? (p.h + p.bb) / ip : 0;
+  const kPct = p.bf ? p.so / p.bf : 0;
+  const bbPct = p.bf ? p.bb / p.bf : 0;
+  const kbbPct = kPct - bbPct;
+  let xfip = 0;
+  if (ip && lc) {
+    const uBBhbp = p.bb - (p.ibb || 0) + p.hbp;
+    const xHRexp = p.bbFB * (lc.lgHRFB || 0);
+    xfip = (13 * xHRexp + 3 * uBBhbp - 2 * p.so) / ip + (lc.fipConstant || 0);
+  }
+  const m = cfg && cfg.tuning && cfg.tuning.metrics;
+  const kwera = m ? m.kwERA.c0 - m.kwERA.k * kbbPct : 0;
+  return { era, whip, xfip, kwera, kbbPct };
 }
 /** OAA(アウト単位)→UZR概算（内野0.75/外野0.90・fielding.mjs の uzrRuns と同じ run/out定数を流用）。 */
 function watchUzrOf(oaaOuts, pos, cfg) {
@@ -12230,9 +12331,13 @@ function watchUzrOf(oaaOuts, pos, cfg) {
 }
 
 const fmt1Abs = (v) => v.toFixed(1);
+const fmtIntAbs = (v) => Math.round(v).toString();
+const fmtPct1Abs = (v) => (v * 100).toFixed(1) + '%';
 const fmtSigned3 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(3).replace(/^0/, '');
 const fmtSigned2 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(2);
 const fmtSigned1 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(1);
+const fmtSignedInt = (v) => (v >= 0 ? '+' : '-') + Math.round(Math.abs(v)).toString();
+const fmtSignedPct1 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(1) + '%';
 
 /** 指標1行（絶対値が変化していなければ null）。invert=true は「低いほど良い」指標(ERA/WHIP)の色反転。 */
 function mdRow(label, before, after, fmtAbs, fmtDelta, invert) {
@@ -12250,38 +12355,54 @@ function mdRow(label, before, after, fmtAbs, fmtDelta, invert) {
  */
 function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
   const { cfg, beforeGame, gameBat, gamePit, gameFld, u, lastScore } = ctx;
+  const lc = u.state && u.state.lc;
   const rows = { batting: [], pitching: [], fielding: [], batterId: e.batterId, pitcherId, fielderId: null };
   // --- 打者 ---
-  const bZero = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0 };
+  const bZero = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0, pa: 0, so: 0, ibb: 0, hardHits: 0, bbEvents: 0 };
   const bg = (beforeGame.get(e.batterId) || {}).batting || bZero;
   const before = {}; const soFarBefore = gameBat.get(e.batterId) || {};
   for (const k of Object.keys(bZero)) before[k] = (bg[k] || 0) + (soFarBefore[k] || 0);
-  const bd = watchBattingDelta(e);
+  const bd = watchBattingDelta(e, cfg);
   bumpCounts(gameBat, e.batterId, bd);
   const after = {}; const soFarAfter = gameBat.get(e.batterId) || {};
   for (const k of Object.keys(bZero)) after[k] = (bg[k] || 0) + (soFarAfter[k] || 0);
-  const sBefore = watchSlash(before); const sAfter = watchSlash(after);
+  const sBefore = watchSlash(before, lc); const sAfter = watchSlash(after, lc);
   for (const [label, key] of [['AVG', 'avg'], ['OBP', 'obp'], ['SLG', 'slg'], ['OPS', 'ops']]) {
     const r = mdRow(label, sBefore[key], sAfter[key], u.fmt3, fmtSigned3, false);
     if (r) rows.batting.push(r);
   }
+  const rWraa = mdRow('wRAA', sBefore.wraa, sAfter.wraa, fmt1Abs, fmtSigned1, false);
+  if (rWraa) rows.batting.push(rWraa);
+  const rWrcPlus = mdRow('wRC+', sBefore.wrcPlus, sAfter.wrcPlus, fmtIntAbs, fmtSignedInt, false);
+  if (rWrcPlus) rows.batting.push(rWrcPlus);
+  const rHard = mdRow('Hard%', sBefore.hardHitPct, sAfter.hardHitPct, fmtPct1Abs, fmtSignedPct1, false);
+  if (rHard) rows.batting.push(rHard);
   // --- 投手（この打席の対戦投手・失点は簡易に自責点扱い＝失策絡みの非自責化までは近似しない） ---
   const runs = watchRunsOnPlay(e, lastScore);
   lastScore.set(e.batTeam, e.batScore);
   if (pitcherId) {
-    const pZero = { outs: 0, h: 0, bb: 0, er: 0 };
+    const pZero = { outs: 0, h: 0, bb: 0, er: 0, so: 0, ibb: 0, hbp: 0, hr: 0, bf: 0, bbFB: 0 };
     const bgP = (beforeGame.get(pitcherId) || {}).pitching || pZero;
     const beforeP = {}; const soFarPBefore = gamePit.get(pitcherId) || {};
     for (const k of Object.keys(pZero)) beforeP[k] = (bgP[k] || 0) + (soFarPBefore[k] || 0);
     const outsAfter = e.outsAfter != null ? e.outsAfter : outsBeforeThis;
-    bumpCounts(gamePit, pitcherId, { outs: outsAfter - outsBeforeThis, h: bd.h, bb: bd.bb, er: runs });
+    bumpCounts(gamePit, pitcherId, {
+      outs: outsAfter - outsBeforeThis, h: bd.h, bb: bd.bb, er: runs,
+      so: bd.so, ibb: bd.ibb, hbp: bd.hbp, hr: e.result === 'HR' ? 1 : 0, bf: 1, bbFB: e.battedType === 'FB' ? 1 : 0,
+    });
     const afterP = {}; const soFarPAfter = gamePit.get(pitcherId) || {};
     for (const k of Object.keys(pZero)) afterP[k] = (bgP[k] || 0) + (soFarPAfter[k] || 0);
-    const lBefore = watchPitchLine(beforeP); const lAfter = watchPitchLine(afterP);
+    const lBefore = watchPitchLine(beforeP, lc, cfg); const lAfter = watchPitchLine(afterP, lc, cfg);
     const rEra = mdRow('ERA', lBefore.era, lAfter.era, u.f2, fmtSigned2, true);
     if (rEra) rows.pitching.push(rEra);
     const rWhip = mdRow('WHIP', lBefore.whip, lAfter.whip, u.f2, fmtSigned2, true);
     if (rWhip) rows.pitching.push(rWhip);
+    const rXfip = mdRow('xFIP', lBefore.xfip, lAfter.xfip, u.f2, fmtSigned2, true);
+    if (rXfip) rows.pitching.push(rXfip);
+    const rKwera = mdRow('kwERA', lBefore.kwera, lAfter.kwera, u.f2, fmtSigned2, true);
+    if (rKwera) rows.pitching.push(rKwera);
+    const rKbb = mdRow('K-BB%', lBefore.kbbPct, lAfter.kbbPct, fmtPct1Abs, fmtSignedPct1, false);
+    if (rKbb) rows.pitching.push(rKbb);
   }
   // --- 守備（打球を処理した野手のみ・§16手順1で追加した fielderPos/fielderId） ---
   const fd = watchFieldingDelta(e, cfg);
@@ -12294,7 +12415,9 @@ function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
     const uzrBefore = watchUzrOf(oaaBefore, fd.pos, cfg); const uzrAfter = watchUzrOf(oaaAfter, fd.pos, cfg);
     const rOaa = mdRow('OAA', oaaBefore, oaaAfter, fmt1Abs, fmtSigned1, false);
     if (rOaa) rows.fielding.push(rOaa);
-    const rUzr = mdRow('UZR', uzrBefore, uzrAfter, fmt1Abs, fmtSigned1, false);
+    // ラベルを「UZR概算」とし、チームタブの正式UZR（リーグ平均センタリング済み・fielding.mjs）とは
+    // 値が一致しない簡易近似であることを明示する（§16・レビュー指摘対応）。
+    const rUzr = mdRow('UZR概算', uzrBefore, uzrAfter, fmt1Abs, fmtSigned1, false);
     if (rUzr) rows.fielding.push(rUzr);
   }
   return rows.batting.length || rows.pitching.length || rows.fielding.length ? rows : null;
@@ -12329,7 +12452,11 @@ function renderWatchScreen(u) {
   root.innerHTML = '';
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, ['観戦　', el('span', { class: 'muted' }, `${tname(v.away)} vs ${tname(v.home)}`)]),
-    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る')]),
+    el('div', { class: 'row' }, [
+      el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る'),
+      // G10: タッチ端末では th の title ツールチップが出せない→用語集モーダルへの導線
+      el('button', { class: 'link', onclick: () => u.renderGlossary() }, '?'),
+    ]),
   ]));
   // G1a: ① コンパクトスコアボード（sticky・常設はこれだけ。▼でラインスコア展開）
   root.append(watchScorebar(v, u, w));
@@ -12676,6 +12803,8 @@ function watchFieldChart(v, u) {
     svg.append(svgEl('circle', { cx: b2x, cy: b2y, r: 3, fill: '#c9a06a' }));
     svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, fill: '#fff' }));
     const bb = p.bb;
+    const cfg = u.state && u.state.cfg;
+    const barrel = !!(cfg && isBarrel(bb.evKmh, bb.laDeg, cfg.tuning.metrics));
     const [ex, ey] = pt(bb.sprayDeg, Math.min(bb.distanceM, 130));
     // 軌跡: laDeg帯で弧の高さを変える（<10=ゴロ気味の直線／10-25=浅い弧／25+=山なり）
     const arcH = bb.laDeg < 10 ? 4 : bb.laDeg < 25 ? 20 : 46;
@@ -12684,13 +12813,15 @@ function watchFieldChart(v, u) {
       d: `M ${hx} ${hy} Q ${ctrlX.toFixed(1)} ${ctrlY.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`,
       class: 'fieldtraj', fill: 'none', stroke: '#e9e4d0', 'stroke-width': '1.6', 'stroke-dasharray': '4 3', opacity: 0.9,
     }));
+    // バレル（Statcast近似判定）は着弾マーカーの縁取りをオレンジ太枠にして結果色と独立に強調表示する。
     svg.append(svgEl('circle', {
-      cx: ex.toFixed(1), cy: ey.toFixed(1), r: p.result === 'HR' ? 6.5 : 5.5, class: 'fieldmark',
-      fill: watchBallColor(p.result), stroke: '#0c3122', 'stroke-width': '1.5',
+      cx: ex.toFixed(1), cy: ey.toFixed(1), r: p.result === 'HR' ? 6.5 : 5.5, class: 'fieldmark' + (barrel ? ' barrel' : ''),
+      fill: watchBallColor(p.result), stroke: barrel ? '#ff9d3d' : '#0c3122', 'stroke-width': barrel ? '2.5' : '1.5',
     }));
     col.append(svg);
     col.append(el('div', { class: 'fieldlabel ' + (p.cls || '') }, p.resultText));
-    col.append(el('div', { class: 'fieldsub muted' }, `EV${Math.round(p.bb.evKmh)}km/h ${Math.round(p.bb.distanceM)}m`));
+    col.append(el('div', { class: 'fieldsub muted' },
+      `EV${Math.round(bb.evKmh)}km/h ${Math.round(bb.distanceM)}m 角度${Math.round(bb.laDeg)}°${barrel ? '・バレル' : ''}`));
   } else if (!p) {
     col.append(el('div', { class: 'fieldlabel muted' }, 'まだ打球なし'));
   } else {
@@ -13184,8 +13315,9 @@ function renderWAR(c) {
     .sort((a, b) => b.war - a.war)
     .slice(0, 50);
   c.append(el('div', { class: 'muted', style: 'margin:4px 0' }, 'WAR = 打撃(wRAA)＋走塁(BsR)＋守備(UZR)＋位置補正 の総合。行タップで詳細。'));
+  const navIds = rows.map((r) => r.id); // G9: モーダルの前後ナビ用
   c.append(el('div', { class: 'warlist' }, rows.map((r, i) =>
-    el('div', { class: 'warcard clickable', onclick: () => openModal(r.id) }, [
+    el('div', { class: 'warcard clickable', onclick: () => openModal(r.id, navIds) }, [
       el('span', { class: 'warrank' }, String(i + 1)),
       el('span', { class: 'warval' }, r.war.toFixed(1)),
       el('span', { class: 'warname' }, [
@@ -13311,9 +13443,12 @@ function renderPostseasonPanel(c) {
   }
   if (ps.japanSeries) {
     box.append(seriesRow('日本シリーズ', ps.japanSeries));
-    const scores = ps.japanSeries.games.map((g, i) =>
-      `第${i + 1}戦 ${name(g.home)} ${g.homeScore}-${g.awayScore} ${name(g.away)}${g.innings > 9 ? `（延長${g.innings}回）` : ''}`);
-    box.append(el('div', { class: 'muted' }, scores.join(' ／ ')));
+    // G8: 戦績の長文1行を表形式に（戦/ホーム/スコア/ビジター/延長）
+    const jsRows = ps.japanSeries.games.map((g, i) => el('tr', {}, [
+      td(`第${i + 1}戦`), td(name(g.home)), td(`${g.homeScore}-${g.awayScore}`, 'right'), td(name(g.away)),
+      td(g.innings > 9 ? `延長${g.innings}回` : ''),
+    ]));
+    box.append(table(['戦', 'ホーム', 'スコア', 'ビジター', '延長'], jsRows));
   }
   if (ps.champion) box.append(el('div', { class: 'pschamp' }, `日本一: ${name(ps.champion)}`));
   c.append(box);
@@ -13450,7 +13585,9 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     const head = el('tr', {}, curCols.map(([k, label, align]) =>
       el('th', { class: (align || '') + (state.sort.key === k ? ' sorted' : ''), title: TIP[k] || '', onclick: () => { state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : -1 }; render(); } }, label + (state.sort.key === k ? (dir < 0 ? ' ▼' : ' ▲') : '')),
     ));
-    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id) }, curCols.map(([k, , align]) => {
+    // G9: 表示中テーブルのソート済みID配列をモーダルの前後ナビに渡す。
+    const navIds = sorted.map((d) => d.id);
+    const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id, navIds) }, curCols.map(([k, , align]) => {
       if (k === 'team') return teamCell(d, align); // G5a: 略称チップ（teamIdが無ければ文字列フォールバック）
       let v = d[k];
       if (typeof v === 'number') {
@@ -13491,7 +13628,10 @@ function teamCell(d, align) {
 // --- 選手モーダル（タブ化・§B3 UI）----------------------------------------
 // 打者: 基本 / 打球(スプレー+EV/LA+Barrel%) / スプリット(対左右/RISP/home-away) / 文脈(WPA/RE24/Clutch/LI) / 守備成分
 // 投手: 基本 / 投球(xFIP/SIERA/被打球) / 文脈(WPA/pLI/gmLI/SD/MD)
-function openModal(playerId) {
+// G9: navIds は「表示中テーブルのソート済みID配列」（省略可）。渡されたときだけ modalhead に
+//   前後ナビ（◀/▶）が出る。ナビ時は overlay を作り直さず一旦 remove() して openModal を呼び直す
+//   （最も単純な再構築＝タブ選択状態はナビをまたいで保持しない仕様）。
+function openModal(playerId, navIds = null) {
   const p = state.byId.get(playerId);
   if (!p) return;
   const isPitcher = p.role === 'pitcher';
@@ -13502,7 +13642,7 @@ function openModal(playerId) {
   if (!s) s = createPlayerSeason(playerId, state.res ? state.res.season : 0);
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
-  box.append(modalHeader(p, isPitcher, overlay));
+  box.append(modalHeader(p, isPitcher, overlay, playerId, navIds));
   const modalTabs = !hasStats
     ? [['basic', '基本']]
     : isPitcher
@@ -13535,8 +13675,9 @@ function openModal(playerId) {
 /**
  * モーダルヘッダ（E1整備）: 名前＋二つ名（キャリア時）／所属（一軍支配下・育成二軍）・位置・
  * 年齢・利き手／受賞歴（キャリア時・直近3件＋件数）。三層構造: 二つ名も受賞も観測ベース。
+ * G9: navIds が渡されたときは◀/▶の前後ナビボタンを右側（✕の隣）に足す（端は disabled）。
  */
-function modalHeader(p, isPitcher, overlay) {
+function modalHeader(p, isPitcher, overlay, playerId, navIds) {
   const gs = game.gs;
   const left = el('div', {});
   const nameRow = el('div', {}, [el('span', { class: 'pname' }, p.name)]);
@@ -13554,7 +13695,21 @@ function modalHeader(p, isPitcher, overlay) {
       left.append(el('div', { class: 'headawards' }, `🏅 ${recent}${hist.length > 3 ? ` 他${hist.length - 3}件` : ''}`));
     }
   }
-  return el('div', { class: 'modalhead' }, [left, el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]);
+  const right = el('div', { class: 'modalnavwrap' });
+  if (navIds && navIds.length > 1) {
+    const idx = navIds.indexOf(playerId);
+    const prevId = idx > 0 ? navIds[idx - 1] : null;
+    const nextId = idx >= 0 && idx < navIds.length - 1 ? navIds[idx + 1] : null;
+    const navBtn = (label, id) => {
+      const attrs = { class: 'link modalnav' };
+      if (id == null) attrs.disabled = true;
+      else attrs.onclick = () => { overlay.remove(); openModal(id, navIds); };
+      return el('button', attrs, label);
+    };
+    right.append(navBtn('◀', prevId), navBtn('▶', nextId));
+  }
+  right.append(el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'));
+  return el('div', { class: 'modalhead' }, [left, right]);
 }
 
 // 基本タブ: 成績サマリ＋（打者）WAR内訳/対球種 ＋能力バー
@@ -14267,11 +14422,15 @@ function renderHub(tab = 'hub') {
 
 /** E4: 成績タブ（打・投・守・WAR・球団比較のサブタブ。既存の描画関数を再利用）。 */
 function renderStatsTab(c) {
-  c.append(el('div', { class: 'subtabs' }, HUB_STAT_SUBTABS.map(([k, label]) =>
-    el('button', {
-      class: 'subtab' + (hubStatsSub === k ? ' active' : ''),
-      onclick: () => { hubStatsSub = k; renderHub('stats'); },
-    }, label))));
+  c.append(el('div', { class: 'subtabs' }, [
+    ...HUB_STAT_SUBTABS.map(([k, label]) =>
+      el('button', {
+        class: 'subtab' + (hubStatsSub === k ? ' active' : ''),
+        onclick: () => { hubStatsSub = k; renderHub('stats'); },
+      }, label)),
+    // G10: 成績タブには現行「説明行」が無いため subtabs 行末尾に用語集導線を同居させる
+    el('button', { class: 'link', onclick: () => renderGlossary() }, '📖 用語集'),
+  ]));
   const body = el('div');
   c.append(body);
   if (hubStatsSub === 'war') renderWAR(body);
@@ -14286,7 +14445,7 @@ function renderStatsTab(c) {
  */
 function scheduleDeps() {
   return {
-    el, td, state, game, tname, pname, playerLink, posJP, fmt3,
+    el, td, state, game, tname, pname, playerLink, posJP, fmt3, pendingDayOf,
     renderHub: () => renderHub('schedule'),
   };
 }
@@ -14656,6 +14815,55 @@ function openSaveModal() {
   document.getElementById('app').append(overlay);
 }
 
+/**
+ * G10: 共通の用語集モーダル（TIP全項目のdt/dd列挙＋観戦の色凡例）。
+ * タッチ端末では th の title 属性（ツールチップ）が出せないため、いつでも定義に到達できる導線として設ける。
+ * overlay/modal は選手モーダル（openModal）・セーブモーダル（openSaveModal）と同じ流儀。
+ */
+function renderGlossary() {
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '用語集・凡例'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
+  const dl = el('dl', { class: 'glossarylist' });
+  for (const k of Object.keys(TIP)) {
+    dl.append(el('dt', {}, k), el('dd', {}, TIP[k]));
+  }
+  box.append(dl);
+  box.append(el('h4', { class: 'teamsub' }, '観戦の色凡例'));
+  box.append(el('div', { class: 'glossarylegend' }, [
+    el('div', { class: 'glossarysec' }, [
+      el('div', { class: 'muted' }, '球判定'),
+      el('div', { class: 'legendrow' }, [
+        el('span', { class: 'legendchip pc-ball' }, 'ボール'),
+        el('span', { class: 'legendchip pc-called' }, '見逃し'),
+        el('span', { class: 'legendchip pc-whiff' }, '空振り'),
+        el('span', { class: 'legendchip pc-foul' }, 'ファウル'),
+        el('span', { class: 'legendchip pc-inplay' }, 'インプレー'),
+      ]),
+    ]),
+    el('div', { class: 'glossarysec' }, [
+      el('div', { class: 'muted' }, '結果'),
+      el('div', { class: 'legendrow' }, [
+        el('span', { class: 'legendchip ev-hit' }, '安打'),
+        el('span', { class: 'legendchip ev-hr' }, 'HR・得点'),
+        el('span', { class: 'legendchip ev-k' }, '三振'),
+        el('span', { class: 'legendchip ev-bb' }, '四死球'),
+        el('span', { class: 'legendchip ev-err' }, '失策'),
+      ]),
+    ]),
+    el('div', { class: 'glossarysec' }, [
+      el('div', { class: 'muted' }, 'ランプ（カウント）'),
+      el('div', { class: 'legendrow' }, [
+        el('span', { class: 'legendchip lamplegend lb' }, 'B（ボール）'),
+        el('span', { class: 'legendchip lamplegend ls' }, 'S（ストライク）'),
+        el('span', { class: 'legendchip lamplegend lo' }, 'O（アウト）'),
+      ]),
+    ]),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
+}
+
 function slotLabel(key) {
   const rec = game.slots[key];
   if (key === 'auto') return 'オートセーブ';
@@ -14773,6 +14981,8 @@ function runAdvanceWithProgress(until) {
   const startDay = pendingDayOf(gs.rt) - 1; // 0始まりの現在day
   const targetDay = Math.floor(startDay / span) * span + span; // 次の span 境界（advanceTo と同義）
   const heading = until === 'weekEnd' ? '1週間を進行中…' : '月末まで進行中…';
+  // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
+  const digestSnap = { startDay, heading, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -14791,12 +15001,80 @@ function runAdvanceWithProgress(until) {
     if (gs.rt.finished || cur >= targetDay) {
       autoSave();
       overlay.remove();
-      if (gs.rt.finished) renderSeasonResult(); else renderHub();
+      // G6: rt.finished は G2 の分岐をそのまま維持（ダイジェストを挟まずリザルトへ直行）。
+      //   それ以外のときだけ差分ダイジェストモーダルを表示してから hub へ戻る。
+      if (gs.rt.finished) renderSeasonResult(); else showAdvanceDigest(gs, digestSnap);
     } else {
       setTimeout(step, 0);
     }
   };
   step();
+}
+
+/** G6: 自リーグ内の順位（1始まり）とリーグ球団数。renderHubHome のミニ順位表と同じ算出方法。 */
+function leagueRankOf(rt, teamId) {
+  const rows = currentStandings(rt);
+  const myLg = rt.standings.get(teamId).league;
+  const lgRows = rows.filter((r) => r.league === myLg);
+  return { rank: lgRows.findIndex((r) => r.teamId === teamId) + 1, total: lgRows.length };
+}
+
+/**
+ * G6: 週/月進行後の差分ダイジェスト（runAdvanceWithProgress 完了後・rt.finished でないときのみ表示）。
+ * 期間戦績（進行開始日以降のW-L-T）・順位変動（開始時→完了時）・見出し（週次ダイジェスト＋選手活躍）・
+ * 昇降格（期間分・自チームのみ）を overlay モーダルで示してから「閉じる」で renderHub() へ戻る。
+ * スキップ設定は持たない（「次の試合へ」経由の playNextPlayerGame では呼ばない＝仕様どおり）。
+ */
+function showAdvanceDigest(gs, snap) {
+  const rt = gs.rt;
+  const myId = gs.playerTeamId;
+  // 期間戦績: rt.playerGameLog のうち進行開始日以降
+  const games = rt.playerGameLog.filter((g) => g.day >= snap.startDay);
+  let w = 0, l = 0, t = 0;
+  for (const g of games) {
+    const isHome = g.home === myId;
+    const my = isHome ? g.homeScore : g.awayScore;
+    const opp = isHome ? g.awayScore : g.homeScore;
+    if (g.tie) t++; else if (my > opp) w++; else l++;
+  }
+  // 順位変動: 開始時スナップショット → 現在
+  const after = leagueRankOf(rt, myId);
+  // 見出し: 週次ダイジェスト上位3件＋選手活躍3件
+  const heads = weeklyDigest({
+    gameLog: rt.playerGameLog,
+    standings: currentStandings(rt),
+    teamId: myId,
+    nameOf: (id) => tname(id),
+  }).slice(0, 3);
+  heads.push(...schedPlayerHeadlines(rt, scheduleDeps(), 3));
+  // 昇降格: 期間分・自チームのみ
+  const moves = (rt.rosterMoves ?? []).filter((m) => m.teamId === myId && m.day >= snap.startDay);
+
+  const close = () => { overlay.remove(); renderHub(); };
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' }, `${snap.heading.replace('進行中…', '')}結果`),
+    el('button', { class: 'link', onclick: close }, '✕'),
+  ]));
+  box.append(el('div', {}, `期間戦績: ${w}勝${l}敗${t}分`));
+  if (snap.rank.rank && after.rank) {
+    box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
+  }
+  box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
+  box.append(el('div', { class: 'newsfeed' }, heads.length
+    ? heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))
+    : [el('div', { class: 'newsrow info' }, '目立った見出しはありません。')]));
+  if (moves.length) {
+    box.append(el('h3', { class: 'leaguename' }, '🔁 昇格・降格'));
+    box.append(el('div', { class: 'newsfeed' }, moves.map((m) =>
+      el('div', { class: 'newsrow info' }, [`第${m.day + 1}節: `, ...rosterMoveParts(m)]))));
+  }
+  box.append(el('div', { class: 'row', style: 'margin-top:10px' }, [
+    el('button', { class: 'primary', onclick: close }, '閉じる'),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
 }
 
 // 「シーズン終了まで」: UIを凍らせないチャンク進行（節を小分けに消化＋プログレスバー）。
@@ -14839,6 +15117,7 @@ function watchDeps() {
   return {
     el, td, state, game, tname, pname, posJP, playerLink, teamColor, tabbr,
     svgEl, svgText, fmt3, f2, refreshRes, renderHub,
+    renderGlossary, // G10: 観戦ヘッダーの「?」用語集リンク
   };
 }
 
@@ -14858,12 +15137,17 @@ function renderSeasonResult() {
   refreshRes();
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, `${gs.year}年 シーズンリザルト`),
-    el('div', { class: 'row' }, [
-      // E3: リザルト→年送りの間に「ストーブリーグ」ステップ（FA入札/トレード起案）。スキップも可。
-      el('button', { class: 'primary', onclick: () => renderStoveScreen(stoveDeps()) }, '▶ ストーブリーグへ（FA・トレード）'),
-      el('button', { onclick: () => advanceToNextYearUI() }, '翌シーズンへ（スキップ）'),
-      el('button', { onclick: () => renderHub('standings') }, '成績を見る'),
-      el('button', { class: 'link', onclick: () => renderTitle() }, 'タイトルへ'),
+    // G8: 4ボタンを2行構成に（1行目=進行系・primary/2行目=閲覧系）。ボタン文言は変更しない。
+    el('div', {}, [
+      el('div', { class: 'row' }, [
+        // E3: リザルト→年送りの間に「ストーブリーグ」ステップ（FA入札/トレード起案）。スキップも可。
+        el('button', { class: 'primary', onclick: () => renderStoveScreen(stoveDeps()) }, '▶ ストーブリーグへ（FA・トレード）'),
+        el('button', { onclick: () => advanceToNextYearUI() }, '翌シーズンへ（スキップ）'),
+      ]),
+      el('div', { class: 'row' }, [
+        el('button', { onclick: () => renderHub('standings') }, '成績を見る'),
+        el('button', { class: 'link', onclick: () => renderTitle() }, 'タイトルへ'),
+      ]),
     ]),
   ]));
   const ps = rt.postseason;
@@ -14916,9 +15200,10 @@ function renderAwardsPanel(c) {
   c.append(el('h3', { class: 'leaguename' }, `🏅 ${gs.year}年 表彰`));
   // E1: 受賞者名は playerLink でモーダルへ（導線の全画面化）。引退者は素のテキストに落ちる。
   const linkOf = (id) => (id ? playerLink(id) : '—');
+  // G8: リーグごとに<details>で折りたたみ、自チームのリーグだけ既定open
+  const myLg = gs.rt.standings.get(gs.playerTeamId).league;
   for (const lg of aw.leagues) {
     const box = el('div', { class: 'awardpanel' });
-    box.append(el('div', { class: 'awardlgname' }, leagueNameOf(gs.cfg, lg.leagueId)));
     // MVP・新人王
     const bigVal = (a) => [playerLink(a.playerId), `（WAR ${a.war.toFixed(1)}）`];
     const top = [['MVP', lg.mvp ? bigVal(lg.mvp) : '—']];
@@ -14941,7 +15226,12 @@ function renderAwardsPanel(c) {
     box.append(el('div', { class: 'kvgrid' }, lg.gloves.map((g) => el('div', { class: 'kv' }, [
       el('div', { class: 'kvk' }, posJP(g.pos)), el('div', { class: 'kvv' }, g.playerId ? [playerLink(g.playerId), `（${signed(g.defScore)}）`] : '—'),
     ]))));
-    c.append(box);
+    const detailsAttrs = { class: 'awarddetails' };
+    if (lg.leagueId === myLg) detailsAttrs.open = '';
+    c.append(el('details', detailsAttrs, [
+      el('summary', { class: 'leaguename' }, leagueNameOf(gs.cfg, lg.leagueId)),
+      box,
+    ]));
   }
 }
 

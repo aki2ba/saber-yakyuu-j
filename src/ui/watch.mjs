@@ -383,7 +383,11 @@ export function renderWatchScreen(u) {
   root.innerHTML = '';
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, ['観戦　', el('span', { class: 'muted' }, `${tname(v.away)} vs ${tname(v.home)}`)]),
-    el('div', { class: 'row' }, [el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る')]),
+    el('div', { class: 'row' }, [
+      el('button', { class: 'link', onclick: () => { w.auto = false; game.watch = null; u.renderHub(); } }, 'ホームへ戻る'),
+      // G10: タッチ端末では th の title ツールチップが出せない→用語集モーダルへの導線
+      el('button', { class: 'link', onclick: () => u.renderGlossary() }, '?'),
+    ]),
   ]));
   // G1a: ① コンパクトスコアボード（sticky・常設はこれだけ。▼でラインスコア展開）
   root.append(watchScorebar(v, u, w));

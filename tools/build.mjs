@@ -114,6 +114,7 @@ const html = `<!DOCTYPE html>
   input { background:#0c3122; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:5px; }
   .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
   .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
+  .header .row { flex-wrap:wrap; }
   /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設 */
   .tabs { display:flex; gap:6px; position:sticky; top:0; z-index:6; background:var(--bg); padding:6px 0;
           margin:6px 0; flex-wrap:nowrap; overflow-x:auto; }
@@ -179,6 +180,11 @@ const html = `<!DOCTYPE html>
   .modalbody { min-height:40px; }
   h4.teamsub { font-size:12px; color:var(--muted); margin:8px 0 3px; font-weight:600; }
   h3.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); }
+  /* G7: 日程タブの月見出しは summary（<details class="schedmonth">内）でも同じ見た目にする */
+  summary.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); cursor:pointer; }
+  .schedmonth { margin:4px 0; }
+  .nextjump { margin:6px 0; }
+  .schednext { outline:1px solid var(--gold); }
   .pspanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:12px; background:var(--panel); }
   .psrow { display:flex; gap:8px; font-size:13px; margin:3px 0; flex-wrap:wrap; }
   .pslabel { color:var(--muted); min-width:190px; }
@@ -246,6 +252,10 @@ const html = `<!DOCTYPE html>
   .newsrow.info { border-left-color:#5aa9e6; }
   .awardpanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:var(--panel); }
   .awardlgname { color:var(--gold); font-weight:700; border-bottom:1px solid var(--line); padding-bottom:4px; margin-bottom:6px; }
+  /* G8: 表彰パネルをリーグ単位で折りたたみ */
+  .awarddetails { margin:8px 0; }
+  .awarddetails > summary { cursor:pointer; }
+  .awarddetails .awardpanel { margin-top:6px; }
   .awardtop { display:flex; flex-wrap:wrap; gap:10px; }
   .awardbig { flex:1; min-width:160px; background:#0c3122; border-radius:6px; padding:8px; }
   .awardbigk { display:block; font-size:11px; color:var(--muted); }
@@ -396,6 +406,27 @@ const html = `<!DOCTYPE html>
     .modal { padding:12px; }
     .pslabel { min-width:0; }
   }
+  /* G10: 用語集モーダル（TIP全項目のdt/dd＋観戦の色凡例） */
+  .glossarylist { margin:0; }
+  .glossarylist dt { font-weight:700; color:var(--gold); margin-top:8px; font-size:13px; }
+  .glossarylist dd { margin:2px 0 0; font-size:12px; color:var(--chalk); }
+  .glossarylegend { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+  .legendrow { display:flex; flex-wrap:wrap; gap:6px; }
+  /* 既存の pc-*/ev-*/lb・ls・lo は他クラスとの併記が前提の色指定なので、凡例チップは独立した配色を持つ */
+  .legendchip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid var(--line); color:var(--chalk); }
+  .legendchip.pc-ball { color:#f4f1e6; border-color:#f4f1e6; }
+  .legendchip.pc-called { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.pc-whiff { color:#e06d6d; border-color:#e06d6d; }
+  .legendchip.pc-foul { color:#e8b84b; border-color:#e8b84b; }
+  .legendchip.pc-inplay { color:#8fc7ff; border-color:#8fc7ff; }
+  .legendchip.ev-hit { color:#8fc7ff; border-color:#8fc7ff; }
+  .legendchip.ev-hr { color:#ff8a76; border-color:#ff8a76; font-weight:700; }
+  .legendchip.ev-k { color:var(--muted); border-color:var(--muted); }
+  .legendchip.ev-bb { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.ev-err { color:#e8b84b; border-color:#e8b84b; }
+  .legendchip.lamplegend.lb { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.lamplegend.ls { color:var(--gold); border-color:var(--gold); }
+  .legendchip.lamplegend.lo { color:#c96a5a; border-color:#c96a5a; }
 </style>
 </head>
 <body>

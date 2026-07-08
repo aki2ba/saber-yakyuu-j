@@ -326,9 +326,12 @@ function renderPostseasonPanel(c) {
   }
   if (ps.japanSeries) {
     box.append(seriesRow('日本シリーズ', ps.japanSeries));
-    const scores = ps.japanSeries.games.map((g, i) =>
-      `第${i + 1}戦 ${name(g.home)} ${g.homeScore}-${g.awayScore} ${name(g.away)}${g.innings > 9 ? `（延長${g.innings}回）` : ''}`);
-    box.append(el('div', { class: 'muted' }, scores.join(' ／ ')));
+    // G8: 戦績の長文1行を表形式に（戦/ホーム/スコア/ビジター/延長）
+    const jsRows = ps.japanSeries.games.map((g, i) => el('tr', {}, [
+      td(`第${i + 1}戦`), td(name(g.home)), td(`${g.homeScore}-${g.awayScore}`, 'right'), td(name(g.away)),
+      td(g.innings > 9 ? `延長${g.innings}回` : ''),
+    ]));
+    box.append(table(['戦', 'ホーム', 'スコア', 'ビジター', '延長'], jsRows));
   }
   if (ps.champion) box.append(el('div', { class: 'pschamp' }, `日本一: ${name(ps.champion)}`));
   c.append(box);
@@ -1302,11 +1305,15 @@ function renderHub(tab = 'hub') {
 
 /** E4: 成績タブ（打・投・守・WAR・球団比較のサブタブ。既存の描画関数を再利用）。 */
 function renderStatsTab(c) {
-  c.append(el('div', { class: 'subtabs' }, HUB_STAT_SUBTABS.map(([k, label]) =>
-    el('button', {
-      class: 'subtab' + (hubStatsSub === k ? ' active' : ''),
-      onclick: () => { hubStatsSub = k; renderHub('stats'); },
-    }, label))));
+  c.append(el('div', { class: 'subtabs' }, [
+    ...HUB_STAT_SUBTABS.map(([k, label]) =>
+      el('button', {
+        class: 'subtab' + (hubStatsSub === k ? ' active' : ''),
+        onclick: () => { hubStatsSub = k; renderHub('stats'); },
+      }, label)),
+    // G10: 成績タブには現行「説明行」が無いため subtabs 行末尾に用語集導線を同居させる
+    el('button', { class: 'link', onclick: () => renderGlossary() }, '📖 用語集'),
+  ]));
   const body = el('div');
   c.append(body);
   if (hubStatsSub === 'war') renderWAR(body);
@@ -1321,7 +1328,7 @@ function renderStatsTab(c) {
  */
 function scheduleDeps() {
   return {
-    el, td, state, game, tname, pname, playerLink, posJP, fmt3,
+    el, td, state, game, tname, pname, playerLink, posJP, fmt3, pendingDayOf,
     renderHub: () => renderHub('schedule'),
   };
 }
@@ -1691,6 +1698,55 @@ function openSaveModal() {
   document.getElementById('app').append(overlay);
 }
 
+/**
+ * G10: 共通の用語集モーダル（TIP全項目のdt/dd列挙＋観戦の色凡例）。
+ * タッチ端末では th の title 属性（ツールチップ）が出せないため、いつでも定義に到達できる導線として設ける。
+ * overlay/modal は選手モーダル（openModal）・セーブモーダル（openSaveModal）と同じ流儀。
+ */
+function renderGlossary() {
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '用語集・凡例'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
+  const dl = el('dl', { class: 'glossarylist' });
+  for (const k of Object.keys(TIP)) {
+    dl.append(el('dt', {}, k), el('dd', {}, TIP[k]));
+  }
+  box.append(dl);
+  box.append(el('h4', { class: 'teamsub' }, '観戦の色凡例'));
+  box.append(el('div', { class: 'glossarylegend' }, [
+    el('div', { class: 'glossarysec' }, [
+      el('div', { class: 'muted' }, '球判定'),
+      el('div', { class: 'legendrow' }, [
+        el('span', { class: 'legendchip pc-ball' }, 'ボール'),
+        el('span', { class: 'legendchip pc-called' }, '見逃し'),
+        el('span', { class: 'legendchip pc-whiff' }, '空振り'),
+        el('span', { class: 'legendchip pc-foul' }, 'ファウル'),
+        el('span', { class: 'legendchip pc-inplay' }, 'インプレー'),
+      ]),
+    ]),
+    el('div', { class: 'glossarysec' }, [
+      el('div', { class: 'muted' }, '結果'),
+      el('div', { class: 'legendrow' }, [
+        el('span', { class: 'legendchip ev-hit' }, '安打'),
+        el('span', { class: 'legendchip ev-hr' }, 'HR・得点'),
+        el('span', { class: 'legendchip ev-k' }, '三振'),
+        el('span', { class: 'legendchip ev-bb' }, '四死球'),
+        el('span', { class: 'legendchip ev-err' }, '失策'),
+      ]),
+    ]),
+    el('div', { class: 'glossarysec' }, [
+      el('div', { class: 'muted' }, 'ランプ（カウント）'),
+      el('div', { class: 'legendrow' }, [
+        el('span', { class: 'legendchip lamplegend lb' }, 'B（ボール）'),
+        el('span', { class: 'legendchip lamplegend ls' }, 'S（ストライク）'),
+        el('span', { class: 'legendchip lamplegend lo' }, 'O（アウト）'),
+      ]),
+    ]),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
+}
+
 function slotLabel(key) {
   const rec = game.slots[key];
   if (key === 'auto') return 'オートセーブ';
@@ -1808,6 +1864,8 @@ function runAdvanceWithProgress(until) {
   const startDay = pendingDayOf(gs.rt) - 1; // 0始まりの現在day
   const targetDay = Math.floor(startDay / span) * span + span; // 次の span 境界（advanceTo と同義）
   const heading = until === 'weekEnd' ? '1週間を進行中…' : '月末まで進行中…';
+  // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
+  const digestSnap = { startDay, heading, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -1826,12 +1884,80 @@ function runAdvanceWithProgress(until) {
     if (gs.rt.finished || cur >= targetDay) {
       autoSave();
       overlay.remove();
-      if (gs.rt.finished) renderSeasonResult(); else renderHub();
+      // G6: rt.finished は G2 の分岐をそのまま維持（ダイジェストを挟まずリザルトへ直行）。
+      //   それ以外のときだけ差分ダイジェストモーダルを表示してから hub へ戻る。
+      if (gs.rt.finished) renderSeasonResult(); else showAdvanceDigest(gs, digestSnap);
     } else {
       setTimeout(step, 0);
     }
   };
   step();
+}
+
+/** G6: 自リーグ内の順位（1始まり）とリーグ球団数。renderHubHome のミニ順位表と同じ算出方法。 */
+function leagueRankOf(rt, teamId) {
+  const rows = currentStandings(rt);
+  const myLg = rt.standings.get(teamId).league;
+  const lgRows = rows.filter((r) => r.league === myLg);
+  return { rank: lgRows.findIndex((r) => r.teamId === teamId) + 1, total: lgRows.length };
+}
+
+/**
+ * G6: 週/月進行後の差分ダイジェスト（runAdvanceWithProgress 完了後・rt.finished でないときのみ表示）。
+ * 期間戦績（進行開始日以降のW-L-T）・順位変動（開始時→完了時）・見出し（週次ダイジェスト＋選手活躍）・
+ * 昇降格（期間分・自チームのみ）を overlay モーダルで示してから「閉じる」で renderHub() へ戻る。
+ * スキップ設定は持たない（「次の試合へ」経由の playNextPlayerGame では呼ばない＝仕様どおり）。
+ */
+function showAdvanceDigest(gs, snap) {
+  const rt = gs.rt;
+  const myId = gs.playerTeamId;
+  // 期間戦績: rt.playerGameLog のうち進行開始日以降
+  const games = rt.playerGameLog.filter((g) => g.day >= snap.startDay);
+  let w = 0, l = 0, t = 0;
+  for (const g of games) {
+    const isHome = g.home === myId;
+    const my = isHome ? g.homeScore : g.awayScore;
+    const opp = isHome ? g.awayScore : g.homeScore;
+    if (g.tie) t++; else if (my > opp) w++; else l++;
+  }
+  // 順位変動: 開始時スナップショット → 現在
+  const after = leagueRankOf(rt, myId);
+  // 見出し: 週次ダイジェスト上位3件＋選手活躍3件
+  const heads = weeklyDigest({
+    gameLog: rt.playerGameLog,
+    standings: currentStandings(rt),
+    teamId: myId,
+    nameOf: (id) => tname(id),
+  }).slice(0, 3);
+  heads.push(...schedPlayerHeadlines(rt, scheduleDeps(), 3));
+  // 昇降格: 期間分・自チームのみ
+  const moves = (rt.rosterMoves ?? []).filter((m) => m.teamId === myId && m.day >= snap.startDay);
+
+  const close = () => { overlay.remove(); renderHub(); };
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' }, `${snap.heading.replace('進行中…', '')}結果`),
+    el('button', { class: 'link', onclick: close }, '✕'),
+  ]));
+  box.append(el('div', {}, `期間戦績: ${w}勝${l}敗${t}分`));
+  if (snap.rank.rank && after.rank) {
+    box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
+  }
+  box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
+  box.append(el('div', { class: 'newsfeed' }, heads.length
+    ? heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))
+    : [el('div', { class: 'newsrow info' }, '目立った見出しはありません。')]));
+  if (moves.length) {
+    box.append(el('h3', { class: 'leaguename' }, '🔁 昇格・降格'));
+    box.append(el('div', { class: 'newsfeed' }, moves.map((m) =>
+      el('div', { class: 'newsrow info' }, [`第${m.day + 1}節: `, ...rosterMoveParts(m)]))));
+  }
+  box.append(el('div', { class: 'row', style: 'margin-top:10px' }, [
+    el('button', { class: 'primary', onclick: close }, '閉じる'),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
 }
 
 // 「シーズン終了まで」: UIを凍らせないチャンク進行（節を小分けに消化＋プログレスバー）。
@@ -1874,6 +2000,7 @@ function watchDeps() {
   return {
     el, td, state, game, tname, pname, posJP, playerLink, teamColor, tabbr,
     svgEl, svgText, fmt3, f2, refreshRes, renderHub,
+    renderGlossary, // G10: 観戦ヘッダーの「?」用語集リンク
   };
 }
 
@@ -1893,12 +2020,17 @@ function renderSeasonResult() {
   refreshRes();
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, `${gs.year}年 シーズンリザルト`),
-    el('div', { class: 'row' }, [
-      // E3: リザルト→年送りの間に「ストーブリーグ」ステップ（FA入札/トレード起案）。スキップも可。
-      el('button', { class: 'primary', onclick: () => renderStoveScreen(stoveDeps()) }, '▶ ストーブリーグへ（FA・トレード）'),
-      el('button', { onclick: () => advanceToNextYearUI() }, '翌シーズンへ（スキップ）'),
-      el('button', { onclick: () => renderHub('standings') }, '成績を見る'),
-      el('button', { class: 'link', onclick: () => renderTitle() }, 'タイトルへ'),
+    // G8: 4ボタンを2行構成に（1行目=進行系・primary/2行目=閲覧系）。ボタン文言は変更しない。
+    el('div', {}, [
+      el('div', { class: 'row' }, [
+        // E3: リザルト→年送りの間に「ストーブリーグ」ステップ（FA入札/トレード起案）。スキップも可。
+        el('button', { class: 'primary', onclick: () => renderStoveScreen(stoveDeps()) }, '▶ ストーブリーグへ（FA・トレード）'),
+        el('button', { onclick: () => advanceToNextYearUI() }, '翌シーズンへ（スキップ）'),
+      ]),
+      el('div', { class: 'row' }, [
+        el('button', { onclick: () => renderHub('standings') }, '成績を見る'),
+        el('button', { class: 'link', onclick: () => renderTitle() }, 'タイトルへ'),
+      ]),
     ]),
   ]));
   const ps = rt.postseason;
@@ -1951,9 +2083,10 @@ function renderAwardsPanel(c) {
   c.append(el('h3', { class: 'leaguename' }, `🏅 ${gs.year}年 表彰`));
   // E1: 受賞者名は playerLink でモーダルへ（導線の全画面化）。引退者は素のテキストに落ちる。
   const linkOf = (id) => (id ? playerLink(id) : '—');
+  // G8: リーグごとに<details>で折りたたみ、自チームのリーグだけ既定open
+  const myLg = gs.rt.standings.get(gs.playerTeamId).league;
   for (const lg of aw.leagues) {
     const box = el('div', { class: 'awardpanel' });
-    box.append(el('div', { class: 'awardlgname' }, leagueNameOf(gs.cfg, lg.leagueId)));
     // MVP・新人王
     const bigVal = (a) => [playerLink(a.playerId), `（WAR ${a.war.toFixed(1)}）`];
     const top = [['MVP', lg.mvp ? bigVal(lg.mvp) : '—']];
@@ -1976,6 +2109,11 @@ function renderAwardsPanel(c) {
     box.append(el('div', { class: 'kvgrid' }, lg.gloves.map((g) => el('div', { class: 'kv' }, [
       el('div', { class: 'kvk' }, posJP(g.pos)), el('div', { class: 'kvv' }, g.playerId ? [playerLink(g.playerId), `（${signed(g.defScore)}）`] : '—'),
     ]))));
-    c.append(box);
+    const detailsAttrs = { class: 'awarddetails' };
+    if (lg.leagueId === myLg) detailsAttrs.open = '';
+    c.append(el('details', detailsAttrs, [
+      el('summary', { class: 'leaguename' }, leagueNameOf(gs.cfg, lg.leagueId)),
+      box,
+    ]));
   }
 }

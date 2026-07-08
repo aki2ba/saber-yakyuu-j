@@ -641,6 +641,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     // 打席プレー全体の得点として一括計上し、文脈指標(gc)へも合算で渡す（RE24/WPAの telescoping を保つ）。
     const runs = advRuns + wpRuns;
 
+    let gbDp = false;
     if (result === 'out') {
       if (isAirOut && runs > 0) {
         // 犠飛: ABを取り消してSF計上
@@ -674,11 +675,12 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           if (dpS) statFor(dpS, fielding.teamId).fielding.dpTurned++;
         }
       }
+      gbDp = outs - outsBefore >= 2;
     }
     if (runs > 0) {
       batting.score += runs;
-      // 打点は打撃結果の得点(advRuns)のみ・失策は打点なし。暴投/捕逸(wpRuns)は打点対象外。
-      if (result !== 'E') bStat.batting.rbi += advRuns;
+      // 打点は打撃結果の得点(advRuns)のみ・失策と併殺ゴロ間の得点は打点なし（公式準拠・boxscore.mjsと同基準）。
+      if (result !== 'E' && !gbDp) bStat.batting.rbi += advRuns;
       pStat.pitching.r += runs;
       pStat.pitching.er += errorInInning ? 0 : runs; // 失策以降は非自責
       fielding.cur.runs += runs;

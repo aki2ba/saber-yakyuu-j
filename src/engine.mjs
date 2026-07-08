@@ -46,6 +46,7 @@ import { deriveParkFactors, parkFactorSpread } from './sim/parkFactor.mjs';
 import { playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, pythag } from './sim/metrics.mjs';
 import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
+import { isBarrel } from './sim/battedBallStats.mjs';
 
 // F2-2: 出場登録29人（一軍デプスチャート=登録者のみ）＋二軍リーグ並走＝エンジン挙動が 0.9.1 から
 //   変わる（verify-identity/smoke の新ベースラインは F2-5 の再較正確定後に取得する）。
@@ -82,6 +83,7 @@ export {
   rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg,
   uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns,
   hitterWAR, pitcherWAR, playerWAR, posAdjRuns,
+  isBarrel,
 };
 
 // --- エンジン同一性の門番 ---------------------------------------------------

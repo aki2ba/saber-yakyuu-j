@@ -34,7 +34,7 @@
 //   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同一<script>へ前置concat。ui.mjs のヘルパーは
 //     deps オブジェクト u（ui.mjs の watchDeps()）で受け取る（トップレベル名衝突の回避・E1の流儀）。
 // ============================================================================
-import { playerBatting, playerPitching, effectiveBats } from '../engine.mjs';
+import { playerBatting, playerPitching, effectiveBats, rawRunValuePerPA, isBarrel } from '../engine.mjs';
 import { detectGameNotables, notableHeadline } from '../game/index.mjs';
 import { buildBoxScore } from '../game/boxscore.mjs';
 
@@ -96,18 +96,19 @@ function watchExpOut(e, cfg) {
 }
 
 /**
- * 1打席(pa/bunt)の打者側 生カウント差分（ab/h/b1/b2/b3/hr/bb/hbp/sf）。
- * game.mjs のスプリット計上（§B3b bumpSplit 呼び出し箇所）と同じ分岐を再現する（乱数非消費）。
+ * 1打席(pa/bunt)の打者側 生カウント差分（ab/h/b1/b2/b3/hr/bb/hbp/sf ＋ §16b wRC+/wRAA/Hard%用に
+ * pa/so/ibb/hardHits/bbEvents を追加）。game.mjs のスプリット計上（§B3b bumpSplit 呼び出し箇所）と
+ * 同じ分岐を再現する（乱数非消費・cfgはHardHit閾値の読み取りのみに使用）。
  */
-function watchBattingDelta(e) {
-  const d = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0 };
+function watchBattingDelta(e, cfg) {
+  const d = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0, pa: 1, so: 0, ibb: 0, hardHits: 0, bbEvents: 0 };
   if (e.type === 'bunt') {
     if (e.outcome === 'hit') { d.ab = 1; d.h = 1; d.b1 = 1; }
     else if (e.outcome === 'fail') { d.ab = 1; }
     return d; // 'success'（送りバント成功）は打数に含めない
   }
   const sacFly = e.result === 'out' && e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB';
-  if (e.outcome === 'BB') d.bb = 1;
+  if (e.outcome === 'BB') { d.bb = 1; if (e.isIBB) d.ibb = 1; }
   else if (e.outcome === 'HBP') d.hbp = 1;
   else if (e.result === '1B') { d.ab = 1; d.h = 1; d.b1 = 1; }
   else if (e.result === '2B') { d.ab = 1; d.h = 1; d.b2 = 1; }
@@ -116,6 +117,11 @@ function watchBattingDelta(e) {
   else if (e.result === 'E') d.ab = 1;
   else if (sacFly) d.sf = 1;
   else d.ab = 1;
+  if (e.outcome === 'K') d.so = 1;
+  if (cfg && e.bb && e.battedType) {
+    d.bbEvents = 1;
+    if (e.bb.evKmh >= cfg.tuning.metrics.hardHitKmh) d.hardHits = 1;
+  }
   return d;
 }
 
@@ -154,12 +160,15 @@ function computeGameEventTotals(events, cfg) {
   for (const e of events) {
     if (e.type === 'atbat') { curPitcherId = e.pitcherId; curOuts = e.outs; }
     else if (e.type === 'pa' || e.type === 'bunt') {
-      const bd = watchBattingDelta(e);
+      const bd = watchBattingDelta(e, cfg);
       bumpCounts(bat, e.batterId, bd);
       const runs = watchRunsOnPlay(e, lastScore);
       lastScore.set(e.batTeam, e.batScore);
       const outsAfter = e.outsAfter != null ? e.outsAfter : curOuts;
-      bumpCounts(pit, curPitcherId, { outs: outsAfter - curOuts, h: bd.h, bb: bd.bb, er: runs });
+      bumpCounts(pit, curPitcherId, {
+        outs: outsAfter - curOuts, h: bd.h, bb: bd.bb, er: runs,
+        so: bd.so, ibb: bd.ibb, hbp: bd.hbp, hr: e.result === 'HR' ? 1 : 0, bf: 1, bbFB: e.battedType === 'FB' ? 1 : 0,
+      });
       curOuts = outsAfter;
       const fd = watchFieldingDelta(e, cfg);
       if (fd) bumpCounts(fld, fd.pid, { oaaOuts: fd.oaaDelta });
@@ -190,10 +199,14 @@ function computeBeforeGame(events, state) {
         b1: (sb ? sb.b1 : 0) - (gb.b1 || 0), b2: (sb ? sb.b2 : 0) - (gb.b2 || 0), b3: (sb ? sb.b3 : 0) - (gb.b3 || 0),
         hr: (sb ? sb.hr : 0) - (gb.hr || 0), bb: (sb ? sb.bb : 0) - (gb.bb || 0),
         hbp: (sb ? sb.hbp : 0) - (gb.hbp || 0), sf: (sb ? sb.sf : 0) - (gb.sf || 0),
+        pa: (sb ? sb.pa : 0) - (gb.pa || 0), so: (sb ? sb.so : 0) - (gb.so || 0), ibb: (sb ? sb.ibb : 0) - (gb.ibb || 0),
+        hardHits: (sb ? sb.hardHits : 0) - (gb.hardHits || 0), bbEvents: (sb ? sb.bbEvents : 0) - (gb.bbEvents || 0),
       },
       pitching: {
         outs: (sp ? sp.outs : 0) - (gp.outs || 0), h: (sp ? sp.h : 0) - (gp.h || 0),
         bb: (sp ? sp.bb : 0) - (gp.bb || 0), er: (sp ? sp.er : 0) - (gp.er || 0),
+        so: (sp ? sp.so : 0) - (gp.so || 0), ibb: (sp ? sp.ibb : 0) - (gp.ibb || 0), hbp: (sp ? sp.hbp : 0) - (gp.hbp || 0),
+        hr: (sp ? sp.hr : 0) - (gp.hr || 0), bf: (sp ? sp.bf : 0) - (gp.bf || 0), bbFB: (sp ? sp.bbFB : 0) - (gp.bbFB || 0),
       },
       fielding: { oaaOuts: (sfl ? sfl.oaaOuts : 0) - (gf.oaaOuts || 0) },
     });
@@ -201,19 +214,46 @@ function computeBeforeGame(events, state) {
   return before;
 }
 
-/** 生カウント→AVG/OBP/SLG/OPS（打者側・簡易スラッシュライン）。 */
-function watchSlash(b) {
+/**
+ * 生カウント→AVG/OBP/SLG/OPS＋wRAA/wRC+/Hard%（打者側）。lc（リーグ定数）が無ければ
+ * wRAA/wRC+は0/100・Hard%は0のまま返す（観戦開始直後などlc未確定時のフォールバック）。
+ */
+function watchSlash(b, lc) {
   const tb = b.b1 + 2 * b.b2 + 3 * b.b3 + 4 * b.hr;
   const avg = b.ab ? b.h / b.ab : 0;
   const obpDen = b.ab + b.bb + b.hbp + b.sf;
   const obp = obpDen ? (b.h + b.bb + b.hbp) / obpDen : 0;
   const slg = b.ab ? tb / b.ab : 0;
-  return { avg, obp, slg, ops: obp + slg };
+  const pa = b.pa || obpDen;
+  let wraa = 0; let wrcPlus = 100;
+  if (lc) {
+    const raw = rawRunValuePerPA(b, lc.linearWeights);
+    wraa = (raw - (lc.lgRawPerPA || 0)) * pa;
+    wrcPlus = lc.lgRunsPerPA && pa ? ((wraa / pa + lc.lgRunsPerPA) / lc.lgRunsPerPA) * 100 : 100;
+  }
+  const hardHitPct = b.bbEvents ? b.hardHits / b.bbEvents : 0;
+  return { avg, obp, slg, ops: obp + slg, wraa, wrcPlus, hardHitPct };
 }
-/** 生カウント→ERA/WHIP（投手側・簡易）。 */
-function watchPitchLine(p) {
+/**
+ * 生カウント→ERA/WHIP＋xFIP/kwERA/K-BB%（投手側）。xFIPはlc（lgHRFB/fipConstant）必須、
+ * 未確定時は0を返す（watchSlash同様のフォールバック）。
+ */
+function watchPitchLine(p, lc, cfg) {
   const ip = p.outs / 3;
-  return { era: ip ? (p.er * 9) / ip : 0, whip: ip ? (p.h + p.bb) / ip : 0 };
+  const era = ip ? (p.er * 9) / ip : 0;
+  const whip = ip ? (p.h + p.bb) / ip : 0;
+  const kPct = p.bf ? p.so / p.bf : 0;
+  const bbPct = p.bf ? p.bb / p.bf : 0;
+  const kbbPct = kPct - bbPct;
+  let xfip = 0;
+  if (ip && lc) {
+    const uBBhbp = p.bb - (p.ibb || 0) + p.hbp;
+    const xHRexp = p.bbFB * (lc.lgHRFB || 0);
+    xfip = (13 * xHRexp + 3 * uBBhbp - 2 * p.so) / ip + (lc.fipConstant || 0);
+  }
+  const m = cfg && cfg.tuning && cfg.tuning.metrics;
+  const kwera = m ? m.kwERA.c0 - m.kwERA.k * kbbPct : 0;
+  return { era, whip, xfip, kwera, kbbPct };
 }
 /** OAA(アウト単位)→UZR概算（内野0.75/外野0.90・fielding.mjs の uzrRuns と同じ run/out定数を流用）。 */
 function watchUzrOf(oaaOuts, pos, cfg) {
@@ -222,9 +262,13 @@ function watchUzrOf(oaaOuts, pos, cfg) {
 }
 
 const fmt1Abs = (v) => v.toFixed(1);
+const fmtIntAbs = (v) => Math.round(v).toString();
+const fmtPct1Abs = (v) => (v * 100).toFixed(1) + '%';
 const fmtSigned3 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(3).replace(/^0/, '');
 const fmtSigned2 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(2);
 const fmtSigned1 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(1);
+const fmtSignedInt = (v) => (v >= 0 ? '+' : '-') + Math.round(Math.abs(v)).toString();
+const fmtSignedPct1 = (v) => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(1) + '%';
 
 /** 指標1行（絶対値が変化していなければ null）。invert=true は「低いほど良い」指標(ERA/WHIP)の色反転。 */
 function mdRow(label, before, after, fmtAbs, fmtDelta, invert) {
@@ -242,38 +286,54 @@ function mdRow(label, before, after, fmtAbs, fmtDelta, invert) {
  */
 function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
   const { cfg, beforeGame, gameBat, gamePit, gameFld, u, lastScore } = ctx;
+  const lc = u.state && u.state.lc;
   const rows = { batting: [], pitching: [], fielding: [], batterId: e.batterId, pitcherId, fielderId: null };
   // --- 打者 ---
-  const bZero = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0 };
+  const bZero = { ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, sf: 0, pa: 0, so: 0, ibb: 0, hardHits: 0, bbEvents: 0 };
   const bg = (beforeGame.get(e.batterId) || {}).batting || bZero;
   const before = {}; const soFarBefore = gameBat.get(e.batterId) || {};
   for (const k of Object.keys(bZero)) before[k] = (bg[k] || 0) + (soFarBefore[k] || 0);
-  const bd = watchBattingDelta(e);
+  const bd = watchBattingDelta(e, cfg);
   bumpCounts(gameBat, e.batterId, bd);
   const after = {}; const soFarAfter = gameBat.get(e.batterId) || {};
   for (const k of Object.keys(bZero)) after[k] = (bg[k] || 0) + (soFarAfter[k] || 0);
-  const sBefore = watchSlash(before); const sAfter = watchSlash(after);
+  const sBefore = watchSlash(before, lc); const sAfter = watchSlash(after, lc);
   for (const [label, key] of [['AVG', 'avg'], ['OBP', 'obp'], ['SLG', 'slg'], ['OPS', 'ops']]) {
     const r = mdRow(label, sBefore[key], sAfter[key], u.fmt3, fmtSigned3, false);
     if (r) rows.batting.push(r);
   }
+  const rWraa = mdRow('wRAA', sBefore.wraa, sAfter.wraa, fmt1Abs, fmtSigned1, false);
+  if (rWraa) rows.batting.push(rWraa);
+  const rWrcPlus = mdRow('wRC+', sBefore.wrcPlus, sAfter.wrcPlus, fmtIntAbs, fmtSignedInt, false);
+  if (rWrcPlus) rows.batting.push(rWrcPlus);
+  const rHard = mdRow('Hard%', sBefore.hardHitPct, sAfter.hardHitPct, fmtPct1Abs, fmtSignedPct1, false);
+  if (rHard) rows.batting.push(rHard);
   // --- 投手（この打席の対戦投手・失点は簡易に自責点扱い＝失策絡みの非自責化までは近似しない） ---
   const runs = watchRunsOnPlay(e, lastScore);
   lastScore.set(e.batTeam, e.batScore);
   if (pitcherId) {
-    const pZero = { outs: 0, h: 0, bb: 0, er: 0 };
+    const pZero = { outs: 0, h: 0, bb: 0, er: 0, so: 0, ibb: 0, hbp: 0, hr: 0, bf: 0, bbFB: 0 };
     const bgP = (beforeGame.get(pitcherId) || {}).pitching || pZero;
     const beforeP = {}; const soFarPBefore = gamePit.get(pitcherId) || {};
     for (const k of Object.keys(pZero)) beforeP[k] = (bgP[k] || 0) + (soFarPBefore[k] || 0);
     const outsAfter = e.outsAfter != null ? e.outsAfter : outsBeforeThis;
-    bumpCounts(gamePit, pitcherId, { outs: outsAfter - outsBeforeThis, h: bd.h, bb: bd.bb, er: runs });
+    bumpCounts(gamePit, pitcherId, {
+      outs: outsAfter - outsBeforeThis, h: bd.h, bb: bd.bb, er: runs,
+      so: bd.so, ibb: bd.ibb, hbp: bd.hbp, hr: e.result === 'HR' ? 1 : 0, bf: 1, bbFB: e.battedType === 'FB' ? 1 : 0,
+    });
     const afterP = {}; const soFarPAfter = gamePit.get(pitcherId) || {};
     for (const k of Object.keys(pZero)) afterP[k] = (bgP[k] || 0) + (soFarPAfter[k] || 0);
-    const lBefore = watchPitchLine(beforeP); const lAfter = watchPitchLine(afterP);
+    const lBefore = watchPitchLine(beforeP, lc, cfg); const lAfter = watchPitchLine(afterP, lc, cfg);
     const rEra = mdRow('ERA', lBefore.era, lAfter.era, u.f2, fmtSigned2, true);
     if (rEra) rows.pitching.push(rEra);
     const rWhip = mdRow('WHIP', lBefore.whip, lAfter.whip, u.f2, fmtSigned2, true);
     if (rWhip) rows.pitching.push(rWhip);
+    const rXfip = mdRow('xFIP', lBefore.xfip, lAfter.xfip, u.f2, fmtSigned2, true);
+    if (rXfip) rows.pitching.push(rXfip);
+    const rKwera = mdRow('kwERA', lBefore.kwera, lAfter.kwera, u.f2, fmtSigned2, true);
+    if (rKwera) rows.pitching.push(rKwera);
+    const rKbb = mdRow('K-BB%', lBefore.kbbPct, lAfter.kbbPct, fmtPct1Abs, fmtSignedPct1, false);
+    if (rKbb) rows.pitching.push(rKbb);
   }
   // --- 守備（打球を処理した野手のみ・§16手順1で追加した fielderPos/fielderId） ---
   const fd = watchFieldingDelta(e, cfg);
@@ -286,7 +346,9 @@ function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
     const uzrBefore = watchUzrOf(oaaBefore, fd.pos, cfg); const uzrAfter = watchUzrOf(oaaAfter, fd.pos, cfg);
     const rOaa = mdRow('OAA', oaaBefore, oaaAfter, fmt1Abs, fmtSigned1, false);
     if (rOaa) rows.fielding.push(rOaa);
-    const rUzr = mdRow('UZR', uzrBefore, uzrAfter, fmt1Abs, fmtSigned1, false);
+    // ラベルを「UZR概算」とし、チームタブの正式UZR（リーグ平均センタリング済み・fielding.mjs）とは
+    // 値が一致しない簡易近似であることを明示する（§16・レビュー指摘対応）。
+    const rUzr = mdRow('UZR概算', uzrBefore, uzrAfter, fmt1Abs, fmtSigned1, false);
     if (rUzr) rows.fielding.push(rUzr);
   }
   return rows.batting.length || rows.pitching.length || rows.fielding.length ? rows : null;
@@ -668,6 +730,8 @@ function watchFieldChart(v, u) {
     svg.append(svgEl('circle', { cx: b2x, cy: b2y, r: 3, fill: '#c9a06a' }));
     svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, fill: '#fff' }));
     const bb = p.bb;
+    const cfg = u.state && u.state.cfg;
+    const barrel = !!(cfg && isBarrel(bb.evKmh, bb.laDeg, cfg.tuning.metrics));
     const [ex, ey] = pt(bb.sprayDeg, Math.min(bb.distanceM, 130));
     // 軌跡: laDeg帯で弧の高さを変える（<10=ゴロ気味の直線／10-25=浅い弧／25+=山なり）
     const arcH = bb.laDeg < 10 ? 4 : bb.laDeg < 25 ? 20 : 46;
@@ -676,13 +740,15 @@ function watchFieldChart(v, u) {
       d: `M ${hx} ${hy} Q ${ctrlX.toFixed(1)} ${ctrlY.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`,
       class: 'fieldtraj', fill: 'none', stroke: '#e9e4d0', 'stroke-width': '1.6', 'stroke-dasharray': '4 3', opacity: 0.9,
     }));
+    // バレル（Statcast近似判定）は着弾マーカーの縁取りをオレンジ太枠にして結果色と独立に強調表示する。
     svg.append(svgEl('circle', {
-      cx: ex.toFixed(1), cy: ey.toFixed(1), r: p.result === 'HR' ? 6.5 : 5.5, class: 'fieldmark',
-      fill: watchBallColor(p.result), stroke: '#0c3122', 'stroke-width': '1.5',
+      cx: ex.toFixed(1), cy: ey.toFixed(1), r: p.result === 'HR' ? 6.5 : 5.5, class: 'fieldmark' + (barrel ? ' barrel' : ''),
+      fill: watchBallColor(p.result), stroke: barrel ? '#ff9d3d' : '#0c3122', 'stroke-width': barrel ? '2.5' : '1.5',
     }));
     col.append(svg);
     col.append(el('div', { class: 'fieldlabel ' + (p.cls || '') }, p.resultText));
-    col.append(el('div', { class: 'fieldsub muted' }, `EV${Math.round(p.bb.evKmh)}km/h ${Math.round(p.bb.distanceM)}m`));
+    col.append(el('div', { class: 'fieldsub muted' },
+      `EV${Math.round(bb.evKmh)}km/h ${Math.round(bb.distanceM)}m 角度${Math.round(bb.laDeg)}°${barrel ? '・バレル' : ''}`));
   } else if (!p) {
     col.append(el('div', { class: 'fieldlabel muted' }, 'まだ打球なし'));
   } else {

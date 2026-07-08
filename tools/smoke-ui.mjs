@@ -243,6 +243,14 @@ assert.ok(hubHead && textOf(hubHead).includes('2026年'), 'シーズンハブに
 // C4) ニュースフィードがハブに描画される（序盤は placeholder 行）
 assert.ok(hasClass('newsfeed'), 'ハブにニュースフィードが描画される');
 
+// G4a) 全タブ共通の進行フッター（固定下部・ホームの旧.progressbar-wrapを一本化。ボタン文言は既存のまま）
+assert.ok(hasClass('hubfooter'), 'ハブに進行フッター(.hubfooter)が描画される');
+assert.ok(
+  btnByText('次の試合へ') && btnByText('1週間') && btnByText('月末まで') && btnByText('シーズン終了まで'),
+  'フッターに進行ボタン4種（▶ 次の試合へ/1週間/月末まで/シーズン終了まで）',
+);
+assert.ok(!hasClass('progressbar-wrap'), 'ホームの旧.progressbar-wrapは削除されフッターへ一本化');
+
 // G3) ハブのタブ（E4整理: ホーム/チーム/日程・結果/順位/成績/ニュース/記録）が開ける（例外なし）
 for (const tabName of ['順位', '日程・結果', 'ニュース', 'チーム', '記録']) {
   const t = btnByText(tabName);

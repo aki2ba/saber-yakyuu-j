@@ -3,6 +3,38 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G4a 全タブ共通の進行フッター＋stickyタブバー)
+
+**やったこと**（phaseG_spec.md の G4a を実装。G3直後の続き）
+- `src/ui.mjs`: `renderHub` の末尾（既存のタブ別描画分岐の直後）に全タブ共通の固定フッター `.hubfooter` を
+  root へ直接append（G1aで実証済みのposition:stickyのcontaining block問題を踏まえ、余計なラップdivで
+  包まず root の直接の子として置く。position:fixedはposition:stickyほど繊細ではないが同じ流儀で統一）。
+  ボタン文言は既存のまま一切変更せず（§0ルール8）: `▶ 次の試合へ`/`1週間`/`月末まで`/`シーズン終了まで`
+  （onclick も既存の `showNextGameChoices()`/`runAdvanceWithProgress('weekEnd'|'monthEnd')`/
+  `runToSeasonEnd()` をそのまま移設）。`rt.finished` 時は `[シーズンリザルトへ(primary)]` の1ボタンに切替。
+  末尾に `.hubspacer`（height:68px）を追加してフッターの下に隠れないようにする
+- `renderHubHome` から `.progressbar-wrap`（進行ボタンのホーム内表示）を削除し、上記フッターへ一本化。
+  `tools/build.mjs` の未使用化した `.progressbar-wrap` CSS 規則も削除
+- `tools/build.mjs`: `.tabs`（ハブ・クイックシミュレート `renderMain` 共通）を仕様どおり sticky化
+  （`position:sticky; top:0; z-index:6; flex-wrap:nowrap; overflow-x:auto;`）。`.hubfooter`/`.hubspacer`
+  CSS を新規追加（`position:fixed; bottom:0` 全幅・モバイルは`flex:1`均等割り・900px以上のデスクトップは
+  中央寄せ＋ボタン幅固定＝G1a `.watchctrl` と同じ配慮）
+- `tools/smoke-ui.mjs`: ハブ初期表示直後に `.hubfooter` 存在assert・フッターの4ボタン文言assert・
+  旧 `.progressbar-wrap` が存在しないことのassertを追加（既存の `btnByText('次の試合へ')`等は部分一致の
+  ため無変更で動作＝§0ルール8の設計判断どおりsmoke変更は最小限で済んだ）
+- **最終ゲート全PASS**: `npm test`(327件) → `npm run build` → `npm run smoke`(全10ブロックPASS) →
+  `npm run verify`(ENGINE identity不変) → `npm run calibrate`(既存30+B20+D2 3+二軍4=PASS57/FAIL0、
+  表示層のみの変更で数値は完全不変)
+- **Playwright実機確認**（モバイル390×700・chromium_headless_shell経由）: 日程・結果タブ（150行の表で
+  スクロール可能な高さを確保）で `window` を300pxスクロール→`.tabs`のcomputed position=sticky・
+  boundingClientRect.top=0（stickyでtopに貼付き実測）／`.hubfooter`のcomputed position=fixed・
+  boundingClientRect.top=639/bottom=700（ビューポート最下部に固定のままスクロールに追従しない＝fixedの
+  意図どおり）を確認。フッターのボタン文言4種（`▶ 次の試合へ`/`1週間`/`月末まで`/`シーズン終了まで`）が
+  変更なしで描画されることも確認。観戦画面へ遷移して `.hubfooter` が出ず `.watchctrl` のみが存在する
+  （重複しない）ことも確認
+
+**次**: G4b（ホームの絞り込み — 9セクション→4＋ヘッダー導線）
+
 ## 2026-07-08 (G3 成績タブの規定閾値を消化試合比例に＋空状態メッセージ)
 
 **やったこと**（phaseG_spec.md の G3 を実装。G2直後の続き）

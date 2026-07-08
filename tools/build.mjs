@@ -114,9 +114,21 @@ const html = `<!DOCTYPE html>
   input { background:#0c3122; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:5px; }
   .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
   .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
-  .tabs { display:flex; gap:6px; margin:10px 0; flex-wrap:wrap; }
-  .tab { padding:6px 14px; }
+  /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設 */
+  .tabs { display:flex; gap:6px; position:sticky; top:0; z-index:6; background:var(--bg); padding:6px 0;
+          margin:6px 0; flex-wrap:nowrap; overflow-x:auto; }
+  .tab { padding:6px 14px; white-space:nowrap; flex:none; }
   .tab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .hubfooter { position:fixed; left:0; right:0; bottom:0; z-index:8; display:flex; gap:6px;
+               background:var(--bg); border-top:1px solid var(--line); padding:8px;
+               box-shadow:0 -6px 8px -6px rgba(0,0,0,.5); }
+  .hubfooter button { flex:1; min-height:44px; white-space:nowrap; padding:6px 2px; }
+  .hubspacer { height:68px; }
+  @media (min-width:900px) {
+    /* デスクトップでは flex:1 のボタンが幅いっぱいに間延びするのを防ぐ（G1a .watchctrl と同じ配慮） */
+    .hubfooter { justify-content:center; }
+    .hubfooter button { flex:none; min-width:140px; }
+  }
   .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
   .emptybox { text-align:center; padding:24px 8px; color:var(--muted); }
   table.stat { border-collapse:collapse; width:100%; font-size:13px; white-space:nowrap; }
@@ -172,7 +184,6 @@ const html = `<!DOCTYPE html>
   .teamcard { text-align:left; padding:10px 12px; }
   .teamcard:hover { background:#174a34; }
   .tcname { font-weight:700; font-size:14px; }
-  .progressbar-wrap { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }
   .nextcard { border:1px solid var(--clay); border-radius:8px; padding:8px 12px; margin:8px 0; background:var(--panel); }
   .nextmatch { font-size:15px; font-weight:700; }
   .recentlist { display:flex; flex-direction:column; gap:3px; }

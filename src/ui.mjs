@@ -1180,6 +1180,18 @@ function renderHub(tab = 'hub') {
   else if (tab === 'news') { refreshRes(); renderNewsTab(content); } // E4: ニュース
   else if (tab === 'standings') { refreshRes(); renderStandings(content); }
   else if (tab === 'stats') { refreshRes(); renderStatsTab(content); } // E4: 成績（サブタブ集約）
+  // G4a: 全タブ共通の進行フッター（固定下部・観戦画面の.watchctrlと同位置）。ラップdivで包まず root へ直接append
+  //（G1aのposition:stickyのcontaining block問題の再発防止＝position:fixedも祖先のtransform等で無効化され得るため同様に注意）。
+  const footerBtns = rt.finished
+    ? [el('button', { class: 'primary', onclick: () => renderSeasonResult() }, 'シーズンリザルトへ')]
+    : [
+        el('button', { class: 'primary', onclick: () => showNextGameChoices() }, '▶ 次の試合へ'),
+        el('button', { onclick: () => runAdvanceWithProgress('weekEnd') }, '1週間'),
+        el('button', { onclick: () => runAdvanceWithProgress('monthEnd') }, '月末まで'),
+        el('button', { onclick: () => runToSeasonEnd() }, 'シーズン終了まで'),
+      ];
+  root.append(el('div', { class: 'hubfooter' }, footerBtns));
+  root.append(el('div', { class: 'hubspacer' }));
 }
 
 /** E4: 成績タブ（打・投・守・WAR・球団比較のサブタブ。既存の描画関数を再利用）。 */
@@ -1238,16 +1250,7 @@ function renderHubHome(c) {
     ]));
     return;
   }
-  // 進行ボタン
-  c.append(el('div', { class: 'progressbar-wrap' }, [
-    el('div', { class: 'muted' }, '進行'),
-    el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
-      el('button', { class: 'primary', onclick: () => showNextGameChoices() }, '▶ 次の試合へ'),
-      el('button', { onclick: () => runAdvanceWithProgress('weekEnd') }, '1週間'),
-      el('button', { onclick: () => runAdvanceWithProgress('monthEnd') }, '月末まで'),
-      el('button', { onclick: () => runToSeasonEnd() }, 'シーズン終了まで'),
-    ]),
-  ]));
+  // G4a: 進行ボタンは全タブ共通の .hubfooter（renderHub 末尾）へ一本化。ここでは出さない。
 
   // 次戦カード
   const nextCard = nextPlayerCard(rt);

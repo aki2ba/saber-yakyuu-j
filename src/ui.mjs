@@ -322,9 +322,22 @@ const BAT_COLS = [
   ['bsr', 'BsR'], ['wpa', 'WPA'], ['clutch', 'Clutch'], ['bbPct', 'BB%'], ['kPct', 'K%'],
   ['sh', '犠打'], ['ibb', '敬遠'], ['ph', '代打'], // S4: 采配の発現（SH/IBB/PH）
 ];
+// G3: 規定ライン（NPB: 打席=試合数×3.1 / 投球回=試合数×1.0）。シーズン途中は消化試合に比例させ、
+// 通年（g=143）では従来の固定フィルタ（打者100PA/投手20IP）と同値に収める＝通年の表示は従来と不変。
+function qualifyPa(teamId) {
+  const st = state.res.standings.find((t) => t.teamId === teamId);
+  const g = st ? st.w + st.l + st.t : 0;
+  return Math.min(100, Math.max(1, Math.ceil(g * 3.1)));
+}
+function qualifyIp(teamId) {
+  const st = state.res.standings.find((t) => t.teamId === teamId);
+  const g = st ? st.w + st.l + st.t : 0;
+  return Math.min(20, Math.max(1, Math.ceil(g * 1.0)));
+}
+const QUALIFY_EMPTY_MSG = '規定到達者がまだいません（規定打席=消化試合×3.1・規定投球回=消化試合×1.0）。試合を進めると表示されます。';
 function renderBatting(c) {
   const data = state.res.playerSeasons
-    .filter((s) => s.batting.pa >= 100)
+    .filter((s) => s.batting.pa >= qualifyPa(s.teamId))
     .map((s) => {
       const m = playerBatting(s, state.lc);
       const p = state.byId.get(s.playerId);
@@ -333,7 +346,7 @@ function renderBatting(c) {
       const b = s.batting;
       return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, pos: primaryPos(p), war, bsr, sh: b.sh, ibb: b.ibb, ph: b.ph, ...m };
     });
-  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct'], 'war', 1));
+  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct'], 'war', 1, { emptyMsg: QUALIFY_EMPTY_MSG }));
 }
 
 // --- 投手 -----------------------------------------------------------------
@@ -347,7 +360,7 @@ const PIT_COLS = [
 ];
 function renderPitching(c) {
   const data = state.res.playerSeasons
-    .filter((s) => s.pitching.outs / 3 >= 20)
+    .filter((s) => s.pitching.outs / 3 >= qualifyIp(s.teamId))
     .map((s) => {
       const m = playerPitching(s, state.lc, state.cfg);
       const p = state.byId.get(s.playerId);
@@ -355,7 +368,7 @@ function renderPitching(c) {
       const role = m.g && m.gs * 2 >= m.g ? '先発' : '救援';
       return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, role, war: pitcherWAR(s, state.cfg, state.lc).war, ...m };
     });
-  c.append(statTable(data, PIT_COLS, ['era', 'fip', 'whip', 'xfip', 'siera', 'kwera'], ['bbPct', 'kbbPct', 'lobPct'], 'war', 1));
+  c.append(statTable(data, PIT_COLS, ['era', 'fip', 'whip', 'xfip', 'siera', 'kwera'], ['bbPct', 'kbbPct', 'lobPct'], 'war', 1, { emptyMsg: QUALIFY_EMPTY_MSG }));
 }
 
 // --- 守備 -----------------------------------------------------------------
@@ -378,10 +391,12 @@ function renderFielding(c) {
 }
 
 // --- 汎用ソート可能テーブル ------------------------------------------------
-function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0) {
+function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {}) {
+  const { emptyMsg } = opts;
   const wrap = el('div', { class: 'tablewrap' });
   const render = () => {
     wrap.innerHTML = '';
+    if (!data.length) { wrap.append(el('div', { class: 'emptybox' }, emptyMsg || '対象データがありません。')); return; }
     const { key, dir } = state.sort;
     const sorted = [...data].sort((a, b) => {
       const av = a[key]; const bv = b[key];

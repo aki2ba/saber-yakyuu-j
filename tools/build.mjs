@@ -118,6 +118,7 @@ const html = `<!DOCTYPE html>
   .tab { padding:6px 14px; }
   .tab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
   .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+  .emptybox { text-align:center; padding:24px 8px; color:var(--muted); }
   table.stat { border-collapse:collapse; width:100%; font-size:13px; white-space:nowrap; }
   table.stat th { position:sticky; top:0; background:#0c3122; color:var(--chalk); padding:6px 8px;
                   text-align:right; cursor:pointer; user-select:none; border-bottom:1px solid var(--line); }

@@ -3,6 +3,30 @@
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 > 三原則: ①セイバー指標網羅（一球・一プレー粒度） ②セパ両リーグ近似（架空・起用/采配の妥当性） ③やきゅつく的な楽しさ
 
+## 2026-07-08 (G3 成績タブの規定閾値を消化試合比例に＋空状態メッセージ)
+
+**やったこと**（phaseG_spec.md の G3 を実装。G2直後の続き）
+- `src/ui.mjs`: `qualifyPa(teamId)`/`qualifyIp(teamId)` を追加（`state.res.standings` から該当チームの
+  消化試合数 g=w+l+t を引き、`Math.min(100, Math.max(1, Math.ceil(g*3.1)))` /
+  `Math.min(20, Math.max(1, Math.ceil(g*1.0)))`＝NPB規定ライン（打席=試合数×3.1・投球回=試合数×1.0）を
+  消化試合に比例させつつ通年(g=143)では従来の固定フィルタ(100PA/20IP)と同値に収める）。
+  `renderBatting`の`s.batting.pa >= 100` → `>= qualifyPa(s.teamId)`、`renderPitching`の
+  `outs/3 >= 20` → `>= qualifyIp(s.teamId)` に置換
+- `statTable` のシグネチャに `opts = {}`（`{ emptyMsg }`）を追加。`data.length === 0` のとき
+  `.emptybox` 1行（`emptyMsg`既定文言）を出してテーブル自体を描かない（列だけのヘッダーが出る問題を解消）。
+  `opts` は仕様書の指示どおり G5a が `groups`/`getGroup`/`setGroup` を足して再利用する共通拡張点として
+  そのまま残した（G3時点では`emptyMsg`のみ実装）
+- `renderBatting`/`renderPitching` は共通の `QUALIFY_EMPTY_MSG`（規定到達者不在時の案内文）を
+  `statTable` 呼び出しの7番目の引数（`opts.emptyMsg`）として渡す
+- `tools/build.mjs`: `.emptybox { text-align:center; padding:24px 8px; color:var(--muted); }` を追加
+- エンジン非改変（`src/sim/`・`src/game/`・`src/config.mjs` 無変更）・`src/generate.mjs` 変更なし
+- `tools/smoke-ui.mjs` は変更不要（本仕様が意図したとおり通年シナリオでは規定値が従来と一致し既存assertが無変更で通る）。
+  `npm test`（327件PASS）→`npm run verify`（ENGINE identity不変・seed=12345 selfCheck一致）→
+  `npm run smoke`（全10ブロックPASS）→`npm run calibrate`（既存30+B20+D2 3+二軍4 全PASS、数値は不変＝
+  UI層のみの変更どおり）→`npm run build` を確認
+
+**次**: G4a（ハブの全タブ共通進行フッター＋stickyタブバー）
+
 ## 2026-07-08 (G2 「1週間・月末まで」のフリーズ解消 — 日次分割進行＋プログレスバー)
 
 **やったこと**（phaseG_spec.md の G2 を実装。G1c直後の続き）

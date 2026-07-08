@@ -31,14 +31,14 @@
   table.stat td { padding:5px 8px; text-align:right; border-bottom:1px solid #1c4a34; }
   /* F4: 列数の多い成績表（打撃26列等）を横スクロールしても選手名が見えるよう先頭列を固定 */
   table.stat th:first-child { left:0; z-index:2; }
-  table.stat td:first-child { position:sticky; left:0; background:var(--bg); z-index:1; }
+  table.stat td:first-child { position:sticky; left:0; background:var(--sticky-bg, var(--bg)); z-index:1; }
   tr.clickable:hover { background:#174a34; cursor:pointer; }
   /* 上記の先頭列固定より後ろに置き、自チーム強調/hoverが先頭セルだけ効かなくなるのを防ぐ */
   tr.clickable:hover td:first-child { background:#174a34; }
   .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
   .modal { background:var(--panel); border:1px solid var(--clay); border-radius:10px; padding:16px;
-           max-width:560px; width:100%; }
+           max-width:560px; width:100%; --sticky-bg:var(--panel); }
   .modalhead { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
   .pname { font-size:18px; font-weight:700; }
   .kvgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
@@ -84,8 +84,7 @@
   .recentrow .score { margin-left:auto; color:var(--muted); }
   .wl { display:inline-block; width:18px; text-align:center; font-weight:700; border-radius:4px; }
   .wlw { color:#7bc47f; } .wll { color:#e06d6d; } .wlt { color:var(--muted); }
-  tr.myteam td { background:#1c4a34; font-weight:700; }
-  tr.myteam td:first-child { background:#1c4a34; }
+  table.stat tr.myteam td { background:#1c4a34; font-weight:700; } /* (0,2,3)で先頭列固定の(0,2,2)に順序非依存で勝つ */
   .teamstate { margin:8px 0; font-size:14px; letter-spacing:1px; }
   .mgrpanel, .savepanel { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:12px; }
   .tendrow { display:flex; align-items:center; gap:6px; margin:4px 0; }

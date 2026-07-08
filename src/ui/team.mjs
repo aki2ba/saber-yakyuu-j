@@ -62,6 +62,19 @@ export function renderTeamTab(c, u) {
   const gs = game.gs;
   const rt = gs.rt;
   const myId = gs.playerTeamId;
+
+  // G4b: 冒頭に離脱者サマリ（ホームの故障者リストを撤去し統合＝三重表示の解消）。
+  //   ホームと同じ判定（seasonInjuries・自チーム・残り離脱日数>0）。0名なら出さない。
+  const curDay0 = u.pendingDayOf(rt) - 1;
+  const injuredCount = (rt.seasonInjuries ?? [])
+    .filter((e) => e.teamId === myId && e.gamesLost > curDay0).length;
+  if (injuredCount) {
+    c.append(el('div', { class: 'muted', style: 'margin:4px 0' }, [
+      `離脱中: ${injuredCount}名　`,
+      el('button', { class: 'link', onclick: () => u.gotoNews() }, '→ニュース'),
+    ]));
+  }
+
   const teamPlayers = gs.league.players.filter((p) => p.teamId === myId);
   // 一軍＝出場登録（F2-2: rt.registeredByTeam。旧セーブ/ミニ構成で無ければ支配下全員＝旧挙動）。
   const reg = rt.registeredByTeam ? rt.registeredByTeam.get(myId) : null;
@@ -72,11 +85,18 @@ export function renderTeamTab(c, u) {
     : teamPlayers.filter((p) => !reg || !reg.has(p.id)).concat((gs.league.farm ?? []).filter((p) => p.teamId === myId));
   const sub = teamTabView.sub;
   const nMinor = farmRoster.filter((p) => p.rosterStatus === 'minor').length;
-  // サブタブ: 一軍(出場登録) / 二軍(支配下残+育成)
+  // サブタブ: 一軍(出場登録) / 二軍(支配下残+育成) / 采配(G4b: ホームの采配パネルを移設)
   c.append(el('div', { class: 'subtabs' }, [
     el('button', { class: 'subtab' + (sub === 'active' ? ' active' : ''), onclick: () => { teamTabView.sub = 'active'; u.rerender(); } }, `一軍・出場登録（${actives.length}人）`),
     el('button', { class: 'subtab' + (sub === 'farm' ? ' active' : ''), onclick: () => { teamTabView.sub = 'farm'; u.rerender(); } }, `二軍・支配下＋育成（${farmRoster.length}人）`),
+    el('button', { class: 'subtab' + (sub === 'manager' ? ' active' : ''), onclick: () => { teamTabView.sub = 'manager'; u.rerender(); } }, '采配'),
   ]));
+  if (sub === 'manager') {
+    // G4b: renderManagerPanel は再描画コールバック引数化済み。u.rerender（チームタブ再描画）を渡すことで
+    //   方針変更後もチームタブ（采配サブタブ）に留まる（引数なし版=renderHub()直呼びだとホームへ強制遷移する回帰を避ける）。
+    c.append(u.renderManagerPanel(() => u.rerender()));
+    return;
+  }
   const players = sub === 'active' ? actives : farmRoster;
   if (!players.length) {
     c.append(el('div', { class: 'muted', style: 'margin:8px 0' }, '選手がいません。'));

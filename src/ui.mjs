@@ -1166,6 +1166,8 @@ function renderHub(tab = 'hub') {
   const header = el('div', { class: 'header' }, [
     el('h2', {}, [`${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 / 第${pendingDayOf(rt)}節　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
     el('div', { class: 'row' }, [
+      // G4b: セーブ/ロードはヘッダー導線→overlayモーダル（ホームからは削除）
+      el('button', { class: 'link', onclick: () => openSaveModal() }, '💾 セーブ'),
       el('button', { class: 'link', onclick: () => renderTitle() }, '≡ タイトル'),
     ]),
   ]);
@@ -1230,6 +1232,8 @@ function teamTabDeps() {
     el, td, state, game, openModal, playerLink, posJP, primaryPos, scoutGrade,
     fmt3, pct, pendingDayOf,
     rerender: () => renderHub('team'),
+    renderManagerPanel, // G4b: 采配パネルをチームタブの采配サブタブへ移設（呼び出し側で rerender を差し替える）
+    gotoNews: () => renderHub('news'), // G4b: 離脱者サマリ「→ニュース」導線
   };
 }
 
@@ -1264,20 +1268,7 @@ function renderHubHome(c) {
   // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
   renderNewsFeed(c);
 
-  // 故障者リスト（C2.4/§10.5）: 自チームの現在離脱中の選手（残り離脱日数付き）を表示する。
-  //   離脱＝直前オフに確定した故障(gamesLost)。開幕から day 進むごとに復帰が近づく。1年目は無し。
-  const curDay = pendingDayOf(rt) - 1; // 0始まりの進行 day
-  const injured = (rt.seasonInjuries ?? [])
-    .filter((e) => e.teamId === gs.playerTeamId && e.gamesLost > curDay)
-    .sort((a, b) => b.gamesLost - a.gamesLost);
-  if (injured.length) {
-    c.append(el('h3', { class: 'leaguename' }, `故障者リスト（${injured.length}名離脱中）`));
-    c.append(el('div', { class: 'recentlist' }, injured.map((e) => el('div', { class: 'recentrow' }, [
-      el('span', { class: 'wl wll' }, e.severity === 'major' ? '重' : '軽'),
-      el('span', {}, [playerLink(e.id), `（${e.role === 'pitcher' ? '投' : posJP(e.primaryPos)}）`]), // E1: 選手名→詳細
-      el('span', { class: 'score' }, `残り約${e.gamesLost - curDay}試合`),
-    ]))));
-  }
+  // G4b: 故障者リストはホームから削除（ニュースタブ・チームタブ冒頭の離脱者サマリに一本化＝三重表示の解消）。
 
   // 直近結果（自チーム直近5試合）
   const recent = rt.playerGameLog.slice(-5).reverse();
@@ -1320,10 +1311,8 @@ function renderHubHome(c) {
     el('span', {}, form || '—'),
   ]));
 
-  // 采配（監督プロファイル介入・自チームのみ）
-  c.append(renderManagerPanel());
-  // セーブ/ロード
-  c.append(renderSavePanel());
+  // G4b: 采配（チームタブの采配サブタブへ移設）・セーブ/ロード（ヘッダーの💾セーブ導線へ移設）は
+  //   ここでは描かない。
 }
 
 // --- ニュースフィード（C4） --------------------------------------------------
@@ -1351,7 +1340,8 @@ function renderNewsFeed(c) {
     c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
     return;
   }
-  c.append(el('div', { class: 'newsfeed' }, heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))));
+  // G4b: ホームは3件に絞る（全件は「一覧へ →」＝ニュースタブ）
+  c.append(el('div', { class: 'newsfeed' }, heads.slice(0, 3).map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))));
 }
 
 /**
@@ -1529,14 +1519,17 @@ function teamForm(rt, teamId) {
 const TEND_LEVELS = [['積極', 65], ['標準', 50], ['慎重', 35]];
 const TEND_FIELDS = [['buntTend', 'バント'], ['stealTend', '盗塁'], ['ibbTend', '敬遠'], ['quickHook', '継投の早さ']];
 
-function renderManagerPanel() {
+// G4b: rerender は「このパネルを内包する画面をどう再描画するか」の再描画コールバック引数化
+// （既定=renderHub()＝旧来のホーム呼び出しのまま）。チームタブの采配サブタブから呼ぶ場合は
+// () => renderHub('team') 相当（teamTabDeps().rerender）を渡し、方針変更後もそのタブに留まらせる。
+function renderManagerPanel(rerender = () => renderHub()) {
   const gs = game.gs;
   const box = el('div', { class: 'mgrpanel' });
   box.append(el('h3', { class: 'leaguename' }, '采配（監督方針・自チーム）'));
   const auto = gs.settings.autoManage;
   box.append(el('div', { class: 'row' }, [
     el('span', { class: 'muted' }, 'おまかせ（AI委任）: '),
-    el('button', { class: auto ? 'primary' : '', onclick: () => { clearManagerProfile(gs); autoSave(); renderHub(); } }, auto ? 'ON' : 'OFFにする→'),
+    el('button', { class: auto ? 'primary' : '', onclick: () => { clearManagerProfile(gs); autoSave(); rerender(); } }, auto ? 'ON' : 'OFFにする→'),
     !auto ? el('span', { class: 'muted' }, '（人間が方針を上書き中）') : el('span', {}, ''),
   ]));
   // 現在有効な監督値（rt に反映済みの値）
@@ -1547,7 +1540,7 @@ function renderManagerPanel() {
       el('span', { class: 'tendlabel' }, label),
       ...TEND_LEVELS.map(([lvl, val]) => el('button', {
         class: 'tendbtn' + (Math.abs(v - val) <= 7 ? ' active' : ''),
-        onclick: () => { setManagerProfile(gs, { [field]: val }); autoSave(); renderHub(); },
+        onclick: () => { setManagerProfile(gs, { [field]: val }); autoSave(); rerender(); },
       }, lvl)),
     ]));
   }
@@ -1556,18 +1549,42 @@ function renderManagerPanel() {
 }
 
 // --- セーブ/ロード（IndexedDB＋セッションミラー） ------------------------------
-function renderSavePanel() {
+// G4b: rerender は「保存後にこのパネルをどう再描画するか」の再描画コールバック引数化
+// （既定=renderHub()。ヘッダーのセーブモーダルからは rebuildModalBody を渡し、
+//  保存直後もモーダルを閉じずに「→ロードN」ボタンへ進めるようにする）。
+function renderSavePanel(rerender = () => renderHub()) {
   const box = el('div', { class: 'savepanel' });
   box.append(el('h3', { class: 'leaguename' }, 'セーブ / ロード'));
   const row = el('div', { class: 'row', style: 'flex-wrap:wrap' });
   for (let n = 1; n <= 3; n++) {
     const key = 'slot' + n;
-    row.append(el('button', { onclick: () => { saveToSlot(key); renderHub(); } }, `スロット${n}に保存`));
+    row.append(el('button', { onclick: () => { saveToSlot(key); rerender(); } }, `スロット${n}に保存`));
     if (game.slots[key]) row.append(el('button', { class: 'link', onclick: () => loadFromSlot(key) }, `→ロード${n}`));
   }
   box.append(row);
   box.append(el('div', { class: 'muted' }, 'オートセーブは日次で IndexedDB に保存されます（localStorage不使用）。'));
   return box;
+}
+
+/**
+ * G4b: ハブヘッダーの「💾 セーブ」→ overlayモーダルにセーブ/ロードパネルを表示する。
+ * modalhead＋✕は選手モーダルと同じ流儀。rebuildModalBody は overlay を作り直さず
+ * box の中身だけ再構築する＝renderHub() を呼ばないため、保存直後もモーダルが開いたままになり
+ * 「→ロードN」ボタンへ進める（renderSavePanel の rerender 引数として渡す）。
+ */
+function openSaveModal() {
+  const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, 'セーブ / ロード'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
+  const body = el('div');
+  box.append(body);
+  const rebuildModalBody = () => {
+    body.innerHTML = '';
+    body.append(renderSavePanel(rebuildModalBody));
+  };
+  rebuildModalBody();
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
 }
 
 function slotLabel(key) {

@@ -251,6 +251,11 @@ assert.ok(
 );
 assert.ok(!hasClass('progressbar-wrap'), 'ホームの旧.progressbar-wrapは削除されフッターへ一本化');
 
+// G4b) ホーム絞り込み: 采配パネル/セーブパネル/故障者リストはホームに無い（チームタブ/ヘッダーへ移設・重複表示解消）
+assert.ok(!hasClass('mgrpanel'), 'ホームに采配パネルは無い（チームタブの采配サブタブへ移設）');
+assert.ok(!hasClass('savepanel'), 'ホームにセーブパネルは無い（ヘッダーの💾セーブ導線へ移設）');
+assert.ok(!walk(appDiv).some((n) => textOf(n).includes('故障者リスト')), 'ホームに故障者リストの見出しは無い（チームタブの離脱者サマリへ統合）');
+
 // G3) ハブのタブ（E4整理: ホーム/チーム/日程・結果/順位/成績/ニュース/記録）が開ける（例外なし）
 for (const tabName of ['順位', '日程・結果', 'ニュース', 'チーム', '記録']) {
   const t = btnByText(tabName);
@@ -266,11 +271,22 @@ for (const sub of ['投手', '守備', 'WAR', '球団比較', '打撃']) {
 }
 btnByText('ホーム')._onclick();
 
-// G4) 采配介入（監督プロファイル差し替え）: おまかせトグル＋方針ボタン
+// G4b) 采配は チームタブの采配サブタブへ移設: おまかせトグル＋方針ボタン。
+//   方針変更後もチームタブ（采配サブタブ）に留まること＝renderManagerPanel の rerender 引数化の回帰防止。
+btnByText('チーム')._onclick();
+const mgrSub = allClass('subtab').find((n) => textOf(n) === '采配');
+assert.ok(mgrSub, 'チームタブに「采配」サブタブがある');
+mgrSub._onclick();
 const tendBtns = allClass('tendbtn');
 assert.ok(tendBtns.length >= 8, `采配パネルに方針ボタンがある (got ${tendBtns.length})`);
-tendBtns[0]._onclick(); // 「積極」等を1つ押す→介入登録＋ハブ再描画（例外が出ないこと）
-assert.ok(hasClass('header'), '介入後もハブが再描画される');
+tendBtns[0]._onclick(); // 「積極」等を1つ押す→介入登録＋再描画（例外が出ないこと）
+assert.ok(
+  allClass('subtab').some((n) => textOf(n) === '采配' && (n.className || '').includes('active')),
+  'G4b: 方針ボタンを押した後もチームタブ（采配サブタブ）に留まる',
+);
+// サブタブ選択を「一軍」に戻す（teamTabView.sub はモジュール状態＝以後のE1aの前提「既定=一軍」を保つ）
+allClass('subtab').find((n) => n.tag === 'button' && textOf(n).includes('一軍'))._onclick();
+btnByText('ホーム')._onclick();
 
 // G5) 次の試合へ → 観戦（G1a: コンパクトスコアボード＋タブ4分割「速報/対戦/ボックス/スタメン」＋下部進行バー）
 btnByText('次の試合へ')._onclick();
@@ -494,12 +510,15 @@ allClass('wtab').find((n) => textOf(n) === '対戦')._onclick();
 btnByText('ホームへ戻る')._onclick(); // E4: 戻る導線の一貫（ハブ→ホーム改称）
 assert.ok(allClass('recentrow').length >= 1, 'ハブの直近結果に観戦した試合が反映される');
 
-// G6) セーブ/ロード（セッションミラー経由・ロード後の描画継続）
+// G6→G4b) セーブ/ロード（ヘッダーの💾セーブ→overlayモーダル。セッションミラー経由・ロード後の描画継続）
 const daySig = () => textOf(hasClass('header'));
 const beforeSave = daySig();
+btnByText('💾 セーブ')._onclick();
+assert.ok(hasClass('savepanel'), 'ヘッダーの💾セーブでセーブモーダル(.savepanel)が開く');
 btnByText('スロット1に保存')._onclick();
+assert.ok(hasClass('overlay'), 'G4b: スロット保存後もセーブモーダルが開いたまま（renderHub()を呼ばずモーダルの中身だけ再構築）');
 const loadBtn = btnByText('→ロード1');
-assert.ok(loadBtn, 'スロット保存後にロードボタンが出る');
+assert.ok(loadBtn, 'G4b: スロット保存後もモーダル内で「→ロード1」ボタンに進める');
 loadBtn._onclick();
 assert.ok(hasClass('header'), 'ロード後にハブが描画される（決定論継続）');
 assert.equal(daySig(), beforeSave, 'ロードでセーブ時点の日付/成績に戻る');

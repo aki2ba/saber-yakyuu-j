@@ -242,15 +242,26 @@ test('C4: 引退選手が通算記録・受賞履歴から脱落しない（allP
   // allPlayersById（現役＋引退者サマリ）では保持されることを不変量として検証。
   // F2-1: 人口が840人へ拡大し、6年では引退者が記録リーダーへ入りにくくなったため8年へ延長
   //  （記録の上位N争いが厚くなった＝環境依存。検証する不変量そのものは不変）。
+  // 「引退者が記録リーダーに入る」までの年数は得点環境・人口に依存する創発事象なので、
+  // 年数を固定せず「12年以内に必ず起きる」を不変量として検証する（シード/エンジン変更に頑健）。
   const st = newGame(SEED, 'T1', { cfg });
-  for (let y = 0; y < 8; y++) {
+  let activeById = null;
+  let allById = null;
+  let retiredInAllRecords = false;
+  for (let y = 0; y < 12 && !retiredInAllRecords; y++) {
     advanceTo(st, 'seasonEnd');
-    if (y < 7) advanceYear(st);
+    if (y >= 4 && st.retiredPlayers.length > 0) {
+      activeById = new Map(st.league.players.map((p) => [p.id, p]));
+      allById = allPlayersById(st);
+      const rec = leagueRecords({ careerStats: st.careerStats, playersById: allById, cfg });
+      const ids = new Set(Object.values(rec).flat().map((r) => r.playerId ?? r.id).filter(Boolean));
+      retiredInAllRecords = [...ids].some((id) => !activeById.has(id));
+    }
+    if (y < 11 && !retiredInAllRecords) advanceYear(st);
   }
   assert.ok(st.retiredPlayers.length > 0, `引退選手が発生している（${st.retiredPlayers.length}）`);
+  assert.ok(retiredInAllRecords, '12年以内に引退選手が全時代byIdのリーグ記録へ現れる');
 
-  const activeById = new Map(st.league.players.map((p) => [p.id, p]));
-  const allById = allPlayersById(st);
   assert.ok(allById.size > activeById.size, '全時代byIdは現役byIdより大きい（引退者を含む）');
 
   // careerStats には引退選手のシーズンが残っており、その id は活動byIdには無いが全時代byIdにはある
@@ -263,8 +274,6 @@ test('C4: 引退選手が通算記録・受賞履歴から脱落しない（allP
   const recActive = leagueRecords({ careerStats: st.careerStats, playersById: activeById, cfg });
   const recAll = leagueRecords({ careerStats: st.careerStats, playersById: allById, cfg });
   const idsIn = (rec) => new Set(Object.values(rec).flat().map((r) => r.playerId ?? r.id).filter(Boolean));
-  const retiredInAll = [...idsIn(recAll)].some((id) => !activeById.has(id));
-  assert.ok(retiredInAll, '全時代byIdのリーグ記録に引退選手が含まれる');
   assert.ok(idsIn(recAll).size >= idsIn(recActive).size, '全時代byIdの記録は現役のみより脱落が少ない');
 
   // 受賞履歴: 引退選手のIDでも過去年の受賞が全時代byIdなら再計算で拾える（純関数・例外なし）

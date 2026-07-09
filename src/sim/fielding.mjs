@@ -7,7 +7,9 @@
 // 実結果 − 期待 の累積(oaaOuts)が個人のレンジ・シグナルになる（MLBAM OAAと同型）。
 // ============================================================================
 
-const OUTFIELD = new Set(['LF', 'CF', 'RF']);
+import { IS_OUTFIELD } from './fieldingGeometry.mjs';
+
+const OUTFIELD = IS_OUTFIELD;
 
 /** 野手のRangeレーティング（50=リーグ平均）。§7.1 の Range = ポジIQ+初動+走力 */
 export function rangeRating(player, cfg) {

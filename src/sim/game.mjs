@@ -13,6 +13,7 @@ import { runPlateAppearance } from './plateAppearance.mjs';
 import { resolveBattedBall, battedType } from './battedBallResult.mjs';
 import { accumulateBatted } from './battedBallStats.mjs';
 import { rangeRating } from './fielding.mjs';
+import { IS_OUTFIELD } from './fieldingGeometry.mjs';
 import { logit, expit, ratingDelta } from './rates.mjs';
 import { effectiveBats } from '../model/player.mjs';
 import { clamp } from '../model/util.mjs';
@@ -32,7 +33,7 @@ import {
 } from './manager.mjs';
 
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
-const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']); // ARM（外野送球）対象ポジション（§B3b）
+// ARM（外野送球）対象ポジションは fieldingGeometry の IS_OUTFIELD を使う（単一の真実）
 
 /**
  * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
@@ -648,7 +649,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
     // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
     // 不変・乱数も一切消費しない（＝決定論・較正30指標が不変）。実際の送球死化はB1（一球データ）で。
-    if (hitFielderPos && OUTFIELD_POS.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
+    if (hitFielderPos && IS_OUTFIELD.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
       const ofPid = fielding.defense[hitFielderPos];
       const ofPlayer = ofPid ? fielding.byId.get(ofPid) : null;
       if (ofPlayer) {

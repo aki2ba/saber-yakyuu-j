@@ -194,7 +194,8 @@ export const TUNING_DEFAULT = {
   // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
   context: CONTEXT_CONST,
 
-  hrScale: 0.966, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大。
+  hrScale: 0.9695, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大。
+  //   守備モデル刷新でPA数がわずかに動き HR王 が帯を割ったため微増（0.966→0.9695・HR/team は帯中央を維持）
   //   F2-5: 出場登録29人選抜の上澄み効果でHR/teamが141へ膨張→0.985から引下げて[110,130]帯へ再収束
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
@@ -322,7 +323,8 @@ export const TUNING_DEFAULT = {
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
     hitProb: 0.1, // 内野安打化
     maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
-    attemptBase: 0.145, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
+    attemptBase: 0.158, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
+    //   守備モデル刷新(Distance-Time)でバント局面の実アウト確率が変わり犠打が目減りしたため再較正(0.145→0.158)
     //   F2-5: 0.16→0.145（DH無リーグの攻撃力を僅かに回復しセパ得点差を帯上限0.45から離す。SH帯は維持）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.8, // 投手打席はほぼ必ずバント（F2-5: 0.9→0.8。セパ得点差の再収束＝投手にも僅かに打たせる）
@@ -547,25 +549,58 @@ export const TUNING_DEFAULT = {
   // 併殺（2-6 wGDP, §6）: GBアウト×走者一塁×2アウト未満で併殺成立。打者の足で回避。
   gdp: { base: 0.42, speedW: 0.007, runGDP: -0.42 }, // speedWはS5較正（足↔併殺回避の結線を統計的に頑健へ）
 
-  // 守備（2-7/2-8, §7）: 野手個人のRangeを期待アウトに接続し、OAAに個人スキルを乗せる。
+  // 守備（§7 / 全面再設計 2026-07-09）: Distance-Time モデル（Statcast OAA と同型）。
+  //   正典: thyroxin/research/fielding_metrics_reference.md §2 / §11
+  //   打球ごとに各野手の「アウト化確率 p」を幾何から導く。p はリーグ中立（＝catch probability）。
+  //   個人の Range は実効クロージング速度 Smax に乗り、抽選側にのみ効く。
+  //   ※ 旧 hitGB/hitLD/hitFB/hitPU/evHitW/timeDifficulty*/posTypicalDepthM/rangeLogitSlope は
+  //     この幾何から創発するため撤去した（打球種別の安打率はもうノブではない）。
   field: {
-    // Range個人差はlogit空間でシフトする（UZR/DRS/Statcast OAAが確率バケット方式で暗黙に
-    // 持つ「五分五分の難しいプレーほど巧拙が効く／簡単・絶望的なプレーでは効きにくい」性質の近似。
-    // §req_20260708 守備指標再設計）。rangeLogitSlope×(rating-50)/10 をpHitのlogitへ加減する
-    // （ratingDelta関数と同じ変換）。p=0.5近辺では旧rangePerRating=0.0015と同等の効きになるよう
-    // 0.06へ換算（勾配0.25倍＝0.0015/0.25=0.006、ratingDelta内の/10を戻すと0.06）※S5較正対象。
-    rangeLogitSlope: 0.06,
+    // --- 守備隊形（本塁原点の極座標。r=距離[m], t=spray角[deg]・負が三塁側） ---
+    //     実際のMLB/NPBの平均的な守備位置に近い値。内野手は塁間より深く守る。
+    positions: {
+      '3B': { r: 34, t: -33 },
+      SS: { r: 44, t: -16 },
+      '2B': { r: 44, t: 16 },
+      '1B': { r: 33, t: 35 },
+      LF: { r: 88, t: -28 },
+      CF: { r: 98, t: 0 },
+      RF: { r: 88, t: 28 },
+    },
+    // --- 到達モデル ---
+    smaxBase: 6.82, // リーグ平均野手の実効クロージング速度 m/s（反応後の平均速度。全力疾走9m/sより低い）※較正済み: 得点環境中立に着地
+    // Range 1pt → Smax の増分 m/s（50中心）。UZRの広がりと |xwOBA−wOBA| 乖離を同時に支配する:
+    //   個人差を強めるほど「守備中立の xwOBA」と「実際に上手いレギュラーが守った wOBA」がずれる。
+    //   0.022 で UZR上位≈+15（FanGraphs のゴールドグラブ級）かつ |xwOBA−wOBA| ≤ 0.003 に収まる。
+    smaxPerRating: 0.022,
+    width: 1.05, // 到達ロジスティックの幅 m/s。小さいほど p が両極化する ※較正対象
+    reactionS: 0.3, // 初動までの反応時間 s
+    reachM: 1.7, // グラブ＋ダイブの到達半径 m
+    backPenalty: 0.35, // 後方への移動の減速（Statcastが2017年に direction を追加した理由）※較正対象
+    // --- ゴロ ---
+    gbSpeedFactor: 0.8, // ゴロの実効水平速度 = EV(m/s) × これ（バウンド減速込み）※較正対象
+    gbMinDepth: 3, // 迎撃点がこれより手前なら処理対象外（本塁付近の当たり）
+    gbMaxDepth: 50, // 迎撃点がこれより奥なら内野を抜けた
+    gloveHeightM: 2.1, // 迎撃点での打球高度がこれを超えると内野手の頭上を通過
+    // --- 送球アウト（Statcast infield OAA の「塁までの距離」「打者走者の足」） ---
+    transferS: 0.7, // 捕球 → リリース
+    throwSpeed: 32, // 送球速度 m/s
+    runnerToFirstS: 4.35, // 打者走者の一塁到達 s（speed 50 = 平均）
+    runnerToFirstPerRating: 0.008, // speed 1pt → 一塁到達が何秒縮むか（速い打者に内野安打が湧く）※較正対象
+    throwWidth: 0.22, // 送球アウトのロジスティック幅 s
+
     wRange: { positioningIQ: 0.45, reaction: 0.3, speed: 0.25 }, // Range合成重み（§7.1）
-    runPerOutInfield: 0.75, // OAA→run換算（内野・Statcast FRV）
-    runPerOutOutfield: 0.9, // 外野
-    runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（監査A3・§7.2）
-    framePerInning: 0.0005, // 捕手フレーミング: (framing-50)×これ×守備イニング をrun換算（監査B5・§7.3）
-    // --- B3b UZR成分分解（ARM/DPR/rSB・§B3b）: 追加集計の対平均run換算係数。
-    //     いずれも WAR用の uzrRuns には加えず（＝較正30指標が完全不変）、
-    //     uzrComponents（分解表示）でのみ合成する（総UZR不変が理想・§検証）。
-    armRunPerOpp: 0.007, // 外野ARM: 追加進塁機会1回あたり (arm-50)×これ をrun換算（対平均・game.mjsで累積。上位+5〜12run）
-    runPerDP: 0.45, // DPR: 併殺1つ（対リーグ平均転換率）あたりのrun価値。1件の併殺は二遊間で共有する1イベント（打者側 runGDP=-0.42 と同型の対称値）
-    dpShare: 0.5, // DPR: 上記の1イベントrun価値を参加者で分担する比率。game.mjs が1機会/成立を 2B・SS 双方にフル計上するため、二重帰属を避けるべく各参加者に0.5を配分（Σで単一計上のチーム値に一致・§B3b）
+    // --- run 換算（すべて MLB.com 公式 FRV glossary の固定定数・正典§2.4） ---
+    runPerOutInfield: 0.75, // "1 out = .75 runs (infielders)"
+    runPerOutOutfield: 0.9, // "1 out = .9 runs (outfielders)"
+    runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（§7.2）
+    framePerInning: 0.0005, // 捕手フレーミング（per-inning近似の遺構。実際は一球ごとに runPerCall で積む）
+    armRunPerOpp: 0.007, // 【暫定】外野ARM: 真値armの線形変換。鉄則4違反のため次コミットで実イベント創発へ置換する
+    runPerDP: 0.4, // "Double Plays 1 = .4"（旧0.45を FRV 準拠へ）
+    dpShare: 0.5, // 1件の併殺を 2B・SS で分担する比率（game.mjs が双方にフル計上するため・§B3b）
+    // 捕手送球: "Catcher Throwing 1 SB prevented = .65 runs, the difference between a SB (+.2) and a CS (-.45)"
+    //   → 定数を置かず run.runSB − run.runCS から導出する（正典§8.4）
+    runPerBlock: 0.25, // "Catcher Blocking 1 = .25"
   },
   // 走塁 Spd（簡易4成分・Bill James風0-10スケール・§B3b）: SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
   spd: {
@@ -633,30 +668,17 @@ export const TUNING_DEFAULT = {
     //   中立球場(4m)は差0＝baseline不変。高い壁の球場は同じ打球が凡フライ側へ（原則1: 文脈で化ける）。
     hrFenceHeightBase: 4, // 実効距離ペナルティの基準フェンス高(m)。中立と同じ＝差0
     hrFenceHeightW: 1.5, // フェンス高1m超過あたりの実効フェンス距離加算(m)
-    // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
-    hitGB: 0.206, // ※S5較正（F2-5: 0.2195→0.210。BB%回復(+1.4pt)で膨らんだ得点環境をBABIP側で相殺しERA≤3.9へ。§req_20260708: ERA残差の最終微調整）
-    hitLD: 0.668, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束。§req_20260708: timeDifficultyAdj新設ぶんを軽く相殺
-    hitFB: 0.127, // ※S5較正。§req_20260708: ERA残差(3.95→3.9目標)の微調整
-    hitPU: 0.02,
-    evHitW: 0.003, // (evKmh-140)×これ を hit率に加算 ※S5較正（BABIP裾＝打率王≤.355）
-    gapDistM: 86.0, // 単打/二塁打の境界（外野手到達圏）。これ未満の空中安打は単打（監査B1で84→90、S5較正でSLG帯確保のため85.5へ。F2-5: →86.0＝ERA再収束の微調整。fbHitBonusM=84より上を維持）
-    fbHitBonusM: 84, // FB警告帯ヒット加点(+0.15)の閾値。BABIP環境を保つため二塁打境界と分離（監査B1）
+    // ⚠️ 旧「結果グリッド」(hitGB/hitLD/hitFB/hitPU/evHitW/fbHitBonusM) は撤去した。
+    //   打球種別ごとの安打率は、守備隊形と打球の幾何から創発する（tuning.field の Distance-Time モデル）。
+    //   正典: thyroxin/research/fielding_metrics_reference.md §11.2 / §11.4
+    //   同様に timeDifficultyW/Cap・posTypicalDepthM・outfieldLDTypicalDepthM も撤去（対症療法だった）。
+    // 単打/二塁打の境界。新モデルでは外野手の定位置(LF/RF=88m)より手前に置く:
+    //   そこへ落ちた打球は外野手が「下がりながら/走りながら」処理するため打者を単打に留められない。
+    //   ※旧86.0はDistance-Timeモデル導入前の自由ノブ。得点環境中立(SLG/OPS維持)のため76.0へ再較正。
+    gapDistM: 76.0,
     tripleDistM: 94, // 二塁打/三塁打候補の深さ。これ以上の深いギャップ/ライン際球が三塁打になりうる（監査B1）
     tripleBase: 0.32, // 深いギャップ球の三塁打基本率（打者speedで上下）※較正済み
     tripleSpeedW: 0.007, // 打者speed(50中心)→三塁打率への寄与
-    // 滞空時間ベースの難易度（§req_20260708 守備指標再設計。Statcast OAA/DRSの「到達可能時間」の近似）:
-    //   守備者の初期位置は持たないため、担当ポジションの定位置(typicalDepthM)との落下点ギャップを
-    //   滞空時間(hangTimeS)で割り「間に合わせるのに要する速度」とし、これが大きいほどヒット寄りにpHitを
-    //   加点する（浅すぎる/深すぎる=定位置から離れた打球ほど難しい＝no man's land・グラウンダー(hangTimeS=0)は対象外）。
-    //   ※初回較正でBABIP暴騰(0.391)が発覚: LD(10-25°)はassignFielderの45m閾値超で外野判定される
-    //   ため、FB定位置(95-100m)を基準にすると「外野扱いされる浅いライナー」ほぼ全てが大ギャップ＝
-    //   高難度になり系統的に偏った。ライナーは外野手が定位置より前で処理する前提でoutfieldLDTypicalDepthMを
-    //   別基準に分離＋重み/上限も大幅に引き下げて再較正。
-    // ※12seed較正でAVG/OPS/ERAがなお全面超過(AVG.275/ERA4.45)と判明し、さらに引き下げ。
-    timeDifficultyW: 0.0007, // 上記「要求速度(m/s)」→pHit加点の換算 ※S5較正対象
-    timeDifficultyCap: 0.06, // 加点の上限（暴走防止）
-    posTypicalDepthM: { '1B': 30, '2B': 38, '3B': 35, SS: 40, LF: 95, CF: 100, RF: 95, C: 5 },
-    outfieldLDTypicalDepthM: { LF: 65, CF: 68, RF: 65 }, // ライナーは定位置より前寄りで処理する（FBの定位置とは別基準）
     // 失策（ROE・§7 Hands）。インプレーのアウトが確率 errBase−(Hands−50)×errHandsW で失策になる。
     // 失策以降その回の得点は非自責（ERA<失点 の差＝未自責点を生む・較正の整合に必須）。
     errBase: 0.023,

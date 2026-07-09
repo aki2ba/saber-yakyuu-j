@@ -1,16 +1,20 @@
 // ============================================================================
-// 打球結果解決（1-3）— 2段パイプラインの第2段・後半（§3.2 / 自己レビュー F29）
+// 打球結果解決（1-3）— 2段パイプラインの第2段・後半（§3.2）
 //
 // 打球3要素(EV/LA/方向)＋球場ジオメトリから落下点・滞空時間を出し、
 //   - フェンス越え → HR
-//   - それ以外 → 「そのポジション平均の期待アウト率」で安打/アウトを確定し、
-//     安打種別(1B/2B/3B)を落下点から導く
-// を行う。ここで守備者"個人"の巧拙は入れない（＝ポジション平均）。
-// 個人の上手さは OAA(1-9) と守備モデル(2-7)で "期待からの差分" として後付けする。
+//   - それ以外 → Distance-Time モデルで各野手のアウト化確率を幾何から導き、
+//     責任野手(argmax)のリーグ中立確率 pOut を期待アウト率とし、
+//     責任野手"個人"の Smax で実際の抽選を行う
+// を行う。expOut はリーグ中立（＝Statcast catch probability と同じ性質）。
+// 個人の上手さは OAA(1-9) で "期待からの差分" として湧く。
+//
+// 【重要】打球種別ごとの安打率(旧 hitGB/hitLD/hitFB/hitPU)はもはやノブではない。
+//   守備隊形と打球の幾何から創発する（鉄則4・正典§11.2）。
 // ============================================================================
 import { fenceDistanceAt, NEUTRAL_PARK } from '../model/battedball.mjs';
 import { clamp } from '../model/util.mjs';
-import { logit, expit, ratingDelta } from './rates.mjs';
+import { neutralResponsible, fieldingChances, outProb, smaxOf, FIELD_POS } from './fieldingGeometry.mjs';
 
 const G = 9.8;
 
@@ -46,46 +50,13 @@ export function computeGeometry(bb, cfg, park = NEUTRAL_PARK) {
   return bb;
 }
 
-/** 落下点・打球種別から担当野手ポジションを決める（OAAの主語） */
-export function assignFielder(bb, type) {
-  const s = bb.sprayDeg;
-  const infield = type === 'GB' || type === 'PU' || (type === 'LD' && bb.distanceM < 45);
-  if (infield) {
-    if (s <= -18) return '3B';
-    if (s <= -4) return 'SS';
-    if (s < 6) return s < 0 ? 'SS' : '2B';
-    if (s < 20) return '2B';
-    return '1B';
-  }
-  // 外野: CFの担当角を狭め（±15→±10）、モード(0°)集中による機会・UZR過大を緩和（監査B6）
-  if (s <= -10) return 'LF';
-  if (s < 10) return 'CF';
-  return 'RF';
-}
-
-/** 打球種別ごとの基準hit率（ポジション平均のxBABIP的な値） */
-function baseHitProb(type, cfg) {
-  const bb = cfg.tuning.bb;
-  return type === 'GB' ? bb.hitGB : type === 'LD' ? bb.hitLD : type === 'FB' ? bb.hitFB : bb.hitPU;
-}
-
 /**
- * 滞空時間ベースの難易度加点（§req_20260708・UZR/DRS/Statcast OAAの「到達可能時間」の近似）。
- * 守備者の初期位置は持たないため、担当ポジションの定位置(posTypicalDepthM)と落下点の距離ギャップを
- * 滞空時間で割り「間に合わせるのに要する速度」とする。ゴロ(hangTimeS=0)は対象外＝0。
- * 外野に割り当てられたライナー(LD)はフライ(FB)より手前の定位置(outfieldLDTypicalDepthM)を使う
- * （assignFielderの45m閾値超で外野判定される浅いライナーがFB定位置比で軒並み高難度化する偏りを回避）。
+ * 落下点・打球種別から責任野手を決める（OAAの主語）。
+ * Distance-Time モデルのリーグ中立 argmax（DRS の流儀・正典§9.2）。
+ * 旧実装は spray角のみで1人に決め打ちしていた（正典§5.4 の根本原因）。
  */
-function timeDifficultyAdj(fielderPos, type, distanceM, hangTimeS, cfg) {
-  if (!(hangTimeS > 0)) return 0;
-  const g = cfg.tuning.bb;
-  const typical = (type === 'LD' && g.outfieldLDTypicalDepthM[fielderPos] != null)
-    ? g.outfieldLDTypicalDepthM[fielderPos]
-    : g.posTypicalDepthM[fielderPos];
-  if (typical == null) return 0;
-  const gapM = Math.abs(distanceM - typical);
-  const reqSpeed = gapM / hangTimeS; // m/s相当
-  return clamp(reqSpeed * g.timeDifficultyW, 0, g.timeDifficultyCap);
+export function assignFielder(bb, type, cfg) {
+  return neutralResponsible(bb, type, cfg).pos;
 }
 
 /** 安打種別を落下点から決める（監査B1: 単打/二塁打境界＝gapDistM、深いギャップ球は打者脚力で三塁打化） */
@@ -159,22 +130,35 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
     const evBoost = 1 + g.hrEvGain / (1 + Math.exp(-(bb.evKmh - g.hrEvRef) / g.hrEvWidth));
     const hrDist = g.carry * ((v * v) / G) * hrLift * evBoost;
     if (hrDist * cfg.tuning.hrScale >= fence) {
-      bb.fielderPos = assignFielder(bb, type);
+      bb.fielderPos = assignFielder(bb, type, cfg);
       bb.result = 'HR';
       return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
     }
   }
 
-  // --- インプレー: ポジション平均の期待アウト率で安打/アウト ---
-  const fielderPos = assignFielder(bb, type);
+  // --- インプレー: Distance-Time モデルで各野手のアウト化確率を出し、責任野手を決める ---
+  // 各野手の「必要走速度」「送球アウト確率」は野手の能力を含まない（＝Statcast catch probability）。
+  const { reqSpeed, pThrow } = fieldingChances(bb, type, cfg);
+  const smaxBase = cfg.tuning.field.smaxBase;
+
+  // 責任野手 = リーグ中立 p の argmax（DRS の流儀・正典§9.2）。
+  // 全員 p≈0（誰にも捕れない打球）なら「最も惜しかった」＝必要走速度が最小の野手。
+  let fielderPos = null;
+  let pOut = -1;
+  let bestReq = Infinity;
+  for (const pos of FIELD_POS) {
+    const p = outProb(reqSpeed[pos], pThrow[pos], smaxBase, cfg);
+    if (p > pOut + 1e-12 || (Math.abs(p - pOut) <= 1e-12 && reqSpeed[pos] < bestReq)) {
+      pOut = p;
+      bestReq = reqSpeed[pos];
+      fielderPos = pos;
+    }
+  }
+  if (fielderPos == null) fielderPos = type === 'GB' ? 'SS' : 'CF';
   bb.fielderPos = fielderPos;
-  let pHit = baseHitProb(type, cfg) + (bb.evKmh - 140) * cfg.tuning.bb.evHitW;
-  if (type === 'FB' && bb.distanceM >= cfg.tuning.bb.fbHitBonusM) pHit += 0.15; // 警告帯FBの被安打（BABIP環境維持のため二塁打境界と別閾値）
-  // 滞空時間ベースの難易度（§req_20260708）: 担当ポジションの定位置から離れた落下点（浅すぎ/深すぎ＝
-  // no man's land）ほど、滞空時間に対して間に合わせにくくヒット寄りに加点。
-  pHit += timeDifficultyAdj(fielderPos, type, bb.distanceM, bb.hangTimeS, cfg);
-  pHit = clamp(pHit, 0.01, 0.97);
-  const expOut = 1 - pHit; // リーグ平均基準（OAAのベースライン・ポジション中立）
+
+  const expOut = clamp(Math.max(0, pOut), 0, 1); // リーグ中立の期待アウト（OAAのベースライン）
+  const pHit = 1 - expOut;
 
   // 期待塁打分布（§B3a）: 防御中立の pHit × decideBases 確率版。rng を消費しない（決定論不変）。
   const eb = expectedBases(bb, type, cfg);
@@ -182,12 +166,12 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
   const xB2 = pHit * eb.p2;
   const xB3 = pHit * eb.p3;
 
-  // 守備者個人のRangeで実効被安打率を上下（good fielder→outを増やす）。OAAの個人シグナル源。
-  // logit空間でシフト（§req_20260708・UZR/DRS/OAAの確率バケット方式が暗黙に持つ「五分五分の
-  // プレーほど巧拙が効き、簡単/絶望的なプレーでは効きにくい」性質の近似。線形シフトだと極端な
-  // pHitでも一律に効いてしまい非現実的だった）。
+  // 実際の抽選は責任野手"個人"の Smax で行う（OAAの個人シグナル源）。
+  // 難しいプレー（p≈0.5）でのみ巧拙が大きく効き、凡プレー/絶望的な打球では効きにくい
+  // ＝ロジスティックの性質から自動的に導かれる（旧 rangeLogitSlope の人為的近似は不要）。
   const rangeR = fielderRangeFor ? fielderRangeFor(fielderPos) : 50;
-  const effPHit = clamp(expit(logit(pHit) - ratingDelta(rangeR, cfg.tuning.field.rangeLogitSlope)), 0.01, 0.99);
+  const effPOut = clamp(outProb(reqSpeed[fielderPos], pThrow[fielderPos], smaxOf(rangeR, cfg), cfg), 0.005, 0.995);
+  const effPHit = 1 - effPOut;
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';

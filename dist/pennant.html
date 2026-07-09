@@ -1244,7 +1244,8 @@ const TUNING_DEFAULT = {
   // B2 文脈指標（RE24/WPA/LI）の導出/定義定数（§B2・上の CONTEXT_CONST を集約）。
   context: CONTEXT_CONST,
 
-  hrScale: 0.966, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大。
+  hrScale: 0.9695, // 本塁打産出スケール（門番: hrPerTeam/HR王）。⚠️HRは閾値のため感度大。
+  //   守備モデル刷新でPA数がわずかに動き HR王 が帯を割ったため微増（0.966→0.9695・HR/team は帯中央を維持）
   //   F2-5: 出場登録29人選抜の上澄み効果でHR/teamが141へ膨張→0.985から引下げて[110,130]帯へ再収束
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
@@ -1372,7 +1373,8 @@ const TUNING_DEFAULT = {
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
     hitProb: 0.1, // 内野安打化
     maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
-    attemptBase: 0.145, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
+    attemptBase: 0.158, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
+    //   守備モデル刷新(Distance-Time)でバント局面の実アウト確率が変わり犠打が目減りしたため再較正(0.145→0.158)
     //   F2-5: 0.16→0.145（DH無リーグの攻撃力を僅かに回復しセパ得点差を帯上限0.45から離す。SH帯は維持）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.8, // 投手打席はほぼ必ずバント（F2-5: 0.9→0.8。セパ得点差の再収束＝投手にも僅かに打たせる）
@@ -1597,25 +1599,58 @@ const TUNING_DEFAULT = {
   // 併殺（2-6 wGDP, §6）: GBアウト×走者一塁×2アウト未満で併殺成立。打者の足で回避。
   gdp: { base: 0.42, speedW: 0.007, runGDP: -0.42 }, // speedWはS5較正（足↔併殺回避の結線を統計的に頑健へ）
 
-  // 守備（2-7/2-8, §7）: 野手個人のRangeを期待アウトに接続し、OAAに個人スキルを乗せる。
+  // 守備（§7 / 全面再設計 2026-07-09）: Distance-Time モデル（Statcast OAA と同型）。
+  //   正典: thyroxin/research/fielding_metrics_reference.md §2 / §11
+  //   打球ごとに各野手の「アウト化確率 p」を幾何から導く。p はリーグ中立（＝catch probability）。
+  //   個人の Range は実効クロージング速度 Smax に乗り、抽選側にのみ効く。
+  //   ※ 旧 hitGB/hitLD/hitFB/hitPU/evHitW/timeDifficulty*/posTypicalDepthM/rangeLogitSlope は
+  //     この幾何から創発するため撤去した（打球種別の安打率はもうノブではない）。
   field: {
-    // Range個人差はlogit空間でシフトする（UZR/DRS/Statcast OAAが確率バケット方式で暗黙に
-    // 持つ「五分五分の難しいプレーほど巧拙が効く／簡単・絶望的なプレーでは効きにくい」性質の近似。
-    // §req_20260708 守備指標再設計）。rangeLogitSlope×(rating-50)/10 をpHitのlogitへ加減する
-    // （ratingDelta関数と同じ変換）。p=0.5近辺では旧rangePerRating=0.0015と同等の効きになるよう
-    // 0.06へ換算（勾配0.25倍＝0.0015/0.25=0.006、ratingDelta内の/10を戻すと0.06）※S5較正対象。
-    rangeLogitSlope: 0.06,
+    // --- 守備隊形（本塁原点の極座標。r=距離[m], t=spray角[deg]・負が三塁側） ---
+    //     実際のMLB/NPBの平均的な守備位置に近い値。内野手は塁間より深く守る。
+    positions: {
+      '3B': { r: 34, t: -33 },
+      SS: { r: 44, t: -16 },
+      '2B': { r: 44, t: 16 },
+      '1B': { r: 33, t: 35 },
+      LF: { r: 88, t: -28 },
+      CF: { r: 98, t: 0 },
+      RF: { r: 88, t: 28 },
+    },
+    // --- 到達モデル ---
+    smaxBase: 6.82, // リーグ平均野手の実効クロージング速度 m/s（反応後の平均速度。全力疾走9m/sより低い）※較正済み: 得点環境中立に着地
+    // Range 1pt → Smax の増分 m/s（50中心）。UZRの広がりと |xwOBA−wOBA| 乖離を同時に支配する:
+    //   個人差を強めるほど「守備中立の xwOBA」と「実際に上手いレギュラーが守った wOBA」がずれる。
+    //   0.022 で UZR上位≈+15（FanGraphs のゴールドグラブ級）かつ |xwOBA−wOBA| ≤ 0.003 に収まる。
+    smaxPerRating: 0.022,
+    width: 1.05, // 到達ロジスティックの幅 m/s。小さいほど p が両極化する ※較正対象
+    reactionS: 0.3, // 初動までの反応時間 s
+    reachM: 1.7, // グラブ＋ダイブの到達半径 m
+    backPenalty: 0.35, // 後方への移動の減速（Statcastが2017年に direction を追加した理由）※較正対象
+    // --- ゴロ ---
+    gbSpeedFactor: 0.8, // ゴロの実効水平速度 = EV(m/s) × これ（バウンド減速込み）※較正対象
+    gbMinDepth: 3, // 迎撃点がこれより手前なら処理対象外（本塁付近の当たり）
+    gbMaxDepth: 50, // 迎撃点がこれより奥なら内野を抜けた
+    gloveHeightM: 2.1, // 迎撃点での打球高度がこれを超えると内野手の頭上を通過
+    // --- 送球アウト（Statcast infield OAA の「塁までの距離」「打者走者の足」） ---
+    transferS: 0.7, // 捕球 → リリース
+    throwSpeed: 32, // 送球速度 m/s
+    runnerToFirstS: 4.35, // 打者走者の一塁到達 s（speed 50 = 平均）
+    runnerToFirstPerRating: 0.008, // speed 1pt → 一塁到達が何秒縮むか（速い打者に内野安打が湧く）※較正対象
+    throwWidth: 0.22, // 送球アウトのロジスティック幅 s
+
     wRange: { positioningIQ: 0.45, reaction: 0.3, speed: 0.25 }, // Range合成重み（§7.1）
-    runPerOutInfield: 0.75, // OAA→run換算（内野・Statcast FRV）
-    runPerOutOutfield: 0.9, // 外野
-    runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（監査A3・§7.2）
-    framePerInning: 0.0005, // 捕手フレーミング: (framing-50)×これ×守備イニング をrun換算（監査B5・§7.3）
-    // --- B3b UZR成分分解（ARM/DPR/rSB・§B3b）: 追加集計の対平均run換算係数。
-    //     いずれも WAR用の uzrRuns には加えず（＝較正30指標が完全不変）、
-    //     uzrComponents（分解表示）でのみ合成する（総UZR不変が理想・§検証）。
-    armRunPerOpp: 0.007, // 外野ARM: 追加進塁機会1回あたり (arm-50)×これ をrun換算（対平均・game.mjsで累積。上位+5〜12run）
-    runPerDP: 0.45, // DPR: 併殺1つ（対リーグ平均転換率）あたりのrun価値。1件の併殺は二遊間で共有する1イベント（打者側 runGDP=-0.42 と同型の対称値）
-    dpShare: 0.5, // DPR: 上記の1イベントrun価値を参加者で分担する比率。game.mjs が1機会/成立を 2B・SS 双方にフル計上するため、二重帰属を避けるべく各参加者に0.5を配分（Σで単一計上のチーム値に一致・§B3b）
+    // --- run 換算（すべて MLB.com 公式 FRV glossary の固定定数・正典§2.4） ---
+    runPerOutInfield: 0.75, // "1 out = .75 runs (infielders)"
+    runPerOutOutfield: 0.9, // "1 out = .9 runs (outfielders)"
+    runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（§7.2）
+    framePerInning: 0.0005, // 捕手フレーミング（per-inning近似の遺構。実際は一球ごとに runPerCall で積む）
+    armRunPerOpp: 0.007, // 【暫定】外野ARM: 真値armの線形変換。鉄則4違反のため次コミットで実イベント創発へ置換する
+    runPerDP: 0.4, // "Double Plays 1 = .4"（旧0.45を FRV 準拠へ）
+    dpShare: 0.5, // 1件の併殺を 2B・SS で分担する比率（game.mjs が双方にフル計上するため・§B3b）
+    // 捕手送球: "Catcher Throwing 1 SB prevented = .65 runs, the difference between a SB (+.2) and a CS (-.45)"
+    //   → 定数を置かず run.runSB − run.runCS から導出する（正典§8.4）
+    runPerBlock: 0.25, // "Catcher Blocking 1 = .25"
   },
   // 走塁 Spd（簡易4成分・Bill James風0-10スケール・§B3b）: SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
   spd: {
@@ -1683,30 +1718,17 @@ const TUNING_DEFAULT = {
     //   中立球場(4m)は差0＝baseline不変。高い壁の球場は同じ打球が凡フライ側へ（原則1: 文脈で化ける）。
     hrFenceHeightBase: 4, // 実効距離ペナルティの基準フェンス高(m)。中立と同じ＝差0
     hrFenceHeightW: 1.5, // フェンス高1m超過あたりの実効フェンス距離加算(m)
-    // 結果グリッド（xBABIP系。type別の基準hit率＋EV補正）
-    hitGB: 0.206, // ※S5較正（F2-5: 0.2195→0.210。BB%回復(+1.4pt)で膨らんだ得点環境をBABIP側で相殺しERA≤3.9へ。§req_20260708: ERA残差の最終微調整）
-    hitLD: 0.668, // 文献整合(ライナー安打率~.68-.70)へ引上げ(B-8)。得点環境は下の較正で再収束。§req_20260708: timeDifficultyAdj新設ぶんを軽く相殺
-    hitFB: 0.127, // ※S5較正。§req_20260708: ERA残差(3.95→3.9目標)の微調整
-    hitPU: 0.02,
-    evHitW: 0.003, // (evKmh-140)×これ を hit率に加算 ※S5較正（BABIP裾＝打率王≤.355）
-    gapDistM: 86.0, // 単打/二塁打の境界（外野手到達圏）。これ未満の空中安打は単打（監査B1で84→90、S5較正でSLG帯確保のため85.5へ。F2-5: →86.0＝ERA再収束の微調整。fbHitBonusM=84より上を維持）
-    fbHitBonusM: 84, // FB警告帯ヒット加点(+0.15)の閾値。BABIP環境を保つため二塁打境界と分離（監査B1）
+    // ⚠️ 旧「結果グリッド」(hitGB/hitLD/hitFB/hitPU/evHitW/fbHitBonusM) は撤去した。
+    //   打球種別ごとの安打率は、守備隊形と打球の幾何から創発する（tuning.field の Distance-Time モデル）。
+    //   正典: thyroxin/research/fielding_metrics_reference.md §11.2 / §11.4
+    //   同様に timeDifficultyW/Cap・posTypicalDepthM・outfieldLDTypicalDepthM も撤去（対症療法だった）。
+    // 単打/二塁打の境界。新モデルでは外野手の定位置(LF/RF=88m)より手前に置く:
+    //   そこへ落ちた打球は外野手が「下がりながら/走りながら」処理するため打者を単打に留められない。
+    //   ※旧86.0はDistance-Timeモデル導入前の自由ノブ。得点環境中立(SLG/OPS維持)のため76.0へ再較正。
+    gapDistM: 76.0,
     tripleDistM: 94, // 二塁打/三塁打候補の深さ。これ以上の深いギャップ/ライン際球が三塁打になりうる（監査B1）
     tripleBase: 0.32, // 深いギャップ球の三塁打基本率（打者speedで上下）※較正済み
     tripleSpeedW: 0.007, // 打者speed(50中心)→三塁打率への寄与
-    // 滞空時間ベースの難易度（§req_20260708 守備指標再設計。Statcast OAA/DRSの「到達可能時間」の近似）:
-    //   守備者の初期位置は持たないため、担当ポジションの定位置(typicalDepthM)との落下点ギャップを
-    //   滞空時間(hangTimeS)で割り「間に合わせるのに要する速度」とし、これが大きいほどヒット寄りにpHitを
-    //   加点する（浅すぎる/深すぎる=定位置から離れた打球ほど難しい＝no man's land・グラウンダー(hangTimeS=0)は対象外）。
-    //   ※初回較正でBABIP暴騰(0.391)が発覚: LD(10-25°)はassignFielderの45m閾値超で外野判定される
-    //   ため、FB定位置(95-100m)を基準にすると「外野扱いされる浅いライナー」ほぼ全てが大ギャップ＝
-    //   高難度になり系統的に偏った。ライナーは外野手が定位置より前で処理する前提でoutfieldLDTypicalDepthMを
-    //   別基準に分離＋重み/上限も大幅に引き下げて再較正。
-    // ※12seed較正でAVG/OPS/ERAがなお全面超過(AVG.275/ERA4.45)と判明し、さらに引き下げ。
-    timeDifficultyW: 0.0007, // 上記「要求速度(m/s)」→pHit加点の換算 ※S5較正対象
-    timeDifficultyCap: 0.06, // 加点の上限（暴走防止）
-    posTypicalDepthM: { '1B': 30, '2B': 38, '3B': 35, SS: 40, LF: 95, CF: 100, RF: 95, C: 5 },
-    outfieldLDTypicalDepthM: { LF: 65, CF: 68, RF: 65 }, // ライナーは定位置より前寄りで処理する（FBの定位置とは別基準）
     // 失策（ROE・§7 Hands）。インプレーのアウトが確率 errBase−(Hands−50)×errHandsW で失策になる。
     // 失策以降その回の得点は非自責（ERA<失点 の差＝未自責点を生む・較正の整合に必須）。
     errBase: 0.023,
@@ -2153,6 +2175,235 @@ function deepAssign(base, over) {
 }
 
 
+// ===== src/sim/rates.mjs =====
+// 確率合成の基本関数（log5/オッズ比の土台。§3.1）。
+// logit/expit と、レーティング(20-80, 50=平均)を logit の増分へ写す変換。
+
+/** ロジット（オッズの対数） */
+function logit(p) {
+  return Math.log(p / (1 - p));
+}
+
+/** 逆ロジット（シグモイド） */
+function expit(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * レーティング(50=平均)を logit 増分に変換。
+ * 例: slope=0.30 なら 80(=+30) で +0.9（オッズ約2.5倍）。
+ */
+function ratingDelta(rating, slope) {
+  return (slope * (rating - 50)) / 10;
+}
+
+/**
+ * log5 / オッズ比合成: リーグ基準率に打者側・投手側の logit 増分を足し込む（§3.1）。
+ * logit(P) = logit(L) + Δbatter + Δpitcher。両者が平均なら L に戻る。
+ */
+function log5(leagueRate, batterDelta, pitcherDelta) {
+  return expit(logit(leagueRate) + batterDelta + pitcherDelta);
+}
+
+
+// ===== src/sim/fieldingGeometry.mjs =====
+// ============================================================================
+// 守備の幾何（Distance-Time モデル）— Statcast OAA と同型の捕球確率
+// 正典: thyroxin/research/fielding_metrics_reference.md §2.1-2.3 / §11.2
+//
+// 【設計の核】
+//   打球ごとに、各野手の「アウト化確率 p」を幾何から導く。
+//   p はリーグ中立（野手個人の能力を含まない）＝ Statcast の catch probability と同じ性質。
+//   個人の Range 能力は「実効クロージング速度 Smax」に乗り、抽選側にのみ効く。
+//
+//   空中球(LD/FB/PU) : p = expit((Smax − 必要走速度) / width)
+//                      必要走速度 = (落下点までの距離 − reach) / (滞空時間 − 反応時間) / 方向係数
+//   ゴロ(GB)         : p = P(到達) × P(送球アウト)
+//                      Statcast infield OAA の4要素（迎撃点までの距離・使える時間・
+//                      迎撃点から塁までの距離・打者走者の足）をすべて含む。
+//                      P(到達) のみだとゴロ安打率が 0.19→0.04 に破綻する（§11.2）。
+//
+//   方向補正(direction) : 後方への移動は前方/横より遅い（Statcast が2017年に追加）。
+//                         これが無いと内野手が頭上のライナーへ走り戻って捕ってしまう。
+//
+// 【責任野手】 argmax_i p_i（DRS の流儀・§9.2）。同率なら必要走速度が小さい方。
+//   アウト → OAA += (1 − p_j) / 安打 → OAA += −p_j。
+//   到達不能な打球は全野手 p≈0 ゆえ、誰もほとんど減点されない（＝ポテンヒット問題の解消）。
+// ============================================================================
+
+
+const FG_G = 9.8; // 重力加速度（build.mjs が全モジュールを1スコープへインライン化するため名前衝突を避ける）
+const FG_RAD = Math.PI / 180;
+
+const FG_INFIELD = ['3B', 'SS', '2B', '1B'];
+const FG_OUTFIELD = ['LF', 'CF', 'RF'];
+const FIELD_POS = [...FG_INFIELD, ...FG_OUTFIELD];
+const IS_OUTFIELD = new Set(FG_OUTFIELD);
+const IS_INFIELD = new Set(FG_INFIELD);
+
+/** 一塁ベースの座標（本塁原点・y=センター方向・x=一塁側が正） */
+const FIRST_BASE = { x: 27.43 / Math.SQRT2, y: 27.43 / Math.SQRT2 };
+
+/** 守備隊形（config の極座標 r[m], t[deg]）→ 直交座標 */
+function fielderPositions(cfg) {
+  const out = {};
+  const src = cfg.tuning.field.positions;
+  for (const pos of FIELD_POS) {
+    const p = src[pos];
+    out[pos] = { x: p.r * Math.sin(p.t * FG_RAD), y: p.r * Math.cos(p.t * FG_RAD), r: p.r };
+  }
+  return out;
+}
+
+/**
+ * 方向係数。野手 → 目標点 の移動が「本塁から見て外向き（＝後方へ下がる）」ほど小さくなる。
+ * 係数 = 1 − backPenalty × max(0, 外向き成分の余弦)。前方・横方向では 1。
+ */
+function directionFactor(fx, fy, tx, ty, backPenalty) {
+  const mx = tx - fx;
+  const my = ty - fy;
+  const m = Math.hypot(mx, my);
+  if (m < 1e-6) return 1;
+  const fr = Math.hypot(fx, fy);
+  if (fr < 1e-6) return 1;
+  const cos = (mx * (fx / fr) + my * (fy / fr)) / m; // 外向き単位ベクトルとの余弦
+  return 1 - backPenalty * Math.max(0, cos);
+}
+
+/** 空中球の必要走速度[m/s]。到達不能なら Infinity */
+function reqSpeedAir(f, landX, landY, hangS, g) {
+  const t = hangS - g.reactionS;
+  if (t <= 0) return Infinity;
+  const d = Math.hypot(landX - f.x, landY - f.y) - g.reachM;
+  if (d <= 0) return 0;
+  const dir = directionFactor(f.x, f.y, landX, landY, g.backPenalty);
+  if (dir <= 0.02) return Infinity;
+  return d / t / dir;
+}
+
+/**
+ * ゴロの内野処理。迎撃点は野手を打球ベクトルへ射影した点（Statcast の "intercept point"）。
+ * 迎撃点での打球高度が gloveHeightM を超える（頭上を通過）なら処理不能。
+ * @returns {{reqSpeed:number, pThrow:number}|null}
+ */
+function groundChance(f, bb, g, runnerToFirstS) {
+  const dx = Math.sin(bb.sprayDeg * FG_RAD);
+  const dy = Math.cos(bb.sprayDeg * FG_RAD);
+  const s = f.x * dx + f.y * dy; // 本塁 → 迎撃点
+  if (s <= g.gbMinDepth || s > g.gbMaxDepth) return null; // 背後 / 内野を抜けた
+
+  const v = bb.evKmh / 3.6;
+  if (bb.laDeg > 0) {
+    const vx = v * Math.cos(bb.laDeg * FG_RAD);
+    if (vx > 1e-6) {
+      const h = s * Math.tan(bb.laDeg * FG_RAD) - (FG_G * s * s) / (2 * vx * vx);
+      if (h > g.gloveHeightM) return null; // 頭上を通過
+    }
+  }
+
+  const ix = s * dx;
+  const iy = s * dy;
+  const move = Math.hypot(ix - f.x, iy - f.y) - g.reachM;
+  const vG = v * g.gbSpeedFactor; // ゴロの実効水平速度（バウンド減速込み）
+  const tBall = s / vG;
+  const tAvail = tBall - g.reactionS;
+  if (tAvail <= 0) return null;
+
+  const dir = directionFactor(f.x, f.y, ix, iy, g.backPenalty);
+  const reqSpeed = move <= 0 ? 0 : move / tAvail / Math.max(0.02, dir);
+
+  // 送球アウト: 捕球時刻 + 持ち替え + 送球飛行 < 打者走者の一塁到達
+  const tField = Math.max(tBall, g.reactionS + Math.max(0, move) / g.smaxBase);
+  const throwDist = Math.hypot(FIRST_BASE.x - ix, FIRST_BASE.y - iy);
+  const tOut = tField + g.transferS + throwDist / g.throwSpeed;
+  return { reqSpeed, pThrow: expit((runnerToFirstS - tOut) / g.throwWidth) };
+}
+
+/** 打者走者の一塁到達時間[s]。speed 50 = リーグ平均。速い打者ほど内野安打が湧く */
+function runnerToFirst(runnerSpeed, cfg) {
+  const g = cfg.tuning.field;
+  return g.runnerToFirstS - (runnerSpeed - 50) * g.runnerToFirstPerRating;
+}
+
+/**
+ * 打球1つに対する各野手の「必要走速度」と「送球アウト確率」。
+ * 野手個人の能力を含まない（＝ Statcast catch probability と同じくリーグ中立）。
+ * @returns {{reqSpeed: Object<string,number>, pThrow: Object<string,number>}}
+ */
+function fieldingChances(bb, type, cfg) {
+  const g = cfg.tuning.field;
+  const F = fielderPositions(cfg);
+  const reqSpeed = {};
+  const pThrow = {};
+
+  const v = bb.evKmh / 3.6;
+  const hangS = bb.laDeg > 0 ? (2 * v * Math.sin(bb.laDeg * FG_RAD)) / FG_G : 0;
+  const landX = bb.distanceM * Math.sin(bb.sprayDeg * FG_RAD);
+  const landY = bb.distanceM * Math.cos(bb.sprayDeg * FG_RAD);
+  const rtf = runnerToFirst(bb.runnerSpeed ?? 50, cfg);
+
+  for (const pos of FIELD_POS) {
+    const f = F[pos];
+    let rs = Infinity;
+    let pt = 1;
+    if (type === 'GB') {
+      // ゴロは内野手のみアウト機会を持つ（外野へ抜けたら安打。外野の処理は ARM の領分）
+      if (IS_INFIELD.has(pos)) {
+        const gc = groundChance(f, bb, g, rtf);
+        if (gc) {
+          rs = gc.reqSpeed;
+          pt = gc.pThrow;
+        }
+      }
+    } else {
+      // 空中球は全野手が落下点を狙える。頭上を越える打球は後方ペナルティで自動的に p≈0 になる
+      rs = reqSpeedAir(f, landX, landY, hangS, g);
+    }
+    reqSpeed[pos] = rs;
+    pThrow[pos] = pt;
+  }
+  return { reqSpeed, pThrow };
+}
+
+/** Smax（実効クロージング速度 m/s）。rating 50 = リーグ平均 */
+function smaxOf(rating, cfg) {
+  const g = cfg.tuning.field;
+  return g.smaxBase + (rating - 50) * g.smaxPerRating;
+}
+
+/** 必要走速度 + Smax → アウト化確率 */
+function outProb(reqSpeed, pThrow, smax, cfg) {
+  if (!Number.isFinite(reqSpeed)) return 0;
+  return expit((smax - reqSpeed) / cfg.tuning.field.width) * pThrow;
+}
+
+/**
+ * リーグ中立の責任野手とアウト化確率。
+ * argmax_i p_i。全員 p≈0（誰にも捕れない打球）のときは、必要走速度が最小の野手＝
+ * 「最も惜しかった」野手を責任者とする（減点は −p≈0 なので実害は無い）。
+ * @returns {{pos:string, pOut:number, reqSpeed:number, pThrow:number}}
+ */
+function neutralResponsible(bb, type, cfg) {
+  const { reqSpeed, pThrow } = fieldingChances(bb, type, cfg);
+  const smax = cfg.tuning.field.smaxBase;
+  let bestPos = null;
+  let bestP = -1;
+  let bestReq = Infinity;
+  for (const pos of FIELD_POS) {
+    const p = outProb(reqSpeed[pos], pThrow[pos], smax, cfg);
+    const rs = reqSpeed[pos];
+    // p が大きい方を優先。同率（典型的には両方 0）なら必要走速度が小さい方
+    if (p > bestP + 1e-12 || (Math.abs(p - bestP) <= 1e-12 && rs < bestReq)) {
+      bestP = p;
+      bestReq = rs;
+      bestPos = pos;
+    }
+  }
+  if (bestPos == null) bestPos = type === 'GB' ? 'SS' : 'CF';
+  return { pos: bestPos, pOut: Math.max(0, bestP), reqSpeed: reqSpeed[bestPos], pThrow: pThrow[bestPos] };
+}
+
+
 // ===== src/sim/fielding.mjs =====
 // ============================================================================
 // 守備の能力→結果 結線（2-7）＋ OAA→UZR run換算（2-8）（§7 / 自己レビュー M1・B-7）
@@ -2163,7 +2414,9 @@ function deepAssign(base, over) {
 // 実結果 − 期待 の累積(oaaOuts)が個人のレンジ・シグナルになる（MLBAM OAAと同型）。
 // ============================================================================
 
-const OUTFIELD = new Set(['LF', 'CF', 'RF']);
+
+
+const OUTFIELD = IS_OUTFIELD;
 
 /** 野手のRangeレーティング（50=リーグ平均）。§7.1 の Range = ポジIQ+初動+走力 */
 function rangeRating(player, cfg) {
@@ -3067,37 +3320,6 @@ function shuffle(rng, arr) {
 }
 
 
-// ===== src/sim/rates.mjs =====
-// 確率合成の基本関数（log5/オッズ比の土台。§3.1）。
-// logit/expit と、レーティング(20-80, 50=平均)を logit の増分へ写す変換。
-
-/** ロジット（オッズの対数） */
-function logit(p) {
-  return Math.log(p / (1 - p));
-}
-
-/** 逆ロジット（シグモイド） */
-function expit(x) {
-  return 1 / (1 + Math.exp(-x));
-}
-
-/**
- * レーティング(50=平均)を logit 増分に変換。
- * 例: slope=0.30 なら 80(=+30) で +0.9（オッズ約2.5倍）。
- */
-function ratingDelta(rating, slope) {
-  return (slope * (rating - 50)) / 10;
-}
-
-/**
- * log5 / オッズ比合成: リーグ基準率に打者側・投手側の logit 増分を足し込む（§3.1）。
- * logit(P) = logit(L) + Δbatter + Δpitcher。両者が平均なら L に戻る。
- */
-function log5(leagueRate, batterDelta, pitcherDelta) {
-  return expit(logit(leagueRate) + batterDelta + pitcherDelta);
-}
-
-
 // ===== src/sim/pitchGrid.mjs =====
 // ============================================================================
 // 球種格子 段階1（2-1/2-2 / §4）
@@ -3575,14 +3797,18 @@ function runPlateAppearance(env) {
 
 // ===== src/sim/battedBallResult.mjs =====
 // ============================================================================
-// 打球結果解決（1-3）— 2段パイプラインの第2段・後半（§3.2 / 自己レビュー F29）
+// 打球結果解決（1-3）— 2段パイプラインの第2段・後半（§3.2）
 //
 // 打球3要素(EV/LA/方向)＋球場ジオメトリから落下点・滞空時間を出し、
 //   - フェンス越え → HR
-//   - それ以外 → 「そのポジション平均の期待アウト率」で安打/アウトを確定し、
-//     安打種別(1B/2B/3B)を落下点から導く
-// を行う。ここで守備者"個人"の巧拙は入れない（＝ポジション平均）。
-// 個人の上手さは OAA(1-9) と守備モデル(2-7)で "期待からの差分" として後付けする。
+//   - それ以外 → Distance-Time モデルで各野手のアウト化確率を幾何から導き、
+//     責任野手(argmax)のリーグ中立確率 pOut を期待アウト率とし、
+//     責任野手"個人"の Smax で実際の抽選を行う
+// を行う。expOut はリーグ中立（＝Statcast catch probability と同じ性質）。
+// 個人の上手さは OAA(1-9) で "期待からの差分" として湧く。
+//
+// 【重要】打球種別ごとの安打率(旧 hitGB/hitLD/hitFB/hitPU)はもはやノブではない。
+//   守備隊形と打球の幾何から創発する（鉄則4・正典§11.2）。
 // ============================================================================
 
 
@@ -3622,46 +3848,13 @@ function computeGeometry(bb, cfg, park = NEUTRAL_PARK) {
   return bb;
 }
 
-/** 落下点・打球種別から担当野手ポジションを決める（OAAの主語） */
-function assignFielder(bb, type) {
-  const s = bb.sprayDeg;
-  const infield = type === 'GB' || type === 'PU' || (type === 'LD' && bb.distanceM < 45);
-  if (infield) {
-    if (s <= -18) return '3B';
-    if (s <= -4) return 'SS';
-    if (s < 6) return s < 0 ? 'SS' : '2B';
-    if (s < 20) return '2B';
-    return '1B';
-  }
-  // 外野: CFの担当角を狭め（±15→±10）、モード(0°)集中による機会・UZR過大を緩和（監査B6）
-  if (s <= -10) return 'LF';
-  if (s < 10) return 'CF';
-  return 'RF';
-}
-
-/** 打球種別ごとの基準hit率（ポジション平均のxBABIP的な値） */
-function baseHitProb(type, cfg) {
-  const bb = cfg.tuning.bb;
-  return type === 'GB' ? bb.hitGB : type === 'LD' ? bb.hitLD : type === 'FB' ? bb.hitFB : bb.hitPU;
-}
-
 /**
- * 滞空時間ベースの難易度加点（§req_20260708・UZR/DRS/Statcast OAAの「到達可能時間」の近似）。
- * 守備者の初期位置は持たないため、担当ポジションの定位置(posTypicalDepthM)と落下点の距離ギャップを
- * 滞空時間で割り「間に合わせるのに要する速度」とする。ゴロ(hangTimeS=0)は対象外＝0。
- * 外野に割り当てられたライナー(LD)はフライ(FB)より手前の定位置(outfieldLDTypicalDepthM)を使う
- * （assignFielderの45m閾値超で外野判定される浅いライナーがFB定位置比で軒並み高難度化する偏りを回避）。
+ * 落下点・打球種別から責任野手を決める（OAAの主語）。
+ * Distance-Time モデルのリーグ中立 argmax（DRS の流儀・正典§9.2）。
+ * 旧実装は spray角のみで1人に決め打ちしていた（正典§5.4 の根本原因）。
  */
-function timeDifficultyAdj(fielderPos, type, distanceM, hangTimeS, cfg) {
-  if (!(hangTimeS > 0)) return 0;
-  const g = cfg.tuning.bb;
-  const typical = (type === 'LD' && g.outfieldLDTypicalDepthM[fielderPos] != null)
-    ? g.outfieldLDTypicalDepthM[fielderPos]
-    : g.posTypicalDepthM[fielderPos];
-  if (typical == null) return 0;
-  const gapM = Math.abs(distanceM - typical);
-  const reqSpeed = gapM / hangTimeS; // m/s相当
-  return clamp(reqSpeed * g.timeDifficultyW, 0, g.timeDifficultyCap);
+function assignFielder(bb, type, cfg) {
+  return neutralResponsible(bb, type, cfg).pos;
 }
 
 /** 安打種別を落下点から決める（監査B1: 単打/二塁打境界＝gapDistM、深いギャップ球は打者脚力で三塁打化） */
@@ -3735,22 +3928,35 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
     const evBoost = 1 + g.hrEvGain / (1 + Math.exp(-(bb.evKmh - g.hrEvRef) / g.hrEvWidth));
     const hrDist = g.carry * ((v * v) / G) * hrLift * evBoost;
     if (hrDist * cfg.tuning.hrScale >= fence) {
-      bb.fielderPos = assignFielder(bb, type);
+      bb.fielderPos = assignFielder(bb, type, cfg);
       bb.result = 'HR';
       return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
     }
   }
 
-  // --- インプレー: ポジション平均の期待アウト率で安打/アウト ---
-  const fielderPos = assignFielder(bb, type);
+  // --- インプレー: Distance-Time モデルで各野手のアウト化確率を出し、責任野手を決める ---
+  // 各野手の「必要走速度」「送球アウト確率」は野手の能力を含まない（＝Statcast catch probability）。
+  const { reqSpeed, pThrow } = fieldingChances(bb, type, cfg);
+  const smaxBase = cfg.tuning.field.smaxBase;
+
+  // 責任野手 = リーグ中立 p の argmax（DRS の流儀・正典§9.2）。
+  // 全員 p≈0（誰にも捕れない打球）なら「最も惜しかった」＝必要走速度が最小の野手。
+  let fielderPos = null;
+  let pOut = -1;
+  let bestReq = Infinity;
+  for (const pos of FIELD_POS) {
+    const p = outProb(reqSpeed[pos], pThrow[pos], smaxBase, cfg);
+    if (p > pOut + 1e-12 || (Math.abs(p - pOut) <= 1e-12 && reqSpeed[pos] < bestReq)) {
+      pOut = p;
+      bestReq = reqSpeed[pos];
+      fielderPos = pos;
+    }
+  }
+  if (fielderPos == null) fielderPos = type === 'GB' ? 'SS' : 'CF';
   bb.fielderPos = fielderPos;
-  let pHit = baseHitProb(type, cfg) + (bb.evKmh - 140) * cfg.tuning.bb.evHitW;
-  if (type === 'FB' && bb.distanceM >= cfg.tuning.bb.fbHitBonusM) pHit += 0.15; // 警告帯FBの被安打（BABIP環境維持のため二塁打境界と別閾値）
-  // 滞空時間ベースの難易度（§req_20260708）: 担当ポジションの定位置から離れた落下点（浅すぎ/深すぎ＝
-  // no man's land）ほど、滞空時間に対して間に合わせにくくヒット寄りに加点。
-  pHit += timeDifficultyAdj(fielderPos, type, bb.distanceM, bb.hangTimeS, cfg);
-  pHit = clamp(pHit, 0.01, 0.97);
-  const expOut = 1 - pHit; // リーグ平均基準（OAAのベースライン・ポジション中立）
+
+  const expOut = clamp(Math.max(0, pOut), 0, 1); // リーグ中立の期待アウト（OAAのベースライン）
+  const pHit = 1 - expOut;
 
   // 期待塁打分布（§B3a）: 防御中立の pHit × decideBases 確率版。rng を消費しない（決定論不変）。
   const eb = expectedBases(bb, type, cfg);
@@ -3758,12 +3964,12 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
   const xB2 = pHit * eb.p2;
   const xB3 = pHit * eb.p3;
 
-  // 守備者個人のRangeで実効被安打率を上下（good fielder→outを増やす）。OAAの個人シグナル源。
-  // logit空間でシフト（§req_20260708・UZR/DRS/OAAの確率バケット方式が暗黙に持つ「五分五分の
-  // プレーほど巧拙が効き、簡単/絶望的なプレーでは効きにくい」性質の近似。線形シフトだと極端な
-  // pHitでも一律に効いてしまい非現実的だった）。
+  // 実際の抽選は責任野手"個人"の Smax で行う（OAAの個人シグナル源）。
+  // 難しいプレー（p≈0.5）でのみ巧拙が大きく効き、凡プレー/絶望的な打球では効きにくい
+  // ＝ロジスティックの性質から自動的に導かれる（旧 rangeLogitSlope の人為的近似は不要）。
   const rangeR = fielderRangeFor ? fielderRangeFor(fielderPos) : 50;
-  const effPHit = clamp(expit(logit(pHit) - ratingDelta(rangeR, cfg.tuning.field.rangeLogitSlope)), 0.01, 0.99);
+  const effPOut = clamp(outProb(reqSpeed[fielderPos], pThrow[fielderPos], smaxOf(rangeR, cfg), cfg), 0.005, 0.995);
+  const effPHit = 1 - effPOut;
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';
@@ -4547,8 +4753,9 @@ function accumulateBatted(bat, pit, bb, r, pullSign, cfg) {
 
 
 
+
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
-const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']); // ARM（外野送球）対象ポジション（§B3b）
+// ARM（外野送球）対象ポジションは fieldingGeometry の IS_OUTFIELD を使う（単一の真実）
 
 /**
  * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
@@ -5164,7 +5371,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
     // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
     // 不変・乱数も一切消費しない（＝決定論・較正30指標が不変）。実際の送球死化はB1（一球データ）で。
-    if (hitFielderPos && OUTFIELD_POS.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
+    if (hitFielderPos && IS_OUTFIELD.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
       const ofPid = fielding.defense[hitFielderPos];
       const ofPlayer = ofPid ? fielding.byId.get(ofPid) : null;
       if (ofPlayer) {
@@ -7571,6 +7778,7 @@ function playerWAR(player, ps, cfg, lc) {
 //
 // このファイルが「唯一の真実のソース」。
 //   - Node（ヘッドレス実走 / テスト / 較正）  : そのまま 
+
 
 
 
@@ -12389,30 +12597,15 @@ function watchInfieldChar(deg) {
 // ============================================================================
 
 /**
- * 打球の期待アウト率（resolveBattedBall の pHit 計算を厳密に再現・§16 B3a と同じ式）。
- * cfg.tuning.bb の定数のみを参照する読み取り専用の再計算（rng不使用・エンジン非変更）。
+ * 打球の期待アウト率（＝Statcast の catch probability 相当）。
+ * エンジンの Distance-Time モデル（neutralResponsible）をそのまま呼ぶ読み取り専用の再計算。
+ * 以前はここに resolveBattedBall の pHit 計算を手写ししていたが、二重実装は乖離の温床なので撤去した。
  * 打球のない打席は null、本塁打はエンジンと同じく 0 を返す。
  */
 function watchExpOut(e, cfg) {
   if (!e.bb || !e.battedType || !cfg) return null;
   if (e.result === 'HR') return 0;
-  const g = cfg.tuning.bb;
-  const base = e.battedType === 'GB' ? g.hitGB : e.battedType === 'LD' ? g.hitLD : e.battedType === 'FB' ? g.hitFB : g.hitPU;
-  let pHit = base + (e.bb.evKmh - 140) * g.evHitW;
-  if (e.battedType === 'FB' && e.bb.distanceM >= g.fbHitBonusM) pHit += 0.15;
-  // 滞空時間ベースの難易度（resolveBattedBall と同じ式・§req_20260708）。
-  const hangTimeS = e.bb.hangTimeS || 0;
-  const typical = e.fielderPos
-    ? (e.battedType === 'LD' && g.outfieldLDTypicalDepthM[e.fielderPos] != null
-        ? g.outfieldLDTypicalDepthM[e.fielderPos]
-        : g.posTypicalDepthM[e.fielderPos])
-    : null;
-  if (hangTimeS > 0 && typical != null) {
-    const reqSpeed = Math.abs(e.bb.distanceM - typical) / hangTimeS;
-    pHit += Math.min(g.timeDifficultyCap, Math.max(0, reqSpeed * g.timeDifficultyW));
-  }
-  pHit = Math.min(0.97, Math.max(0.01, pHit));
-  return 1 - pHit;
+  return neutralResponsible(e.bb, e.battedType, cfg).pOut;
 }
 
 /**

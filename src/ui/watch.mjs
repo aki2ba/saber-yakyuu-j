@@ -34,7 +34,7 @@
 //   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同一<script>へ前置concat。ui.mjs のヘルパーは
 //     deps オブジェクト u（ui.mjs の watchDeps()）で受け取る（トップレベル名衝突の回避・E1の流儀）。
 // ============================================================================
-import { playerBatting, playerPitching, effectiveBats, rawRunValuePerPA, isBarrel } from '../engine.mjs';
+import { playerBatting, playerPitching, effectiveBats, rawRunValuePerPA, isBarrel, neutralResponsible } from '../engine.mjs';
 import { detectGameNotables, notableHeadline } from '../game/index.mjs';
 import { buildBoxScore } from '../game/boxscore.mjs';
 
@@ -80,30 +80,15 @@ function watchInfieldChar(deg) {
 // ============================================================================
 
 /**
- * 打球の期待アウト率（resolveBattedBall の pHit 計算を厳密に再現・§16 B3a と同じ式）。
- * cfg.tuning.bb の定数のみを参照する読み取り専用の再計算（rng不使用・エンジン非変更）。
+ * 打球の期待アウト率（＝Statcast の catch probability 相当）。
+ * エンジンの Distance-Time モデル（neutralResponsible）をそのまま呼ぶ読み取り専用の再計算。
+ * 以前はここに resolveBattedBall の pHit 計算を手写ししていたが、二重実装は乖離の温床なので撤去した。
  * 打球のない打席は null、本塁打はエンジンと同じく 0 を返す。
  */
 function watchExpOut(e, cfg) {
   if (!e.bb || !e.battedType || !cfg) return null;
   if (e.result === 'HR') return 0;
-  const g = cfg.tuning.bb;
-  const base = e.battedType === 'GB' ? g.hitGB : e.battedType === 'LD' ? g.hitLD : e.battedType === 'FB' ? g.hitFB : g.hitPU;
-  let pHit = base + (e.bb.evKmh - 140) * g.evHitW;
-  if (e.battedType === 'FB' && e.bb.distanceM >= g.fbHitBonusM) pHit += 0.15;
-  // 滞空時間ベースの難易度（resolveBattedBall と同じ式・§req_20260708）。
-  const hangTimeS = e.bb.hangTimeS || 0;
-  const typical = e.fielderPos
-    ? (e.battedType === 'LD' && g.outfieldLDTypicalDepthM[e.fielderPos] != null
-        ? g.outfieldLDTypicalDepthM[e.fielderPos]
-        : g.posTypicalDepthM[e.fielderPos])
-    : null;
-  if (hangTimeS > 0 && typical != null) {
-    const reqSpeed = Math.abs(e.bb.distanceM - typical) / hangTimeS;
-    pHit += Math.min(g.timeDifficultyCap, Math.max(0, reqSpeed * g.timeDifficultyW));
-  }
-  pHit = Math.min(0.97, Math.max(0.01, pHit));
-  return 1 - pHit;
+  return neutralResponsible(e.bb, e.battedType, cfg).pOut;
 }
 
 /**

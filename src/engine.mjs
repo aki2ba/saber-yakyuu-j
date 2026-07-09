@@ -25,6 +25,10 @@ import { logit, expit, ratingDelta, log5 } from './sim/rates.mjs';
 import { PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance } from './sim/plateAppearance.mjs';
 import { generateBattedBall } from './sim/battedBall.mjs';
 import { battedType, computeGeometry, assignFielder, resolveBattedBall } from './sim/battedBallResult.mjs';
+import {
+  fieldingChances, neutralResponsible, outProb, smaxOf, fielderPositions, runnerToFirst,
+  FIELD_POS, FG_INFIELD, FG_OUTFIELD, IS_OUTFIELD,
+} from './sim/fieldingGeometry.mjs';
 import { selectPitch, selectPitchByCount } from './sim/pitchGrid.mjs';
 import { buildDepthChart, selectActiveRoster, hitScore, obpScore, powerScore, starterScore, relieverScore } from './sim/team.mjs';
 import {
@@ -66,6 +70,7 @@ export {
   logit, expit, ratingDelta, log5,
   PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,
+  fieldingChances, neutralResponsible, outProb, smaxOf, fielderPositions, runnerToFirst, FIELD_POS, FG_INFIELD, FG_OUTFIELD, IS_OUTFIELD,
   buildDepthChart, selectActiveRoster, hitScore, obpScore, powerScore, starterScore, relieverScore,
   neutralManager, buildPregameEval, availableRelievers, observedWoba, stealLogitAdjust,
   buntAttemptProb, ibbProb, choosePinchHitter, choosePinchRunner, chooseDefensiveSub,

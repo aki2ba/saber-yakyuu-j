@@ -13,6 +13,7 @@ import {
   decideBases,
 } from '../src/sim/battedBallResult.mjs';
 import { FIELD_POSITIONS } from '../src/model/positions.mjs';
+import { neutralResponsible, fieldingChances, outProb, smaxOf } from '../src/sim/fieldingGeometry.mjs';
 
 const cfg = createConfig();
 const avgBatter = () => createPlayer({ role: 'fielder', trueAbility: createTrueAbility() });
@@ -59,22 +60,71 @@ test('assignFielder は有効なポジションを返す', () => {
   for (const [type, la] of [['GB', -3], ['LD', 15], ['FB', 35], ['PU', 60]]) {
     for (const spray of [-40, -20, 0, 20, 40]) {
       const bb = { evKmh: 150, laDeg: la, sprayDeg: spray, distanceM: 80 };
-      const pos = assignFielder(bb, type);
+      const pos = assignFielder(bb, type, cfg);
       assert.ok(positions.has(pos), `${type}/${spray} -> ${pos}`);
     }
   }
 });
 
-test('assignFielder: 外野の担当角が±10でLF/CF/RFに分かれCF過集中が緩む（監査B6）', () => {
-  const fb = (spray) => assignFielder({ evKmh: 150, laDeg: 30, sprayDeg: spray, distanceM: 95 }, 'FB');
-  // 境界: |spray|<10 のみCF、それ以外は角側の外野へ
+test('assignFielder: 責任野手は幾何で決まる（正面フライはCF、ライン際はLF/RF、ゴロは内野）', () => {
+  const fb = (spray) => assignFielder({ evKmh: 150, laDeg: 30, sprayDeg: spray, distanceM: 95 }, 'FB', cfg);
   assert.equal(fb(0), 'CF', '正面はCF');
-  assert.equal(fb(-9), 'CF', '±10未満はCF');
-  assert.equal(fb(9), 'CF', '±10未満はCF');
-  assert.equal(fb(-10), 'LF', '-10はLF（旧±15より狭い）');
-  assert.equal(fb(10), 'RF', '+10はRF（旧±15より狭い）');
-  assert.equal(fb(-30), 'LF');
-  assert.equal(fb(30), 'RF');
+  assert.equal(fb(-35), 'LF');
+  assert.equal(fb(35), 'RF');
+  // ゴロは必ず内野手の責任（外野へ抜けても「最も惜しかった」内野手に帰属する）
+  const gb = (spray) => assignFielder({ evKmh: 140, laDeg: -5, sprayDeg: spray, distanceM: 20 }, 'GB', cfg);
+  assert.ok(['3B', 'SS'].includes(gb(-30)), `三塁側ゴロ -> ${gb(-30)}`);
+  assert.ok(['2B', '1B'].includes(gb(30)), `一塁側ゴロ -> ${gb(30)}`);
+});
+
+// --- Distance-Time モデルの核心的性質（正典 §2.3 / §5.4） -----------------------
+test('捕球確率は両極に分布する（凡プレーは≒1、到達不能な打球は≒0）', () => {
+  // センター正面の平凡なフライ: ほぼ確実にアウト
+  const routine = neutralResponsible({ evKmh: 150, laDeg: 35, sprayDeg: 2, distanceM: 92.3 }, 'FB', cfg);
+  assert.equal(routine.pos, 'CF');
+  assert.ok(routine.pOut > 0.95, `凡フライ pOut=${routine.pOut}`);
+
+  // 遊撃正面のゴロ: ほぼ確実にアウト
+  const easyGb = neutralResponsible({ evKmh: 130, laDeg: -8, sprayDeg: -16, distanceM: 20 }, 'GB', cfg);
+  assert.equal(easyGb.pos, 'SS');
+  assert.ok(easyGb.pOut > 0.9, `正面ゴロ pOut=${easyGb.pOut}`);
+});
+
+test('ポテンヒット（EV120km/h・61m の浅いライナー）は誰の責任にもならない（正典§5.4）', () => {
+  // 旧実装は CF に expOut 0.39 を課していた（CFは17.7m/sで走る必要があり物理的に到達不能）
+  const bloop = neutralResponsible({ evKmh: 120, laDeg: 18, sprayDeg: 0, distanceM: 60.9 }, 'LD', cfg);
+  assert.ok(bloop.pOut < 0.05, `ポテンヒットの減点は極小であるべき: pOut=${bloop.pOut}`);
+  assert.notEqual(bloop.pos, 'CF', 'CFの責任にはならない（二遊間の方がまだ近い）');
+});
+
+test('後方への移動は前方より遅い（direction補正・Statcast 2017）', () => {
+  // 同じ距離でも、外野手が「下がって」捕る打球の方が難しい
+  const back = fieldingChances({ evKmh: 150, laDeg: 30, sprayDeg: 0, distanceM: 112 }, 'FB', cfg);
+  const front = fieldingChances({ evKmh: 150, laDeg: 30, sprayDeg: 0, distanceM: 84 }, 'FB', cfg);
+  assert.ok(back.reqSpeed.CF > front.reqSpeed.CF, `後方(${back.reqSpeed.CF}) > 前方(${front.reqSpeed.CF})`);
+});
+
+test('内野は「到達」だけでなく「送球アウト」を要する（足の速い打者に内野安打が湧く）', () => {
+  const deepHole = { evKmh: 140, laDeg: -4, sprayDeg: -28, distanceM: 25, runnerSpeed: 50 };
+  const slow = neutralResponsible({ ...deepHole, runnerSpeed: 20 }, 'GB', cfg);
+  const fast = neutralResponsible({ ...deepHole, runnerSpeed: 80 }, 'GB', cfg);
+  assert.ok(fast.pOut < slow.pOut, `速い打者ほどアウトになりにくい: fast=${fast.pOut} slow=${slow.pOut}`);
+});
+
+test('個人のRangeはSmaxに乗り、五分五分のプレーで最も効く', () => {
+  const bb = { evKmh: 145, laDeg: 20, sprayDeg: -22, distanceM: 70 };
+  const nr = neutralResponsible(bb, 'LD', cfg);
+  const { reqSpeed, pThrow } = fieldingChances(bb, 'LD', cfg);
+  const good = outProb(reqSpeed[nr.pos], pThrow[nr.pos], smaxOf(70, cfg), cfg);
+  const bad = outProb(reqSpeed[nr.pos], pThrow[nr.pos], smaxOf(30, cfg), cfg);
+  assert.ok(good > bad, `上手い野手ほどアウトにする: ${good} > ${bad}`);
+  // 絶望的な打球では巧拙がほとんど効かない
+  const hopeless = { evKmh: 120, laDeg: 18, sprayDeg: 0, distanceM: 60.9 };
+  const hnr = neutralResponsible(hopeless, 'LD', cfg);
+  const hc = fieldingChances(hopeless, 'LD', cfg);
+  const hGood = outProb(hc.reqSpeed[hnr.pos], hc.pThrow[hnr.pos], smaxOf(70, cfg), cfg);
+  const hBad = outProb(hc.reqSpeed[hnr.pos], hc.pThrow[hnr.pos], smaxOf(30, cfg), cfg);
+  assert.ok(hGood - hBad < good - bad, '絶望的な打球では巧拙の差が小さい');
 });
 
 test('decideBases(監査B1): 浅い空中安打は単打、深い打球は二塁打、最深ギャップは脚力で三塁打化', () => {

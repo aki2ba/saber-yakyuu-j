@@ -36,6 +36,15 @@ const OFF1 = advanceYear(ST);
 advanceTo(ST, 'seasonEnd');
 const MOVES_Y2 = ST.rt.rosterMoves.slice();
 const OFF2 = advanceYear(ST);
+// 昇格の検証は「昇格直後」の状態で行う。3年目のシーズン中に farmPromote スワップで
+// 支配下→育成へ再契約されうる（applyFarmPromotionSwap は 1:1 の同型入替）ため、
+// 後の時点で「昇格者は支配下」を要求すると正しい挙動を誤検知する。
+const PROMO2_AFTER = new Map(
+  OFF2.promotions.map((pr) => {
+    const p = ST.league.players.find((x) => x.id === pr.playerId);
+    return [pr.playerId, { inPlayers: !!p, status: p ? p.rosterStatus : null, inFarm: ST.league.farm.some((x) => x.id === pr.playerId) }];
+  })
+);
 advanceTo(ST, 'seasonEnd');
 
 test('F2-3: 1年目は入替が一切発生しない（鉄則7: simulateSeasonとbit同一を維持）', () => {
@@ -149,10 +158,12 @@ test('F2-3: 育成→支配下 — オフの昇格は空き枠を同型消費し
   const promos = [...OFF1.promotions, ...OFF2.promotions];
   assert.ok(promos.length > 0, '多年で育成昇格が発生する');
   for (const pr of promos) {
-    // 昇格者は現支配下に居る（かつ引退等で消えている場合もあるが、直近オフ分は在籍）
+    // 昇格「直後」に支配下(active)へ移り、育成枠から抜けていること（後年の再契約は別問題）
     if (OFF2.promotions.includes(pr)) {
-      const p = ST.league.players.find((x) => x.id === pr.playerId);
-      assert.ok(p && p.rosterStatus === 'active', `${pr.playerId}: 昇格者は支配下`);
+      const st = PROMO2_AFTER.get(pr.playerId);
+      assert.ok(st.inPlayers, `${pr.playerId}: 昇格直後は支配下に居る`);
+      assert.equal(st.status, 'active', `${pr.playerId}: 昇格直後は active`);
+      assert.ok(!st.inFarm, `${pr.playerId}: 昇格直後は育成枠から抜けている`);
     }
   }
 });

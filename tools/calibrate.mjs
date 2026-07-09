@@ -20,7 +20,7 @@ import { hitterWAR, pitcherWAR } from '../src/sim/war.mjs';
 // --- フェーズB B3c 追加系指標の健全性チェック用（既存30には一切影響しない） ---
 import { createBattingLine, createPitchingLine, addBattingLine, addPitchingLine } from '../src/model/statline.mjs';
 import { playerBatting, playerPitching } from '../src/sim/metrics.mjs';
-import { armRunsAboveAvg, mainPosition, totalFieldInnings } from '../src/sim/fielding.mjs';
+import { armRunsAboveAvg, mainPosition, totalFieldInnings, uzrRuns } from '../src/sim/fielding.mjs';
 // --- F2-5 二軍サニティ用（ゲーム層の日次ランタイム＝二軍リーグ並走。既存30には一切影響しない） ---
 import { startSeasonRuntime, advanceRuntimeDay, pendingDay } from '../src/game/season_runtime.mjs';
 
@@ -134,12 +134,21 @@ function runOnce(seed) {
   const lgPm = playerPitching({ pitching: lgPit }, lc, cfg); // リーグ集計の LOB%
   let armLeader = -Infinity; // 外野ARM上位（規定守備の外野手・対平均run）
   let assistLeader = 0; // 外野補殺リーダー（NPB実測: 年6〜9本・正典§6.4）
+  // 守備の門番（正典§11.8）: 規定守備イニングの野手UZR（捕手を除く。捕手はUZRを持たない）
+  const uzrVals = [];
   for (const s of res.playerSeasons) {
-    if (OUTFIELD.has(mainPosition(s.fielding)) && totalFieldInnings(s.fielding) >= 400) {
+    const pos = mainPosition(s.fielding);
+    const inn = totalFieldInnings(s.fielding);
+    if (OUTFIELD.has(pos) && inn >= 400) {
       armLeader = Math.max(armLeader, armRunsAboveAvg(s, cfg, lc));
       assistLeader = Math.max(assistLeader, s.fielding.armKill || 0);
     }
+    if (inn >= 400 && pos && pos !== 'C' && pos !== 'DH') uzrVals.push(uzrRuns(s, cfg, lc));
   }
+  const uzrTop = uzrVals.length ? Math.max(...uzrVals) : 0;
+  const uzrBottom = uzrVals.length ? Math.min(...uzrVals) : 0;
+  const uzrMean = uzrVals.reduce((a, b) => a + b, 0) / (uzrVals.length || 1);
+  const uzrSd = Math.sqrt(uzrVals.reduce((a, b) => a + (b - uzrMean) ** 2, 0) / (uzrVals.length || 1));
   let totQS = 0;
   let totGS = 0;
   // --- B1-3 規律系: 先発投球数/試合・WP+PB/球団・フレーミング上位（一球の副産物）---
@@ -208,6 +217,9 @@ function runOnce(seed) {
     lobPct: lgPm.lobPct,
     armLeader,
     assistLeader,
+    uzrTop,
+    uzrBottom,
+    uzrSd,
     qsRate: totGS ? totQS / totGS : 0,
     disc,
     // --- D2 パークファクター ---
@@ -309,7 +321,7 @@ console.log(row('SLG', m.slg, T.batting.slg));
 console.log(row('OPS', m.ops, T.batting.ops));
 console.log(row('K%', m.kPct, T.batting.kPct));
 console.log(row('BB%', m.bbPct, T.batting.bbPct));
-console.log(row('BABIP', m.babip, null));
+console.log(row('BABIP', m.babip, T.batting.babip));
 console.log(row('HR/team', m.hrPerTeam, T.batting.hrPerTeam, 1));
 console.log(row('ERA', m.era, T.pitching.era, 2));
 console.log(row('runs/tm/g', m.runsPTG, T.batting.runsPerTeamPerGame, 2));
@@ -396,6 +408,11 @@ console.log(brow('LOB%', avgR((r) => r.lobPct), B.lobPct, 3));
 console.log(brow('QS率', avgR((r) => r.qsRate), B.qsRate, 3));
 console.log(brow('ARM上位(外野)', avgR((r) => r.armLeader), B.armLeader, 2));
 console.log(brow('外野補殺リーダー', avgR((r) => r.assistLeader), B.ofAssistLeader, 1));
+console.log('');
+console.log('--- 守備の門番（正典§11.8・規定守備400イニング以上の野手UZR。捕手はUZRを持たない） ---');
+console.log(brow('UZR最高', avgR((r) => r.uzrTop), B.uzrTop, 2));
+console.log(brow('UZR最低', avgR((r) => r.uzrBottom), B.uzrBottom, 2));
+console.log(brow('UZR標準偏差', avgR((r) => r.uzrSd), B.uzrSd, 2));
 console.log('');
 console.log('--- 文脈指標（context・seeds=' + CTX_SEEDS.join(',') + ' 平均） ---');
 console.log(babs('ΣRE24(恒等≈0)', avgC((r) => r.re24Sum), B.re24SumAbs));

@@ -382,141 +382,448 @@ CF も担当角 ±10° で 747 打球と、LF/RF（各 498）の 1.5 倍。深�
 
 ---
 
-## 6. 【未調査】次セッションで埋めるべき欠落
+## 6. NPB の実分布（調査結果）
 
-本調査は MLB 一次情報を満票で確定できたが、以下は **API セッション上限により未完**。**推測で埋めてはならない。**
+### 6.1 結論: 1.02 は順位のみ公開、実数値は非公開
 
-### 6.1 NPB の UZR 実分布（最優先）
-較正目標を決めるのに必須。**日本語ソースが必要。**
-- 検索クエリ: `1.02 UZR ランキング` / `DELTA UZR 2024` / `NPB UZR 順位` / `デルタ 守備指標` / `菊池涼介 UZR` / `源田壮亮 UZR`
-- 主要ソース: `data.1point02.jp`（有料/会員制の可能性）、`note.com/deltagraphs`、DELTA『プロ野球データブック』、蛭川皓平『セイバーメトリクス入門』
-- 知りたいこと:
-  - NPB の年間 UZR 最高値（ポジション別。特に 2B/SS/CF/1B）
-  - 規定到達者の UZR 標準偏差
-  - 143試合 vs 162試合でスケールが違うのか（単純比例か）
-  - NPB の UZR は誰がどのゾーン方式で算出しているか
-  - ポジション別 年間失策数の目安、捕手の盗塁阻止率（NPB平均と上位）
+`data.1point02.jp`（DELTA / 1.02）は NPB UZR の実質的な公式発表元だが、
+**「デルタ・フィールディング・アワード」等の無料記事では受賞選手名のみが示され、UZR 実数値は掲載されない。**
+実数値が出るのは DELTA が個別分析コラムで引用したケースに限られる（詳細データは会員限定と推測）。
 
-### 6.2 DRS の成分定義
-- `rPM` / `rSB` / `rGDP` / `rARM` / `rGFP` / `rBU` / `rTHR` / `rSZ(framing)` / `rPOS` の定義とポジション対応表
-- Plus/Minus システムが **1つの打球を1人に帰属させるのか複数に分割するのか**（UZR は分割する）
-- PADE（Park-Adjusted Defensive Efficiency）
-- 出典: https://library.fangraphs.com/defense/drs/ 、https://www.fieldingbible.com/
+### 6.2 それでも確定できたこと
 
-### 6.3 捕手フレーミングの現実的レンジ
-- **1シーズンの最良/最悪は何 run か**（実測シムは +26.4 だが、現実の上限が不明）
-- Statcast Catcher Framing と BP の CSAA の違い
-- shadow zone の分割方法
-- NPB のフレーミング公表値の有無
-- 出典: https://baseballsavant.mlb.com/catcher_framing 、https://www.mlb.com/glossary/statcast/catcher-framing
+**DELTA 公式用語集の解釈目安** `[一次]`:
+> 「平均的な守備者の UZR はゼロで、優秀な選手は **+10 や +20** といった数値に達する」
+> — https://1point02.jp/op/gnav/glossary/gls_explanation.aspx?eid=20026
 
-### 6.4 走塁指標
-- BsR = UBR + wSB + wGDP の定義、`runSB` / `runCS` の実値
-- UBR が何を独立変数にしているか
-- Spd（Speed Score）の正確な式
-- MLB / NPB での現実的なレンジ
-- 出典: https://library.fangraphs.com/offense/bsr/ 、`/ubr/` 、`/wsb/` 、`/spd/`
+**実測値の断片**（日本経済新聞が DELTA 算出値を引用。`[二次]`）:
+| 選手 | ポジション | 年 | UZR |
+|---|---|---|---|
+| 外崎修汰（西武） | 2B | 2022 | **+15.4**（12球団2B トップ） |
+| ソト（DeNA） | 1B | 2022 | +7.3（12球団1B トップ） |
+| 安田尚憲（ロッテ） | 3B | 2022 | +7.1（12球団3B トップ） |
+| 吉川尚輝（巨人） | 2B | 2021 | +9.2（リーグトップ） |
+| 菊池涼介（広島） | 2B | 2014 | +12.3（守備範囲成分）`[一次: 1.02コラム]` |
 
-### 6.5 未決の疑問
-- **Statcast OAA は、安打が落ちたとき「最も捕球確率の高い1人」だけを減点するのか、捕球確率が非ゼロの全野手を減点するのか。**
-  glossary の "reflecting the likelihood of that ball being caught by other outfielders" は前者を示唆するが断定できず。
-  → 設計上は **「最も p が高い1人に −p を課す」** が単純かつリーグ総和≈0 を保てる。
-- ポジション補正の分母は 1350 か 1458 か（§3 注記）。
+- 出典: https://www.nikkei.com/article/DGXZQODH18D9Q0Y2A111C2000000/ （二次・DELTA算出データ引用）
+- 出典: https://1point02.jp/op/gnav/column/bs/column.aspx?cid=53404 （一次）
+
+**NPB の UZR は MGL のオリジナル UZR とは別実装** `[一次: DELTA 自身が明記]`:
+> 「米国で算出されている UZR と完全に同じ計算方法で算出されているわけではない」
+
+DELTA・データスタジアムがそれぞれ独自のゾーンデータで算出。成分は RngR / ErrR / DPR / ARM（＝FanGraphs と同じ4成分）。
+内野手はゴロのみ、外野手はフライ・ライナーが対象。
+
+### 6.3 【重要】143試合スケールの換算は不要
+
+**「UZR/143」のような正規化・スケーリングの慣行を示す資料は見つからなかった `[確認できず]`。**
+
+しかし決定的なのは、DELTA の目安（「優秀は +10〜+20」）も実測値（外崎 +15.4、菊池 +12.3〜13.7）も、
+**MLB の「+15 = ゴールドグラブ級」とほぼ同水準にそのまま収まっている**こと。
+
+**→ 較正目標は MLB の目安（+15 = ゴールドグラブ級）をそのまま採用してよい。143/162 の比例縮小（+13.2）を行う根拠は無い。**
+
+### 6.4 NPB の失策数・盗塁阻止率 `[一次: NPB.jp 公式]`
+
+**2024年 セ・リーグ 遊撃手 失策数**: 門脇誠 14 / 森敬斗 12 / 長岡秀樹・矢野雅哉 9 / 木浪聖也 8 / 村松開人・小幡竜平 5 / 京田陽太・小園海斗ら 3
+→ 主要遊撃手は **年間 3〜14 個**
+- 出典: https://npb.jp/bis/2024/stats/lf_e6_c.html
+
+**2024年 セ・リーグ 捕手 盗塁阻止率**: 岸田行倫 .475 / 中村悠平 .467 / 坂倉将吾 .385 / 山本祐大 .352 / 加藤匠馬 .261 / 梅野隆太郎 .216
+→ **約 .22 〜 .48**
+- 出典: https://npb.jp/bis/2024/stats/lf_csp2_c.html
+
+### 6.5 取得できなかったもの `[確認できず]`
+- ポジション別（特に CF/SS）の歴代最高 UZR の数値そのもの（1位の選手名までは判明、数値は非公開）
+- 規定到達者の UZR 標準偏差（NPB 向けの明示的な統計値は未発見）
+- 菊池涼介の UZR 歴代値の確定系列（出典間で数値が食い違う。2016年 13.7 vs 17.3 など。**断定不可**）
+- 捕手盗塁阻止率の NPB リーグ平均
 
 ---
 
-## 7. 修正方針（原典に基づく設計案）
+## 7. 走塁指標（BsR / UBR / wSB / wGDP / Spd）
 
-> ⚠ これは **提案** であり、実装前に §6 の欠落（特に NPB 分布）を埋めて較正目標を確定すること。
+### 7.1 定義 `[一次]`
 
-### 7.1 中核: Distance-Time モデルによる per-fielder 捕球確率
+**BsR = wSB + UBR + wGDP** — https://library.fangraphs.com/offense/bsr/
+（約 10 走塁 run で 1 win 相当）
 
-現行の「担当野手を1人決め打ち → 打球種別平均で expOut」を捨て、Statcast OAA と同じ構造にする。
+| 成分 | 定義 |
+|---|---|
+| **wSB** | 盗塁・盗塁死の走塁価値 |
+| **UBR** | 盗塁以外の走塁貢献（安打時の進塁・タッチアップ・走塁死など） |
+| **wGDP** | 併殺打の回避度 |
+
+### 7.2 wSB の算出式 `[一次]` — https://library.fangraphs.com/offense/wsb/
 
 ```
-1. 各ポジションの守備初期位置 (x, y) を定義する（守備隊形。現行の posTypicalDepthM を2次元へ拡張）
-2. 打球の幾何から、各野手 i について:
-     - 外野/飛球: opportunity distance = 初期位置 → 落下点、opportunity time = hangTimeS
-     - 内野/ゴロ: intercept point までの距離、打球がそこへ到達するまでの時間
-     - reqSpeed_i = distance_i / time_i
-3. p_i = expit( (maxSpeed_i − reqSpeed_i) / width )
-     maxSpeed_i は Range レーティング（positioningIQ + reaction + speed）から導く
-     → これにより p は自然に両極分布する（届く球は p≈1、届かない球は p≈0）
-4. 打球のアウト確率 pOut = max_i(p_i)（最も近い野手が処理する）
-5. アウト/安打の抽選は pOut で行う
-6. OAA 帰属:
-     アウト → 処理した野手 j に  +(1 − p_j)
-     安打   → 最も p の高い野手 j に  −p_j       ← 到達不能な打球なら p_j≈0 で実質無罰
-7. run 換算は現行のまま（内野 0.75 / 外野 0.9・§2.4 で一次情報確証済み）
+wSB   = (SB × runSB) + (CS × runCS) − (lgwSB × (1B + BB + HBP − IBB))
+lgwSB = (ΣSB × runSB + ΣCS × runCS) / (Σ1B + ΣBB + ΣHBP − ΣIBB)
+runSB = +0.2   ← 全シーズン固定
+runCS = −(2 × RunsPerOut + 0.075)   ← 得点環境依存で年ごとに変動
+```
+実例: 2016年 runCS = −0.41、2014年 runCS ≈ −0.377。実測レンジは概ね **−0.35 〜 −0.45**。
+
+**NPB でも 1.02 が同型の指標を公表している** `[一次]`:
+> 「盗塁得点は通常 **0.20 前後**、盗塁死得点は **−0.40 前後**」
+> — https://1point02.jp/op/gnav/glossary/gls_explanation.aspx?ecd=204&eid=20049
+
+**→ 現行 config の `run.runSB: 0.19` / `run.runCS: -0.38` は日米一次情報の範囲内で妥当。**
+ただし `runCS` は本来 `−(2 × RunsPerOut + 0.075)` という**得点環境依存の可変式**であり、固定値にすると
+時代トレンド（フェーズD）で得点環境が動いたときに乖離する。
+
+### 7.3 UBR `[一次]` — https://library.fangraphs.com/offense/ubr/
+
+考案者は MGL（UZR と同じ）。状況（塁上・アウトカウント・打球結果）ごとに、
+走者の実際の進塁結果と、その状況でのリーグ平均的な結果との**期待得点の差分**をプレー単位で積算する。
+
+対象7カテゴリ: ①安打時の余分な進塁 ②打者走者の余塁進塁 ③先行走者の進塁判断 ④後続走者への影響
+⑤フライでのタッチアップ ⑥内野ゴロでの一塁走者 ⑦遊撃・三塁方向の打球での二塁走者
+
+**除外**: 盗塁・盗塁死（wSB で別評価）、三塁走者のフライ以外での生還。
+
+**独立変数は「結果（進塁したか / アウトになったか）」であり、打球速度や守備者の肩は直接の変数ではない。**
+
+### 7.4 解釈目安 `[一次]`
+
+| 評価 | BsR | UBR | Spd |
+|---|---|---|---|
+| Excellent | **+8** | +6 | 7.0 |
+| Great | +6 | +4 | 6.0 |
+| Above Average | +2 | +1.5 | 5.5 |
+| Average | 0 | 0 | 4.5 |
+| Below Average | −2 | −1.5 | 4.0 |
+| Poor | −4 | −4 | 3.0 |
+| Awful | −6 | −6 | 2.0 |
+
+> 「最高レベルの走者でも年間 **8〜10 得点程度が上限**」
+
+wGDP は概ね −2.5 〜 +2。
+
+### 7.5 Spd（Speed Score）
+
+FanGraphs 版は **4成分**: 盗塁成功率 / 盗塁企図頻度 / 三塁打率 / 得点率（Runs Scored %）`[一次]`
+Bill James の原典は6成分（上記＋併殺回避率＋守備範囲）だが、**正確な重み付け式は確認できず** `[二次]`。
+
+**→ 現行実装の Spd 4成分は「盗塁成功率×頻度・三塁打率・XBT%・守備位置速度」であり、FanGraphs 版と2成分が異なる**
+（`得点率` の代わりに `XBT%`、加えて `守備位置速度`）。FanGraphs 版に寄せるか、独自と明記するか要判断。
+
+### 7.6 Statcast Sprint Speed `[一次]`
+- 定義: "feet per second in a player's fastest one-second window"
+- リーグ平均 **27 ft/sec**（8.23 m/s）、競争レンジ **23（poor）〜30（elite）**、"Bolt" = 30 ft/sec 以上
+- 出典: https://baseballsavant.mlb.com/leaderboard/sprint_speed
+
+---
+
+
+## 8. 捕手守備（フレーミング / ブロッキング / 送球）
+
+### 8.1 Statcast Catcher Framing Runs `[一次]`
+
+> "Catcher Framing Runs converts strikes to runs saved on a **.125 run/strike** basis, and includes **park and pitcher adjustments**."
+>
+> "The **shadow zone** is essentially the edges of the strike zone, roughly one ball width inside and one ball wide outside of the zone."
+
+- 出典: https://baseballsavant.mlb.com/catcher_framing （一次）
+- ランク対象条件: チーム試合あたり6テイク（見逃し）以上
+
+**0.125 run/strike の導出** `[一次: Tango 本人]`:
+> called strike の run value は shadow zone 限定で **12.6〜12.7 runs / 100球**。
+> "I like round numbers" として 12.5 runs/100球 = **0.125 runs/pitch** に丸めた。
+- 出典: https://tangotiger.com/index.php/site/wowy-framing-part-3-of-n-run-value-of-a-called-strike
+
+**⚠ 訂正**: 「shadow zone を8分割し、各エリアのストライク獲得率を平均と比較」という方式は **一次情報で確認できず**。
+実際は「投球のゾーン境界からの**距離**に基づく連続確率モデル」（2025年にモデル改訂）。離散8ブロックという理解は不正確。
+
+### 8.2 【最重要】フレーミングの現実的なレンジ
+
+**MLB 単年**:
+| 選手 | 年 | Framing Runs |
+|---|---|---|
+| Patrick Bailey | 2025 | **+25**（MLB首位） |
+| Patrick Bailey | 2024 | +16（MLB首位） |
+| Francisco Alvarez | 2023 | +13.4 |
+| Willson Contreras | 2023 | −10.8 |
+| Edgar Quero | 2025 | −13（MLB最下位） |
+| Elias Diaz | 2023 | **−18.8**（MLB最下位） |
+
+> MLB.com: "The spread between the best and worst framers is more on the scale of **30 to 40 runs**, or three to four wins."
+> （対照的に **ブロッキングの最良-最悪差は約10 runs**）
+
+リーグ標準偏差は PITCHf/x 期で約 13 runs だが、リーグ全体の技術向上に伴い分散は縮小傾向（`[二次]`）。
+
+**NPB（DELTA / 1.02 の独自フレーミング指標）** `[二次: 私設分析サイト]`:
+| 選手 | 年 | 値 |
+|---|---|---|
+| 中村悠平（ヤクルト） | 2023 | +4.0点（前年 **+10.4点**） |
+| 坂本誠志郎（阪神） | 2023 | +0.2点 |
+| 坂倉将吾（広島） | 2023 | **−7.5点** |
+
+**→ NPB のフレーミングのレンジは MLB より遥かに狭い（概ね ±10 点）。**
+NPB 公式のフレーミング公表値は存在しない。DELTA は球種・構え・コース・投手左右・球場・球審・カウントを考慮した機械学習モデルで算出。
+- 出典: https://1point02.jp/op/gnav/column/bs/column.aspx?cid=54003
+
+**→ 実測シムの framing max = +26.4 は MLB エリート級（Bailey 2025 の +25 相当）だが、NPB 近似という本プロジェクトの目的関数からは過大。**
+
+### 8.3 年度間相関: フレーミングは守備指標の中で最も安定
+
+| 指標 | year-to-year 相関 |
+|---|---|
+| **Framing (CAFE 階層ベイズ)** | **0.70 (2012-13) / 0.71 (2013-14)** |
+| UZR | ≈0.5 |
+| OAA | 0.31（Spearman） |
+| DRS | 0.23（Spearman） |
+
+「フレーミングの自己相関 0.5〜0.7 は打者のスラッギング率と同水準」。
+- 出典: arXiv:1704.00823 （学術）
+- ただし近年はリーグ内平準化により相関自体が低下傾向（`[二次]` THT: R²=0.49 → 0.20）
+
+### 8.4 ブロッキング / 送球 `[一次: MLB.com glossary]`
+
+> "Catcher Blocking Runs converts blocks to runs saved on a **.25 runs/block** basis."
+>
+> "Catcher Stealing Runs is a translation of Caught Stealing Above Average to a run value on a **.65 runs/CS** basis,
+> **the difference between a SB (+.2 runs) and a CS (−.45 runs)**."
+
+**→ `.65 run/CS` の正体は「SB の run value と CS の run value の差」。**
+これは §7.2 の `runSB = +0.2` / `runCS ≈ −0.45` と完全に整合する。捕手 rSB を実装する際、
+`0.65` を天下り的に置くのではなく `runSB − runCS` から導出すべき。
+
+- ブロッキングの最良-最悪差は **約10 runs**（フレーミングの 30-40 runs より明確に小さい）
+
+### 8.5 BP の CSAA との違い `[二次]`
+- **BP CSAA**: 全テイク球（30万球超）を対象に、捕手・投手・打者・球審を**同時に混合モデルで回帰**して捕手固有の寄与を分離
+- **Statcast Framing Runs**: shadow zone 中心、球の位置ベースの確率モデル。park / pitcher 補正込み
+- 両者は「完全には一致しないがかなり近い」とされるが、**定量的な相関係数は確認できず**
+
+---
+
+## 9. DRS（Defensive Runs Saved）
+
+本プロジェクトは UZR/OAA 方式を採用するため参考情報。ただし **§9.2 は設計判断に直結する**。
+
+### 9.1 成分 `[一次: FanGraphs Library]` — https://library.fangraphs.com/defense/drs/
+
+| 略号 | 定義（原文） | 対象 |
+|---|---|---|
+| rPM | "evaluates the fielder's range and ability to convert a batted ball to an out" | 範囲を持つ全野手 |
+| rSB | "the pitcher's contributions to controlling the running game, and gives the catcher credit for throwing out runners" | 投手 / 捕手 |
+| rBU | "evaluates a fielder's handling of bunted balls in play" | 1B / 3B |
+| rGDP | "credits infielders for turning double plays" | 2B / SS |
+| rARM | "evaluates an outfielder's throwing arm based on how often runners advance on base hits" | 外野手 |
+| rHR | "credits the outfielder **1.6 runs per robbed home run**" | 外野手 |
+
+`rGFP` / `rSZ` / `rPOS` / `rTHR` は **一次ページで定義文を確認できず**（二次情報のみ）。
+
+### 9.2 【設計に直結】DRS は責任を1人に集約する `[二次]`
+
+> （2人の外野手の間を抜けた打球の例）"**only the player who was most likely to make the play gets penalized** for not doing so.
+> ... if centerfielders typically catch that ball in the gap 60% of the time, but leftfielders just 35% of the time,
+> **only the centerfielder gets penalized**."
+
+**→ DRS は「最も捕球確率が高い1人」に責任を集約する。UZR の比例配分（複数野手へ按分）とは方式が異なる。**
+（この対比の一次ソース＝Fielding Bible 公式解説は JS 描画で本文取得できず、**二次情報にとどまる**）
+
+**run 換算は固定値ではなく打球ごとの期待アウト率に応じた可変値** `[二次]`:
+> "If an out is made on a similar batted ball 25% of the time, a successful play earns 0.75 runs saved,
+> where an unsuccessful play loses −0.25."
+
+### 9.3 スケール `[一次]`
+| DRS | 評価 |
+|---|---|
+| +15 | Gold Glove Caliber |
+| +10 | Great |
+| +5 | Above Average |
+| 0 | Average |
+| −5 | Below Average |
+
+歴代単年最高: **Andrelton Simmons 2017年 41 DRS**（`[二次: Wikipedia]`）。
+「トップクラスの野手は年間 **15〜20 DRS** 程度が典型」。
+
+---
+
+## 10. 未決の疑問（残）
+
+- **Statcast OAA は、安打が落ちたとき「最も捕球確率の高い1人」だけを減点するのか、非ゼロの全野手を減点するのか。**
+  一次情報では断定できず。ただし **DRS が明確に「1人に集約」（§9.2）** であり、
+  設計上は **「最も p が高い1人に −p を課す」** を採用する（単純・リーグ総和 ≈ 0 を保てる・DRS 流儀と一致）。
+- **ポジション補正の分母は 1350 か 1458 か**（§3 注記）。FanGraphs 原典で要再確認。
+- `rGFP` / `rSZ` / `rPOS` / `rTHR` の一次定義。
+- Statcast framing の連続確率モデルの正確な関数形。
+- Bill James Spd 原典6成分の正確な重み付け式（`[確認できず]`）。
+
+---
+
+## 11. 修正方針（原典に基づく設計案・プロトタイプ検証済み）
+
+> これは **設計提案** であり、未実装。較正53指標が全面的に動く変更のため、着手前に本節をレビューすること。
+
+### 11.1 【最重要な気づき】OAA の会計層はすでに正しい。壊れているのは `expOut` の中身だけ
+
+Statcast の catch probability は**野手個人の能力を含まないリーグ共通モデル**であり、
+そこからの差分（実結果 − p）が OAA になる。現行実装も
+
+- `expOut`（中立ベースライン）と `effPHit`（個人 Range 補正後）を分けている（`battedBallResult.mjs:177,190`）
+- `oaaOuts += actual − expOut`（`game.mjs:625`）
+
+という**構造は原典と一致している**。したがって修正は `expOut` の計算と `assignFielder` に**局所化できる**。
+`game.mjs` の累積ロジック、`fielding.mjs` の中心化・run換算は原則そのまま使える。
+
+### 11.2 中核: Distance-Time モデルによる per-fielder 捕球確率
+
+```
+1. 各ポジションの守備初期位置を2次元で定義（本塁からの距離 r と spray 角 θ）
+2. 打球ごとに、各野手 i について:
+   [空中球: LD / FB / PU]
+     opportunity distance = 初期位置 → 落下点 − reach
+     opportunity time     = hangTime − reaction
+     p_i = expit((Smax − reqSpeed) / width)
+   [ゴロ: GB]
+     迎撃点 = 野手を打球ベクトルへ射影した点（Statcast の "intercept point"）
+     ※ 迎撃点での打球高度が gloveHeight を超えるなら頭上を越える ＝ p_i = 0
+     p_reach = expit((Smax − 横移動距離 / 打球到達時間) / width)
+     p_throw = expit((打者走者の一塁到達時間 − (捕球時刻 + 持ち替え + 送球飛行)) / throwWidth)
+     p_i = p_reach × p_throw          ← Statcast infield OAA の4要素すべてを含む
+3. pOut = max_i p_i、責任野手 = argmax_i p_i     （§9.2 DRS の流儀）
+4. アウト/安打の抽選は、責任野手の個人 Range を反映した p'_j で行う
+5. OAA 帰属:  アウト → +(1 − p_j)   /   安打 → −p_j     （p_j はリーグ中立値）
+6. run 換算は現行のまま（内野 0.75 / 外野 0.9・§2.4 で一次情報確証済み）
 ```
 
-これにより:
-- **§5.4 のポテンヒットは CF の p≈0.02 → 減点 −0.02。ユーザーの違和感が構造的に解消される。**
-- `p(1−p)` が大半の打球で≈0 になるため、**UZR の二項ノイズが自然に縮み**、FanGraphs の ±15 レンジに収まるはず。
-- `timeDifficultyAdj` と `outfieldLDTypicalDepthM` という対症療法が**不要になる**。
-- Range レーティングのシグナルが「五分五分の打球」に集中して効くようになる（＝守備の巧拙が意味を持つ）。
+**内野で `p_throw` が必須**な理由: Statcast infield OAA の4要素のうち「到達点から塁までの距離」「フォース時の打者走者の足」を
+落とすと、内野手が全部捕ってしまう。プロトタイプ v1（到達確率のみ）はゴロ安打率 0.040（現実 0.19）で破綻した。
 
-**注意**: 打球の総アウト率（BABIP）は較正53指標の根幹。`maxSpeed` / `width` / 守備隊形は、**リーグ全体の BABIP が現行と一致するよう再較正**が必要。1年目シム不変（鉄則7）を壊さないこと。
+### 11.3 プロトタイプの検証結果
 
-### 7.2 UZR の成分を FanGraphs 定義に合わせる
+`thyroxin/research/proto_catchprob2.mjs` を 277,757 打球で実行:
+
+| 指標 | 現行 | 提案 v2 | 備考 |
+|---|---|---|---|
+| catch prob が両極 (p<0.1 or >0.9) | 17.5% | **70.8%** | 原典どおり両極分布 |
+| コイントス帯 (0.3≤p<0.7) | 24.9% | **10.8%** | ここでのみ守備力が効く |
+| リーグ out率 | 0.716 | 0.737 | 要微調整 |
+| GB 安打率 | 0.191 | **0.203** | **創発**（ノブではない） |
+| LD 安打率 | 0.650 | 0.593 | 要微調整 |
+| FB 安打率 | 0.145 | **0.125** | **創発** |
+| PU 安打率 | 0.022 | 0.035 | 要微調整 |
+| 構造ノイズ SD (CF) | 10.5 run | **5.8 run** | ほぼ半減 |
+| 構造ノイズ SD (3B) | 5.3 run | **2.2 run** | |
+
+**個別打球の挙動（原典との整合）:**
+```
+EV120 LA18° 60.9m（ユーザー報告のポテンヒット）
+   → SS p=0.014 / 2B p=0.014 / CF p=0.000
+     責任 = SS、落球時の減点 −0.01   [現行: CF に −0.39]
+
+EV150 LA35° 92.3m センター正面フライ
+   → CF p=0.996（落とせば −1.00 ＝ ほぼ1アウト分の大罪）
+
+EV130 LA−8° 遊撃正面ゴロ  → SS p=0.983（捕って当然）
+EV145 LA−4° 三遊間の強いゴロ → SS p=0.855 / 3B p=0.936（ここで守備力が効く）
+```
+
+**打球種別の安打率が、チューニングノブではなく幾何から創発している。** これは鉄則4（指標を後付けしない）の回復である。
+
+### 11.4 死ぬ config ノブ / 生まれる config ノブ
+
+**削除（創発するので不要）:**
+`bb.hitGB` / `bb.hitLD` / `bb.hitFB` / `bb.hitPU` / `bb.evHitW` / `bb.fbHitBonusM` /
+`bb.timeDifficultyW` / `bb.timeDifficultyCap` / `bb.outfieldLDTypicalDepthM` / `bb.posTypicalDepthM` /
+`field.rangeLogitSlope`（Smax への加算に置換）
+
+**新設（物理量。すべて意味を持ち、出典を持つ）:**
+| ノブ | 仮値 | 意味 |
+|---|---|---|
+| `field.positions` | 3B(34m,−33°) SS(44m,−16°) 2B(44m,+16°) 1B(33m,+35°) LF(88m,−28°) CF(98m,0°) RF(88m,+28°) | 守備隊形 |
+| `field.smaxBase` | 6.9 m/s | リーグ平均野手の実効クロージング速度 |
+| `field.smaxPerRating` | (要較正) | Range 1pt → Smax の増分 |
+| `field.width` | 1.05 m/s | 到達ロジスティックの幅（小さいほど両極化） |
+| `field.reactionS` | 0.30 s | 初動までの反応時間 |
+| `field.reachM` | 1.7 m | グラブ + ダイブの到達半径 |
+| `field.gloveHeightM` | 2.1 m | 内野手の頭上判定 |
+| `field.gbSpeedFactor` | 0.80 | ゴロの実効水平速度 / EV |
+| `field.transferS` | 0.70 s | 捕球 → リリース |
+| `field.throwSpeed` | 32 m/s | 送球速度 |
+| `field.runnerToFirstS` | 4.35 s | 打者走者の一塁到達（**打者 speed で可変にすべき**） |
+| `field.throwWidth` | 0.22 s | 送球アウトのロジスティック幅 |
+
+**副産物**: `runnerToFirstS` を打者の `speed` で可変にすると、**内野安打が足の速さから自然に湧く**。
+現行の `gdp.speedW`（足↔併殺回避の人為的な結線）が不要になる可能性がある。
+
+### 11.5 UZR の成分を FanGraphs 定義に合わせる
 
 ```
 外野手 UZR = RngR + ErrR + ARM
 内野手 UZR = RngR + ErrR + DPR
-捕手     = UZR を付けない（framing / blocking / throwing を別立てで WAR に入れる）
+捕手      = UZR を付けない（framing / blocking / throwing を捕手守備 run として別勘定）
 ```
-
 - ARM / DPR を WAR の `uzrRuns` に**含める**（現在は表示のみ）
-- `runPerDP` を 0.45 → **0.4**（FRV 準拠）
-- 捕手の framing を UZR に混ぜるのをやめ、捕手守備 run として別勘定にする
+- `field.runPerDP` を 0.45 → **0.40**（FRV 準拠）
+- 捕手 framing を UZR に混ぜるのをやめる
 
-### 7.3 ARM を真値の直訳から実イベント創発へ（鉄則4の回復）
+### 11.6 ARM を真値の直訳から実イベント創発へ（鉄則4の回復）
 
 現行: `armRuns += (arm − 50) × 0.007` ← 進塁抑止イベントが一切起きていない。
 
-あるべき姿: 単打で二塁走者が三塁を狙う／二塁打で一塁走者が本塁を狙う場面で、
-外野手の `arm` を進塁成功確率と刺殺確率に**実際に結線**し、
-`ARM = (リーグ平均の期待失点) − (この外野手が実際に許した失点)` として**生カウントから創発**させる。
+あるべき姿: 単打で二塁走者が三塁を狙う／二塁打で一塁走者が本塁を狙う場面で、外野手の `arm` を
+**進塁成功確率と刺殺確率に実際に結線**し、`ARM = リーグ平均の期待失点 − この外野手が実際に許した失点` として創発させる。
 
-> `game.mjs` の `resolveAdv` は現在 arm を見ておらず、乱数も消費していない。ここを結線すると
-> 進塁の実結果が変わる ＝ 較正指標（得点環境）が動く。**再較正が必要な変更**であることを織り込むこと。
+> `game.mjs` の `resolveAdv` は現在 `arm` を見ておらず、乱数も消費していない。
+> ここを結線すると進塁の実結果が変わる ＝ **得点環境が動き、較正53指標が全面的に動く**。
 
-### 7.4 捕手守備の完成
+### 11.7 捕手守備の完成
 
-| 成分 | 素データ | run 換算（FRV） | 状態 |
+| 成分 | 素データ | run 換算（FRV・一次） | 状態 |
 |---|---|---|---|
 | framing | `frameCalls`（一球ごと） | 1 strike = **.125** | ✅ 実装済み・係数も正当 |
-| blocking | `wp` / `pb` / `blockOpp`（集計済み） | 1 = **.25** | ⚠ 未接続 |
-| throwing (rSB) | `sbAllowed` / `csMade` | 1 SB prevented = **.65** | ⚠ 換算式を FRV へ |
+| blocking | `wp` / `pb` / `blockOpp`（集計済み） | 1 block = **.25** | ⚠ 未接続 |
+| throwing (rSB) | `sbAllowed` / `csMade` | 1 CS = **.65** = `runSB − runCS` | ⚠ 換算式を FRV へ |
 
-framing の現行実測 max は +26.4 run。**現実の上限が §6.3 未調査のため、係数ではなく「平均からの逸脱コール数」の分布が過大でないか要検証。**
+**フレーミングは NPB 基準では過大**（§8.2）。シム実測 +26.4 に対し NPB の DELTA 公表値は概ね ±10。
+係数 0.125 は正当なので、**「平均からの逸脱コール数」の分布**（`plateAppearance.mjs` の判定モデル）を絞る必要がある。
 
-### 7.5 較正への配線（守備を門番に通す）
+### 11.8 較正への配線（守備を門番に通す）
 
-`tools/calibrate.mjs` に守備の目標帯を追加し、`uzrTop` を実際に検査する。
+**現状、守備指標は較正53指標に1つも入っていない。** `uzrTop` は config に書かれているだけで未参照。
+`tools/calibrate.mjs` に以下を追加し、実際に PASS/FAIL 判定する。
 
-- 暫定案（MLB 目安ベース。**NPB 実分布の調査後に確定**）:
-  - `uzrTop`: リーグ最高 UZR（400イニング以上） → `[10, 16]`（+15 = ゴールドグラブ級）
-  - `uzrBottom`: リーグ最低 UZR → `[−16, −10]`
-  - `uzrSd`: 規定守備者の UZR 標準偏差 → 目安 `[4, 7]`
-  - `framingTop`: 現実レンジ調査後に確定
+| 目標 | 帯 | 根拠 |
+|---|---|---|
+| `uzrTop`（リーグ最高 UZR・400イニング以上） | **[10, 16]** | MLB「+15=ゴールドグラブ級」。NPB 実測も外崎 +15.4 / 菊池 +12.3 で同水準（§6.2） |
+| `uzrBottom`（リーグ最低 UZR） | **[−16, −10]** | 同上（対称） |
+| `uzrSd`（規定守備者の UZR 標準偏差） | **[4, 7]**（暫定） | NPB の SD は**確認できず**。構造ノイズ 2〜6 run + 能力差から逆算した暫定値 |
+| `framingTop`（捕手フレーミング最高） | **[5, 12]** | NPB: 中村悠平 +10.4（最大級）、坂倉 −7.5（§8.2） |
+| `bsrTop`（BsR 最高） | **[6, 9]** | FanGraphs: Excellent +8、「最高でも年間8〜10 が上限」（§7.4） |
 
-### 7.6 単年 UZR のノイズについて（設計思想）
+**143/162 の比例縮小は不要**（§6.3）。NPB でも +15 前後がトップという実測と一致するため。
 
-原典（§4）: 単年 UZR の年度間相関は ≈0.5、**真の実力推定には約半分に回帰**させるべき。
+### 11.9 単年 UZR のノイズと三層構造
 
-シムは真値を持つため、
-- **UI（コーチの見立て・球団AI）は UZR をそのまま信じてはいけない**（三層構造・鉄則3）
-- 起用AI / 球団AI が UZR を参照する場合、**約50%回帰させた値**を使うのが原典に忠実
+原典（§4）: 単年 UZR の年度間相関 ≈ 0.5、**真の実力推定には約半分に回帰**させるべき。
+フレーミングは 0.70 で例外的に安定（§8.3）。
+
+シムは真値を持つため:
+- **起用AI / 球団AI が UZR を参照する場合、約50%回帰させた値を使う**のが原典に忠実（鉄則3・三層構造）
+- フレーミングは回帰を弱くしてよい（安定指標だから）
 - これは「市場の非効率を仕込む」（鉄則5・守備の過小評価）とも整合する
 
-現行実装は `market` の `wDefMean: 0.62` で守備を過小評価させているが、**回帰による不確実性はモデル化されていない**。
+現行実装は `market.wDefMean: 0.62` で守備を過小評価させているが、**回帰による不確実性はモデル化されていない**。
+
+### 11.10 実装リスク
+
+1. **較正53指標が全面的に動く。** `hitGB/hitLD/hitFB/hitPU` が創発値になるため、BABIP・打率・得点環境がすべて再較正対象。
+2. **鉄則7「1年目シム不変」が守れない。** これは加齢等の多年要素ではなく、シムの中核モデルの変更だから当然。
+   ただし **`npm run verify`（決定論）は維持しなければならない**。
+3. 乱数消費順序が変わる。決定論は保たれるが、既存セーブデータとの互換は失われる。
+4. ARM の実イベント化（§11.6）は得点環境を動かす。**§11.2 とは別コミットに分けるべき。**
 
 ---
 
-## 8. 変更履歴
+## 12. 変更履歴
 
-- 2026-07-09: 初版。MLB 一次情報（UZR / OAA / FRV / posAdj / 信頼性）を敵対的検証つきで確定。
-  現行実装の実測（UZR分布・expOut分布・担当打球数・構造ノイズ）を取得し、根本原因を §5.2〜5.4 に特定。
-  NPB 分布 / DRS / フレーミングレンジ / 走塁指標は **未調査**（§6）。
-  計測スクリプト: `measure_uzr.mjs` / `measure_expout.mjs` / `measure_chances.mjs`（同ディレクトリ）
+- 2026-07-09: 初版。
+  - MLB 一次情報（UZR / OAA / FRV / posAdj / 信頼性）を deep-research の敵対的検証（3-0）で確定
+  - 現行実装を実測（UZR分布・expOut分布・担当打球数・構造ノイズ）し、根本原因を §5.2〜5.4 に特定
+  - NPB 分布（§6）・走塁指標（§7）・捕手守備（§8）・DRS（§9）を追加調査
+  - Distance-Time モデルの設計案を §11 に記述し、プロトタイプで数値検証
+  - 計測/検証スクリプト: `measure_uzr.mjs` / `measure_expout.mjs` / `measure_chances.mjs` / `proto_catchprob2.mjs`

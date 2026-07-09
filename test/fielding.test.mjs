@@ -9,6 +9,7 @@ import {
   dprRunsAboveAvg, catcherBlockRuns, catcherRsbRuns, uzrComponents,
 } from '../src/sim/fielding.mjs';
 import { deriveLeagueConstants } from '../src/sim/leagueConstants.mjs';
+import { advanceRunners } from '../src/sim/game.mjs';
 import { createTrueAbility, createPlayer } from '../src/model/player.mjs';
 
 const cfg = createConfig();
@@ -51,7 +52,13 @@ test('centeredOAAOuts: ポジション別に中心化され、出場守備者に
   assert.ok(ss.length >= 4, '遊撃手が複数出場');
   assert.ok(Math.min(...ss) < 0, '負のOAAが存在（中心化）＝出場守備者が全員プラスにならない');
   assert.ok(Math.max(...ss) > 0, '正のOAAも存在');
-  assert.ok(Math.abs(ss.reduce((a, b) => a + b, 0)) < ss.length * 2, '遊撃手OAA合計が0付近');
+  // 中心化の不変量は「主守備位置ごとに Σ centeredOAA = 0」。
+  // （SSで100イニング以上守った選手の集合は、主ポジが他にあるユーティリティを含むため0にならない）
+  const mainSS = res.playerSeasons
+    .filter((s) => mainPosition(s.fielding) === 'SS' && totalFieldInnings(s.fielding) >= 1)
+    .map((s) => centeredOAAOuts(s, lc));
+  assert.ok(mainSS.length >= 4, '主戦遊撃手が複数');
+  assert.ok(Math.abs(mainSS.reduce((a, b) => a + b, 0)) < 1e-6, '主ポジ=SS の centeredOAA 合計は厳密に0');
 });
 
 test('errRunsAboveAvg: ポジション中心化＋uzrRunsに失策成分が合成される（監査A3）', () => {
@@ -108,4 +115,66 @@ test('uzrRuns: OAAアウトに位置別run換算（内野0.75/外野0.90）', ()
   assert.equal(mainPosition(psSS.fielding), 'SS');
   assert.ok(Math.abs(uzrRuns(psSS, cfg) - 7.5) < 1e-9, '内野 10out×0.75=7.5run');
   assert.ok(Math.abs(uzrRuns(psCF, cfg) - 9.0) < 1e-9, '外野 10out×0.90=9.0run');
+});
+
+// ============================================================================
+// 外野補殺（ARM）の塁状態の整合性。
+// resolveAdv が「走らなかった(hold)」と「走って刺された(out)」を同じ false で返していたため、
+// 刺された走者がアウトに数えられた上で塁にも残る「幽霊走者」が生まれていた（回帰テスト）。
+// ============================================================================
+test('外野補殺: 刺された走者は塁から消え、アウトが1つ増える（幽霊走者を作らない）', () => {
+  const runner = createPlayer({ id: 'R2', role: 'fielder', trueAbility: createTrueAbility() });
+  const batter = createPlayer({ id: 'B1', role: 'fielder', trueAbility: createTrueAbility() });
+  const byId = new Map([['R2', runner], ['B1', batter]]);
+  const lines = new Map();
+  const statFor = (pid) => {
+    if (!lines.has(pid)) lines.set(pid, { baserunning: { advOpp: 0, advTaken: 0, adv2h1bOpp: 0, adv2h1bTaken: 0 } });
+    return lines.get(pid);
+  };
+  const armLine = { armOpp: 0, armAdv: 0, armKill: 0, a: 0 };
+  // rng.next()=0 → 必ず走り、必ず刺される（p>0 / pKill>0）
+  const rng = { next: () => 0 };
+  const ctx = {
+    byId,
+    statFor,
+    teamId: 'T1',
+    def: { arm: 90, line: armLine },
+    outs: 0,
+    outsAdded: 0,
+  };
+
+  const bases = [null, 'R2', null]; // 二塁走者
+  const runs = advanceRunners(bases, '1B', 'B1', false, 0, rng, cfg, ctx);
+
+  assert.equal(runs, 0, '刺されたので得点しない');
+  assert.equal(ctx.outsAdded, 1, 'アウトが1つ増える');
+  assert.equal(armLine.armKill, 1, '外野補殺が記録される');
+  assert.equal(armLine.a, 1, '補殺(a)が記録される');
+  assert.equal(bases[2], null, '刺された走者は三塁に居ない（幽霊走者を作らない）');
+  assert.equal(bases[1], null, '刺された走者は二塁にも居ない');
+  assert.equal(bases[0], 'B1', '打者は一塁');
+});
+
+test('外野補殺: 1打席で3アウト目を作らない（既に2アウト相当なら刺さない）', () => {
+  const mk = (id) => createPlayer({ id, role: 'fielder', trueAbility: createTrueAbility() });
+  const byId = new Map([['R1', mk('R1')], ['R2', mk('R2')], ['B1', mk('B1')]]);
+  const lines = new Map();
+  const statFor = (pid) => {
+    if (!lines.has(pid)) {
+      lines.set(pid, {
+        baserunning: { advOpp: 0, advTaken: 0, adv2h1bOpp: 0, adv2h1bTaken: 0, adv1t3bOpp: 0, adv1t3bTaken: 0 },
+      });
+    }
+    return lines.get(pid);
+  };
+  const armLine = { armOpp: 0, armAdv: 0, armKill: 0, a: 0 };
+  const rng = { next: () => 0 }; // 常に走り、常に刺される条件
+  const ctx = { byId, statFor, teamId: 'T1', def: { arm: 90, line: armLine }, outs: 1, outsAdded: 0 };
+
+  const bases = ['R1', 'R2', null]; // 一・二塁、1アウト
+  advanceRunners(bases, '1B', 'B1', false, 1, rng, cfg, ctx);
+
+  // 1アウト + 補殺1 = 2アウト。2人目は刺さない（outs + outsAdded < 2 のガード）
+  assert.equal(ctx.outsAdded, 1, '補殺は1つまで（3アウト目を作らない）');
+  assert.ok(armLine.armKill === 1, `補殺は1つ (got ${armLine.armKill})`);
 });

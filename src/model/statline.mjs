@@ -169,10 +169,10 @@ export function createFieldingLine() {
     e: 0, // 失策
     oaaOuts: 0, // OAA（実アウト − 期待アウト、outs単位）§7.2。集計で加算
     framingRuns: 0, // フレーミング(捕手)。集計で加算
-    // --- B3b UZR成分分解の素（ARM/DPR/rSB・§B3b）。game.mjs で乱数非消費のまま累積する。
-    // これらは WAR用 uzrRuns には入れず、uzrComponents（分解表示）でのみ合成する（較正30指標が不変）。
-    armOpp: 0, // 外野: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に相対した回数
-    armRuns: 0, // 外野ARM run（(arm-50)×armRunPerOpp を機会ごとに累積・対平均）
+    // --- UZR成分の素（ARM/DPR/rSB）。すべて生カウントで、run換算は fielding.mjs がリーグ平均基準で行う。
+    armOpp: 0, // 外野: 走者の追加進塁機会に相対した回数（ARMの分母）
+    armAdv: 0, // うち追加進塁を許した数
+    armKill: 0, // うち走塁死に仕留めた数（外野補殺）
     dpOpp: 0, // 二遊間: 併殺機会（GB×走者一塁×2死未満で当該ポジ在籍）
     dpTurned: 0, // うち併殺成立（DPR＝対リーグ平均転換率で metrics 側が run 換算）
     sbAllowed: 0, // 捕手: 許した盗塁（rSBの素）

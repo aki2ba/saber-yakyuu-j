@@ -963,10 +963,10 @@ function createFieldingLine() {
     e: 0, // 失策
     oaaOuts: 0, // OAA（実アウト − 期待アウト、outs単位）§7.2。集計で加算
     framingRuns: 0, // フレーミング(捕手)。集計で加算
-    // --- B3b UZR成分分解の素（ARM/DPR/rSB・§B3b）。game.mjs で乱数非消費のまま累積する。
-    // これらは WAR用 uzrRuns には入れず、uzrComponents（分解表示）でのみ合成する（較正30指標が不変）。
-    armOpp: 0, // 外野: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に相対した回数
-    armRuns: 0, // 外野ARM run（(arm-50)×armRunPerOpp を機会ごとに累積・対平均）
+    // --- UZR成分の素（ARM/DPR/rSB）。すべて生カウントで、run換算は fielding.mjs がリーグ平均基準で行う。
+    armOpp: 0, // 外野: 走者の追加進塁機会に相対した回数（ARMの分母）
+    armAdv: 0, // うち追加進塁を許した数
+    armKill: 0, // うち走塁死に仕留めた数（外野補殺）
     dpOpp: 0, // 二遊間: 併殺機会（GB×走者一塁×2死未満で当該ポジ在籍）
     dpTurned: 0, // うち併殺成立（DPR＝対リーグ平均転換率で metrics 側が run 換算）
     sbAllowed: 0, // 捕手: 許した盗塁（rSBの素）
@@ -1162,6 +1162,7 @@ const CALIBRATION_TARGETS = {
     lobPct: [0.70, 0.75], // リーグ残塁率
     qsRate: [0.45, 0.60], // 先発QS率（NPB水準・B1一球化＋継投再較正で帯内に収束）
     armLeader: [5, 12], // 外野ARM上位（対リーグ平均run）
+    ofAssistLeader: [5, 11], // 外野補殺リーダー（NPB.jp 2025実測: セ6 / パ9・正典§6.4）
     re24SumAbs: 1e-6, // |ΣRE24| ≤ これ（打者+走者+投手 = 0 恒等）
     wpaZeroSum: 1e-9, // WPAゼロサム最大誤差 ≤ これ（1試合 勝者±0.5）
     liAvg: [0.999, 1.001], // 打席加重平均LI = 1.0（正規化・aLI/pLI）
@@ -1373,8 +1374,8 @@ const TUNING_DEFAULT = {
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
     hitProb: 0.1, // 内野安打化
     maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
-    attemptBase: 0.158, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
-    //   守備モデル刷新(Distance-Time)でバント局面の実アウト確率が変わり犠打が目減りしたため再較正(0.145→0.158)
+    attemptBase: 0.17, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
+    //   守備モデル刷新(Distance-Time)＋ARM実イベント化でバント局面の期待値が変わり犠打が目減りしたため再較正(0.145→0.17)
     //   F2-5: 0.16→0.145（DH無リーグの攻撃力を僅かに回復しセパ得点差を帯上限0.45から離す。SH帯は維持）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.8, // 投手打席はほぼ必ずバント（F2-5: 0.9→0.8。セパ得点差の再収束＝投手にも僅かに打たせる）
@@ -1645,7 +1646,14 @@ const TUNING_DEFAULT = {
     runPerOutOutfield: 0.9, // "1 out = .9 runs (outfielders)"
     runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（§7.2）
     framePerInning: 0.0005, // 捕手フレーミング（per-inning近似の遺構。実際は一球ごとに runPerCall で積む）
-    armRunPerOpp: 0.007, // 【暫定】外野ARM: 真値armの線形変換。鉄則4違反のため次コミットで実イベント創発へ置換する
+    // --- ARM（外野送球）: 実イベントから創発させる（旧 armRunPerOpp = 真値の線形変換は撤去）。
+    //   強肩は (a) 走者に自重させ（armAdvSuppress） (b) 走った走者を刺す（armKill*）。
+    //   ARM run は armOpp/armAdv/armKill の生カウントからリーグ平均基準で算出（fielding.mjs）。
+    ofReachM: 45, // 空中球がこの距離以上に落ちたら外野が処理する（＝外野手の返球が関与する）
+    armAdvSuppress: 0.0045, // 肩1pt(50中心) → 走者の追加進塁確率をこれだけ下げる ※較正対象
+    armKillBase: 0.1, // 走った走者を刺す基本確率（リーグ平均の肩） ※較正済み（NPB外野補殺リーダー年6〜9本）
+    armKillSlope: 0.003, // 肩1pt → 刺殺確率の増分
+    armKillMax: 0.25, // 刺殺確率の上限
     runPerDP: 0.4, // "Double Plays 1 = .4"（旧0.45を FRV 準拠へ）
     dpShare: 0.5, // 1件の併殺を 2B・SS で分担する比率（game.mjs が双方にフル計上するため・§B3b）
     // 捕手送球: "Catcher Throwing 1 SB prevented = .65 runs, the difference between a SB (+.2) and a CS (-.45)"
@@ -2365,6 +2373,31 @@ function fieldingChances(bb, type, cfg) {
   return { reqSpeed, pThrow };
 }
 
+/**
+ * 打球を「拾う」外野手（ARM の主語）。責任野手（OAA の主語）とは別概念であることに注意:
+ *   三遊間を抜けたゴロの OAA 責任は SS だが、実際に球を拾って返球するのは LF である。
+ * 空中球は落下点に最も近い外野手、ゴロは spray 角のセクタで決める。
+ */
+function retrievingOutfielder(bb, cfg) {
+  const F = fielderPositions(cfg);
+  const landX = bb.distanceM * Math.sin(bb.sprayDeg * FG_RAD);
+  const landY = bb.distanceM * Math.cos(bb.sprayDeg * FG_RAD);
+  let best = null;
+  let bestD = Infinity;
+  for (const pos of FG_OUTFIELD) {
+    const f = F[pos];
+    // ゴロは転がり出しの落下点が浅く落下点距離が使えないので、角度セクタで決める
+    const d = bb.laDeg <= 0
+      ? Math.abs(bb.sprayDeg - cfg.tuning.field.positions[pos].t)
+      : Math.hypot(landX - f.x, landY - f.y);
+    if (d < bestD) {
+      bestD = d;
+      best = pos;
+    }
+  }
+  return best;
+}
+
 /** Smax（実効クロージング速度 m/s）。rating 50 = リーグ平均 */
 function smaxOf(rating, cfg) {
   const g = cfg.tuning.field;
@@ -2474,43 +2507,49 @@ function errRunsAboveAvg(ps, cfg, lc) {
 }
 
 /**
- * UZR相当(run単位) = 範囲成分(中心化OAA×run/out) + 失策成分(ErrR) + 捕手フレーミング(framingRuns)。
- * 内野0.75 / 外野0.90（Statcast FRV, §7.2）。捕手は範囲=0で framing が主成分（監査B5）。
+ * 守備run（WARに入る値）。FanGraphs の UZR 定義に従い、ポジションで成分が異なる（正典§1.1）:
+ *   外野手 = RngR + ErrR + ARM
+ *   内野手 = RngR + ErrR + DPR
+ *   捕手   = ErrR + framing + blocking + rSB（UZRは付けない）
+ * run換算は MLB.com 公式 FRV glossary の固定定数（内野0.75 / 外野0.90 out・正典§2.4）。
+ * uzrComponents(...).total と厳密一致する（表示とWARが食い違わない）。
  */
 function uzrRuns(ps, cfg, lc) {
-  const pos = mainPosition(ps.fielding);
-  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
-  return centeredOAAOuts(ps, lc) * rpo + errRunsAboveAvg(ps, cfg, lc) + (ps.fielding.framingRuns || 0);
+  return uzrComponents(ps, cfg, lc).total;
 }
 
 // ============================================================================
-// B3b: UZR成分分解（RngR + ErrR + ARM + DPR + rSB + framing・§B3b）
+// UZR の成分（FanGraphs 定義・正典§1.1）
+//   外野手 UZR = RngR + ErrR + ARM
+//   内野手 UZR = RngR + ErrR + DPR
+//   捕手     = UZR を付けない → 捕手守備run = ErrR + framing + blocking + throwing(rSB)
 //
-// ARM/DPR/rSB は「一球データを要さない」追加集計として game.mjs が乱数非消費で素カウントを
-// 積み、ここで対リーグ平均の run に換算する。いずれも WAR用の uzrRuns には加えない
-// （＝較正30指標・総WARが完全不変。分解表示でのみ合成する。総UZR不変が理想・§検証）。
-// ※フレーミング/ブロッキングの毎球分解は一球データが要る＝B1で実装。ここでは既存の
-//   per-inning近似 framingRuns をそのまま維持する（触らない）。
+// すべて生カウント（armOpp/armAdv/armKill, dpOpp/dpTurned, blockOpp/wp/pb, sbAllowed/csMade）
+// からリーグ平均基準で創発させる。run換算は MLB.com 公式 FRV glossary の固定定数（正典§2.4）。
+// リーグΣ は各成分とも 0 に厳密収束する（＝WARの総量を動かさない）。
 // ============================================================================
 
 /**
- * ARM（外野送球）run。game.mjs が (arm-50)×armRunPerOpp を追加進塁機会ごとに累積した armRuns を、
- * リーグの外野手平均の肩（lgArmRunPerOpp×機会）に対して0中心化する（§B3b・リーグΣ ARM≈0）。
+ * ARM（外野送球）run。実イベント（追加進塁を許した数 / 走塁死に仕留めた数）から創発する。
+ *   ARM = lgPerOpp×機会 − (許進塁×runUBR + 刺殺×runCS)
+ *   lgPerOpp = (Σ許進塁×runUBR + Σ刺殺×runCS) / Σ機会
+ * runCS は負値なので、走者を刺すほど ARM は増える。リーグΣ ARM = 0（厳密）。
  */
-function armRunsAboveAvg(ps, lc) {
+function armRunsAboveAvg(ps, cfg, lc) {
   const f = ps.fielding;
-  const raw = f.armRuns || 0;
-  const center = lc && lc.lgArmRunPerOpp != null ? lc.lgArmRunPerOpp * (f.armOpp || 0) : 0;
-  return raw - center;
+  const opp = f.armOpp || 0;
+  if (!opp || !lc || lc.lgArmAdvRate == null) return 0;
+  const runAdv = cfg.tuning.run.runUBR; // 走者が1つ余分に進む攻撃側価値
+  const runKill = cfg.tuning.run.runCS; // 走塁死の攻撃側価値（負）
+  const lgPerOpp = lc.lgArmAdvRate * runAdv + lc.lgArmKillRate * runKill;
+  return lgPerOpp * opp - ((f.armAdv || 0) * runAdv + (f.armKill || 0) * runKill);
 }
 
 /**
- * DPR（二遊間の併殺転換）run。対リーグ平均転換率(lgDPRate)より多く転換した分がプラス（§B3b）。
- * 1件の併殺は2B・SSが共同で成立させる1イベントで、game.mjs は機会/成立を両者へフル計上する。
- * runPerDP はこの「1イベント」あたりの対称run価値なので、二重帰属を避けるため参加者ぶん
- * (dpShare=0.5) を配分する。フルタイムの二遊間ペアなら両者の dpTurned/dpOpp は等しく、
- * ΣDPR は単一計上したチームの併殺run価値（対平均）にちょうど一致する。lgDPRate は分母分子とも
- * 2倍でも比が不変・対平均は0中心ゆえ、この配分でも リーグΣDPR≈0 は保たれる。
+ * DPR（二遊間の併殺転換）run。対リーグ平均転換率より多く転換した分がプラス。
+ * 1件の併殺は 2B・SS が共同で成立させる1イベントで、game.mjs は機会/成立を両者へフル計上する。
+ * runPerDP はこの「1イベント」あたりの対称run価値（FRV: Double Plays 1 = .4）なので、
+ * 二重帰属を避けるため参加者ぶん (dpShare=0.5) を配分する。
  */
 function dprRunsAboveAvg(ps, cfg, lc) {
   const f = ps.fielding;
@@ -2520,9 +2559,12 @@ function dprRunsAboveAvg(ps, cfg, lc) {
 }
 
 /**
- * 捕手 rSB（盗塁阻止run）。既存の盗塁/盗塁死（捕手が許したSB/刺したCS）から、
- * リーグ平均の1企図あたり攻撃価値を基準に、捕手が抑えた分をプラス評価する（FG rSB相当・§B3b）。
- * rSB = lgPerAtt×企図 − (許SB×runSB + 刺CS×runCS)。リーグΣ rSB≈0（Σ許SB=lgSB, Σ刺CS=lgCS）。
+ * 捕手 rSB（盗塁阻止run）。FRV: "Catcher Stealing Runs is a translation of Caught Stealing
+ * Above Average to a run value on a .65 runs/CS basis, the difference between a SB (+.2 runs)
+ * and a CS (-.45 runs)"（正典§8.4）。
+ * .65 を天下りで置かず、この得点環境の runSB − runCS から導出する。
+ *   rSB = (刺CS − リーグCS率×企図) × (runSB − runCS)
+ * リーグΣ rSB = 0（厳密）。
  */
 function catcherRsbRuns(ps, cfg, lc) {
   const f = ps.fielding;
@@ -2530,28 +2572,55 @@ function catcherRsbRuns(ps, cfg, lc) {
   const cs = f.csMade || 0;
   const att = sb + cs;
   if (!att || !lc) return 0;
-  const runSB = cfg.tuning.run.runSB;
-  const runCS = cfg.tuning.run.runCS;
   const lgAtt = (lc.lgSB || 0) + (lc.lgCS || 0);
-  const lgPerAtt = lgAtt ? ((lc.lgSB || 0) * runSB + (lc.lgCS || 0) * runCS) / lgAtt : 0;
-  return lgPerAtt * att - (sb * runSB + cs * runCS);
+  if (!lgAtt) return 0;
+  const lgCsRate = (lc.lgCS || 0) / lgAtt;
+  const runPerCs = cfg.tuning.run.runSB - cfg.tuning.run.runCS; // ≈ .57（FRVの .65 と同型の導出）
+  return (cs - lgCsRate * att) * runPerCs;
 }
 
 /**
- * UZR成分分解（表示用・§B3b）。total = RngR + ErrR + framing + ARM + DPR + rSB。
- * 「classic」= RngR + ErrR + framing は WAR用 uzrRuns と厳密一致する（＝ARM/DPR/rSB は
- * 純粋な内訳の付け足しで、WAR/較正には一切影響しない・self-check可能）。
+ * 捕手ブロッキング run（FRV: "Catcher Blocking 1 = .25 runs"）。
+ * ワンバウンド機会あたりの (暴投+捕逸) 率がリーグ平均より低いほどプラス。リーグΣ = 0。
+ */
+function catcherBlockRuns(ps, cfg, lc) {
+  const f = ps.fielding;
+  const opp = f.blockOpp || 0;
+  if (!opp || !lc || lc.lgBlockFailRate == null) return 0;
+  const fails = (f.wp || 0) + (f.pb || 0);
+  return (lc.lgBlockFailRate * opp - fails) * cfg.tuning.field.runPerBlock;
+}
+
+/** 捕手守備 run（UZRは付けない・正典§1.1）= ErrR + framing + blocking + rSB */
+function catcherDefenseRuns(ps, cfg, lc) {
+  return (
+    errRunsAboveAvg(ps, cfg, lc) +
+    (ps.fielding.framingRuns || 0) +
+    catcherBlockRuns(ps, cfg, lc) +
+    catcherRsbRuns(ps, cfg, lc)
+  );
+}
+
+/**
+ * UZR成分分解（表示用）。ポジションに応じて FanGraphs 定義の成分だけを持つ。
+ * total は WAR用 uzrRuns と厳密一致する（表示とWARが食い違わない）。
  */
 function uzrComponents(ps, cfg, lc) {
   const pos = mainPosition(ps.fielding);
-  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
+  if (pos === 'C') {
+    const errR = errRunsAboveAvg(ps, cfg, lc);
+    const framing = ps.fielding.framingRuns || 0;
+    const blocking = catcherBlockRuns(ps, cfg, lc);
+    const rSB = catcherRsbRuns(ps, cfg, lc);
+    return { pos, rngR: 0, errR, framing, blocking, rSB, arm: 0, dpr: 0, total: errR + framing + blocking + rSB };
+  }
+  const isOF = OUTFIELD.has(pos);
+  const rpo = isOF ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
   const rngR = centeredOAAOuts(ps, lc) * rpo;
   const errR = errRunsAboveAvg(ps, cfg, lc);
-  const framing = ps.fielding.framingRuns || 0;
-  const arm = armRunsAboveAvg(ps, lc);
-  const dpr = dprRunsAboveAvg(ps, cfg, lc);
-  const rSB = catcherRsbRuns(ps, cfg, lc);
-  return { pos, rngR, errR, framing, arm, dpr, rSB, total: rngR + errR + framing + arm + dpr + rSB };
+  const arm = isOF ? armRunsAboveAvg(ps, cfg, lc) : 0;
+  const dpr = isOF ? 0 : dprRunsAboveAvg(ps, cfg, lc);
+  return { pos, rngR, errR, framing: 0, blocking: 0, rSB: 0, arm, dpr, total: rngR + errR + arm + dpr };
 }
 
 
@@ -4225,16 +4294,26 @@ function deriveLeagueConstants(res, cfg = null) {
   }
   const lgDPRate = totDPopp ? totDPturned / totDPopp : 0;
 
-  // 外野ARMの中心化基準（§B3b）: 追加進塁機会1回あたりの平均armRun。ARMを「リーグの外野手平均の肩」
-  // に対して0中心化するため（外野手は概して平均以上の肩＝生の(arm-50)は正に偏る）。metrics側で
-  // ARM = armRuns − lgArmRunPerOpp×armOpp とすると リーグΣ ARM≈0 が厳密成立する。
-  let totArmRuns = 0;
+  // 外野ARMの基準（実イベント創発）: 追加進塁機会あたりの「進塁を許した率」「刺した率」。
+  // fielding.mjs が ARM = lgPerOpp×opp − (adv×runUBR + kill×runCS) で対平均run換算する
+  // （リーグΣ ARM = 0 が厳密成立）。
   let totArmOpp = 0;
+  let totArmAdv = 0;
+  let totArmKill = 0;
+  // 捕手ブロッキングの基準: ワンバウンド機会あたりの (暴投+捕逸) 率
+  let totBlockOpp = 0;
+  let totWpPb = 0;
   for (const ps of res.playerSeasons) {
-    totArmRuns += ps.fielding.armRuns || 0;
-    totArmOpp += ps.fielding.armOpp || 0;
+    const f = ps.fielding;
+    totArmOpp += f.armOpp || 0;
+    totArmAdv += f.armAdv || 0;
+    totArmKill += f.armKill || 0;
+    totBlockOpp += f.blockOpp || 0;
+    totWpPb += (f.wp || 0) + (f.pb || 0);
   }
-  const lgArmRunPerOpp = totArmOpp ? totArmRuns / totArmOpp : 0;
+  const lgArmAdvRate = totArmOpp ? totArmAdv / totArmOpp : 0;
+  const lgArmKillRate = totArmOpp ? totArmKill / totArmOpp : 0;
+  const lgBlockFailRate = totBlockOpp ? totWpPb / totBlockOpp : 0;
 
   // 追加進塁リーグ率（UBRの基準・§6／§req_20260708強化）。
   // 実際のUBR/EqBRR（Fangraphs/Baseball Prospectus）はシナリオ別（単打での二塁走者本塁突入・
@@ -4293,7 +4372,9 @@ function deriveLeagueConstants(res, cfg = null) {
   return {
     lgGDPrate,
     lgDPRate,
-    lgArmRunPerOpp,
+    lgArmAdvRate,
+    lgArmKillRate,
+    lgBlockFailRate,
     lgAdvRate,
     lgAdvRateByScenario,
     lgSB,
@@ -4763,6 +4844,10 @@ const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
  */
 function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ctx) {
   let runs = 0;
+  if (ctx) {
+    ctx.outs = outs; // ARM補殺の可否判定（3アウト目は作らない）
+    ctx.outsAdded = 0; // 外野補殺で増えたアウト。呼び出し側が outs へ加算する
+  }
   const b1 = bases[0];
   const b2 = bases[1];
   const b3 = bases[2];
@@ -4867,20 +4952,38 @@ function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ctx) 
  *   UBRのリーグ基準をシナリオごとに正しく分離できるようにする（Fangraphs UBR/BP EqBRR準拠）。
  */
 function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
+  const def = ctx && ctx.def; // 打球を拾った外野手（ARMの主語）。内野処理なら null
   let p = baseProb;
   if (ctx) {
     const t = ctx.byId.get(pid).trueAbility;
     const tool = (t.common.speed + t.baserunning.baserunIQ) / 2;
-    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope, 0.05, 0.95);
+    // 強肩の外野手ほど走者は自重する（進塁抑止・§ARM実イベント化）
+    const armSup = def ? (def.arm - 50) * cfg.tuning.field.armAdvSuppress : 0;
+    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope - armSup, 0.05, 0.95);
     const bs = ctx.statFor(pid, ctx.teamId).baserunning;
     bs.advOpp++;
     bs[`${scenario}Opp`]++;
     const took = (rng ? rng.next() : 1) < p;
+    if (def) def.line.armOpp++;
     if (took) {
+      // 走った → 強肩なら刺せる（補殺）。3アウト目になる走塁死は run 計上順序が壊れるため
+      // outs<2 に限定する（NPBの外野補殺リーダーが年6〜9本という水準の近似・正典§6.4）
+      const canKill = def && ctx.outs < 2;
+      const f = cfg.tuning.field;
+      const pKill = canKill ? clamp(f.armKillBase + (def.arm - 50) * f.armKillSlope, 0, f.armKillMax) : 0;
+      const killed = canKill && rng && rng.next() < pKill;
+      if (killed) {
+        def.line.armKill++;
+        def.line.a++; // 補殺
+        ctx.outsAdded++;
+        return false; // 進塁できず走塁死
+      }
       bs.advTaken++;
       bs[`${scenario}Taken`]++;
+      if (def) def.line.armAdv++;
+      return true;
     }
-    return took;
+    return false;
   }
   return (rng ? rng.next() : 1) < baseProb;
 }
@@ -5369,20 +5472,31 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (!isIBB) recordByCount(bStat.batting.byCount, paBucket, paPassed02, paPassed30, outcome, result);
 
     // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
-    // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
-    // 不変・乱数も一切消費しない（＝決定論・較正30指標が不変）。実際の送球死化はB1（一球データ）で。
-    if (hitFielderPos && IS_OUTFIELD.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
-      const ofPid = fielding.defense[hitFielderPos];
+    // ARM（外野送球）: 打球を「拾う」外野手を幾何で決め、resolveAdv に注入する。
+    //   OAA の責任野手（argmax p）とは別概念: 三遊間を抜けたゴロの OAA 責任は SS だが、
+    //   球を拾って返球するのは LF である（正典§11.6）。
+    //   強肩は (a) 走者に自重させ (b) 走った走者を刺す。ARM run は armOpp/armAdv/armKill の
+    //   生カウントからリーグ平均基準で創発させる（鉄則4: 指標を後付けしない）。
+    let ubrDef = null;
+    if (battedBall && (result === '1B' || result === '2B' || result === '3B' || (result === 'out' && isAirOut))) {
+      const ofPos = retrievingOutfielder(battedBall, cfg);
+      const ofPid = ofPos ? fielding.defense[ofPos] : null;
       const ofPlayer = ofPid ? fielding.byId.get(ofPid) : null;
-      if (ofPlayer) {
-        const fl = statFor(ofPid, fielding.teamId).fielding;
-        fl.armOpp++;
-        fl.armRuns += (ofPlayer.trueAbility.common.arm - 50) * cfg.tuning.field.armRunPerOpp;
+      // 内野で処理された打球（内野ゴロアウト・内野フライ）では外野手は関与しない
+      const reachedOF = battedBall.laDeg > 0 ? battedBall.distanceM >= cfg.tuning.field.ofReachM : result !== 'out';
+      if (ofPlayer && reachedOF) {
+        ubrDef = { arm: ofPlayer.trueAbility.common.arm, line: statFor(ofPid, fielding.teamId).fielding };
       }
     }
 
-    const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId };
+    const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId, def: ubrDef, outs, outsAdded: 0 };
     const advRuns = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+    // 外野補殺で増えたアウト（走塁死）を反映する
+    if (ubrCtx.outsAdded) {
+      outs += ubrCtx.outsAdded;
+      fielding.cur.outs += ubrCtx.outsAdded;
+      pStat.pitching.outs += ubrCtx.outsAdded;
+    }
     // 打席中の暴投/捕逸で入った得点(wpRuns)は打点対象外だが投手失点＝自責（失策後は非自責）。
     // 打席プレー全体の得点として一括計上し、文脈指標(gc)へも合算で渡す（RE24/WPAの telescoping を保つ）。
     const runs = advRuns + wpRuns;

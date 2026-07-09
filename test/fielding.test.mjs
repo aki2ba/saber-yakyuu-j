@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
-import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, errRunsAboveAvg, totalFieldInnings } from '../src/sim/fielding.mjs';
+import {
+  rangeRating, mainPosition, uzrRuns, centeredOAAOuts, errRunsAboveAvg, totalFieldInnings,
+  dprRunsAboveAvg, catcherBlockRuns, catcherRsbRuns, uzrComponents,
+} from '../src/sim/fielding.mjs';
 import { deriveLeagueConstants } from '../src/sim/leagueConstants.mjs';
 import { createTrueAbility, createPlayer } from '../src/model/player.mjs';
 
@@ -66,12 +69,11 @@ test('errRunsAboveAvg: ポジション中心化＋uzrRunsに失策成分が合�
     const sum = byPos[pos].reduce((a, b) => a + b, 0);
     assert.ok(Math.abs(sum) < byPos[pos].length * 2, `ErrR合計が0付近 (${pos}: ${sum.toFixed(1)})`);
   }
-  // uzrRuns = 範囲成分(中心化OAA×run/out) + ErrR + フレーミング の合成整合
-  // （S3日次起用で複数ポジション出場が出るため、SS主戦でも捕手出場分の framingRuns を含めて検証）
+  // 内野手 UZR = RngR + ErrR + DPR（FanGraphs 定義・正典§1.1。フレーミングは捕手の成分）
   const s = res.playerSeasons.find((x) => totalFieldInnings(x.fielding) >= 100 && mainPosition(x.fielding) === 'SS');
   const rpo = cfg.tuning.field.runPerOutInfield;
-  const expSS = centeredOAAOuts(s, lc) * rpo + errRunsAboveAvg(s, cfg, lc) + (s.fielding.framingRuns || 0);
-  assert.ok(Math.abs(uzrRuns(s, cfg, lc) - expSS) < 1e-9, 'UZR=範囲+ErrR+フレーミング');
+  const expSS = centeredOAAOuts(s, lc) * rpo + errRunsAboveAvg(s, cfg, lc) + dprRunsAboveAvg(s, cfg, lc);
+  assert.ok(Math.abs(uzrRuns(s, cfg, lc) - expSS) < 1e-9, '内野UZR=RngR+ErrR+DPR');
   // 失策がUZRに実際に効いている（ErrR非ゼロの野手が存在）
   const anyNonzero = res.playerSeasons.some(
     (x) => totalFieldInnings(x.fielding) >= 100 && Math.abs(errRunsAboveAvg(x, cfg, lc)) > 0.5,
@@ -79,7 +81,7 @@ test('errRunsAboveAvg: ポジション中心化＋uzrRunsに失策成分が合�
   assert.ok(anyNonzero, 'ErrRが非ゼロの野手が存在（hands/失策がUZRに反映）');
 });
 
-test('捕手フレーミングが守備runに接続され、uzrRunsに合成される（監査B5）', () => {
+test('捕手守備run = ErrR + framing + blocking + rSB（UZRは付けない・正典§1.1）', () => {
   const lg = generateLeague(2026, cfg);
   const res = simulateSeason(lg, cfg, { seed: 2026 });
   const lc = deriveLeagueConstants(res);
@@ -92,11 +94,12 @@ test('捕手フレーミングが守備runに接続され、uzrRunsに合成さ�
     catchers.some((s) => Math.abs(s.fielding.framingRuns || 0) > 0.5),
     'フレーミングrun非ゼロの捕手が存在',
   );
-  // 捕手のuzrRuns = 範囲成分 + ErrR + フレーミング の合成整合
+  // 捕手は UZR（レンジ成分）を持たず、framing/blocking/rSB を別勘定する（FanGraphs 定義）
   const c = catchers.find((s) => Math.abs(s.fielding.framingRuns || 0) > 0.5);
-  const rpo = cfg.tuning.field.runPerOutInfield;
-  const expected = centeredOAAOuts(c, lc) * rpo + errRunsAboveAvg(c, cfg, lc) + c.fielding.framingRuns;
-  assert.ok(Math.abs(uzrRuns(c, cfg, lc) - expected) < 1e-9, 'UZR=範囲+ErrR+フレーミング');
+  const expected =
+    errRunsAboveAvg(c, cfg, lc) + c.fielding.framingRuns + catcherBlockRuns(c, cfg, lc) + catcherRsbRuns(c, cfg, lc);
+  assert.ok(Math.abs(uzrRuns(c, cfg, lc) - expected) < 1e-9, '捕手守備run=ErrR+framing+blocking+rSB');
+  assert.equal(uzrComponents(c, cfg, lc).rngR, 0, '捕手にレンジ成分は付かない');
 });
 
 test('uzrRuns: OAAアウトに位置別run換算（内野0.75/外野0.90）', () => {

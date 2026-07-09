@@ -67,43 +67,49 @@ export function errRunsAboveAvg(ps, cfg, lc) {
 }
 
 /**
- * UZR相当(run単位) = 範囲成分(中心化OAA×run/out) + 失策成分(ErrR) + 捕手フレーミング(framingRuns)。
- * 内野0.75 / 外野0.90（Statcast FRV, §7.2）。捕手は範囲=0で framing が主成分（監査B5）。
+ * 守備run（WARに入る値）。FanGraphs の UZR 定義に従い、ポジションで成分が異なる（正典§1.1）:
+ *   外野手 = RngR + ErrR + ARM
+ *   内野手 = RngR + ErrR + DPR
+ *   捕手   = ErrR + framing + blocking + rSB（UZRは付けない）
+ * run換算は MLB.com 公式 FRV glossary の固定定数（内野0.75 / 外野0.90 out・正典§2.4）。
+ * uzrComponents(...).total と厳密一致する（表示とWARが食い違わない）。
  */
 export function uzrRuns(ps, cfg, lc) {
-  const pos = mainPosition(ps.fielding);
-  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
-  return centeredOAAOuts(ps, lc) * rpo + errRunsAboveAvg(ps, cfg, lc) + (ps.fielding.framingRuns || 0);
+  return uzrComponents(ps, cfg, lc).total;
 }
 
 // ============================================================================
-// B3b: UZR成分分解（RngR + ErrR + ARM + DPR + rSB + framing・§B3b）
+// UZR の成分（FanGraphs 定義・正典§1.1）
+//   外野手 UZR = RngR + ErrR + ARM
+//   内野手 UZR = RngR + ErrR + DPR
+//   捕手     = UZR を付けない → 捕手守備run = ErrR + framing + blocking + throwing(rSB)
 //
-// ARM/DPR/rSB は「一球データを要さない」追加集計として game.mjs が乱数非消費で素カウントを
-// 積み、ここで対リーグ平均の run に換算する。いずれも WAR用の uzrRuns には加えない
-// （＝較正30指標・総WARが完全不変。分解表示でのみ合成する。総UZR不変が理想・§検証）。
-// ※フレーミング/ブロッキングの毎球分解は一球データが要る＝B1で実装。ここでは既存の
-//   per-inning近似 framingRuns をそのまま維持する（触らない）。
+// すべて生カウント（armOpp/armAdv/armKill, dpOpp/dpTurned, blockOpp/wp/pb, sbAllowed/csMade）
+// からリーグ平均基準で創発させる。run換算は MLB.com 公式 FRV glossary の固定定数（正典§2.4）。
+// リーグΣ は各成分とも 0 に厳密収束する（＝WARの総量を動かさない）。
 // ============================================================================
 
 /**
- * ARM（外野送球）run。game.mjs が (arm-50)×armRunPerOpp を追加進塁機会ごとに累積した armRuns を、
- * リーグの外野手平均の肩（lgArmRunPerOpp×機会）に対して0中心化する（§B3b・リーグΣ ARM≈0）。
+ * ARM（外野送球）run。実イベント（追加進塁を許した数 / 走塁死に仕留めた数）から創発する。
+ *   ARM = lgPerOpp×機会 − (許進塁×runUBR + 刺殺×runCS)
+ *   lgPerOpp = (Σ許進塁×runUBR + Σ刺殺×runCS) / Σ機会
+ * runCS は負値なので、走者を刺すほど ARM は増える。リーグΣ ARM = 0（厳密）。
  */
-export function armRunsAboveAvg(ps, lc) {
+export function armRunsAboveAvg(ps, cfg, lc) {
   const f = ps.fielding;
-  const raw = f.armRuns || 0;
-  const center = lc && lc.lgArmRunPerOpp != null ? lc.lgArmRunPerOpp * (f.armOpp || 0) : 0;
-  return raw - center;
+  const opp = f.armOpp || 0;
+  if (!opp || !lc || lc.lgArmAdvRate == null) return 0;
+  const runAdv = cfg.tuning.run.runUBR; // 走者が1つ余分に進む攻撃側価値
+  const runKill = cfg.tuning.run.runCS; // 走塁死の攻撃側価値（負）
+  const lgPerOpp = lc.lgArmAdvRate * runAdv + lc.lgArmKillRate * runKill;
+  return lgPerOpp * opp - ((f.armAdv || 0) * runAdv + (f.armKill || 0) * runKill);
 }
 
 /**
- * DPR（二遊間の併殺転換）run。対リーグ平均転換率(lgDPRate)より多く転換した分がプラス（§B3b）。
- * 1件の併殺は2B・SSが共同で成立させる1イベントで、game.mjs は機会/成立を両者へフル計上する。
- * runPerDP はこの「1イベント」あたりの対称run価値なので、二重帰属を避けるため参加者ぶん
- * (dpShare=0.5) を配分する。フルタイムの二遊間ペアなら両者の dpTurned/dpOpp は等しく、
- * ΣDPR は単一計上したチームの併殺run価値（対平均）にちょうど一致する。lgDPRate は分母分子とも
- * 2倍でも比が不変・対平均は0中心ゆえ、この配分でも リーグΣDPR≈0 は保たれる。
+ * DPR（二遊間の併殺転換）run。対リーグ平均転換率より多く転換した分がプラス。
+ * 1件の併殺は 2B・SS が共同で成立させる1イベントで、game.mjs は機会/成立を両者へフル計上する。
+ * runPerDP はこの「1イベント」あたりの対称run価値（FRV: Double Plays 1 = .4）なので、
+ * 二重帰属を避けるため参加者ぶん (dpShare=0.5) を配分する。
  */
 export function dprRunsAboveAvg(ps, cfg, lc) {
   const f = ps.fielding;
@@ -113,9 +119,12 @@ export function dprRunsAboveAvg(ps, cfg, lc) {
 }
 
 /**
- * 捕手 rSB（盗塁阻止run）。既存の盗塁/盗塁死（捕手が許したSB/刺したCS）から、
- * リーグ平均の1企図あたり攻撃価値を基準に、捕手が抑えた分をプラス評価する（FG rSB相当・§B3b）。
- * rSB = lgPerAtt×企図 − (許SB×runSB + 刺CS×runCS)。リーグΣ rSB≈0（Σ許SB=lgSB, Σ刺CS=lgCS）。
+ * 捕手 rSB（盗塁阻止run）。FRV: "Catcher Stealing Runs is a translation of Caught Stealing
+ * Above Average to a run value on a .65 runs/CS basis, the difference between a SB (+.2 runs)
+ * and a CS (-.45 runs)"（正典§8.4）。
+ * .65 を天下りで置かず、この得点環境の runSB − runCS から導出する。
+ *   rSB = (刺CS − リーグCS率×企図) × (runSB − runCS)
+ * リーグΣ rSB = 0（厳密）。
  */
 export function catcherRsbRuns(ps, cfg, lc) {
   const f = ps.fielding;
@@ -123,26 +132,53 @@ export function catcherRsbRuns(ps, cfg, lc) {
   const cs = f.csMade || 0;
   const att = sb + cs;
   if (!att || !lc) return 0;
-  const runSB = cfg.tuning.run.runSB;
-  const runCS = cfg.tuning.run.runCS;
   const lgAtt = (lc.lgSB || 0) + (lc.lgCS || 0);
-  const lgPerAtt = lgAtt ? ((lc.lgSB || 0) * runSB + (lc.lgCS || 0) * runCS) / lgAtt : 0;
-  return lgPerAtt * att - (sb * runSB + cs * runCS);
+  if (!lgAtt) return 0;
+  const lgCsRate = (lc.lgCS || 0) / lgAtt;
+  const runPerCs = cfg.tuning.run.runSB - cfg.tuning.run.runCS; // ≈ .57（FRVの .65 と同型の導出）
+  return (cs - lgCsRate * att) * runPerCs;
 }
 
 /**
- * UZR成分分解（表示用・§B3b）。total = RngR + ErrR + framing + ARM + DPR + rSB。
- * 「classic」= RngR + ErrR + framing は WAR用 uzrRuns と厳密一致する（＝ARM/DPR/rSB は
- * 純粋な内訳の付け足しで、WAR/較正には一切影響しない・self-check可能）。
+ * 捕手ブロッキング run（FRV: "Catcher Blocking 1 = .25 runs"）。
+ * ワンバウンド機会あたりの (暴投+捕逸) 率がリーグ平均より低いほどプラス。リーグΣ = 0。
+ */
+export function catcherBlockRuns(ps, cfg, lc) {
+  const f = ps.fielding;
+  const opp = f.blockOpp || 0;
+  if (!opp || !lc || lc.lgBlockFailRate == null) return 0;
+  const fails = (f.wp || 0) + (f.pb || 0);
+  return (lc.lgBlockFailRate * opp - fails) * cfg.tuning.field.runPerBlock;
+}
+
+/** 捕手守備 run（UZRは付けない・正典§1.1）= ErrR + framing + blocking + rSB */
+export function catcherDefenseRuns(ps, cfg, lc) {
+  return (
+    errRunsAboveAvg(ps, cfg, lc) +
+    (ps.fielding.framingRuns || 0) +
+    catcherBlockRuns(ps, cfg, lc) +
+    catcherRsbRuns(ps, cfg, lc)
+  );
+}
+
+/**
+ * UZR成分分解（表示用）。ポジションに応じて FanGraphs 定義の成分だけを持つ。
+ * total は WAR用 uzrRuns と厳密一致する（表示とWARが食い違わない）。
  */
 export function uzrComponents(ps, cfg, lc) {
   const pos = mainPosition(ps.fielding);
-  const rpo = OUTFIELD.has(pos) ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
+  if (pos === 'C') {
+    const errR = errRunsAboveAvg(ps, cfg, lc);
+    const framing = ps.fielding.framingRuns || 0;
+    const blocking = catcherBlockRuns(ps, cfg, lc);
+    const rSB = catcherRsbRuns(ps, cfg, lc);
+    return { pos, rngR: 0, errR, framing, blocking, rSB, arm: 0, dpr: 0, total: errR + framing + blocking + rSB };
+  }
+  const isOF = OUTFIELD.has(pos);
+  const rpo = isOF ? cfg.tuning.field.runPerOutOutfield : cfg.tuning.field.runPerOutInfield;
   const rngR = centeredOAAOuts(ps, lc) * rpo;
   const errR = errRunsAboveAvg(ps, cfg, lc);
-  const framing = ps.fielding.framingRuns || 0;
-  const arm = armRunsAboveAvg(ps, lc);
-  const dpr = dprRunsAboveAvg(ps, cfg, lc);
-  const rSB = catcherRsbRuns(ps, cfg, lc);
-  return { pos, rngR, errR, framing, arm, dpr, rSB, total: rngR + errR + framing + arm + dpr + rSB };
+  const arm = isOF ? armRunsAboveAvg(ps, cfg, lc) : 0;
+  const dpr = isOF ? 0 : dprRunsAboveAvg(ps, cfg, lc);
+  return { pos, rngR, errR, framing: 0, blocking: 0, rSB: 0, arm, dpr, total: rngR + errR + arm + dpr };
 }

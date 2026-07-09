@@ -156,6 +156,31 @@ export function fieldingChances(bb, type, cfg) {
   return { reqSpeed, pThrow };
 }
 
+/**
+ * 打球を「拾う」外野手（ARM の主語）。責任野手（OAA の主語）とは別概念であることに注意:
+ *   三遊間を抜けたゴロの OAA 責任は SS だが、実際に球を拾って返球するのは LF である。
+ * 空中球は落下点に最も近い外野手、ゴロは spray 角のセクタで決める。
+ */
+export function retrievingOutfielder(bb, cfg) {
+  const F = fielderPositions(cfg);
+  const landX = bb.distanceM * Math.sin(bb.sprayDeg * FG_RAD);
+  const landY = bb.distanceM * Math.cos(bb.sprayDeg * FG_RAD);
+  let best = null;
+  let bestD = Infinity;
+  for (const pos of FG_OUTFIELD) {
+    const f = F[pos];
+    // ゴロは転がり出しの落下点が浅く落下点距離が使えないので、角度セクタで決める
+    const d = bb.laDeg <= 0
+      ? Math.abs(bb.sprayDeg - cfg.tuning.field.positions[pos].t)
+      : Math.hypot(landX - f.x, landY - f.y);
+    if (d < bestD) {
+      bestD = d;
+      best = pos;
+    }
+  }
+  return best;
+}
+
 /** Smax（実効クロージング速度 m/s）。rating 50 = リーグ平均 */
 export function smaxOf(rating, cfg) {
   const g = cfg.tuning.field;

@@ -112,6 +112,7 @@ export const CALIBRATION_TARGETS = {
     lobPct: [0.70, 0.75], // リーグ残塁率
     qsRate: [0.45, 0.60], // 先発QS率（NPB水準・B1一球化＋継投再較正で帯内に収束）
     armLeader: [5, 12], // 外野ARM上位（対リーグ平均run）
+    ofAssistLeader: [5, 11], // 外野補殺リーダー（NPB.jp 2025実測: セ6 / パ9・正典§6.4）
     re24SumAbs: 1e-6, // |ΣRE24| ≤ これ（打者+走者+投手 = 0 恒等）
     wpaZeroSum: 1e-9, // WPAゼロサム最大誤差 ≤ これ（1試合 勝者±0.5）
     liAvg: [0.999, 1.001], // 打席加重平均LI = 1.0（正規化・aLI/pLI）
@@ -323,8 +324,8 @@ export const TUNING_DEFAULT = {
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
     hitProb: 0.1, // 内野安打化
     maxScoreDiff: 2, // 接戦判定（±この点差以内で試行）
-    attemptBase: 0.158, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
-    //   守備モデル刷新(Distance-Time)でバント局面の実アウト確率が変わり犠打が目減りしたため再較正(0.145→0.158)
+    attemptBase: 0.17, // 非強打者×バント局面の基本試行率 ※S2予備調整（野手SHがセパ差を埋没させない水準へ）
+    //   守備モデル刷新(Distance-Time)＋ARM実イベント化でバント局面の期待値が変わり犠打が目減りしたため再較正(0.145→0.17)
     //   F2-5: 0.16→0.145（DH無リーグの攻撃力を僅かに回復しセパ得点差を帯上限0.45から離す。SH帯は維持）
     tendW: 0.5, // 監督buntTend(50中心)の感度（logit増分/10pt）
     pitcherAttempt: 0.8, // 投手打席はほぼ必ずバント（F2-5: 0.9→0.8。セパ得点差の再収束＝投手にも僅かに打たせる）
@@ -595,7 +596,14 @@ export const TUNING_DEFAULT = {
     runPerOutOutfield: 0.9, // "1 out = .9 runs (outfielders)"
     runPerError: 0.5, // 失策1つ（ポジ平均との差）あたりのrun価値。UZRのErrR成分（§7.2）
     framePerInning: 0.0005, // 捕手フレーミング（per-inning近似の遺構。実際は一球ごとに runPerCall で積む）
-    armRunPerOpp: 0.007, // 【暫定】外野ARM: 真値armの線形変換。鉄則4違反のため次コミットで実イベント創発へ置換する
+    // --- ARM（外野送球）: 実イベントから創発させる（旧 armRunPerOpp = 真値の線形変換は撤去）。
+    //   強肩は (a) 走者に自重させ（armAdvSuppress） (b) 走った走者を刺す（armKill*）。
+    //   ARM run は armOpp/armAdv/armKill の生カウントからリーグ平均基準で算出（fielding.mjs）。
+    ofReachM: 45, // 空中球がこの距離以上に落ちたら外野が処理する（＝外野手の返球が関与する）
+    armAdvSuppress: 0.0045, // 肩1pt(50中心) → 走者の追加進塁確率をこれだけ下げる ※較正対象
+    armKillBase: 0.1, // 走った走者を刺す基本確率（リーグ平均の肩） ※較正済み（NPB外野補殺リーダー年6〜9本）
+    armKillSlope: 0.003, // 肩1pt → 刺殺確率の増分
+    armKillMax: 0.25, // 刺殺確率の上限
     runPerDP: 0.4, // "Double Plays 1 = .4"（旧0.45を FRV 準拠へ）
     dpShare: 0.5, // 1件の併殺を 2B・SS で分担する比率（game.mjs が双方にフル計上するため・§B3b）
     // 捕手送球: "Catcher Throwing 1 SB prevented = .65 runs, the difference between a SB (+.2) and a CS (-.45)"

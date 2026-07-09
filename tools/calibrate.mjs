@@ -133,9 +133,11 @@ function runOnce(seed) {
   const lgBm = playerBatting({ batting: lgBat }, lc); // リーグ集計の wOBA/xwOBA
   const lgPm = playerPitching({ pitching: lgPit }, lc, cfg); // リーグ集計の LOB%
   let armLeader = -Infinity; // 外野ARM上位（規定守備の外野手・対平均run）
+  let assistLeader = 0; // 外野補殺リーダー（NPB実測: 年6〜9本・正典§6.4）
   for (const s of res.playerSeasons) {
     if (OUTFIELD.has(mainPosition(s.fielding)) && totalFieldInnings(s.fielding) >= 400) {
-      armLeader = Math.max(armLeader, armRunsAboveAvg(s, lc));
+      armLeader = Math.max(armLeader, armRunsAboveAvg(s, cfg, lc));
+      assistLeader = Math.max(assistLeader, s.fielding.armKill || 0);
     }
   }
   let totQS = 0;
@@ -205,6 +207,7 @@ function runOnce(seed) {
     xwobaDiff: Math.abs(lgBm.xwoba - lgBm.woba),
     lobPct: lgPm.lobPct,
     armLeader,
+    assistLeader,
     qsRate: totGS ? totQS / totGS : 0,
     disc,
     // --- D2 パークファクター ---
@@ -392,6 +395,7 @@ console.log(brow('|xwOBA−wOBA|', avgR((r) => r.xwobaDiff), [0, B.xwobaVsWoba],
 console.log(brow('LOB%', avgR((r) => r.lobPct), B.lobPct, 3));
 console.log(brow('QS率', avgR((r) => r.qsRate), B.qsRate, 3));
 console.log(brow('ARM上位(外野)', avgR((r) => r.armLeader), B.armLeader, 2));
+console.log(brow('外野補殺リーダー', avgR((r) => r.assistLeader), B.ofAssistLeader, 1));
 console.log('');
 console.log('--- 文脈指標（context・seeds=' + CTX_SEEDS.join(',') + ' 平均） ---');
 console.log(babs('ΣRE24(恒等≈0)', avgC((r) => r.re24Sum), B.re24SumAbs));

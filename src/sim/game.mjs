@@ -13,7 +13,7 @@ import { runPlateAppearance } from './plateAppearance.mjs';
 import { resolveBattedBall, battedType } from './battedBallResult.mjs';
 import { accumulateBatted } from './battedBallStats.mjs';
 import { rangeRating } from './fielding.mjs';
-import { IS_OUTFIELD } from './fieldingGeometry.mjs';
+import { IS_OUTFIELD, retrievingOutfielder } from './fieldingGeometry.mjs';
 import { logit, expit, ratingDelta } from './rates.mjs';
 import { effectiveBats } from '../model/player.mjs';
 import { clamp } from '../model/util.mjs';
@@ -41,6 +41,10 @@ const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
  */
 export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ctx) {
   let runs = 0;
+  if (ctx) {
+    ctx.outs = outs; // ARM補殺の可否判定（3アウト目は作らない）
+    ctx.outsAdded = 0; // 外野補殺で増えたアウト。呼び出し側が outs へ加算する
+  }
   const b1 = bases[0];
   const b2 = bases[1];
   const b3 = bases[2];
@@ -145,20 +149,38 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
  *   UBRのリーグ基準をシナリオごとに正しく分離できるようにする（Fangraphs UBR/BP EqBRR準拠）。
  */
 function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
+  const def = ctx && ctx.def; // 打球を拾った外野手（ARMの主語）。内野処理なら null
   let p = baseProb;
   if (ctx) {
     const t = ctx.byId.get(pid).trueAbility;
     const tool = (t.common.speed + t.baserunning.baserunIQ) / 2;
-    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope, 0.05, 0.95);
+    // 強肩の外野手ほど走者は自重する（進塁抑止・§ARM実イベント化）
+    const armSup = def ? (def.arm - 50) * cfg.tuning.field.armAdvSuppress : 0;
+    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope - armSup, 0.05, 0.95);
     const bs = ctx.statFor(pid, ctx.teamId).baserunning;
     bs.advOpp++;
     bs[`${scenario}Opp`]++;
     const took = (rng ? rng.next() : 1) < p;
+    if (def) def.line.armOpp++;
     if (took) {
+      // 走った → 強肩なら刺せる（補殺）。3アウト目になる走塁死は run 計上順序が壊れるため
+      // outs<2 に限定する（NPBの外野補殺リーダーが年6〜9本という水準の近似・正典§6.4）
+      const canKill = def && ctx.outs < 2;
+      const f = cfg.tuning.field;
+      const pKill = canKill ? clamp(f.armKillBase + (def.arm - 50) * f.armKillSlope, 0, f.armKillMax) : 0;
+      const killed = canKill && rng && rng.next() < pKill;
+      if (killed) {
+        def.line.armKill++;
+        def.line.a++; // 補殺
+        ctx.outsAdded++;
+        return false; // 進塁できず走塁死
+      }
       bs.advTaken++;
       bs[`${scenario}Taken`]++;
+      if (def) def.line.armAdv++;
+      return true;
     }
-    return took;
+    return false;
   }
   return (rng ? rng.next() : 1) < baseProb;
 }
@@ -647,20 +669,31 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (!isIBB) recordByCount(bStat.batting.byCount, paBucket, paPassed02, paPassed30, outcome, result);
 
     // ARM（外野送球の対平均run・§B3b）: 単打×二塁走者 / 二塁打×一塁走者 の追加進塁機会に
-    // 相対した外野手へ、機会と (arm-50)×armRunPerOpp のrun換算を累積する。進塁判定(resolveAdv)は
-    // 不変・乱数も一切消費しない（＝決定論・較正30指標が不変）。実際の送球死化はB1（一球データ）で。
-    if (hitFielderPos && IS_OUTFIELD.has(hitFielderPos) && ((result === '1B' && bases[1]) || (result === '2B' && bases[0]))) {
-      const ofPid = fielding.defense[hitFielderPos];
+    // ARM（外野送球）: 打球を「拾う」外野手を幾何で決め、resolveAdv に注入する。
+    //   OAA の責任野手（argmax p）とは別概念: 三遊間を抜けたゴロの OAA 責任は SS だが、
+    //   球を拾って返球するのは LF である（正典§11.6）。
+    //   強肩は (a) 走者に自重させ (b) 走った走者を刺す。ARM run は armOpp/armAdv/armKill の
+    //   生カウントからリーグ平均基準で創発させる（鉄則4: 指標を後付けしない）。
+    let ubrDef = null;
+    if (battedBall && (result === '1B' || result === '2B' || result === '3B' || (result === 'out' && isAirOut))) {
+      const ofPos = retrievingOutfielder(battedBall, cfg);
+      const ofPid = ofPos ? fielding.defense[ofPos] : null;
       const ofPlayer = ofPid ? fielding.byId.get(ofPid) : null;
-      if (ofPlayer) {
-        const fl = statFor(ofPid, fielding.teamId).fielding;
-        fl.armOpp++;
-        fl.armRuns += (ofPlayer.trueAbility.common.arm - 50) * cfg.tuning.field.armRunPerOpp;
+      // 内野で処理された打球（内野ゴロアウト・内野フライ）では外野手は関与しない
+      const reachedOF = battedBall.laDeg > 0 ? battedBall.distanceM >= cfg.tuning.field.ofReachM : result !== 'out';
+      if (ofPlayer && reachedOF) {
+        ubrDef = { arm: ofPlayer.trueAbility.common.arm, line: statFor(ofPid, fielding.teamId).fielding };
       }
     }
 
-    const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId };
+    const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId, def: ubrDef, outs, outsAdded: 0 };
     const advRuns = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
+    // 外野補殺で増えたアウト（走塁死）を反映する
+    if (ubrCtx.outsAdded) {
+      outs += ubrCtx.outsAdded;
+      fielding.cur.outs += ubrCtx.outsAdded;
+      pStat.pitching.outs += ubrCtx.outsAdded;
+    }
     // 打席中の暴投/捕逸で入った得点(wpRuns)は打点対象外だが投手失点＝自責（失策後は非自責）。
     // 打席プレー全体の得点として一括計上し、文脈指標(gc)へも合算で渡す（RE24/WPAの telescoping を保つ）。
     const runs = advRuns + wpRuns;

@@ -96,16 +96,26 @@ export function deriveLeagueConstants(res, cfg = null) {
   }
   const lgDPRate = totDPopp ? totDPturned / totDPopp : 0;
 
-  // 外野ARMの中心化基準（§B3b）: 追加進塁機会1回あたりの平均armRun。ARMを「リーグの外野手平均の肩」
-  // に対して0中心化するため（外野手は概して平均以上の肩＝生の(arm-50)は正に偏る）。metrics側で
-  // ARM = armRuns − lgArmRunPerOpp×armOpp とすると リーグΣ ARM≈0 が厳密成立する。
-  let totArmRuns = 0;
+  // 外野ARMの基準（実イベント創発）: 追加進塁機会あたりの「進塁を許した率」「刺した率」。
+  // fielding.mjs が ARM = lgPerOpp×opp − (adv×runUBR + kill×runCS) で対平均run換算する
+  // （リーグΣ ARM = 0 が厳密成立）。
   let totArmOpp = 0;
+  let totArmAdv = 0;
+  let totArmKill = 0;
+  // 捕手ブロッキングの基準: ワンバウンド機会あたりの (暴投+捕逸) 率
+  let totBlockOpp = 0;
+  let totWpPb = 0;
   for (const ps of res.playerSeasons) {
-    totArmRuns += ps.fielding.armRuns || 0;
-    totArmOpp += ps.fielding.armOpp || 0;
+    const f = ps.fielding;
+    totArmOpp += f.armOpp || 0;
+    totArmAdv += f.armAdv || 0;
+    totArmKill += f.armKill || 0;
+    totBlockOpp += f.blockOpp || 0;
+    totWpPb += (f.wp || 0) + (f.pb || 0);
   }
-  const lgArmRunPerOpp = totArmOpp ? totArmRuns / totArmOpp : 0;
+  const lgArmAdvRate = totArmOpp ? totArmAdv / totArmOpp : 0;
+  const lgArmKillRate = totArmOpp ? totArmKill / totArmOpp : 0;
+  const lgBlockFailRate = totBlockOpp ? totWpPb / totBlockOpp : 0;
 
   // 追加進塁リーグ率（UBRの基準・§6／§req_20260708強化）。
   // 実際のUBR/EqBRR（Fangraphs/Baseball Prospectus）はシナリオ別（単打での二塁走者本塁突入・
@@ -164,7 +174,9 @@ export function deriveLeagueConstants(res, cfg = null) {
   return {
     lgGDPrate,
     lgDPRate,
-    lgArmRunPerOpp,
+    lgArmAdvRate,
+    lgArmKillRate,
+    lgBlockFailRate,
     lgAdvRate,
     lgAdvRateByScenario,
     lgSB,

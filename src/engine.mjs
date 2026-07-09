@@ -26,7 +26,7 @@ import { PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance } 
 import { generateBattedBall } from './sim/battedBall.mjs';
 import { battedType, computeGeometry, assignFielder, resolveBattedBall } from './sim/battedBallResult.mjs';
 import {
-  fieldingChances, neutralResponsible, outProb, smaxOf, fielderPositions, runnerToFirst,
+  fieldingChances, neutralResponsible, outProb, smaxOf, fielderPositions, runnerToFirst, retrievingOutfielder,
   FIELD_POS, FG_INFIELD, FG_OUTFIELD, IS_OUTFIELD,
 } from './sim/fieldingGeometry.mjs';
 import { selectPitch, selectPitchByCount } from './sim/pitchGrid.mjs';
@@ -48,7 +48,7 @@ import { leagueBatting, leaguePitching, leagueSummary, leagueSummaryByLeague } f
 import { deriveLeagueConstants, fillLeagueConstants, rawRunValuePerPA, LINEAR_WEIGHTS } from './sim/leagueConstants.mjs';
 import { deriveParkFactors, parkFactorSpread } from './sim/parkFactor.mjs';
 import { playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, pythag } from './sim/metrics.mjs';
-import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns } from './sim/fielding.mjs';
+import { rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg, uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns, catcherBlockRuns, catcherDefenseRuns } from './sim/fielding.mjs';
 import { hitterWAR, pitcherWAR, playerWAR, posAdjRuns } from './sim/war.mjs';
 import { isBarrel } from './sim/battedBallStats.mjs';
 
@@ -86,7 +86,8 @@ export {
   deriveParkFactors, parkFactorSpread,
   playerBatting, playerPitching, playerBaserunning, battingSplits, playerFielding, pythag,
   rangeRating, mainPosition, uzrRuns, centeredOAAOuts, totalFieldInnings, errRunsAboveAvg,
-  uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns,
+  uzrComponents, armRunsAboveAvg, dprRunsAboveAvg, catcherRsbRuns, catcherBlockRuns, catcherDefenseRuns,
+  retrievingOutfielder,
   hitterWAR, pitcherWAR, playerWAR, posAdjRuns,
   isBarrel,
 };

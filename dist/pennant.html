@@ -1632,7 +1632,7 @@ const TUNING_DEFAULT = {
       RF: { r: 88, t: 28 },
     },
     // --- 到達モデル ---
-    smaxBase: 6.82, // リーグ平均野手の実効クロージング速度 m/s（反応後の平均速度。全力疾走9m/sより低い）※較正済み: 得点環境中立に着地
+    smaxBase: 6.78, // リーグ平均野手の実効クロージング速度 m/s（反応後の平均速度。全力疾走9m/sより低い）※較正済み: 得点環境中立に着地
     // Range 1pt → Smax の増分 m/s（50中心）。UZRの広がりと |xwOBA−wOBA| 乖離を同時に支配する:
     //   個人差を強めるほど「守備中立の xwOBA」と「実際に上手いレギュラーが守った wOBA」がずれる。
     //   0.022 で UZR上位≈+15（FanGraphs のゴールドグラブ級）かつ |xwOBA−wOBA| ≤ 0.003 に収まる。
@@ -1673,17 +1673,6 @@ const TUNING_DEFAULT = {
     //   → 定数を置かず run.runSB − run.runCS から導出する（正典§8.4）
     runPerBlock: 0.25, // "Catcher Blocking 1 = .25"
   },
-  // 走塁 Spd（簡易4成分・Bill James風0-10スケール・§B3b）: SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
-  spd: {
-    minSbAtt: 5, // 盗塁成功率を採用する最小企図数（未満は中立）
-    neutralSbRate: 0.5, // 企図僅少時の中立成功率
-    sbFreqRef: 0.15, // 盗塁企図頻度（企図/一塁到達）の10点基準
-    b3Ref: 0.02, // 三塁打率（三塁打/インプレー）の10点基準
-    xbtRef: 0.6, // XBT%（追加進塁率）の10点基準
-    posDefault: 4, // 位置速度の既定
-    posSpeed: { CF: 8, SS: 7, '2B': 6, '3B': 4, RF: 5, LF: 4, C: 2, '1B': 2, DH: 3 }, // 守備位置の速度性（0-10）
-  },
-
   // 対戦巡目（1-5, §3.3）: 同一投手を1試合に複数回見るほど打者有利。
   // Phase1は一律係数のプレースホルダ。球種数重み付けは 2-1/2-2 後に有効化。
   tto: {
@@ -3013,9 +3002,51 @@ function generatePitcher(rng, id) {
 // ポジション別の打撃バイアス（守備難ポジは打撃控えめ＝現実の傾向。較正で微調整）
 const POS_POWER_BIAS = { '1B': 8, RF: 6, LF: 6, '3B': 3, CF: 0, C: -2, '2B': -3, SS: -5 };
 
+// ============================================================================
+// ポジション別の走力・肩バイアス（一次データ由来）
+// 正典: thyroxin/research/fielding_metrics_reference.md §14
+//
+// 旧実装は「CF/SS だけ速い、RF/C だけ強肩、残り全員フラット」という二値スイッチだった。
+// 実データはそうなっていない（捕手は最も遅い／二塁手は三塁手より速い／一塁手・二塁手の肩は
+// 三塁手より6〜9mphも弱い／コーナー外野は二塁手より速い）。
+//
+// レーティングへの写像: 1 rating pt = 選手個人の標準偏差の 0.1（＝σ=10 rating）。
+//   走力: Baseball Savant 2024 (N=566・競争的走塁10回以上) を CSV から自己集計。
+//         リーグ全体平均 27.30 ft/sec（公称27と一致＝集計の検算）、個人SD 1.36 ft/sec。
+//         bias = (ポジション平均 − 27.30) / 1.36 × 10
+//   肩:   Baseball Savant 2024 公表のポジション別平均（上位10%送球の平均）。
+//         個人SD ≈ 6 mph（arm_overall 5.77 / max_arm 6.62 で挟んだ自己集計値）。
+//         bias = (ポジション平均 − 7ポジ平均85.17) / 6.0 × 10
+//
+// draw の sd は「母集団sdを現行と一致させる値」と「実測の位置内SD」が独立に一致した:
+//   走力 9.97 vs 実測位置内SD 6.1〜9.3 rating  → 10 を採用
+//   肩   7.06 vs 実測位置内SD 6.7〜8.3 rating  → 7.1 を採用
+// base は生成人数で重み付けした平均が現行値（走力50.70 / 肩52.44）になるよう定めた（較正の揺れを最小化）。
+// ============================================================================
+const SPEED_BASE = 49.58;
+const SPEED_SD = 10;
+// Savant 2024 ft/sec: CF 28.68 / SS 27.93 / LF 27.87 / RF 27.79 / 2B 27.61 / 3B 27.30 / 1B 26.32 / C 25.97
+const POS_SPEED_BIAS = { CF: 10.1, SS: 4.6, LF: 4.2, RF: 3.6, '2B': 2.3, '3B': 0, '1B': -7.2, C: -9.8 };
+
+const ARM_BASE = 51.28;
+const ARM_SD = 7.1;
+// Savant 2024 mph: CF 89.7 / RF 89.4 / LF 88.1 / SS 86.9 / 3B 85.7 / 2B 79.3 / 1B 77.1
+// ⚠️捕手は Savant が Arm Strength から除外している（Pop Time で評価する）ため一次情報の平均が存在しない。
+//   2017年のトップ捕手の max-effort 送球が 87〜88mph（＝外野平均と同水準）という二次情報しかないので、
+//   RF と同値を「設計値」として置く。出典のある数値ではないことを明示する。
+const POS_ARM_BIAS = { CF: 7.5, RF: 7.0, C: 7.0, LF: 4.9, SS: 2.9, '3B': 0.9, '2B': -9.8, '1B': -13.5 };
+
+// 盗塁技術は走力と連続に結線する（旧実装は speed>55 で 46→55 と 9pt 跳ぶ階段関数で、
+// speed 25 の選手と speed 54 の選手の盗塁技術が同じだった）。
+// 傾き・切片・残差sdは、旧実装の周辺分布（平均48.85 / sd12.56 / steal~speed の回帰係数0.2636）を
+// 保つよう定めた＝段差の撤廃だけを行い、新しい数値を発明しない。
+const STEAL_BASE = 48.67;
+const STEAL_PER_SPEED = 0.2636;
+const STEAL_SD = 12.17;
+
 /** 野手を1人生成（primaryPos を主守備位置に） */
 function generateFielder(rng, id, primaryPos) {
-  const speed = draw(rng, primaryPos === 'CF' || primaryPos === 'SS' ? 58 : 48, 11);
+  const speed = draw(rng, SPEED_BASE + (POS_SPEED_BIAS[primaryPos] ?? 0), SPEED_SD);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
   const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
   // 外れ値が野手WAR王を9.5超へ押し上げるのを抑える（打率王/HR王の裾もこのsdで同時較正）
@@ -3036,7 +3067,7 @@ function generateFielder(rng, id, primaryPos) {
     common: {
       speed,
       power,
-      arm: draw(rng, primaryPos === 'RF' || primaryPos === 'C' ? 58 : 50, 10),
+      arm: draw(rng, ARM_BASE + (POS_ARM_BIAS[primaryPos] ?? 0), ARM_SD),
       hands: draw(rng, 50, 10),
       reaction: draw(rng, 50, 10),
     },
@@ -3054,7 +3085,7 @@ function generateFielder(rng, id, primaryPos) {
       positioningIQ: draw(rng, 50, 10),
       framing: primaryPos === 'C' ? draw(rng, 50, 10) : draw(rng, 30, 6),
     },
-    baserunning: { steal: draw(rng, speed > 55 ? 55 : 46, 12), baserunIQ: draw(rng, 50, 10) },
+    baserunning: { steal: draw(rng, STEAL_BASE + (speed - 50) * STEAL_PER_SPEED, STEAL_SD), baserunIQ: draw(rng, 50, 10) },
     // §12.4: peakAge を能力タイプ相関で引く（走力系ほど前ズレ＝早熟／低走力の技巧・パワー型ほど
     //   後ろズレ）。乱数は base の rng.normal 一発のみ（既引きの speed で決定論シフト）＝生成の
     //   乱数列は不変＝1年目シム（既存50較正）に影響しない。晩成が“稀な少数テール”になるよう寄せる。
@@ -7509,7 +7540,6 @@ function gamesBehind(leader, t) {
 
 
 
-
 const div = (a, b) => (b ? a / b : 0);
 
 /**
@@ -7530,29 +7560,6 @@ function pythag(t) {
   const expWinPct = Math.pow(rs, exp) / (Math.pow(rs, exp) + Math.pow(ra, exp));
   const actualWinPct = t.w / decided;
   return { expWinPct, luck: (actualWinPct - expWinPct) * decided, exponent: exp };
-}
-
-/**
- * Spd（簡易4成分・Bill James風0-10スケール・§B3b）。SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
- * 俊足で高くなる（各成分が走力に単調）。cfg.tuning.spd の基準で0-10へ写像し平均する。
- */
-function spdScore(ps, cfg) {
-  const b = ps.batting;
-  const br = ps.baserunning || {};
-  const s = cfg.tuning.spd;
-  const att = (b.sb || 0) + (b.cs || 0);
-  const reach = (b.b1 || 0) + (b.bb || 0) + (b.hbp || 0);
-  const sbFreq = div(att, reach); // 盗塁企図頻度
-  const sbRate = att >= s.minSbAtt ? div(b.sb || 0, att) : s.neutralSbRate; // 成功率（企図僅少は中立）
-  const inplay = (b.ab || 0) - (b.so || 0) - (b.hr || 0);
-  const b3Rate = div(b.b3 || 0, inplay); // 三塁打率
-  const xbt = div(br.advTaken || 0, br.advOpp || 0); // XBT%（追加進塁率）
-  const pos = ps.fielding ? mainPosition(ps.fielding) : '';
-  const posSpd = s.posSpeed[pos] ?? s.posDefault; // 守備位置の速度性
-  const cSb = clamp((sbFreq / s.sbFreqRef) * 10, 0, 10) * clamp(sbRate / 0.5, 0, 1.2);
-  const cB3 = clamp((b3Rate / s.b3Ref) * 10, 0, 10);
-  const cXbt = clamp((xbt / s.xbtRef) * 10, 0, 10);
-  return (cSb + cB3 + cXbt + posSpd) / 4;
 }
 
 /** スプリット器→スラッシュライン（AVG/OBP/SLG/OPS・§B3b）。 */
@@ -7724,9 +7731,14 @@ function playerBaserunning(ps, cfg, lc) {
     ubr,
     wGDP,
     bsr: wSB + ubr + wGDP,
-    // --- B3b 走塁の追加集計（XBT%・Spd・§B3b） ---
+    // --- 走塁の追加集計（XBT%）---
+    //   ※ Spd（Speed Score）は撤去した。FanGraphs 自身が「outdated / run スケールでない。UBR を使え」と
+    //     明言しており、各 factor の正確な係数は一次情報で確認できなかった（Wikipedia 単独ソースかつ
+    //     一般に流布する式と係数が食い違う）。旧実装は「守備位置速度」という打席を1つも見ない
+    //     ルックアップ項を含み、しかもその表はこのシムの生成分布と矛盾していた。
+    //     走塁の価値は BsR = UBR + wSB + wGDP（すべて一次情報で定義・生カウントから創発）で表す。
+    //     正典: thyroxin/research/fielding_metrics_reference.md §7
     xbt: div(br.advTaken || 0, br.advOpp || 0), // 追加進塁率（advTaken/advOpp）
-    spd: cfg ? spdScore(ps, cfg) : 0, // 簡易Spd（0-10・俊足で高い）
     advOpp: br.advOpp || 0,
     advTaken: br.advTaken || 0,
     // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2。context有効時のみ非0） ---

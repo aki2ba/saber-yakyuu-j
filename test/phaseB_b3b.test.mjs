@@ -1,6 +1,6 @@
 // フェーズB B3b（守備成分分解・走塁・スプリット・一球データ不要）の単体テスト。
 // UZR分解(RngR+ErrR+ARM+DPR+rSB+framing)の整合・WAR不変・ARM上位=強肩外野・
-// rSB/DPRの対平均0中心・対左右スプリットのPA恒等・XBT%/Spdの俊足相関を検証する。
+// rSB/DPRの対平均0中心・対左右スプリットのPA恒等・XBT%/BsRの俊足相関を検証する。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
@@ -188,7 +188,7 @@ test('battingSplits: スラッシュ器が算出される（対右で多打席�
   assert.ok(sp.vsR.pa > sp.vsL.pa, '右投手との対戦が多い（左投手28%以下）');
 });
 
-test('走塁: XBT%が俊足で高い・Spdが俊足で高い（能力→結果の結線）', () => {
+test('走塁: XBT%とBsRが俊足で高い（能力→結果の結線）', () => {
   const runners = res.playerSeasons
     .filter((s) => (s.baserunning.advOpp || 0) >= 15)
     .map((s) => {
@@ -196,13 +196,20 @@ test('走塁: XBT%が俊足で高い・Spdが俊足で高い（能力→結果�
       const m = playerBaserunning(s, cfg, lc);
       // XBT% = advTaken/advOpp の定義一致
       assert.ok(Math.abs(m.xbt - (s.baserunning.advTaken || 0) / s.baserunning.advOpp) < 1e-12, 'XBT%定義');
-      return { xbt: m.xbt, spd: m.spd, tool: (t.common.speed + t.baserunning.baserunIQ) / 2, speed: t.common.speed };
+      return { xbt: m.xbt, bsr: m.bsr, tool: (t.common.speed + t.baserunning.baserunIQ) / 2, speed: t.common.speed };
     });
   assert.ok(runners.length >= 40, `進塁機会のある走者が十分いる (${runners.length})`);
   assert.ok(corr(runners.map((r) => r.xbt), runners.map((r) => r.tool)) > 0.3, 'corr(XBT%,走塁ツール)>0.3');
-  assert.ok(corr(runners.map((r) => r.spd), runners.map((r) => r.speed)) > 0.4, 'corr(Spd,走力)>0.4');
-  // Spd は 0-10 域
-  for (const r of runners) assert.ok(r.spd >= 0 && r.spd <= 10, `Spd域 ${r.spd}`);
+  assert.ok(corr(runners.map((r) => r.bsr), runners.map((r) => r.speed)) > 0.3, 'corr(BsR,走力)>0.3');
+});
+
+test('Spd（Speed Score）は撤去されている（一次情報で式を確認できず・FanGraphs自身がUBRを推奨）', () => {
+  const s = res.playerSeasons.find((x) => (x.baserunning.advOpp || 0) >= 15);
+  const m = playerBaserunning(s, cfg, lc);
+  assert.equal(m.spd, undefined, 'playerBaserunning は spd を返さない');
+  assert.equal(cfg.tuning.spd, undefined, 'config に spd ブロックが残っていない');
+  // 走塁の価値は BsR = UBR + wSB + wGDP（すべて一次情報で定義）
+  assert.ok(Math.abs(m.bsr - (m.ubr + m.wSB + m.wGDP)) < 1e-9, 'BsR = UBR + wSB + wGDP');
 });
 
 test('playerFielding: 守備成分の表示（内訳＋素カウント）が一貫', () => {

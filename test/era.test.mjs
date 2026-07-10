@@ -94,14 +94,18 @@ test('D3: 得点環境が緩やかに揺れる — evBaseDelta が正弦で上�
 });
 
 test('D3: 時代の揺れが得点環境を動かす — 打高(evBase+) > 中立 > 投高(evBase−)', () => {
-  const seed = 42;
+  // 1シードの得点環境はロスター生成の当たり外れで ±0.15 R/G 揺れる（evBaseDelta±0.8 の効果と同オーダー）。
+  // 順序を主張するなら複数シードの平均を見なければならない（単一シードだと符号が反転しうる）。
+  const seeds = [42, 7, 101];
   const rpg = (delta) => {
-    const c = eraSeasonConfig(createConfig(), { evBaseDelta: delta });
-    const lg = generateLeague(seed, c);
-    const res = simulateSeason(lg, c, { season: 2026, seed, postseason: false });
     let rs = 0;
     let g = 0;
-    for (const r of res.standings.values()) { rs += r.rs; g += r.g; }
+    for (const seed of seeds) {
+      const c = eraSeasonConfig(createConfig(), { evBaseDelta: delta });
+      const lg = generateLeague(seed, c);
+      const res = simulateSeason(lg, c, { season: 2026, seed, postseason: false });
+      for (const r of res.standings.values()) { rs += r.rs; g += r.g; }
+    }
     return rs / g;
   };
   const hi = rpg(+0.8);

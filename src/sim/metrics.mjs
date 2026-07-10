@@ -5,9 +5,8 @@
 // ============================================================================
 import { rawRunValuePerPA, LINEAR_WEIGHTS } from './leagueConstants.mjs';
 import { METRICS_CONST } from '../config.mjs';
-import { mainPosition, uzrComponents } from './fielding.mjs';
+import { uzrComponents } from './fielding.mjs';
 import { createSplitLine } from '../model/statline.mjs';
-import { clamp } from '../model/util.mjs';
 
 const div = (a, b) => (b ? a / b : 0);
 
@@ -29,29 +28,6 @@ export function pythag(t) {
   const expWinPct = Math.pow(rs, exp) / (Math.pow(rs, exp) + Math.pow(ra, exp));
   const actualWinPct = t.w / decided;
   return { expWinPct, luck: (actualWinPct - expWinPct) * decided, exponent: exp };
-}
-
-/**
- * Spd（簡易4成分・Bill James風0-10スケール・§B3b）。SB成功率×頻度・三塁打率・XBT%・守備位置速度の合成。
- * 俊足で高くなる（各成分が走力に単調）。cfg.tuning.spd の基準で0-10へ写像し平均する。
- */
-function spdScore(ps, cfg) {
-  const b = ps.batting;
-  const br = ps.baserunning || {};
-  const s = cfg.tuning.spd;
-  const att = (b.sb || 0) + (b.cs || 0);
-  const reach = (b.b1 || 0) + (b.bb || 0) + (b.hbp || 0);
-  const sbFreq = div(att, reach); // 盗塁企図頻度
-  const sbRate = att >= s.minSbAtt ? div(b.sb || 0, att) : s.neutralSbRate; // 成功率（企図僅少は中立）
-  const inplay = (b.ab || 0) - (b.so || 0) - (b.hr || 0);
-  const b3Rate = div(b.b3 || 0, inplay); // 三塁打率
-  const xbt = div(br.advTaken || 0, br.advOpp || 0); // XBT%（追加進塁率）
-  const pos = ps.fielding ? mainPosition(ps.fielding) : '';
-  const posSpd = s.posSpeed[pos] ?? s.posDefault; // 守備位置の速度性
-  const cSb = clamp((sbFreq / s.sbFreqRef) * 10, 0, 10) * clamp(sbRate / 0.5, 0, 1.2);
-  const cB3 = clamp((b3Rate / s.b3Ref) * 10, 0, 10);
-  const cXbt = clamp((xbt / s.xbtRef) * 10, 0, 10);
-  return (cSb + cB3 + cXbt + posSpd) / 4;
 }
 
 /** スプリット器→スラッシュライン（AVG/OBP/SLG/OPS・§B3b）。 */
@@ -223,9 +199,14 @@ export function playerBaserunning(ps, cfg, lc) {
     ubr,
     wGDP,
     bsr: wSB + ubr + wGDP,
-    // --- B3b 走塁の追加集計（XBT%・Spd・§B3b） ---
+    // --- 走塁の追加集計（XBT%）---
+    //   ※ Spd（Speed Score）は撤去した。FanGraphs 自身が「outdated / run スケールでない。UBR を使え」と
+    //     明言しており、各 factor の正確な係数は一次情報で確認できなかった（Wikipedia 単独ソースかつ
+    //     一般に流布する式と係数が食い違う）。旧実装は「守備位置速度」という打席を1つも見ない
+    //     ルックアップ項を含み、しかもその表はこのシムの生成分布と矛盾していた。
+    //     走塁の価値は BsR = UBR + wSB + wGDP（すべて一次情報で定義・生カウントから創発）で表す。
+    //     正典: thyroxin/research/fielding_metrics_reference.md §7
     xbt: div(br.advTaken || 0, br.advOpp || 0), // 追加進塁率（advTaken/advOpp）
-    spd: cfg ? spdScore(ps, cfg) : 0, // 簡易Spd（0-10・俊足で高い）
     advOpp: br.advOpp || 0,
     advTaken: br.advTaken || 0,
     // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2。context有効時のみ非0） ---

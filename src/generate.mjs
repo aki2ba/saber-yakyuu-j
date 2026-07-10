@@ -142,9 +142,51 @@ export function generatePitcher(rng, id) {
 // ポジション別の打撃バイアス（守備難ポジは打撃控えめ＝現実の傾向。較正で微調整）
 const POS_POWER_BIAS = { '1B': 8, RF: 6, LF: 6, '3B': 3, CF: 0, C: -2, '2B': -3, SS: -5 };
 
+// ============================================================================
+// ポジション別の走力・肩バイアス（一次データ由来）
+// 正典: thyroxin/research/fielding_metrics_reference.md §14
+//
+// 旧実装は「CF/SS だけ速い、RF/C だけ強肩、残り全員フラット」という二値スイッチだった。
+// 実データはそうなっていない（捕手は最も遅い／二塁手は三塁手より速い／一塁手・二塁手の肩は
+// 三塁手より6〜9mphも弱い／コーナー外野は二塁手より速い）。
+//
+// レーティングへの写像: 1 rating pt = 選手個人の標準偏差の 0.1（＝σ=10 rating）。
+//   走力: Baseball Savant 2024 (N=566・競争的走塁10回以上) を CSV から自己集計。
+//         リーグ全体平均 27.30 ft/sec（公称27と一致＝集計の検算）、個人SD 1.36 ft/sec。
+//         bias = (ポジション平均 − 27.30) / 1.36 × 10
+//   肩:   Baseball Savant 2024 公表のポジション別平均（上位10%送球の平均）。
+//         個人SD ≈ 6 mph（arm_overall 5.77 / max_arm 6.62 で挟んだ自己集計値）。
+//         bias = (ポジション平均 − 7ポジ平均85.17) / 6.0 × 10
+//
+// draw の sd は「母集団sdを現行と一致させる値」と「実測の位置内SD」が独立に一致した:
+//   走力 9.97 vs 実測位置内SD 6.1〜9.3 rating  → 10 を採用
+//   肩   7.06 vs 実測位置内SD 6.7〜8.3 rating  → 7.1 を採用
+// base は生成人数で重み付けした平均が現行値（走力50.70 / 肩52.44）になるよう定めた（較正の揺れを最小化）。
+// ============================================================================
+const SPEED_BASE = 49.58;
+const SPEED_SD = 10;
+// Savant 2024 ft/sec: CF 28.68 / SS 27.93 / LF 27.87 / RF 27.79 / 2B 27.61 / 3B 27.30 / 1B 26.32 / C 25.97
+const POS_SPEED_BIAS = { CF: 10.1, SS: 4.6, LF: 4.2, RF: 3.6, '2B': 2.3, '3B': 0, '1B': -7.2, C: -9.8 };
+
+const ARM_BASE = 51.28;
+const ARM_SD = 7.1;
+// Savant 2024 mph: CF 89.7 / RF 89.4 / LF 88.1 / SS 86.9 / 3B 85.7 / 2B 79.3 / 1B 77.1
+// ⚠️捕手は Savant が Arm Strength から除外している（Pop Time で評価する）ため一次情報の平均が存在しない。
+//   2017年のトップ捕手の max-effort 送球が 87〜88mph（＝外野平均と同水準）という二次情報しかないので、
+//   RF と同値を「設計値」として置く。出典のある数値ではないことを明示する。
+const POS_ARM_BIAS = { CF: 7.5, RF: 7.0, C: 7.0, LF: 4.9, SS: 2.9, '3B': 0.9, '2B': -9.8, '1B': -13.5 };
+
+// 盗塁技術は走力と連続に結線する（旧実装は speed>55 で 46→55 と 9pt 跳ぶ階段関数で、
+// speed 25 の選手と speed 54 の選手の盗塁技術が同じだった）。
+// 傾き・切片・残差sdは、旧実装の周辺分布（平均48.85 / sd12.56 / steal~speed の回帰係数0.2636）を
+// 保つよう定めた＝段差の撤廃だけを行い、新しい数値を発明しない。
+const STEAL_BASE = 48.67;
+const STEAL_PER_SPEED = 0.2636;
+const STEAL_SD = 12.17;
+
 /** 野手を1人生成（primaryPos を主守備位置に） */
 export function generateFielder(rng, id, primaryPos) {
-  const speed = draw(rng, primaryPos === 'CF' || primaryPos === 'SS' ? 58 : 48, 11);
+  const speed = draw(rng, SPEED_BASE + (POS_SPEED_BIAS[primaryPos] ?? 0), SPEED_SD);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
   const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
   // 外れ値が野手WAR王を9.5超へ押し上げるのを抑える（打率王/HR王の裾もこのsdで同時較正）
@@ -165,7 +207,7 @@ export function generateFielder(rng, id, primaryPos) {
     common: {
       speed,
       power,
-      arm: draw(rng, primaryPos === 'RF' || primaryPos === 'C' ? 58 : 50, 10),
+      arm: draw(rng, ARM_BASE + (POS_ARM_BIAS[primaryPos] ?? 0), ARM_SD),
       hands: draw(rng, 50, 10),
       reaction: draw(rng, 50, 10),
     },
@@ -183,7 +225,7 @@ export function generateFielder(rng, id, primaryPos) {
       positioningIQ: draw(rng, 50, 10),
       framing: primaryPos === 'C' ? draw(rng, 50, 10) : draw(rng, 30, 6),
     },
-    baserunning: { steal: draw(rng, speed > 55 ? 55 : 46, 12), baserunIQ: draw(rng, 50, 10) },
+    baserunning: { steal: draw(rng, STEAL_BASE + (speed - 50) * STEAL_PER_SPEED, STEAL_SD), baserunIQ: draw(rng, 50, 10) },
     // §12.4: peakAge を能力タイプ相関で引く（走力系ほど前ズレ＝早熟／低走力の技巧・パワー型ほど
     //   後ろズレ）。乱数は base の rng.normal 一発のみ（既引きの speed で決定論シフト）＝生成の
     //   乱数列は不変＝1年目シム（既存50較正）に影響しない。晩成が“稀な少数テール”になるよう寄せる。

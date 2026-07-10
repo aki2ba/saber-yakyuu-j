@@ -613,7 +613,23 @@ NPB 公式のフレーミング公表値は存在しない。DELTA は球種・�
 | rARM | "evaluates an outfielder's throwing arm based on how often runners advance on base hits" | 外野手 |
 | rHR | "credits the outfielder **1.6 runs per robbed home run**" | 外野手 |
 
-`rGFP` / `rSZ` / `rPOS` / `rTHR` は **一次ページで定義文を確認できず**（二次情報のみ）。
+**⚠ 訂正（2026-07-10・`sabermetrics_glossary.md` §5.2）**: 当初 `rTHR` / `rPOS` を成分として挙げたが、
+これは誤りだった。開発元 Sports Info Solutions と FanGraphs Library の一次情報で確認できた成分は次の**9つ**:
+
+| 略号 | 定義 | 対象 |
+|---|---|---|
+| rPM | Plus/Minus Runs Saved（守備範囲とアウト転換能力） | 範囲を持つ全野手 |
+| rSB | Stolen Base Runs Saved | 投手 / 捕手 |
+| rGDP | Double Play Runs Saved | 2B / SS |
+| rARM | Outfield Arms Runs Saved | 外野手 |
+| rGFP | Good Fielding Plays Runs Saved（判断・プレー選択の巧拙） | 全ポジション |
+| rBU | Bunt Runs Saved | 1B / 3B / 投手 |
+| rHR | HR Saving Catch Runs Saved（**1本 = 1.6 run**） | 外野手 |
+| rSZ | Strike Zone Runs Saved（BIS版フレーミング） | 捕手 |
+| rCERA | Adjusted Earned Runs Saved | 捕手 |
+
+`rTHR` は捕手送球が `rSB` に統合されていることとの混同、`rPOS` は WAR の Positional Adjustment との混同と考えられる。
+- 出典: https://www.sportsinfosolutions.com/2019/04/02/what-is-strike-zone-runs-saved/ （一次・開発元公式）
 
 ### 9.2 【設計に直結】DRS は責任を1人に集約する `[二次]`
 
@@ -647,7 +663,10 @@ NPB 公式のフレーミング公表値は存在しない。DELTA は球種・�
 - **Statcast OAA は、安打が落ちたとき「最も捕球確率の高い1人」だけを減点するのか、非ゼロの全野手を減点するのか。**
   一次情報では断定できず。ただし **DRS が明確に「1人に集約」（§9.2）** であり、
   設計上は **「最も p が高い1人に −p を課す」** を採用する（単純・リーグ総和 ≈ 0 を保てる・DRS 流儀と一致）。
-- **ポジション補正の分母は 1350 か 1458 か**（§3 注記）。FanGraphs 原典で要再確認。
+- **ポジション補正の分母は 1350 か 1458 か**（§3 注記）。
+  → 2026-07-10 の追加調査で、**2つの独立したエージェントが「162守備試合 = 1,458イニングあたり」と報告**した
+  （`sabermetrics_glossary.md` §7.5 / §10.3）。1458 が正なら、このシムは補正を 8% 過大に与えている。
+  Baseball-Reference は「1350イニング = フルシーズン」という別の慣行を持つため、**修正前に FanGraphs 原典で再確認すること。**
 - `rGFP` / `rSZ` / `rPOS` / `rTHR` の一次定義。
 - Statcast framing の連続確率モデルの正確な関数形。
 - Bill James Spd 原典6成分の正確な重み付け式（`[確認できず]`）。

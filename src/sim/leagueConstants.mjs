@@ -75,6 +75,16 @@ export function deriveLeagueConstants(res, cfg = null) {
   const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
   const rpw = 1.5 * runsPerGamePerTeam + 3;
 
+  // 盗塁の得点価値（正典 sabermetrics_glossary.md §6.2・一次: FanGraphs Library wSB）
+  //   runSB = +0.2（全シーズン固定）
+  //   runCS = −(2 × RunsPerOut + 0.075)  ← 得点環境依存の可変式
+  // 旧実装は runCS を固定値 -0.38 にしていたため、時代トレンドで得点環境が動くと原典から乖離した。
+  // RunsPerOut = リーグ総得点 / リーグ総アウト数（＝投手の記録した総アウト）。
+  let totalOuts = 0;
+  for (const ps of res.playerSeasons) totalOuts += ps.pitching.outs;
+  const lgRunsPerOut = totalOuts ? totalRuns / totalOuts : 0;
+  const runCS = -(2 * lgRunsPerOut + 0.075);
+
   // 併殺リーグ率（wGDPの基準・§6）
   let totGDP = 0;
   let totGDPOpp = 0;
@@ -190,6 +200,8 @@ export function deriveLeagueConstants(res, cfg = null) {
     lgwOBA,
     lgOBP,
     lgRunsPerPA,
+    lgRunsPerOut,
+    runCS,
     lgSLG,
     lgHRFB,
     lgERA,

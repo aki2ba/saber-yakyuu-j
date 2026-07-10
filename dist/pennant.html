@@ -463,10 +463,22 @@ const POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH'];
 const FIELD_POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'];
 
 /**
- * 位置補正（1350守備イニングあたりの Run 値・MLB標準の初期値）。§9。
- * 難ポジほど+、易ポジほど−。143試合較正で config から再スケールする。
+ * 位置補正（FanGraphs WAR の値）。§9 / 正典 sabermetrics_glossary.md §7.5・§10.3
+ *
+ * ⚠️ 単位は「**162守備試合 = 1,458守備イニング** あたりの run」。1350ではない。
+ *   FanGraphs Library 原文:
+ *     "Positional adjustments are calculated based on a full 162 games, which equates to
+ *      1,458 defensive innings."
+ *     "Positional Adjustment = ((Innings Played/9) / 162) * position specific run value"
+ *   同ページの実例: 一塁手(−12.5)が1,214イニング → −10.4。
+ *     −12.5 × 1214/1458 = −10.41 ✓ ／ −12.5 × 1214/1350 = −11.24 ✗
+ *
+ *   1,350イニングは **Baseball-Reference** の慣行で、しかも値のセット自体が別物
+ *   （C +9 / SS +7 / 2B +3 / CF +2.5 / 3B +2 / LF・RF −7 / 1B −9.5 / DH −15）。
+ *   FanGraphs の値に B-R の分母を掛けてはならない（旧実装のバグ）。
  */
-const POSITION_ADJUST_PER_1350 = {
+const POSITION_ADJUST_INNINGS_FULL = 1458; // 162守備試合 × 9イニング
+const POSITION_ADJUST_PER_162G = {
   C: 12.5,
   SS: 7.5,
   '2B': 2.5,
@@ -1606,7 +1618,11 @@ const TUNING_DEFAULT = {
   // ubr系はS5較正（BsR裾）。runUBR1t3b/runUBRTakerTagは§req_20260708新設シナリオの
   // run価値（文献のRE24差分実測例~0.2-0.3runsを参考にrunUBR=0.36よりやや低めで開始）。
   run: {
-    runSB: 0.19, runCS: -0.38, ubrSlope: 0.007, runUBR: 0.36,
+    // 正典 sabermetrics_glossary.md §6.2（一次: FanGraphs Library wSB）
+    //   runSB = +0.2 は全シーズン固定。runCS = −(2×RunsPerOut + 0.075) の可変式で、
+    //   leagueConstants が実データから導出する（lc.runCS）。ここの値はリーグ定数が無い場合の
+    //   フォールバックにすぎない（テスト・単体呼び出し用）。
+    runSB: 0.2, runCS: -0.4, ubrSlope: 0.007, runUBR: 0.36,
     runUBR1t3b: 0.28, // 単打での一塁→三塁進塁（成功時の限界価値）
     runUBRTag: 0.28, // タッグアップでの二塁→三塁進塁
   },
@@ -2542,7 +2558,7 @@ function armRunsAboveAvg(ps, cfg, lc) {
   const opp = f.armOpp || 0;
   if (!opp || !lc || lc.lgArmAdvRate == null) return 0;
   const runAdv = cfg.tuning.run.runUBR; // 走者が1つ余分に進む攻撃側価値
-  const runKill = cfg.tuning.run.runCS; // 走塁死の攻撃側価値（負）
+  const runKill = lc.runCS ?? cfg.tuning.run.runCS; // 走塁死の攻撃側価値（負・得点環境依存）
   const lgPerOpp = lc.lgArmAdvRate * runAdv + lc.lgArmKillRate * runKill;
   return lgPerOpp * opp - ((f.armAdv || 0) * runAdv + (f.armKill || 0) * runKill);
 }
@@ -2577,7 +2593,7 @@ function catcherRsbRuns(ps, cfg, lc) {
   const lgAtt = (lc.lgSB || 0) + (lc.lgCS || 0);
   if (!lgAtt) return 0;
   const lgCsRate = (lc.lgCS || 0) / lgAtt;
-  const runPerCs = cfg.tuning.run.runSB - cfg.tuning.run.runCS; // ≈ .57（FRVの .65 と同型の導出）
+  const runPerCs = cfg.tuning.run.runSB - (lc.runCS ?? cfg.tuning.run.runCS); // FRV の .65 と同型の導出
   return (cs - lgCsRate * att) * runPerCs;
 }
 
@@ -4317,6 +4333,16 @@ function deriveLeagueConstants(res, cfg = null) {
   const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
   const rpw = 1.5 * runsPerGamePerTeam + 3;
 
+  // 盗塁の得点価値（正典 sabermetrics_glossary.md §6.2・一次: FanGraphs Library wSB）
+  //   runSB = +0.2（全シーズン固定）
+  //   runCS = −(2 × RunsPerOut + 0.075)  ← 得点環境依存の可変式
+  // 旧実装は runCS を固定値 -0.38 にしていたため、時代トレンドで得点環境が動くと原典から乖離した。
+  // RunsPerOut = リーグ総得点 / リーグ総アウト数（＝投手の記録した総アウト）。
+  let totalOuts = 0;
+  for (const ps of res.playerSeasons) totalOuts += ps.pitching.outs;
+  const lgRunsPerOut = totalOuts ? totalRuns / totalOuts : 0;
+  const runCS = -(2 * lgRunsPerOut + 0.075);
+
   // 併殺リーグ率（wGDPの基準・§6）
   let totGDP = 0;
   let totGDPOpp = 0;
@@ -4432,6 +4458,8 @@ function deriveLeagueConstants(res, cfg = null) {
     lgwOBA,
     lgOBP,
     lgRunsPerPA,
+    lgRunsPerOut,
+    runCS,
     lgSLG,
     lgHRFB,
     lgERA,
@@ -7707,9 +7735,12 @@ function playerBaserunning(ps, cfg, lc) {
   // wSB（監査C1）: リーグ基準 lgwSB×(一塁到達機会) を控除して中心化する。
   // 走らない選手は僅かに負の基準、盗塁者は正味加点というゼロ点になり、リーグwSB総和≈0。
   const sbOpp = (b.b1 || 0) + (b.bb || 0) + (b.hbp || 0) - (b.ibb || 0);
+  // 盗塁の得点価値: runCS は得点環境依存の可変式（lc.runCS）。正典 §6.2
+  const runSB = cfg.tuning.run.runSB;
+  const runCS = (lc && lc.runCS != null) ? lc.runCS : cfg.tuning.run.runCS;
   const lgwSBrate =
-    lc && lc.lgSBOpp ? (lc.lgSB * cfg.tuning.run.runSB + lc.lgCS * cfg.tuning.run.runCS) / lc.lgSBOpp : 0;
-  const wSB = b.sb * cfg.tuning.run.runSB + b.cs * cfg.tuning.run.runCS - lgwSBrate * sbOpp;
+    lc && lc.lgSBOpp ? (lc.lgSB * runSB + lc.lgCS * runCS) / lc.lgSBOpp : 0;
+  const wSB = b.sb * runSB + b.cs * runCS - lgwSBrate * sbOpp;
   const br = ps.baserunning || {};
   // wGDP: 期待併殺(リーグ率×機会)より少なく併殺した分がプラス。§6
   const gdpOpp = br.gdpOpp || 0;
@@ -7872,12 +7903,18 @@ function playerPitching(ps, lc, cfg = null) {
 
 
 
-/** 守備位置補正（runs）。各ポジションの守備イニングに比例（§9・BR式 /1350）。 */
+/**
+ * 守備位置補正（runs）。各ポジションの守備イニングに比例する。
+ * FanGraphs 式: `posAdj = Σ_pos ( 値[pos] × (そのポジションの守備イニング / 1458) )`
+ *   ＝ `((Innings/9) / 162) × 値`。分母は **1458**（162守備試合×9イニング）であり 1350 ではない。
+ * 旧実装は FanGraphs の値に Baseball-Reference の分母(1350)を掛けており、補正を 8% 過大に与えていた。
+ * 正典: sabermetrics_glossary.md §7.5 / §10.3
+ */
 function posAdjRuns(ps) {
   let adj = 0;
   for (const pos of Object.keys(ps.fielding.positionOuts)) {
     const innings = ps.fielding.positionOuts[pos] / 3;
-    adj += (POSITION_ADJUST_PER_1350[pos] || 0) * (innings / 1350);
+    adj += (POSITION_ADJUST_PER_162G[pos] || 0) * (innings / POSITION_ADJUST_INNINGS_FULL);
   }
   return adj;
 }
@@ -8428,7 +8465,7 @@ function evaluateProspect(profile, p, cfg, ctx = null) {
   const arm = obsTool(c.arm, profile, ctx, 'arm', id);
   const batComp = ev + contact + power + m.laW * la;
   const defComp = prof + iq + reaction + m.armW * arm;
-  const posVal = (POSITION_ADJUST_PER_1350[p.primaryPos] ?? 0) * m.posScale;
+  const posVal = (POSITION_ADJUST_PER_162G[p.primaryPos] ?? 0) * m.posScale;
   return profile.wBat * batComp + profile.wEye * m.eyeScale * eye + profile.wDef * (defComp + posVal) - ageK;
 }
 
@@ -12717,12 +12754,27 @@ const WATCH_BATTED_JP = { GB: 'ゴロ', LD: 'ライナー', FB: 'フライ', PU:
 const WATCH_HITS = new Set(['1B', '2B', '3B', 'HR']);
 const WATCH_OUTFIELD_POS = new Set(['LF', 'CF', 'RF']);
 
-/** 打球方向（スプレー角→守備位置の呼び名）。負=左・正=右（sprayChart と同じ符号系）。 */
+/** 打球方向（スプレー角→左中右）。負=左・正=右（sprayChart と同じ符号系）。安打の方向表記に使う。 */
 function watchDirName(deg) {
   return deg < -12 ? 'レフト' : deg > 12 ? 'ライト' : 'センター';
 }
 function watchDirChar(deg) {
   return deg < -12 ? '左' : deg > 12 ? '右' : '中';
+}
+
+// アウトになった打球の「誰が処理したか」は、エンジンが決めた責任野手(fielderPos)を唯一の真実とする。
+// 旧実装は打球種別とスプレー角だけでポジション名を推測していたため、
+// たとえば「EV121km/h・LA47°・33m」の内野への高いポップフライ（責任野手=一塁手・捕球確率0.996）を
+// 打球種別FB(25-50°)→外野方向→「ライトフライ」と表示していた（守備指標側は正しく一塁手に帰属していた）。
+const WATCH_POS_JP = { P: 'ピッチャー', C: 'キャッチャー', '1B': 'ファースト', '2B': 'セカンド', '3B': 'サード', SS: 'ショート', LF: 'レフト', CF: 'センター', RF: 'ライト' };
+const WATCH_POS_CHAR = { P: '投', C: '捕', '1B': '一', '2B': '二', '3B': '三', SS: '遊', LF: '左', CF: '中', RF: '右' };
+
+/** 責任野手のポジション名。無ければスプレー角からの方向で代替する。 */
+function watchFielderName(e) {
+  return WATCH_POS_JP[e.fielderPos] || (e.bb ? watchDirName(e.bb.sprayDeg) : '');
+}
+function watchFielderChar(e) {
+  return WATCH_POS_CHAR[e.fielderPos] || (e.bb ? watchDirChar(e.bb.sprayDeg) : '');
 }
 /** イニングハーフの和名（'bottom'→裏）。 */
 function watchHalfJP(half) {
@@ -12732,14 +12784,6 @@ function watchHalfJP(half) {
 function watchScoreTxt(v, tname) {
   return `（${tname(v.away)} ${v.scoreA}-${v.scoreH} ${tname(v.home)}）`;
 }
-/** 内野打球（ゴロ/小フライ）の守備位置の呼び名（スプレー角→三遊二一）。 */
-function watchInfieldName(deg) {
-  return deg < -20 ? 'サード' : deg < 0 ? 'ショート' : deg < 20 ? 'セカンド' : 'ファースト';
-}
-function watchInfieldChar(deg) {
-  return deg < -20 ? '三' : deg < 0 ? '遊' : deg < 20 ? '二' : '一';
-}
-
 // ============================================================================
 // 打席ごとの指標変化（ユーザー要望）: 「現在の打席」ボックスの結果直下に
 // 「AVG .283→.285 (+.002)」のように、この1打席で変化した指標だけをぶら下げ表示する。
@@ -13302,10 +13346,11 @@ function watchResShort(e) {
   if (e.result === 'HR') return d + '本';
   if (e.result === 'E') return d + '失';
   if (e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB') return '犠飛';
-  // ゴロ/小フライは内野の守備位置（三遊二一）、ライナー/フライは外野方向（左中右）で略記
-  if (e.battedType === 'GB') return (e.bb ? watchInfieldChar(e.bb.sprayDeg) : '') + 'ゴ';
-  if (e.battedType === 'PU') return (e.bb ? watchInfieldChar(e.bb.sprayDeg) : '') + '飛';
-  return d + (e.battedType === 'LD' ? '直' : '飛');
+  // アウトになった打球は責任野手(fielderPos)で略記する（三ゴ・一飛・中直…）
+  const f = watchFielderChar(e);
+  if (e.battedType === 'GB') return f + 'ゴ';
+  if (e.battedType === 'LD') return f + '直';
+  return f + '飛';
 }
 
 /**
@@ -13318,7 +13363,7 @@ function watchPaBody(e, lastCall) {
   if (e.outcome === 'K') return { cls: 'ev-k', body: lastCall === 'called' ? '見逃し三振' : '空振り三振' };
   if (e.outcome === 'BB') return { cls: 'ev-bb', body: e.isIBB ? '申告敬遠で歩かされる' : '四球を選んで出塁' };
   if (e.outcome === 'HBP') return { cls: 'ev-bb', body: '死球' };
-  if (e.result === 'E') return { cls: 'ev-err', body: `${dir}のエラーで出塁` };
+  if (e.result === 'E') return { cls: 'ev-err', body: `${watchFielderName(e) || dir}のエラーで出塁` };
   if (e.result === 'HR') {
     const n = e.runsOnPlay;
     return { cls: 'ev-hr', body: `${dir}スタンドへ${n >= 2 ? `の${n}ラン` : 'ソロ'}ホームラン！！${e.bb ? `（EV${Math.round(e.bb.evKmh)}km/h 飛距離${Math.round(e.bb.distanceM)}m）` : ''}` };
@@ -13329,9 +13374,9 @@ function watchPaBody(e, lastCall) {
   if (!e.battedType) return { cls: '', body: '凡退' };
   const dp = e.outsAfter - e.outsBefore >= 2;
   const sf = e.runsOnPlay > 0 && e.battedType !== 'GB';
-  // ゴロ/小フライは内野の守備位置名（ショートゴロ等）、ライナー/フライは外野方向で言語化
-  const spot = e.battedType === 'GB' || e.battedType === 'PU' ? (e.bb ? watchInfieldName(e.bb.sprayDeg) : '内野') : dir;
-  const body = sf ? `${dir}へ犠牲フライ`
+  // アウトになった打球は責任野手(fielderPos)で言語化する（ショートゴロ／ファーストフライ等）
+  const spot = watchFielderName(e) || '内野';
+  const body = sf ? `${spot}へ犠牲フライ`
     : dp ? `${spot}ゴロで併殺（ダブルプレー）`
     : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
   return { cls: '', body };

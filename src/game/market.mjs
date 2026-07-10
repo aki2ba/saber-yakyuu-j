@@ -23,7 +23,7 @@ import { clamp, clampRating } from '../model/util.mjs';
 import { generateRookie, applyEraToRookie } from '../generate.mjs';
 import { applyAging } from './aging.mjs';
 import { observedWoba } from '../sim/manager.mjs';
-import { POSITION_ADJUST_PER_1350 } from '../model/positions.mjs';
+import { POSITION_ADJUST_PER_162G } from '../model/positions.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
 function byId(a, b) {
@@ -120,7 +120,7 @@ export function evaluateProspect(profile, p, cfg, ctx = null) {
   const arm = obsTool(c.arm, profile, ctx, 'arm', id);
   const batComp = ev + contact + power + m.laW * la;
   const defComp = prof + iq + reaction + m.armW * arm;
-  const posVal = (POSITION_ADJUST_PER_1350[p.primaryPos] ?? 0) * m.posScale;
+  const posVal = (POSITION_ADJUST_PER_162G[p.primaryPos] ?? 0) * m.posScale;
   return profile.wBat * batComp + profile.wEye * m.eyeScale * eye + profile.wDef * (defComp + posVal) - ageK;
 }
 

@@ -556,7 +556,11 @@ export const TUNING_DEFAULT = {
   // ubr系はS5較正（BsR裾）。runUBR1t3b/runUBRTakerTagは§req_20260708新設シナリオの
   // run価値（文献のRE24差分実測例~0.2-0.3runsを参考にrunUBR=0.36よりやや低めで開始）。
   run: {
-    runSB: 0.19, runCS: -0.38, ubrSlope: 0.007, runUBR: 0.36,
+    // 正典 sabermetrics_glossary.md §6.2（一次: FanGraphs Library wSB）
+    //   runSB = +0.2 は全シーズン固定。runCS = −(2×RunsPerOut + 0.075) の可変式で、
+    //   leagueConstants が実データから導出する（lc.runCS）。ここの値はリーグ定数が無い場合の
+    //   フォールバックにすぎない（テスト・単体呼び出し用）。
+    runSB: 0.2, runCS: -0.4, ubrSlope: 0.007, runUBR: 0.36,
     runUBR1t3b: 0.28, // 単打での一塁→三塁進塁（成功時の限界価値）
     runUBRTag: 0.28, // タッグアップでの二塁→三塁進塁
   },

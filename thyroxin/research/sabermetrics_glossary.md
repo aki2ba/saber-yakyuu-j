@@ -810,9 +810,18 @@ FanGraphs は「Tom Tango の式を簡略化したもの」と説明。**Tango �
 FanGraphs 自身の但し書き: 約10年前に導出された値で、「DH補正は負に過ぎる／捕手はやや大きい可能性」。
 **最新の再算出時期は不明**（"about a decade ago" という相対表現のみ）。
 
-**⚠ このシムは `POSITION_ADJUST_PER_1350` として innings を 1350 で割っている。**
-本調査で **2つの独立したエージェントが「162試合 = 1,458イニング」** と報告した。
-1458 が正なら、このシムは補正を **1458/1350 = 1.08倍（8%）過大に**与えている。→ §10.3
+**✅ 2026-07-10 に一次情報で決着し、修正済み。** 原文:
+> "Positional adjustments are calculated based on a full 162 games, which **equates to 1,458 defensive innings**.
+> So if a first baseman plays 1,214 innings with -12.5 positional adjustment for a full season,
+> his adjustment for that period will be **-10.4 runs**."
+>
+> "Positional Adjustment = ((Innings Played/9) / 162) * position specific run value"
+
+検算: `−12.5 × 1214/1458 = −10.41` ✓ ／ `−12.5 × 1214/1350 = −11.24` ✗
+
+**1,350 イニングは Baseball-Reference の慣行であり、しかも値のセット自体が別物**
+（C +9 / SS +7 / 2B +3 / CF +2.5 / 3B +2 / LF・RF −7 / 1B −9.5 / DH −15）。
+**FanGraphs の値に B-R の分母を掛けてはならない。**
 
 ### 7.6 RE24 と 24状態の期待得点表 `[一次: Tom Tango]`
 
@@ -1015,37 +1024,54 @@ DER = 1 − (H + ROE − HR) / (PA − BB − SO − HBP − HR)
 | **FRV の run 換算** | 外野0.9 / 内野0.75 / DP 0.4 / framing 0.125 / 捕手送球 0.65 / ブロッキング 0.25 — すべて一致 |
 | **BsR = UBR + wSB + wGDP** | 恒等式をテストで固定済み |
 
-### 10.3 【要修正】ポジション補正の分母 🟡
+### 10.3 ポジション補正の分母 ✅（2026-07-10 修正済み）
 
-- このシム: `POSITION_ADJUST_PER_1350` を `innings / 1350` で按分
-- FanGraphs: **162守備試合 = 1,458 イニング**あたりの値（本調査で2つの独立したエージェントが報告）
+- 旧: `POSITION_ADJUST_PER_1350` を `innings / 1350` で按分 ← **FanGraphs の値に Baseball-Reference の分母を掛けていた**
+- 新: `POSITION_ADJUST_PER_162G` を `innings / 1458` で按分（§7.5 の原文と実例で決着）
 
-1458 が正なら、このシムはポジション補正を **8% 過大**に与えている。
-フルシーズン NPB 捕手で `12.5 × 1287/1350 = 11.92` vs `12.5 × 1287/1458 = 11.03` → **約 0.9 run ≈ 0.1 WAR** の差。
+FanGraphs 公式ページの実例（一塁手 1,214イニング → −10.4）を回帰テストで固定した（`test/war.test.mjs`）。
+影響: フルシーズン NPB 捕手で `11.92 → 11.03 run`（**7.4% 縮小**）。
 
-**⚠ Baseball-Reference は「1350イニング = フルシーズン」という慣行を持つため、両者の混同の可能性がある。
-修正前に FanGraphs 原典で再確認すること。**
+### 10.4 runCS を得点環境依存の可変式へ ✅（2026-07-10 修正済み）
 
-### 10.4 【要検討】runCS を固定値にしている 🟡
+- 旧: `run.runCS: -0.38`（固定値）
+- 新: `leagueConstants` が `runCS = −(2 × RunsPerOut + 0.075)` を実データから導出（`lc.runCS`）
+  - `RunsPerOut = リーグ総得点 / リーグ総アウト数`
+  - このシムでの導出値は **−0.394 〜 −0.404**（FanGraphs 2024 の −0.405 とほぼ一致）
+- `runSB` も原典どおり **0.2 固定**に（旧 0.19）
 
-- 原典: `runCS = −(2 × RunsPerOut + 0.075)` ← **得点環境依存の可変式**
-- このシム: `run.runCS: -0.38`（固定）
+wSB / ARM / rSB はいずれもリーグ平均で 0 に中心化されるため、**WAR の総量は動かない**（Σ は不変）。
 
-フェーズD の「時代トレンド」で得点環境が動くと、原典との乖離が生じる。
-`RunsPerOut` はリーグ定数から算出可能なので、**可変式に置き換えられる**。
+### 10.5 【残る構造的問題】代替水準が run で定義されている 🟡
 
-### 10.5 【要修正】DRS の成分名
+FanGraphs の野手代替水準:
+```
+Replacement Runs = (570 × (MLB Games / 2,430)) × (Runs Per Win / lgPA) × PA
+```
+**`Runs Per Win` が掛かっている**ことに注意。これを RPW で割ると
+`代替 wins = (570 × Games/2430) × PA/lgPA` となり、**得点環境に不変**である。
+
+このシムは `repl = (pa/600) × replBatterPer600`（run）を RPW で割っているため、
+**得点環境が下がると rpw が下がり、代替 wins が増えて総WARが上がる。**
+
+実際、守備モデルの刷新で得点環境が 4.20 → 4.13 R/G に下がった結果、
+総WAR は 421 → 430（上限 430）に張り付いた。**帯を通ってはいるが余裕が無い。**
+
+**修正案**: `repl` を `rpw` に比例させる（＝代替 wins を得点環境に不変にする）。
+これは FanGraphs の定義に忠実で、かつ総WARを得点環境から切り離す。
+
+### 10.6 【要修正】DRS の成分名
 
 `fielding_metrics_reference.md` §9.1 の `rTHR` / `rPOS` は**一次情報で確認できなかった**。
 正しくは **rPM / rSB / rGDP / rARM / rGFP / rBU / rHR / rSZ / rCERA** の9成分（§5.2）。
 
-### 10.6 実装していないが素データが揃っているもの（⬜）
+### 10.7 実装していないが素データが揃っているもの（⬜）
 
 Fld% / Range Factor / Total Chances / DER / RA9 / GB/FB / IFFB% / Swing% / O-Contact% / Z-Contact% /
 Put Away% / Game Score / Off（統合値）/ REW / +WPA・−WPA / exLI・inLI・phLI / BaseRuns / CERA /
 Adjusted EV / EV50 / xwOBACON / Baserunning Run Value
 
-### 10.7 このシムに概念が無いもの（⛔）
+### 10.8 このシムに概念が無いもの（⛔）
 
 Bat Tracking 全般（Bat Speed / Swing Length / Squared-Up% / Blast% / Attack Angle 等）、
 球質全般（Spin Rate / Spin Axis / Active Spin / Extension / Arm Angle / Movement）、

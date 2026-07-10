@@ -44,12 +44,27 @@ const WATCH_BATTED_JP = { GB: 'ゴロ', LD: 'ライナー', FB: 'フライ', PU:
 const WATCH_HITS = new Set(['1B', '2B', '3B', 'HR']);
 const WATCH_OUTFIELD_POS = new Set(['LF', 'CF', 'RF']);
 
-/** 打球方向（スプレー角→守備位置の呼び名）。負=左・正=右（sprayChart と同じ符号系）。 */
+/** 打球方向（スプレー角→左中右）。負=左・正=右（sprayChart と同じ符号系）。安打の方向表記に使う。 */
 function watchDirName(deg) {
   return deg < -12 ? 'レフト' : deg > 12 ? 'ライト' : 'センター';
 }
 function watchDirChar(deg) {
   return deg < -12 ? '左' : deg > 12 ? '右' : '中';
+}
+
+// アウトになった打球の「誰が処理したか」は、エンジンが決めた責任野手(fielderPos)を唯一の真実とする。
+// 旧実装は打球種別とスプレー角だけでポジション名を推測していたため、
+// たとえば「EV121km/h・LA47°・33m」の内野への高いポップフライ（責任野手=一塁手・捕球確率0.996）を
+// 打球種別FB(25-50°)→外野方向→「ライトフライ」と表示していた（守備指標側は正しく一塁手に帰属していた）。
+const WATCH_POS_JP = { P: 'ピッチャー', C: 'キャッチャー', '1B': 'ファースト', '2B': 'セカンド', '3B': 'サード', SS: 'ショート', LF: 'レフト', CF: 'センター', RF: 'ライト' };
+const WATCH_POS_CHAR = { P: '投', C: '捕', '1B': '一', '2B': '二', '3B': '三', SS: '遊', LF: '左', CF: '中', RF: '右' };
+
+/** 責任野手のポジション名。無ければスプレー角からの方向で代替する。 */
+function watchFielderName(e) {
+  return WATCH_POS_JP[e.fielderPos] || (e.bb ? watchDirName(e.bb.sprayDeg) : '');
+}
+function watchFielderChar(e) {
+  return WATCH_POS_CHAR[e.fielderPos] || (e.bb ? watchDirChar(e.bb.sprayDeg) : '');
 }
 /** イニングハーフの和名（'bottom'→裏）。 */
 function watchHalfJP(half) {
@@ -59,14 +74,6 @@ function watchHalfJP(half) {
 function watchScoreTxt(v, tname) {
   return `（${tname(v.away)} ${v.scoreA}-${v.scoreH} ${tname(v.home)}）`;
 }
-/** 内野打球（ゴロ/小フライ）の守備位置の呼び名（スプレー角→三遊二一）。 */
-function watchInfieldName(deg) {
-  return deg < -20 ? 'サード' : deg < 0 ? 'ショート' : deg < 20 ? 'セカンド' : 'ファースト';
-}
-function watchInfieldChar(deg) {
-  return deg < -20 ? '三' : deg < 0 ? '遊' : deg < 20 ? '二' : '一';
-}
-
 // ============================================================================
 // 打席ごとの指標変化（ユーザー要望）: 「現在の打席」ボックスの結果直下に
 // 「AVG .283→.285 (+.002)」のように、この1打席で変化した指標だけをぶら下げ表示する。
@@ -618,7 +625,7 @@ function watchReconstruct(w, u) {
 }
 
 /** 当日成績の略記（左安/中飛/三振/四球…）。スタメン表・対戦カードの「今日」列用。 */
-function watchResShort(e) {
+export function watchResShort(e) {
   if (e.outcome === 'K') return '三振';
   if (e.outcome === 'BB') return e.isIBB ? '敬遠' : '四球';
   if (e.outcome === 'HBP') return '死球';
@@ -629,10 +636,11 @@ function watchResShort(e) {
   if (e.result === 'HR') return d + '本';
   if (e.result === 'E') return d + '失';
   if (e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB') return '犠飛';
-  // ゴロ/小フライは内野の守備位置（三遊二一）、ライナー/フライは外野方向（左中右）で略記
-  if (e.battedType === 'GB') return (e.bb ? watchInfieldChar(e.bb.sprayDeg) : '') + 'ゴ';
-  if (e.battedType === 'PU') return (e.bb ? watchInfieldChar(e.bb.sprayDeg) : '') + '飛';
-  return d + (e.battedType === 'LD' ? '直' : '飛');
+  // アウトになった打球は責任野手(fielderPos)で略記する（三ゴ・一飛・中直…）
+  const f = watchFielderChar(e);
+  if (e.battedType === 'GB') return f + 'ゴ';
+  if (e.battedType === 'LD') return f + '直';
+  return f + '飛';
 }
 
 /**
@@ -640,12 +648,12 @@ function watchResShort(e) {
  * cls: 安打=ev-hit / 本塁打=ev-hr / 三振=ev-k / 四死球=ev-bb / 失策=ev-err / 凡退=''。
  * 得点(ev-score)は呼び出し側で runsOnPlay から付与する。
  */
-function watchPaBody(e, lastCall) {
+export function watchPaBody(e, lastCall) {
   const dir = e.bb ? watchDirName(e.bb.sprayDeg) : '';
   if (e.outcome === 'K') return { cls: 'ev-k', body: lastCall === 'called' ? '見逃し三振' : '空振り三振' };
   if (e.outcome === 'BB') return { cls: 'ev-bb', body: e.isIBB ? '申告敬遠で歩かされる' : '四球を選んで出塁' };
   if (e.outcome === 'HBP') return { cls: 'ev-bb', body: '死球' };
-  if (e.result === 'E') return { cls: 'ev-err', body: `${dir}のエラーで出塁` };
+  if (e.result === 'E') return { cls: 'ev-err', body: `${watchFielderName(e) || dir}のエラーで出塁` };
   if (e.result === 'HR') {
     const n = e.runsOnPlay;
     return { cls: 'ev-hr', body: `${dir}スタンドへ${n >= 2 ? `の${n}ラン` : 'ソロ'}ホームラン！！${e.bb ? `（EV${Math.round(e.bb.evKmh)}km/h 飛距離${Math.round(e.bb.distanceM)}m）` : ''}` };
@@ -656,9 +664,9 @@ function watchPaBody(e, lastCall) {
   if (!e.battedType) return { cls: '', body: '凡退' };
   const dp = e.outsAfter - e.outsBefore >= 2;
   const sf = e.runsOnPlay > 0 && e.battedType !== 'GB';
-  // ゴロ/小フライは内野の守備位置名（ショートゴロ等）、ライナー/フライは外野方向で言語化
-  const spot = e.battedType === 'GB' || e.battedType === 'PU' ? (e.bb ? watchInfieldName(e.bb.sprayDeg) : '内野') : dir;
-  const body = sf ? `${dir}へ犠牲フライ`
+  // アウトになった打球は責任野手(fielderPos)で言語化する（ショートゴロ／ファーストフライ等）
+  const spot = watchFielderName(e) || '内野';
+  const body = sf ? `${spot}へ犠牲フライ`
     : dp ? `${spot}ゴロで併殺（ダブルプレー）`
     : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
   return { cls: '', body };

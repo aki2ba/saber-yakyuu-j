@@ -12,7 +12,7 @@
 // ============================================================================
 
 import { mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng } from './rng.mjs';
-import { POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_1350, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass } from './model/positions.mjs';
+import { POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_162G, POSITION_ADJUST_INNINGS_FULL, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass } from './model/positions.mjs';
 import { createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand } from './model/player.mjs';
 import { createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt } from './model/battedball.mjs';
 import { createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine } from './model/statline.mjs';
@@ -59,7 +59,7 @@ export const ENGINE_VERSION = '0.10.0-farm';
 // RNG・モデル層・config・生成器 を再エクスポート（Node/ブラウザ双方の単一エントリ）
 export {
   mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng,
-  POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_1350, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass,
+  POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_162G, POSITION_ADJUST_INNINGS_FULL, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass,
   selectPitch, selectPitchByCount,
   createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand,
   createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt,

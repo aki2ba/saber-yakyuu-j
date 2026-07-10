@@ -7,6 +7,7 @@ import { simulateSeason } from '../src/sim/season.mjs';
 import { deriveLeagueConstants } from '../src/sim/leagueConstants.mjs';
 import { hitterWAR, pitcherWAR, posAdjRuns } from '../src/sim/war.mjs';
 import { mainPosition, totalFieldInnings } from '../src/sim/fielding.mjs';
+import { POSITION_ADJUST_PER_162G, POSITION_ADJUST_INNINGS_FULL } from '../src/model/positions.mjs';
 import { createPlayerSeason } from '../src/model/statline.mjs';
 
 const cfg = createConfig();
@@ -90,4 +91,32 @@ test('好投手ほど投手WARが高い（FIP低→WAR高）', () => {
     .map((s) => ({ war: pitcherWAR(s, cfg, lc).war, fip: pitcherWAR(s, cfg, lc).fip }));
   qp.sort((a, b) => a.fip - b.fip);
   assert.ok(qp[0].war > qp[qp.length - 1].war, 'FIP最良投手のWAR > FIP最悪投手');
+});
+
+// ============================================================================
+// ポジション補正の按分分母（正典 sabermetrics_glossary.md §7.5 / §10.3）
+// 旧実装は FanGraphs の値（C+12.5 …）に Baseball-Reference の分母(1350)を掛けており、
+// 補正を 8% 過大に与えていた。FanGraphs は「162守備試合 = 1,458守備イニング」あたりの値。
+// ============================================================================
+test('posAdjRuns: 分母は1458（FanGraphs 公式ページの実例で検算）', () => {
+  // 原典の実例: "if a first baseman plays 1,214 innings with -12.5 positional adjustment
+  //              for a full season, his adjustment for that period will be -10.4 runs."
+  const ps = { fielding: { positionOuts: { '1B': 1214 * 3 } } };
+  const adj = posAdjRuns(ps);
+  assert.ok(Math.abs(adj - -10.4) < 0.05, `一塁手1214イニング → -10.4 (got ${adj.toFixed(2)})`);
+  // 旧実装(分母1350)なら -11.24 になり、原典と一致しない
+  assert.ok(Math.abs(adj - -12.5 * 1214 / 1350) > 0.5, '分母1350ではない');
+});
+
+test('posAdjRuns: フル162守備試合(1458イニング)でちょうど表の値になる', () => {
+  for (const [pos, want] of Object.entries(POSITION_ADJUST_PER_162G)) {
+    const ps = { fielding: { positionOuts: { [pos]: POSITION_ADJUST_INNINGS_FULL * 3 } } };
+    assert.ok(Math.abs(posAdjRuns(ps) - want) < 1e-9, `${pos}: ${posAdjRuns(ps)} != ${want}`);
+  }
+});
+
+test('posAdjRuns: 複数ポジション出場はイニングで按分して合算する', () => {
+  const ps = { fielding: { positionOuts: { SS: 729 * 3, '2B': 729 * 3 } } }; // 各半分
+  const want = (7.5 + 2.5) * (729 / POSITION_ADJUST_INNINGS_FULL);
+  assert.ok(Math.abs(posAdjRuns(ps) - want) < 1e-9);
 });

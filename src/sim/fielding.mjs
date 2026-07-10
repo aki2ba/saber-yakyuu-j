@@ -100,7 +100,7 @@ export function armRunsAboveAvg(ps, cfg, lc) {
   const opp = f.armOpp || 0;
   if (!opp || !lc || lc.lgArmAdvRate == null) return 0;
   const runAdv = cfg.tuning.run.runUBR; // 走者が1つ余分に進む攻撃側価値
-  const runKill = cfg.tuning.run.runCS; // 走塁死の攻撃側価値（負）
+  const runKill = lc.runCS ?? cfg.tuning.run.runCS; // 走塁死の攻撃側価値（負・得点環境依存）
   const lgPerOpp = lc.lgArmAdvRate * runAdv + lc.lgArmKillRate * runKill;
   return lgPerOpp * opp - ((f.armAdv || 0) * runAdv + (f.armKill || 0) * runKill);
 }
@@ -135,7 +135,7 @@ export function catcherRsbRuns(ps, cfg, lc) {
   const lgAtt = (lc.lgSB || 0) + (lc.lgCS || 0);
   if (!lgAtt) return 0;
   const lgCsRate = (lc.lgCS || 0) / lgAtt;
-  const runPerCs = cfg.tuning.run.runSB - cfg.tuning.run.runCS; // ≈ .57（FRVの .65 と同型の導出）
+  const runPerCs = cfg.tuning.run.runSB - (lc.runCS ?? cfg.tuning.run.runCS); // FRV の .65 と同型の導出
   return (cs - lgCsRate * att) * runPerCs;
 }
 

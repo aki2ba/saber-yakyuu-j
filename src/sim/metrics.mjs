@@ -175,9 +175,12 @@ export function playerBaserunning(ps, cfg, lc) {
   // wSB（監査C1）: リーグ基準 lgwSB×(一塁到達機会) を控除して中心化する。
   // 走らない選手は僅かに負の基準、盗塁者は正味加点というゼロ点になり、リーグwSB総和≈0。
   const sbOpp = (b.b1 || 0) + (b.bb || 0) + (b.hbp || 0) - (b.ibb || 0);
+  // 盗塁の得点価値: runCS は得点環境依存の可変式（lc.runCS）。正典 §6.2
+  const runSB = cfg.tuning.run.runSB;
+  const runCS = (lc && lc.runCS != null) ? lc.runCS : cfg.tuning.run.runCS;
   const lgwSBrate =
-    lc && lc.lgSBOpp ? (lc.lgSB * cfg.tuning.run.runSB + lc.lgCS * cfg.tuning.run.runCS) / lc.lgSBOpp : 0;
-  const wSB = b.sb * cfg.tuning.run.runSB + b.cs * cfg.tuning.run.runCS - lgwSBrate * sbOpp;
+    lc && lc.lgSBOpp ? (lc.lgSB * runSB + lc.lgCS * runCS) / lc.lgSBOpp : 0;
+  const wSB = b.sb * runSB + b.cs * runCS - lgwSBrate * sbOpp;
   const br = ps.baserunning || {};
   // wGDP: 期待併殺(リーグ率×機会)より少なく併殺した分がプラス。§6
   const gdpOpp = br.gdpOpp || 0;

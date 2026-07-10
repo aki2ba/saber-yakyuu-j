@@ -12,14 +12,20 @@
 // ============================================================================
 import { playerBatting, playerPitching, playerBaserunning } from './metrics.mjs';
 import { uzrRuns } from './fielding.mjs';
-import { POSITION_ADJUST_PER_1350 } from '../model/positions.mjs';
+import { POSITION_ADJUST_PER_162G, POSITION_ADJUST_INNINGS_FULL } from '../model/positions.mjs';
 
-/** 守備位置補正（runs）。各ポジションの守備イニングに比例（§9・BR式 /1350）。 */
+/**
+ * 守備位置補正（runs）。各ポジションの守備イニングに比例する。
+ * FanGraphs 式: `posAdj = Σ_pos ( 値[pos] × (そのポジションの守備イニング / 1458) )`
+ *   ＝ `((Innings/9) / 162) × 値`。分母は **1458**（162守備試合×9イニング）であり 1350 ではない。
+ * 旧実装は FanGraphs の値に Baseball-Reference の分母(1350)を掛けており、補正を 8% 過大に与えていた。
+ * 正典: sabermetrics_glossary.md §7.5 / §10.3
+ */
 export function posAdjRuns(ps) {
   let adj = 0;
   for (const pos of Object.keys(ps.fielding.positionOuts)) {
     const innings = ps.fielding.positionOuts[pos] / 3;
-    adj += (POSITION_ADJUST_PER_1350[pos] || 0) * (innings / 1350);
+    adj += (POSITION_ADJUST_PER_162G[pos] || 0) * (innings / POSITION_ADJUST_INNINGS_FULL);
   }
   return adj;
 }

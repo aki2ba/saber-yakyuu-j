@@ -15,7 +15,7 @@ import { createConfig } from '../src/config.mjs';
 import { newGame, advanceTo, advanceYear } from '../src/game/index.mjs';
 import { teamEvalProfile, evaluateProspect, trueValue } from '../src/game/market.mjs';
 import { createPlayer, createTrueAbility } from '../src/model/player.mjs';
-import { POSITION_ADJUST_PER_1350 } from '../src/model/positions.mjs';
+import { POSITION_ADJUST_PER_162G } from '../src/model/positions.mjs';
 
 const cfg = createConfig();
 const SEED = 20260701; // 決定論テスト＝一度PASSすれば恒久（下の各帯はこのシードで検証済み）
@@ -66,7 +66,7 @@ function defTrue(p) {
     t.fielding.positioningIQ +
     t.common.reaction +
     0.5 * t.common.arm +
-    (POSITION_ADJUST_PER_1350[p.primaryPos] ?? 0) * 1.4
+    (POSITION_ADJUST_PER_162G[p.primaryPos] ?? 0) * 1.4
   );
 }
 

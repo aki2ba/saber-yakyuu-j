@@ -295,11 +295,34 @@ Statcastの走塁総合指標。盗塁と非盗塁進塁を通じた走者価値
 Distance-Time モデル（守備側の Statcast OAA）と**同じ設計思想**。現行シムの守備は既にこのモデルへ移行済みだが
 （§12.4）、走塁側（`resolveAdv`）はまだ単純ロジスティック（速度+IQ+相手肩）であり、幾何モデルではない。
 
-### 6.4 確認できなかった追加指標 `[確認できず]`
+### 6.4 【第3ラウンドで判明】Statcastの走塁指標は名称が3〜4系統に分かれており混同しやすい
 
-- Lead Distance / Secondary Lead / Jump（2023年以降にBaseball Savantが公開したとされる新指標）の正式な定義
+`baseballsavant.mlb.com`／`mlb.com/glossary/statcast/` には、似た名前の走塁指標が複数並存する。
+実装時に取り違えないよう、判明した範囲で整理する。
+
+| 指標名 | 対象範囲 | 確認状況 |
+|---|---|---|
+| **Basestealing Run Value** | 盗塁・牽制死のみ（§6.3） | `[3-0 / 一次]` |
+| **"Baserunning"**（別名 Baserunning/Throwing Value） | 打球に対する追加進塁のみ。**盗塁を含まない** | `[3-0 / 一次]` |
+| **Baserunning Run Value**（"Runner Runs"） | 盗塁＋打球進塁の統合値（§6.3で確認済み） | `[3-0 / 一次]` |
+| **Net Bases Gained**（2024年新設） | 盗塁・ボーク進塁の加点、盗塁死・牽制死の減点による純増塁数（run換算前の**塁数**単位） | `[3-0 / 一次]` |
+
+> "This does account for extra bases taken by batters or runners on batted balls; it does not include stolen bases, as it's about taking extra bases against fielders."（"Baserunning"指標について）
+
+- 出典: https://www.mlb.com/glossary/statcast/baserunning （一次）
+
+> "Every runner is given credit for his advances via steals and balks, and penalized for his outs made via caught stealings and pickoffs, based on the success probability of all those stolen base opportunities. The difference between a player's base advances vs. average and his outs created vs. average is his Net Bases Gained."
+
+- 出典: https://www.mlb.com/news/breaking-down-statcast-s-new-baserunning-stats （一次・2024年12月公開）
+
+**Net Bases Gained は Basestealing Run Value の「run換算前（塁数単位）」の下位指標である可能性が高いが、
+両者の数式的な対応関係を明示した一次情報は見つからず、この対応づけは本ドキュメントの推測に留まる。**
+
+### 6.5 確認できなかった追加指標 `[確認できず]`
+
+- **Lead Distance / Secondary Lead**（2023年以降にBaseball Savantが公開したとされる新指標）の正式な定義・測定タイミング。
+  2つの異なるアプローチで試行したが、いずれも敵対的検証で反証された（`[1-2]` / `[0-3]`）
 - Steal Success Probability モデルの入力詳細（Basestealing Run Value の背後にあるモデルと同一かは不明）
-- UBR / BsR / Sprint Speed の年度間相関（year-to-year correlation）と、信頼性に必要な機会数
 
 ---
 
@@ -343,11 +366,55 @@ SBR/OARに相当）の**2分類へ移行**した。DRC+ の説明ページ自体
 DRBa/DRBn の概念自体は2025年4月の記事が初出ではなく、2024年2月の "Modeling the Bases" 記事で
 先行導入されていた形跡がある。**GAR/OAR の名称が現在も公式に使われているか（廃止されたか）は完全には確認できず。**
 
-### 7.3 確認できなかったこと `[確認できず]`
+### 7.3 【第3ラウンドで判明】成分数に食い違いがある: 4成分 vs 5成分 `[3-0 / 一次]`
 
-- BRR が本当に GAR+SBR+AAR+HAR+OAR の**単純合計**か（式そのものは1件のBP記事で確認できたが、
-  重み付けや正規化の有無は未確認）
-- DRBa/DRBn の具体的な算出式
+BP自身の一次資料2本を突き合わせた結果、**BRR/EqBRRの正式な構成成分数が資料間で食い違う**ことが判明した。
+
+**2006年の原論文**（"Schrodinger's Bat: The Whole, the Sum, and the Parts"）のテーブルは
+`Year, Team, Opps, EqGAR, Opps, EqAAR, Opps, PO, CS, EqSBR, Opps, OA, EqHAR, Total` という列構成で、
+
+> "we added up the various baserunning metrics we've been formulating all summer to come up with a total number of theoretical runs contributed on the bases"
+
+**Total = EqGAR + EqAAR + EqHAR + EqSBR の4成分合計**であり、この記事本文に **EqOAR という語は一切登場しない**
+（「EqOARが2006年記事に存在する」というクレームは敵対的検証で反証済み）。
+
+- 出典: https://www.baseballprospectus.com/news/article/5523/schrodingers-bat-the-whole-the-sum-and-the-parts/ （一次）
+
+**一方、後年の記事**（"Between the Numbers: The Need for Spd"）は明確に5成分と述べる:
+
+> "EqBRR is comprised of stolen bases (EqSBR), ground advancement (EqGAR), air advancement (EqAAR), hit advancement (EqHAR), and 'other' advancement (EqOAR)"
+
+- 出典: https://www.baseballprospectus.com/news/article/11336/between-the-numbers-the-need-for-spd/ （一次）
+
+**EqOARが後年追加された成分か、2006年記事が単に言及を省いただけかは本調査では断定できない。**
+実装するなら5成分版（EqOAR込み）を採用し、OAR（暴投・捕逸・ボークでの進塁）分は
+現行シムでは独立に捕手ブロッキング指標（`fielding_metrics_reference.md` §7.7）側で処理されている点に注意。
+
+### 7.4 参考: Speed Score(Spd) と EqBRR成分の横断的相関（年度間相関ではない） `[3-0 / 一次]`
+
+2007-2009年チームレベル集計での相関係数（r）:
+
+| 成分 | Spdとの相関(r) |
+|---|---|
+| EqBRR（総合） | **.63** |
+| EqSBR（盗塁） | .60 |
+| EqHAR（安打進塁） | .29 |
+| EqGAR（ゴロ進塁） | .12 |
+| EqAAR（フライ進塁） | .11 |
+| EqOAR（その他） | .06 |
+
+- 出典: https://www.baseballprospectus.com/news/article/11336/between-the-numbers-the-need-for-spd/ （一次）
+
+**注意**: これは「Spd（見た目の速さの指標）とEqBRR各成分がどれだけ相関するか」という**横断的（クロスセクション）
+相関**であり、§11で扱う「同一指標が年をまたいでどれだけ再現するか」という**年度間相関**とは別物。
+EqSBR（盗塁）がSpdと最も強く相関し、EqGAR/AAR/OAR（打球進塁系）は弱いという構造は、
+「足の速さは盗塁には直結するが、打球進塁の巧拙は走塁IQ等の別要因が支配的」という解釈と整合する。
+
+### 7.5 確認できなかったこと `[確認できず]`
+
+- 現行のBP公式glossary（`baseballprospectus.com/glossary/`）にEqOARの正式な算出式・run値が掲載されているか
+  （Anubis bot対策で直接確認できず、legacy版アーカイブでの再現も限定的）
+- DRBa/DRBn（2024-25年の新体系、§7.2）の具体的な算出式
 - BP指標のNPB版・日本語一次情報での言及
 
 ---
@@ -415,45 +482,128 @@ NPB向けに実装する場合、どちらの定義に寄せるか（あるい�
 `sabermetrics_glossary.md` §6.2）は別ページ**（https://1point02.jp/op/gnav/glossary/gls_explanation.aspx?ecd=204&eid=20049 、
 「盗塁得点は通常0.20前後、盗塁死得点は−0.40前後」）が根拠であり、本ラウンドでも既存記述と矛盾しない。
 
-### 9.4 確認できなかったこと `[確認できず]`
+### 9.4 NPB公式（npb.jp）の盗塁実数値 `[一次]`
 
-- NPBのリーグ平均: 1球団あたり年間盗塁数、盗塁成功率（セ・パ別、年度別）
-- NPBの走塁得点（UBR/BsR）の実分布・上位選手の実数値
+> **2026-07-10追記**: 初版では「NPB.jpに存在する可能性が高いが未確認」としたが、第3ラウンドでURLパターンを
+> 特定し実数値を確認できた。
+
+**URLパターン** `[3-0 / 一次]`: `https://npb.jp/bis/{年}/stats/lb_sb_c.html`（盗塁個人リーダーズ・セ）/
+`lb_sb_p.html`（パ）/ `lb_cs_c.html`・`lb_cs_p.html`（盗塁刺個人リーダーズ）/ `tmb_c.html`（チーム打撃成績。
+盗塁・盗塁刺列を含む）。捕手盗塁阻止率ページ（`fielding_metrics_reference.md` §6.4の`lf_csp2_c.html`）と
+同系統の命名規則。
+
+**個人盗塁王の実数値** `[3-0 / 一次]`:
+
+| 年 | リーグ | 選手 | 盗塁 | 備考 |
+|---|---|---|---|---|
+| 2024 | セ | 近本光司（阪神） | **19** | 1944年以来・2リーグ制以降で最少の盗塁王 |
+| 2024 | パ | 周東佑京（ソフトバンク） | **41** | 盗塁死13でパ・リーグ最多も兼ねる |
+| 2025 | セ | 近本光司（阪神） | **32** | 3年連続盗塁王・自己最高成功率。2位上林誠知(中日)27／3位三森大貴(DeNA)22／4位中野拓夢(阪神)19／5位タイ 羽月隆太郎(広島)・岡林勇希(中日)17 |
+
+- 出典: https://npb.jp/bis/2024/stats/lb_sb_c.html 、 https://npb.jp/bis/2024/stats/lb_sb_p.html 、 https://npb.jp/bis/2025/stats/lb_sb_c.html （一次）
+
+**チーム別盗塁・盗塁刺（2024年セ・リーグ）** `[2-1 / 一次]`:
+
+| チーム | 盗塁 | 盗塁刺 | 成功率（算出値） |
+|---|---|---|---|
+| ヤクルト | 67 | 16 | 80.7% |
+| DeNA | 69 | 27 | 71.9% |
+| 巨人 | 59 | 25 | 70.2% |
+| 中日 | 40 | 27 | 59.7% |
+| 広島 | 66 | 51 | 56.4% |
+| 阪神 | 41 | 35 | 53.9% |
+| **セ・リーグ計/平均** | **342（57.0/球団）** | **181（30.2/球団）** | **65.4%** |
+
+- 出典: https://npb.jp/bis/2024/stats/tmb_c.html （一次。**成功率列自体はページに存在せず、SB/(SB+CS)からの派生計算値**）
+
+**セ・リーグ計の成功率65.4%は、本ドキュメント§5.2で算術的に導出した損益分岐点（65〜67%）とほぼ一致する。**
+NPBの実際の盗塁企図が経済合理的な水準に収束していることの傍証になる。
+
+**注意**: 2024年はセ・リーグの盗塁数が歴史的に少ない年（盗塁王19個が史上最少タイ）だったため、
+上表のチーム別数値・リーグ平均は**長期的なNPB平均としては低めに出ている可能性がある**。
+複数年度の平均を取る追加調査が望ましい。
+
+### 9.5 確認できなかったこと `[確認できず]`
+
+- NPBの走塁得点（UBR/BsR）の実分布・上位選手の実数値（1.02の会員限定コンテンツの可能性）
 - 1.02が「盗塁得点」「盗塁死得点」「その他走塁得点」を**個別の指標名として**公表しているか
-  （UBR/wSBという名称そのものはFanGraphsのライセンス移植だが、日本語の別称で公表している可能性は未調査）
-
-NPB.jp公式は捕手の盗塁阻止率ページ（`fielding_metrics_reference.md` §6.4で既確認・
-https://npb.jp/bis/2024/stats/lf_csp2_c.html）と同様の命名規則で個人盗塁数・チーム盗塁数のページを
-持つ可能性が高いが、本ラウンドの調査時間内には確認が完了しなかった。**追加調査が必要。**
+- パ・リーグのチーム別盗塁・盗塁刺実数値（本ラウンドではセ・リーグの`tmb_c.html`のみ確認。
+  パ・リーグは`tmb_p.html`等の対応URLで追加確認できる見込み）
+- 複数年度（2020〜2025年）にわたる盗塁数・成功率のトレンド
 
 ---
 
 ## 10. XBT%（Extra Bases Taken Percentage）
 
-### 10.1 確認できなかったこと `[確認できず]`
+> **2026-07-10追記**: 初版では「確認できず」としたが、直接WebFetchの403を見て早期に諦めていたのが原因だった。
+> Wayback Machine / r.jina.aiプロキシ経由での再取得を徹底した第3ラウンドで、定義文とリーグ実測値を確定できた。
 
-正式な定義（分子・分母）、MLBリーグ平均値、状況別（単打での1→3塁・2→本塁、二塁打での1→本塁）成功率は、
-**本ラウンドの調査では一次情報から確定できなかった**。関連クレーム2件は敵対的検証で **0-3** の反証となり不採用。
+### 10.1 定義 `[3-0 / 一次]`
 
-- Baseball-Reference公式ブログ（baseball-reference.com/blog/archives/10867.html）由来とされたクレームは反証された
-- Baseball Prospectus新リーダーボード由来とされたクレームも反証された
+> "XBT%, which is the percentage of time that a baserunner advances more than 1 base on a single or more than 2 bases on a double."
+
+（訳）走者が単打で1塁を超えて進塁する、または二塁打で2塁を超えて進塁する割合。
+
+- 出典: https://www.baseball-reference.com/blog/archives/10867.html （一次・Baseball-Reference公式ブログ「What does XBT% really tell us?」。直接WebFetchは403だがr.jina.aiプロキシとWebFetchの2経路で逐語一致を確認）
+
+### 10.2 リーグ平均値 `[3-0 / 一次]`
+
+| 時点 | XBT%リーグ平均 |
+|---|---|
+| 2023年フルシーズン | **42%** |
+| 2011年開幕〜4/26（部分サンプル） | 41% |
+
+- 出典: https://www.baseball-reference.com/leagues/majors/2023-baserunning-batting.shtml （一次。生HTMLの`data-stat="extra_bases_taken_perc"`属性から直接抽出）
+- 出典: https://www.baseball-reference.com/blog/archives/10867.html （一次。"The league average so far this year is 41%... Generated 4/26/2011."）
+
+### 10.3 確認できなかったこと `[確認できず]`
+
+分子・分母の**厳密な**算入規則は依然確認できず（敵対的検証で**1-2**の反証）:
+- 単打・二塁打で本塁まで生還した場合（1塁→本塁、2塁→本塁）の算入方法
+- 本塁打自体が機会・分母から除外されるか
+- 併殺のリスクがある状況（例: 一塁に走者がいて進塁を自重せざるを得ない場面）が機会から除外されるか
 
 **現行シムの `xbt`（`advTaken/advOpp`、metrics.mjs）は、UBRのシナリオ別機会（adv2h1b/adv1h2b/adv1t3b/tag）を
-全合算した独自の近似値であり、B-Ref/BPいずれの公式XBT%とも分子分母の定義が異なる可能性がある。**
-実測値は §12.2 を参照。名称の妥当性（"XBT%"を名乗ってよいか）は要検討。
+全合算した独自の近似値であり、B-Refの公式XBT%とは分子分母の厳密な定義が異なる可能性が残る**
+（大枠の「単打・二塁打で1つ余分に進塁できたか」という発想は一致）。実測値は §12.2 を参照。
 
 ---
 
 ## 11. 年度間相関・信頼性
 
-### 11.1 確認できなかったこと `[確認できず]`
+### 11.1 UBR/BsRの年度間相関係数は「有力候補記事に不在」であることを確認 `[3-0 / 一次 × 3記事]`
 
-UBR / BsR / Sprint Speed の年度間相関（year-to-year correlation）、信頼性に必要な機会数・打席数は、
-2ラウンドの調査を通じて一次情報から確認できなかった。`fielding_metrics_reference.md` §4（UZRの年度間相関≈0.5・
-フレーミング0.70で例外的に安定）に相当する走塁版の数値は**要追加調査**。
+第3ラウンドで、UBR/BsRの年度間相関を扱っていそうなFanGraphsブログ記事3本を直接精査し、
+**いずれにも数値が掲載されていないことを逐語で確認**した（＝存在しないことの証明ではなく、
+この3本の有力候補には無いという限定的な不在実証）。
+
+| 記事 | 確認結果 |
+|---|---|
+| "Ultimate Base Running Primer"（2011） | 将来の改良点（OBP調整・外野ゾーン追加）には言及するが年度間相関の議論なし |
+| "A Long Needed Update on Reliability"（2017） | "For BsR and UZR, I don't have the granular play-by-play or game-by-game data." と明記し、著者自身が計算対象外としている |
+| "Running and Runs: A Look at BsR Data"（2011） | "year to year" "correlate" "correlation" "consistent" "reliability" "repeat" いずれのキーワードも本文に出現せず。内容はチーム/選手別の累積UBR紹介（Pujols +20.7等）に留まる |
+
+- 出典: https://blogs.fangraphs.com/ultimate-base-running-primer/ 、 https://blogs.fangraphs.com/a-long-needed-update-on-reliability/ 、 https://blogs.fangraphs.com/running-and-runs-a-look-at-bsr-data/ （いずれも一次）
+
+**"A Long Needed Update on Reliability" の著者自身が「BsR/UZRの粒度細かいデータを持っていない」と明言している**
+ことは重要な傍証で、FanGraphs内部でもBsR/UZRの年度間相関を体系的に算出した記事が（少なくとも2017年時点で）
+存在しなかった可能性を示唆する。
+
+### 11.2 Sprint Speedは「年度間でよく相関する」という定性的言及のみ `[2-1 / 二次（孫引き）]`
+
+> "Sprint Speed correlates well from year to year; it doesn't require a large sample to become reflective of true talent (Petriello compares speed to fastball velocity)"
+
+- 出典: https://blogs.fangraphs.com/what-can-speed-do/ （FanGraphsがMLB.com記者Mike Petrielloの記事を要約したもの。Petriello本人の一次記事は406エラー、Wayback Machine経由も本環境では取得不可のため**孫引きの域を出ない**）
+
+**具体的な相関係数（r値）は確認できなかった。**
+
+### 11.3 実装への含意
 
 三層構造（鉄則3）を守るなら、起用AI/球団AIが走塁指標を参照する際の回帰係数は、この数値が確定するまで
 守備UZRの回帰係数（`fielding_metrics_reference.md` §11.9・約50%回帰）を暫定的に流用するのが妥当。
+Sprint Speed相当の「純粋な足の速さ」は年度間で安定しやすい（速球の球速に類似）という定性的示唆はあるため、
+UBR/BsR（走塁判断・結果に依存し年度間変動が大きい可能性）とSprint Speed相当（身体能力・安定）を
+**同じ回帰係数で扱わない方が原典の趣旨に近い**可能性がある。
 
 ---
 
@@ -491,6 +641,13 @@ FanGraphsのBsR（wGDP込み）自体の実測レンジは本調査で確認で�
 
 **盗塁成功率71.3% > 損益分岐点65.5%** ＝ シム内で盗塁は平均して正の得点期待値を持つ戦略として成立しており、
 §5.1の一次情報（"about two-thirds"≈66.7%が損益分岐）と整合する健全な状態。
+
+**NPB実測との比較（§9.4）**: シムのSB/球団=98.5・成功率71.3%に対し、NPB実測（2024年セ・リーグ）は
+SB/球団=57.0・成功率65.4%。**シムはNPB実測より盗塁企図数が多く成功率も高い**
+（ただし2024年セ・リーグは史上最少の盗塁王が出た低盗塁の年であり、長期平均としては控えめに出ている可能性がある。
+`CALIBRATION_TARGETS.leaders.sb: [30,65]` は個人盗塁王を対象とした帯であり、シムの実測48.3はこの帯内で
+PASSしている。チーム総量・成功率は較正目標に入っていないため、この差が「較正上の問題」かどうかは
+現時点では未判定。§13の追加調査（複数年度平均）を待って判断すべき）。
 
 GDP率39.5%は、現行実装の `gdpOpp` がゴロ打席のみに限定されているため（§4.4・§12.3）、
 「ゴロを打った上で併殺になった率」という狭い分母の値であり、**公式GIDP率（走者一塁・2アウト未満の
@@ -564,13 +721,18 @@ BP流のシナリオ分解で実装したハイブリッドである。** 出典
 
 ## 13. 未決の疑問（残）
 
-- **NPBのリーグ平均盗塁数・成功率・XBT%相当・走塁得点の実分布**（§9.4）。NPB.jp公式に個人/チーム別の
-  盗塁数ページがある可能性が高く、`fielding_metrics_reference.md` §6.4 と同じ手法（`npb.jp/bis/{year}/stats/`
-  配下のURLパターン探索）で追加確認できる見込み。
-- **BPのBRR=GAR+SBR+AAR+HAR+OARが単純合計かどうか**（§7.3）と、DRBa/DRBnへの移行が完了しているか。
-- **XBT%の正式な分子分母定義**（§10）。現行実装の`xbt`フィールドとの整合を取るには追加調査が必要。
+3ラウンドの調査を経て、多くの項目は解消したが、なお以下が残る:
+
+- **XBT%の分子分母の厳密な算入規則**（§10.3）: 本塁打時・封殺リスク時の機会除外可否。定義文と
+  リーグ平均値は確定したが、エッジケースの正確な数え方はB-Ref公式グロッサリー等の追加確認が必要。
+- **BPのEqOARが正式な5成分目として現行も使われているか**（§7.3/§7.5）: 2006年記事は4成分、後年記事は
+  5成分と食い違う。現行のBP公式glossaryページを再確認できれば解消する可能性がある。
+- **DRBa/DRBn（BPの2024-25年新体系）の具体的な算出式**（§7.5）。
+- **Statcast Lead Distance / Secondary Lead の正式な定義**（§6.5）: 2回の試行がいずれも反証された。
+- **UBR/BsR/Sprint Speedの年度間相関の具体的なr値**（§11.1/§11.2）: 3本の有力候補記事には不在と確認できたが、
+  他の記事（The Hardball Times等）や、Petrielloの一次記事の別経路での取得はまだ試していない。
 - **損益分岐点の塁/アウト状況別変動**（§5.3）。RE24状態遷移からの導出は本調査では確認できず。
-- **UBR/BsR/Sprint Speedの年度間相関**（§11）。三層構造の回帰係数設計に必要。
+- **NPBの走塁得点（UBR/BsR）の実分布・パ・リーグのチーム別盗塁数・複数年度トレンド**（§9.5）。
 - `gdpOpp`をゴロ限定のままにするか、原典どおり全打席（走者一塁・2アウト未満）に広げるか（§12.3）の設計判断。
 - `1point02.jp`のBsR定義（UBR+wSBの2成分、wGDPなし）とFanGraphsの3成分のどちらに実装を寄せるか（§9.2）。
 - `baserunning.outsOnBase`を実際に配線するか、使われないなら宣言ごと削除するか（§12.4）。
@@ -587,3 +749,17 @@ BP流のシナリオ分解で実装したハイブリッドである。** 出典
   - 現行実装（`metrics.mjs`/`game.mjs`/`config.mjs`）を実測・突き合わせ、`gdpOpp`のゴロ限定・
     `outsOnBase`未配線を発見（§12）
   - 計測スクリプト: `measure_bsr.mjs`（走塁指標分布・損益分岐点）/ `kill.mjs`（外野補殺・走塁死件数）
+- 2026-07-10（第3ラウンド追記）: ユーザーから「XBT%は明らかに定義があるはず、他の未確認項目も含め
+  再調査してほしい」との指摘を受け、直接WebFetchの403/406で早期に諦めていた項目をWayback Machine /
+  r.jina.aiプロキシ経由で再調査（103エージェント）。
+  - **XBT%**（§10）: 定義文とリーグ平均値（2023年42%）を確定。分子分母のエッジケースのみ未確認として残す
+  - **NPB実数値**（§9.4）: npb.jp公式のURLパターン（`lb_sb_c/p.html`等）を特定し、2024-2025年の
+    個人盗塁王・セ・リーグチーム別盗塁数を確定。セ・リーグ2024年の実測成功率65.4%が
+    本ドキュメント§5.2の損益分岐点導出値（65〜67%）とほぼ一致することを確認
+  - **BP GAR/BRR**（§7.3）: 2006年記事(4成分)と後年記事(5成分)の食い違いを発見・明記。
+    Spd-EqBRR成分別相関（クロスセクション）を追加
+  - **Statcast命名の混乱**（§6.4）: "Baserunning"（盗塁を含まない）と"Baserunning Run Value"（盗塁を含む
+    統合指標）が別物であることを整理。Net Bases Gained（2024新設）を追加確認
+  - **年度間相関**（§11）: UBR/BsRは有力候補3記事のいずれにも数値が存在しないことを確認（不在の実証）。
+    Sprint Speedは孫引きの定性的言及のみ
+  - Lead Distance/Secondary Leadは2回目の試行でも確認できず「確認できず」のまま

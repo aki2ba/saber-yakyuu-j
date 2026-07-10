@@ -1042,36 +1042,88 @@ FanGraphs 公式ページの実例（一塁手 1,214イニング → −10.4）�
 
 wSB / ARM / rSB はいずれもリーグ平均で 0 に中心化されるため、**WAR の総量は動かない**（Σ は不変）。
 
-### 10.5 【残る構造的問題】代替水準が run で定義されている 🟡
+### 10.5 代替水準を wins で定義し直した ✅（2026-07-10 修正済み）
 
 FanGraphs の野手代替水準:
 ```
 Replacement Runs = (570 × (MLB Games / 2,430)) × (Runs Per Win / lgPA) × PA
 ```
 **`Runs Per Win` が掛かっている**ことに注意。これを RPW で割ると
-`代替 wins = (570 × Games/2430) × PA/lgPA` となり、**得点環境に不変**である。
+`代替 wins = (570 × Games/2430) × (PA / lgPA)` となり、**得点環境にもリーグ総打席にも不変**である。
+（代替水準は勝率 .294 で定義される概念なので、不変であるべきは「勝利」）
 
-このシムは `repl = (pa/600) × replBatterPer600`（run）を RPW で割っているため、
-**得点環境が下がると rpw が下がり、代替 wins が増えて総WARが上がる。**
+**旧実装の欠陥**: 投手は `(IP/9) × replPer9` と **wins 単位**で持っていたのに、
+野手だけ `repl = (PA/600) × replBatterPer600` と **run 単位**で持ち rpw で割っていた。
+**シム内部で単位が食い違っていた。**
 
-実際、守備モデルの刷新で得点環境が 4.20 → 4.13 R/G に下がった結果、
-総WAR は 421 → 430（上限 430）に張り付いた。**帯を通ってはいるが余裕が無い。**
+**実測された害（フェーズDの時代トレンドは9年周期で実際に走っている・`era.offenseAmpKmh: 0.8`）**
 
-**修正案**: `repl` を `rpw` に比例させる（＝代替 wins を得点環境に不変にする）。
-これは FanGraphs の定義に忠実で、かつ総WARを得点環境から切り離す。
+| 時代 | R/G | rpw | 旧: 総WAR | 新: 総WAR |
+|---|---|---|---|---|
+| 打高 (evBase +0.8) | 4.25 | 9.375 | **409.0** | 412.6 |
+| 中立 | 4.03 | 9.048 | 418.9 | 415.2 |
+| 投高 (evBase −0.8) | 3.93 | 8.900 | **420.2** | 413.0 |
+| **打高↔投高の振れ幅** | | | **11.1 WAR** | **0.4 WAR** |
 
-### 10.6 【要修正】DRS の成分名
+得点が減るほど総WARが増えるという逆向きの挙動で、**同一セーブ内で1年目の WAR 6.0 と
+9年目の WAR 6.0 が同じ価値ではなかった**。
+
+**修正**: `leagueConstants` が `replHitterWinsTotal = replHitterWinsPerTeamGame × Σ(チーム試合数)` を持ち、
+`hitterWAR` は `代替wins = replHitterWinsTotal × (PA / lgPA)` を打席比で按分してから rpw を掛けて run へ戻す。
+＝ **リーグ全体の代替勝利の総量を固定**（FanGraphs 完全準拠）。回帰テスト（`test/era.test.mjs`）で
+「野手の代替勝利は得点環境に対して厳密に不変」を固定した。
+
+### 10.6 【新発見・未修正】このシムの代替水準は勝率 .245 であって .294 ではない 🟡
+
+上の修正で総WARは安定したが、**その水準そのものが原典と違う**ことが分かった。
+
+```
+リーグ総勝利 836（12球団 × 143試合・引分あり）
+総WAR 415.2 → 代替チームの総勝利 = 836 − 415.2 = 420.6 → 1チームあたり 35.0 勝
+→ このシムの代替水準の勝率 = .245
+```
+
+**FanGraphs の代替水準は .294**（`sabermetrics_glossary.md` §7.3）。
+`.294` なら代替総勝利は 504.5 で、**総WAR は 331 になるはず**。実際の 415.2 は **25% 過大**。
+
+つまり、このシムのすべての選手の WAR が約 25% 水増しされている。
+
+**⚠ 単純に直せない理由**: 投手WAR王（帯 [5.5, 8]・実測 5.7）は、その **55%（3.14 WAR）が代替水準ボーナス**
+（170IP の先発なら `(170/9) × 0.166 = 3.14`）で占められている。代替水準を .294 へ引き上げると
+投手WAR王が 5.07 まで落ちて帯を割る。**根本には「投手の FIP のばらつきが狭すぎてエースが平均から離れない」
+という別の較正問題がある。**
+
+修正するには 総WAR / 野手WAR王 / 投手WAR王 / WAR下限 の目標帯を一式で引き直す必要がある。
+**ユーザー判断が要る。**
+
+### 10.7 【要修正】DRS の成分名
 
 `fielding_metrics_reference.md` §9.1 の `rTHR` / `rPOS` は**一次情報で確認できなかった**。
 正しくは **rPM / rSB / rGDP / rARM / rGFP / rBU / rHR / rSZ / rCERA** の9成分（§5.2）。
 
-### 10.7 実装していないが素データが揃っているもの（⬜）
+### 10.8 実装していないが素データが揃っているもの（⬜）
 
 Fld% / Range Factor / Total Chances / DER / RA9 / GB/FB / IFFB% / Swing% / O-Contact% / Z-Contact% /
 Put Away% / Game Score / Off（統合値）/ REW / +WPA・−WPA / exLI・inLI・phLI / BaseRuns / CERA /
 Adjusted EV / EV50 / xwOBACON / Baserunning Run Value
 
-### 10.8 このシムに概念が無いもの（⛔）
+### 10.9 【新発見・未修正】投手の球速が一球シミュレーションに結線されていない 🟡
+
+`trueAbility.pitching.velocityKmh` を消費しているのは次の4つだけ:
+- `sim/team.mjs` の `starterScore` / `relieverScore`（起用の並び順）
+- `game/market.mjs` / `game/roster.mjs` の球団評価
+- `game/aging.mjs` / `game/breakout.mjs` / `game/injury.mjs`（能力変動・故障負荷の代理変数）
+
+**`plateAppearance` / `pitchGrid` / `battedBall` は球速をまったく読まない。**
+球種の `whiff` / `contactQuality` / `hrSuppress` は `generatePitcher` が球速とは独立に抽選している。
+
+実測: 全投手の `velocityKmh` に +10km/h しても、リーグ ERA は 3.79 のまま **1ミリも動かない**。
+
+**帰結**: フェーズD の時代トレンド `era.veloPerYear: 0.5`（平均球速の経年上昇・上限 +10km/h）は、
+**得点環境をまったく動かさない**。「球速が上がって投高になる」という時代の物語が成立していない。
+三原則②（現状のセパ両リーグ近似）の観点で要検討。
+
+### 10.10 このシムに概念が無いもの（⛔）
 
 Bat Tracking 全般（Bat Speed / Swing Length / Squared-Up% / Blast% / Attack Angle 等）、
 球質全般（Spin Rate / Spin Axis / Active Spin / Extension / Arm Angle / Movement）、

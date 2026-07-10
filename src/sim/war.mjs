@@ -30,14 +30,29 @@ export function posAdjRuns(ps) {
   return adj;
 }
 
+/**
+ * 代替水準（野手）を run 単位で返す（内訳表示の単位を wraa/bsr/uzr/posAdj と揃えるため）。
+ * FanGraphs 方式: リーグ全体の代替勝利の総量を固定し、打席比で按分してから rpw を掛けて run へ戻す。
+ *   代替wins(選手) = 代替wins(リーグ総量) × PA / lgPA
+ *   代替runs(選手) = 代替wins(選手) × rpw
+ * → 代替勝利は得点環境にもリーグ総打席にも依存しない（時代が動いても総WARが動かない）。
+ * lc が無い（単体呼び出し・テスト）場合のみ、旧来の (PA/600)×replBatterPer600 [run] にフォールバックする。
+ */
+function replacementRuns(ps, cfg, lc, rpw) {
+  if (lc && lc.replHitterWinsTotal && lc.lgPA) {
+    return lc.replHitterWinsTotal * (ps.batting.pa / lc.lgPA) * rpw;
+  }
+  return (ps.batting.pa / 600) * cfg.tuning.replBatterPer600;
+}
+
 /** 野手WAR（構成要素つき） */
 export function hitterWAR(ps, cfg, lc) {
   const bat = playerBatting(ps, lc);
   const bsr = playerBaserunning(ps, cfg, lc).bsr;
   const uzr = uzrRuns(ps, cfg, lc);
   const posAdj = posAdjRuns(ps);
-  const repl = (ps.batting.pa / 600) * cfg.tuning.replBatterPer600;
   const rpw = lc.rpw || 9.3;
+  const repl = replacementRuns(ps, cfg, lc, rpw);
   const raRuns = bat.wraa + bsr + uzr + posAdj + repl;
   return {
     wraa: bat.wraa,

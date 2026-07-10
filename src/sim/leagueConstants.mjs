@@ -75,6 +75,17 @@ export function deriveLeagueConstants(res, cfg = null) {
   const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
   const rpw = 1.5 * runsPerGamePerTeam + 3;
 
+  // 代替水準（野手）: FanGraphs は「リーグ全体の代替勝利の総量」を固定し、各選手へ打席比で按分する。
+  //   Replacement Runs = (570 × (MLB Games / 2,430)) × (Runs Per Win / lgPA) × PA
+  //   → 両辺を RPW で割ると 代替wins = (570 × Games/2430) × (PA / lgPA)
+  //   ＝ 代替勝利の総量は得点環境にもリーグ総打席にも依存しない（勝率.294のチームは何点環境でも48勝）。
+  // 旧実装は repl を run 単位で (PA/600)×定数 としていたため、投手（wins単位）と単位が食い違い、
+  // 得点環境が下がる（rpw が下がる）と野手の代替勝利だけが膨らんで総WARが動いていた。
+  // 正典: sabermetrics_glossary.md §7.1 / §7.3 / §10.5
+  const lgPA = bat.pa;
+  const lgTeamGames = res.standings.reduce((a, t) => a + t.g, 0); // Σ 各チームの試合数
+  const replHitterWinsTotal = cfg && cfg.tuning ? cfg.tuning.replHitterWinsPerTeamGame * lgTeamGames : 0;
+
   // 盗塁の得点価値（正典 sabermetrics_glossary.md §6.2・一次: FanGraphs Library wSB）
   //   runSB = +0.2（全シーズン固定）
   //   runCS = −(2 × RunsPerOut + 0.075)  ← 得点環境依存の可変式
@@ -201,6 +212,9 @@ export function deriveLeagueConstants(res, cfg = null) {
     lgOBP,
     lgRunsPerPA,
     lgRunsPerOut,
+    lgPA,
+    lgTeamGames,
+    replHitterWinsTotal,
     runCS,
     lgSLG,
     lgHRFB,

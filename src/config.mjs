@@ -214,7 +214,12 @@ export const TUNING_DEFAULT = {
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
-  replBatterPer600: 19.1, // (PA/600)×これ ※WAR較正（F2-5: replStarter引上げに伴う野手WAR比0.53下限の回復で18.8→19.1）
+  // 野手の代替水準（正典 sabermetrics_glossary.md §7.1 / §10.5）。
+  //   FanGraphs: 代替勝利の総量 = 570 × (Games/2430) を固定し、打席比で按分する。
+  //   ＝ 1チーム1試合あたり 570/(30×162) = 0.1173 wins。このシムは較正で値を決める。
+  //   代替勝利を wins で固定することで、時代トレンド（得点環境の揺れ）で総WARが動かなくなる。
+  replHitterWinsPerTeamGame: 0.134, // ※WAR較正（総WAR・野手WAR比の門番）
+  replBatterPer600: 19.1, // 【フォールバック専用】lc が無いときだけ使う旧式 (PA/600)×これ [run]
   // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
   // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
   replStarterPer9: 0.166, // 先発の代替水準（wins/9IP）※投手WAR王5.5-8の門番（総WAR/野手比とのトレードオフの均衡点）

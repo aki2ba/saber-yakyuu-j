@@ -20,6 +20,8 @@ import {
 import { createConfig } from '../src/config.mjs';
 import { generateLeague, generateRookie } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
+import { deriveLeagueConstants } from '../src/sim/leagueConstants.mjs';
+import { hitterWAR, pitcherWAR } from '../src/sim/war.mjs';
 import { overallRating } from '../src/game/market.mjs';
 import { createBattingLine, createPitchingLine, createBaserunningLine, createFieldingLine } from '../src/model/statline.mjs';
 
@@ -240,4 +242,52 @@ test('D3: 記録の時代補正 +指標 — 同一成績でも投高時代ほど
   assert.ok(by.get(2026) > by.get(2027) + 5, `同一成績でも投高時代(2026)の wRC+ が高い（${by.get(2026).toFixed(0)} vs ${by.get(2027).toFixed(0)}）`);
   // 加重通算はその中間（PA加重）に収まる。
   assert.ok(ep.wrcPlus > by.get(2027) && ep.wrcPlus < by.get(2026), '通算 +指標は両年の間');
+});
+
+// ============================================================================
+// 総WAR は時代（得点環境）に対して不変でなければならない。
+// 代替水準は「勝率.294のチームが何勝するか」で定義される概念なので、得点環境が変わっても
+// 代替 *勝利* は動かない。FanGraphs はこれを
+//   Replacement Runs = (570 × Games/2430) × (RPW / lgPA) × PA
+// と定義する（RPW が掛かっているので、RPW で割ると勝利は不変）。
+//
+// 旧実装は野手の代替水準だけを run 単位 (PA/600)×定数 で持ち、rpw で割っていた。
+// 投手は wins 単位 (IP/9)×replPer9 だったため単位が食い違い、
+// 投高の年ほど野手の代替勝利が膨らんで総WARが 11 WAR も動いていた（9年周期の時代トレンド）。
+// 正典: sabermetrics_glossary.md §7.1 / §7.3 / §10.5
+// ============================================================================
+test('D3: 野手の代替勝利は時代（得点環境）に対して厳密に不変', () => {
+  const seed = 11;
+  const measure = (delta) => {
+    const c = eraSeasonConfig(createConfig(), { evBaseDelta: delta });
+    const lg = generateLeague(seed, c);
+    const res = simulateSeason(lg, c, { season: 2026, seed, postseason: false });
+    const lc = deriveLeagueConstants(res, c);
+    let war = 0;
+    let replWins = 0; // 野手の代替勝利の総量（= repl[run] / rpw）
+    for (const ps of res.playerSeasons) {
+      if (ps.batting.pa > 0) {
+        const w = hitterWAR(ps, c, lc);
+        war += w.war;
+        replWins += w.repl / lc.rpw;
+      }
+      if (ps.pitching.outs > 0) war += pitcherWAR(ps, c, lc).war;
+    }
+    return { war, replWins, rpw: lc.rpw, replTotal: lc.replHitterWinsTotal };
+  };
+  const hi = measure(+0.8); // 打高
+  const lo = measure(-0.8); // 投高
+
+  // 得点環境は実際に動いている（テストが空振りしていないことの確認）
+  assert.ok(hi.rpw - lo.rpw > 0.2, `rpw が時代で動いている (${hi.rpw.toFixed(3)} vs ${lo.rpw.toFixed(3)})`);
+
+  // 【厳密な不変量】野手の代替勝利の総量は得点環境に依存しない。
+  // 旧実装は repl を run 固定で持ち rpw で割っていたため、投高の年ほど代替勝利が膨らんでいた
+  // （2.037 → 2.146 wins/600PA）。
+  assert.ok(Math.abs(hi.replWins - lo.replWins) < 1e-9, `野手の代替勝利が時代で動く (${hi.replWins} vs ${lo.replWins})`);
+  assert.ok(Math.abs(hi.replTotal - lo.replTotal) < 1e-9, 'lc.replHitterWinsTotal は得点環境に依存しない');
+
+  // 総WARの時代ドリフトも小さい（旧実装は打高↔投高で約11 WAR 動いていた。単一シードのノイズを見込む）
+  const drift = Math.abs(hi.war - lo.war);
+  assert.ok(drift < 6, `総WARの時代ドリフト ${drift.toFixed(2)} WAR < 6（旧実装は約11）`);
 });

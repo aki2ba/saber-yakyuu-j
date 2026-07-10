@@ -1276,7 +1276,12 @@ const TUNING_DEFAULT = {
   babipBase: 0.3, // インプレー打球の安打基準
   fieldingCoef: 0.0009, // 守備係数（§18）
   // WAR代替水準（§9・§18の初期値。143試合/NPBへ較正対象）
-  replBatterPer600: 19.1, // (PA/600)×これ ※WAR較正（F2-5: replStarter引上げに伴う野手WAR比0.53下限の回復で18.8→19.1）
+  // 野手の代替水準（正典 sabermetrics_glossary.md §7.1 / §10.5）。
+  //   FanGraphs: 代替勝利の総量 = 570 × (Games/2430) を固定し、打席比で按分する。
+  //   ＝ 1チーム1試合あたり 570/(30×162) = 0.1173 wins。このシムは較正で値を決める。
+  //   代替勝利を wins で固定することで、時代トレンド（得点環境の揺れ）で総WARが動かなくなる。
+  replHitterWinsPerTeamGame: 0.134, // ※WAR較正（総WAR・野手WAR比の門番）
+  replBatterPer600: 19.1, // 【フォールバック専用】lc が無いときだけ使う旧式 (PA/600)×これ [run]
   // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
   // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
   replStarterPer9: 0.166, // 先発の代替水準（wins/9IP）※投手WAR王5.5-8の門番（総WAR/野手比とのトレードオフの均衡点）
@@ -4333,6 +4338,17 @@ function deriveLeagueConstants(res, cfg = null) {
   const runsPerGamePerTeam = gamesPerTeam ? totalRuns / res.standings.length / gamesPerTeam : 4.2;
   const rpw = 1.5 * runsPerGamePerTeam + 3;
 
+  // 代替水準（野手）: FanGraphs は「リーグ全体の代替勝利の総量」を固定し、各選手へ打席比で按分する。
+  //   Replacement Runs = (570 × (MLB Games / 2,430)) × (Runs Per Win / lgPA) × PA
+  //   → 両辺を RPW で割ると 代替wins = (570 × Games/2430) × (PA / lgPA)
+  //   ＝ 代替勝利の総量は得点環境にもリーグ総打席にも依存しない（勝率.294のチームは何点環境でも48勝）。
+  // 旧実装は repl を run 単位で (PA/600)×定数 としていたため、投手（wins単位）と単位が食い違い、
+  // 得点環境が下がる（rpw が下がる）と野手の代替勝利だけが膨らんで総WARが動いていた。
+  // 正典: sabermetrics_glossary.md §7.1 / §7.3 / §10.5
+  const lgPA = bat.pa;
+  const lgTeamGames = res.standings.reduce((a, t) => a + t.g, 0); // Σ 各チームの試合数
+  const replHitterWinsTotal = cfg && cfg.tuning ? cfg.tuning.replHitterWinsPerTeamGame * lgTeamGames : 0;
+
   // 盗塁の得点価値（正典 sabermetrics_glossary.md §6.2・一次: FanGraphs Library wSB）
   //   runSB = +0.2（全シーズン固定）
   //   runCS = −(2 × RunsPerOut + 0.075)  ← 得点環境依存の可変式
@@ -4459,6 +4475,9 @@ function deriveLeagueConstants(res, cfg = null) {
     lgOBP,
     lgRunsPerPA,
     lgRunsPerOut,
+    lgPA,
+    lgTeamGames,
+    replHitterWinsTotal,
     runCS,
     lgSLG,
     lgHRFB,
@@ -7919,14 +7938,29 @@ function posAdjRuns(ps) {
   return adj;
 }
 
+/**
+ * 代替水準（野手）を run 単位で返す（内訳表示の単位を wraa/bsr/uzr/posAdj と揃えるため）。
+ * FanGraphs 方式: リーグ全体の代替勝利の総量を固定し、打席比で按分してから rpw を掛けて run へ戻す。
+ *   代替wins(選手) = 代替wins(リーグ総量) × PA / lgPA
+ *   代替runs(選手) = 代替wins(選手) × rpw
+ * → 代替勝利は得点環境にもリーグ総打席にも依存しない（時代が動いても総WARが動かない）。
+ * lc が無い（単体呼び出し・テスト）場合のみ、旧来の (PA/600)×replBatterPer600 [run] にフォールバックする。
+ */
+function replacementRuns(ps, cfg, lc, rpw) {
+  if (lc && lc.replHitterWinsTotal && lc.lgPA) {
+    return lc.replHitterWinsTotal * (ps.batting.pa / lc.lgPA) * rpw;
+  }
+  return (ps.batting.pa / 600) * cfg.tuning.replBatterPer600;
+}
+
 /** 野手WAR（構成要素つき） */
 function hitterWAR(ps, cfg, lc) {
   const bat = playerBatting(ps, lc);
   const bsr = playerBaserunning(ps, cfg, lc).bsr;
   const uzr = uzrRuns(ps, cfg, lc);
   const posAdj = posAdjRuns(ps);
-  const repl = (ps.batting.pa / 600) * cfg.tuning.replBatterPer600;
   const rpw = lc.rpw || 9.3;
+  const repl = replacementRuns(ps, cfg, lc, rpw);
   const raRuns = bat.wraa + bsr + uzr + posAdj + repl;
   return {
     wraa: bat.wraa,

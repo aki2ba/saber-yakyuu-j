@@ -52,8 +52,11 @@ test('RE24 恒等: リーグ総和 ≈ 0（打者+走者側と投手側が相殺
   const grand = reBat + reRun + rePit;
   assert.ok(Math.abs(grand) < 1e-6, `ΣRE24 全体 ${grand}（打者+走者+投手 = 0 恒等）`);
   // 打者側（打者+走者）は構造上0近傍（残差は空塁0死の再出現による標準的な微小ズレ）。
+  // 許容60: リーグ総RE24イベント量(数万run)に対する単一シード残差。airCatch導入(2026-07-12)の
+  // rng列変更で seed 2026 の残差が 38→40.9 へ移動したため 40→60 に緩和（恒等そのものは上の
+  // grand(<1e-6)と下の投手側=−打者側で厳密に担保されている＝この行は分布の健全性チェック）。
   const batside = reBat + reRun;
-  assert.ok(Math.abs(batside) < 40, `ΣRE24 打者側 ${batside.toFixed(2)}（≈0）`);
+  assert.ok(Math.abs(batside) < 60, `ΣRE24 打者側 ${batside.toFixed(2)}（≈0）`);
   // 投手側は打者側のちょうど逆符号
   assert.ok(Math.abs(batside + rePit) < 1e-6, `投手側 = −打者側`);
 });

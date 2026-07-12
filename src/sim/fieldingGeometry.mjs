@@ -75,7 +75,11 @@ function reqSpeedAir(f, landX, landY, hangS, g) {
 /**
  * ゴロの内野処理。迎撃点は野手を打球ベクトルへ射影した点（Statcast の "intercept point"）。
  * 迎撃点での打球高度が gloveHeightM を超える（頭上を通過）なら処理不能。
- * @returns {{reqSpeed:number, pThrow:number}|null}
+ * air=true は「迎撃点が初バウンドより手前」＝ボールがまだ空中にある＝実質ライナー捕球
+ * （LA<10°でGB分類だが、現実の記録では『直』＝ラインドライブアウトになるプレー。
+ *   realism検証 2026-07-12: GB分類アウトの約19%・1試合1.3件がこれに該当し、旧実装は
+ *   すべて「ゴロ」と表示し走者もゴロ意味論（進塁打/併殺）で動かしていた）。
+ * @returns {{reqSpeed:number, pThrow:number, air:boolean}|null}
  */
 function groundChance(f, bb, g, runnerToFirstS) {
   const dx = Math.sin(bb.sprayDeg * FG_RAD);
@@ -84,12 +88,17 @@ function groundChance(f, bb, g, runnerToFirstS) {
   if (s <= g.gbMinDepth || s > g.gbMaxDepth) return null; // 背後 / 内野を抜けた
 
   const v = bb.evKmh / 3.6;
+  let air = false;
   if (bb.laDeg > 0) {
     const vx = v * Math.cos(bb.laDeg * FG_RAD);
     if (vx > 1e-6) {
       const h = s * Math.tan(bb.laDeg * FG_RAD) - (FG_G * s * s) / (2 * vx * vx);
       if (h > g.gloveHeightM) return null; // 頭上を通過
     }
+    // 初バウンドまでの弾道距離（生の放物線）より手前で迎撃＝空中でキャッチ（ライナー捕球）
+    const laRad = bb.laDeg * FG_RAD;
+    const firstBounceM = (v * v * Math.sin(2 * laRad)) / FG_G;
+    air = s < firstBounceM;
   }
 
   const ix = s * dx;
@@ -104,10 +113,11 @@ function groundChance(f, bb, g, runnerToFirstS) {
   const reqSpeed = move <= 0 ? 0 : move / tAvail / Math.max(0.02, dir);
 
   // 送球アウト: 捕球時刻 + 持ち替え + 送球飛行 < 打者走者の一塁到達
+  // （air=trueの捕球は本来送球不要の即アウトだが、該当打球は痛烈でpThrow≈1のため補正は省略）
   const tField = Math.max(tBall, g.reactionS + Math.max(0, move) / g.smaxBase);
   const throwDist = Math.hypot(FIRST_BASE.x - ix, FIRST_BASE.y - iy);
   const tOut = tField + g.transferS + throwDist / g.throwSpeed;
-  return { reqSpeed, pThrow: expit((runnerToFirstS - tOut) / g.throwWidth) };
+  return { reqSpeed, pThrow: expit((runnerToFirstS - tOut) / g.throwWidth), air };
 }
 
 /** 打者走者の一塁到達時間[s]。speed 50 = リーグ平均。速い打者ほど内野安打が湧く */
@@ -119,13 +129,15 @@ export function runnerToFirst(runnerSpeed, cfg) {
 /**
  * 打球1つに対する各野手の「必要走速度」と「送球アウト確率」。
  * 野手個人の能力を含まない（＝ Statcast catch probability と同じくリーグ中立）。
- * @returns {{reqSpeed: Object<string,number>, pThrow: Object<string,number>}}
+ * gbAir[pos]=true はGB分類の打球をそのポジションが「初バウンド前に迎撃」＝実質ライナー捕球。
+ * @returns {{reqSpeed: Object<string,number>, pThrow: Object<string,number>, gbAir: Object<string,boolean>}}
  */
 export function fieldingChances(bb, type, cfg) {
   const g = cfg.tuning.field;
   const F = fielderPositions(cfg);
   const reqSpeed = {};
   const pThrow = {};
+  const gbAir = {};
 
   const v = bb.evKmh / 3.6;
   const hangS = bb.laDeg > 0 ? (2 * v * Math.sin(bb.laDeg * FG_RAD)) / FG_G : 0;
@@ -137,6 +149,7 @@ export function fieldingChances(bb, type, cfg) {
     const f = F[pos];
     let rs = Infinity;
     let pt = 1;
+    let air = false;
     if (type === 'GB') {
       // ゴロは内野手のみアウト機会を持つ（外野へ抜けたら安打。外野の処理は ARM の領分）
       if (IS_INFIELD.has(pos)) {
@@ -144,6 +157,7 @@ export function fieldingChances(bb, type, cfg) {
         if (gc) {
           rs = gc.reqSpeed;
           pt = gc.pThrow;
+          air = gc.air;
         }
       }
     } else {
@@ -152,8 +166,9 @@ export function fieldingChances(bb, type, cfg) {
     }
     reqSpeed[pos] = rs;
     pThrow[pos] = pt;
+    gbAir[pos] = air;
   }
-  return { reqSpeed, pThrow };
+  return { reqSpeed, pThrow, gbAir };
 }
 
 /**

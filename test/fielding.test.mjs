@@ -452,6 +452,20 @@ test('ゴロ: 1死三塁で三塁走者がゴロゴー成功なら得点・OUT�
   }
 });
 
+test('ゴロ: airCatch(実質ライナー捕球)は走者が帰塁して自重＝ゴロ意味論(DP/FC/進塁打)を適用しない', () => {
+  const ctx = mkGbCtx({ outs: 0 });
+  ctx.gbAirCatch = true;
+  const rng = { next: () => 0.1 }; // 通常のGBならDP分岐に入る値
+  const bases = ['R1', null, 'R3'];
+  const runs = advanceRunners(bases, 'out', 'B1', false, 0, rng, cfg, ctx);
+
+  assert.equal(runs, 0, 'ライナー捕球から走者は還れない');
+  assert.deepEqual(bases, ['R1', null, 'R3'], '走者は帰塁して元の塁のまま');
+  assert.equal(ctx.outsAdded, 0, '併殺は発生しない');
+  assert.equal(ctx.gbDp, false);
+  assert.equal(ctx.statFor('B1').batting.gdp, 0, 'GDPが記録されない');
+});
+
 test('ゴロ: ctxなし/fieldingDefenseなしはレガシー挙動（走者凍結）にフォールバックする', () => {
   const bases = ['R1', 'R2', 'R3'];
   // ctx自体が無い呼び出し（bTypeが伝わらないため、そもそもゴロ分岐に入らずisAirOutもfalse→走者そのまま）

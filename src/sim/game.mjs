@@ -79,6 +79,10 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
   }
 
   if (result === 'out') {
+    // 実質ライナー捕球（GB分類だが初バウンド前迎撃）: 走者は帰塁して自重。
+    // ゴロ意味論（進塁打・FC・併殺）もタッグアップも適用しない（内野の目の前で捕られた
+    // ライナーから走者は進めない。逆走(ダブルオフ)は未モデル・将来の拡張余地）。
+    if (ctx && ctx.gbAirCatch) return runs;
     // 空中アウト（LD/FB/PU）: タッグアップは飛距離依存（realism_r1_baserunning_spec §B）。
     // 内野フライ/浅い飛球（本塁付近のポップ含む）では走者は自重し、犠飛は成立しない
     // （旧実装は深さ非依存で三塁走者が無条件生還し、内野フライでも犠飛が付いていた＝穴）。
@@ -827,6 +831,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     let isAirOut = false;
     let bType = null;
     let hitFielderPos = null; // ARM（外野送球）用: 安打を処理した野手ポジション（§B3b）
+    let gbAirCatch = false; // GB分類(LA<10°)だが初バウンド前迎撃＝実質ライナー捕球（表示は「直」・走者は帰塁）
     if (outcome === 'K') {
       result = 'out';
       bStat.batting.ab++;
@@ -854,6 +859,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       result = r.result;
       bType = battedType(bb.laDeg);
       isAirOut = result === 'out' && bType !== 'GB';
+      gbAirCatch = result === 'out' && r.airCatch === true;
       hitFielderPos = r.fielderPos; // 追加進塁機会での外野ARM帰属に使う（§B3b）
       recordBattedBallStat(bStat, pStat, result);
       // 追加系指標の打球集計（§B3a）: 期待out率/塁打分布(r)＋EV/LA/spray を積む。rng消費なし＝決定論不変。
@@ -870,6 +876,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           errorInInning = true;
           result = 'E';
           isAirOut = false;
+          gbAirCatch = false; // 落球＝アウトでなくなったのでライナー捕球扱いも解除
         }
       }
       // OAA累積: ポジション平均の期待アウトからの差分＝レンジ成分（§7.2）。
@@ -926,6 +933,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       def: ubrDef,
       battedBall,
       bType, // ゴロアウト分岐の判定に使う（realism_r1 §A）
+      gbAirCatch, // 実質ライナー捕球（GB分類）: 走者は帰塁＝ゴロ意味論(進塁打/併殺)を適用しない
       fieldingDefense: fielding.defense, // DP統計(2B/SS)の帰属先（§A）
       fieldingTeamId: fielding.teamId,
       errorFielderPos: result === 'E' ? hitFielderPos : null, // 失策を犯した野手（外野/内野の判定・§C）
@@ -1026,6 +1034,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         runsOnPlay: runs,
         sacFly: ubrCtx.sacFly, // 犠飛の唯一の真実（realism_r1 §F-2・UI側の再導出を廃止）
         fc: ubrCtx.fcBatterSafe, // フィールダースチョイス（打者は一塁で生きたがabのみ・§F-2）
+        airCatch: gbAirCatch, // GB分類だが実質ライナー捕球（表示は「遊直」等・§realism 2026-07-12）
         basesAfter: baseBits(bases),
         basesPids: bases.slice(), // 塁上走者の playerId（E2・走者名表示）
         batScore: batting.score,

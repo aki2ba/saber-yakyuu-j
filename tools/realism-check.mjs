@@ -23,6 +23,7 @@ import { buildDepthChart } from '../src/sim/team.mjs';
 import { leagueSummary } from '../src/sim/leagueStats.mjs';
 import { generateBattedBall } from '../src/sim/battedBall.mjs';
 import { resolveBattedBall, battedType, outfieldGeometry } from '../src/sim/battedBallResult.mjs';
+import { FG_INFIELD } from '../src/sim/fieldingGeometry.mjs';
 import { isBarrel } from '../src/sim/battedBallStats.mjs';
 import { makeRng, hashSeed } from '../src/rng.mjs';
 import { NEUTRAL_PARK } from '../src/model/battedball.mjs';
@@ -132,7 +133,7 @@ console.log('\n--- B. イベント不変量（80試合の全プレー走査） -
 
   let paCount = 0;
   let violations = [];
-  let sacFlies = 0, fcs = 0, twoOutKills = 0, frontCut2B = 0;
+  let sacFlies = 0, fcs = 0, twoOutKills = 0, frontCut2B = 0, airCatches = 0;
   for (let seed = 0; seed < 80; seed++) {
     const dh = seed % 2 === 0;
     const stats = new Map();
@@ -166,6 +167,13 @@ console.log('\n--- B. イベント不変量（80試合の全プレー走査） -
         const g = outfieldGeometry({ landingX: e.bb.distanceM * Math.sin(rad), landingY: e.bb.distanceM * Math.cos(rad) }, cfg);
         if (g.beyond <= 0 && g.dPerpMin <= 3) frontCut2B++;
       }
+      // 不変量4: airCatch（実質ライナー捕球）は併殺・犠飛を生まない（走者は帰塁のみ。
+      // 打席中の暴投得点(wpRuns)は打球と無関係に発生しうるため runsOnPlay はチェックしない）
+      if (e.airCatch) {
+        airCatches++;
+        if (e.outsAfter - e.outsBefore >= 2) violations.push(`seed${seed}: ライナー捕球で複数アウト`);
+        if (e.sacFly) violations.push(`seed${seed}: ライナー捕球で犠飛`);
+      }
       // 発現カウント（存在しないと逆に不自然なプレー）
       if (e.fc) fcs++;
       if (e.outsBefore === 2 && e.outsAfter === 3 && (e.result === '1B' || e.result === '2B')) twoOutKills++;
@@ -177,6 +185,7 @@ console.log('\n--- B. イベント不変量（80試合の全プレー走査） -
   gate('犠飛の発現 /80試合', sacFlies, 8, 80, 0); // 現実: 143試合で25-40/球団 ≈ 80試合(両軍)で15-45
   gate('フィールダースチョイスの発現 /80試合', fcs, 5, 200, 0); // ゴロのFC=二塁封殺のみは日常プレー
   gate('2死からの走塁死(安打時)の発現 /80試合', twoOutKills, 1, 60, 0); // 旧実装は構造的にゼロだった（audit）
+  gate('実質ライナー捕球(airCatch)の発現 /80試合', airCatches, 20, 400, 0); // 実測~1.3件/試合（ユーザー指摘の穴の門番）
   info(`（走査した打席イベント n=${paCount}）`);
 }
 
@@ -276,6 +285,8 @@ console.log('\n--- D. MLB Statcast 物理プロキシ比較（30万球・条件�
   const cats = { barrel: mk(), hardHit: mk(), sweetSpot: mk() };
   const TB = { '1B': 1, '2B': 2, '3B': 3, HR: 4 };
   let hrLaSum = 0, hrN = 0, hrLdBand = 0; // HRの打球角度分布（LD帯15-25°に偏っていないかの検証）
+  const IFSET = new Set(FG_INFIELD);
+  let ldOutIF = 0, airCatchOut = 0; // 内野ライナーの発現（LD直＋GB分類の初バウンド前迎撃=遊直等）
   const N = 300000;
   for (let i = 0; i < N; i++) {
     // 打者/投手を一様サンプル（才能の分散込みの打球分布。PA加重でない近似はband幅で吸収）
@@ -290,6 +301,8 @@ console.log('\n--- D. MLB Statcast 物理プロキシ比較（30万球・条件�
     const bump = (s) => { s.n++; if (isHit) s.h++; if (isHr) s.hr++; s.tb += tb; };
     bump(byType[type]);
     if (isHr) { hrLaSum += bb.laDeg; hrN++; if (bb.laDeg < 25) hrLdBand++; }
+    if (r.result === 'out' && type === 'LD' && IFSET.has(r.fielderPos)) ldOutIF++;
+    if (r.result === 'out' && r.airCatch) airCatchOut++;
     if (isBarrel(bb.evKmh, bb.laDeg, METRICS_CONST)) bump(cats.barrel);
     if (bb.evKmh >= METRICS_CONST.hardHitKmh) bump(cats.hardHit);
     if (bb.laDeg >= METRICS_CONST.sweetSpotLoLA && bb.laDeg <= METRICS_CONST.sweetSpotHiLA) bump(cats.sweetSpot);
@@ -331,6 +344,12 @@ console.log('\n--- D. MLB Statcast 物理プロキシ比較（30万球・条件�
     gate('FB%', byType.FB.n / total, profRef.fb[0], profRef.fb[1]);
     gate('PU%', byType.PU.n / total, profRef.pu[0], profRef.pu[1]);
   }
+  // 内野ライナーの発現（ユーザー指摘 2026-07-12「内野ライナーがありえない設定になってたら嫌」への門番）:
+  //   ①LD分類(LA10-25)を内野手が落下点で捕る「ポテライナーの直」 ②GB分類(LA<10)の初バウンド前
+  //   迎撃=「痛烈なライナーの直」（airCatch・従来は全てゴロ表記だった穴の修正）。どちらも消えたらFAIL。
+  gate('内野ライナー(LD直)の発現率/打球', ldOutIF / total, 0.002, 0.03);
+  gate('実質ライナー捕球(airCatch=遊直等)の発現率/打球', airCatchOut / total, 0.005, 0.05);
+  info(`  （1試合換算: LD直 ${(ldOutIF / total * 55).toFixed(2)}件 / airCatch直 ${(airCatchOut / total * 55).toFixed(2)}件。MLB2024実測: 内野ライナーアウト~1.30/試合(両軍)・ライナーアウトの内野手シェア28.7% [realism-refs MLB_LINEOUT]。ライナー併殺0.10/試合はsim未モデル）`);
 }
 
 // ============================================================================

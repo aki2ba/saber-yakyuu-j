@@ -215,13 +215,13 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
     if (hrDist * cfg.tuning.hrScale >= fence) {
       bb.fielderPos = assignFielder(bb, type, cfg);
       bb.result = 'HR';
-      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
+      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, airCatch: false, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
     }
   }
 
   // --- インプレー: Distance-Time モデルで各野手のアウト化確率を出し、責任野手を決める ---
   // 各野手の「必要走速度」「送球アウト確率」は野手の能力を含まない（＝Statcast catch probability）。
-  const { reqSpeed, pThrow } = fieldingChances(bb, type, cfg);
+  const { reqSpeed, pThrow, gbAir } = fieldingChances(bb, type, cfg);
   const smaxBase = cfg.tuning.field.smaxBase;
 
   // 責任野手 = リーグ中立 p の argmax（DRS の流儀・正典§9.2）。
@@ -258,9 +258,13 @@ export function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRang
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';
-    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
+    // airCatch: GB分類(LA<10°)だが初バウンド前に迎撃＝実質ライナー捕球（記録上は「直」・
+    // 走者はゴロ意味論でなく帰塁。realism検証 2026-07-12 で「痛烈な内野ライナーが全て
+    // ゴロ表記になっている」穴として発覚。統計上の打球分類(bbGB)はStatcast準拠のLA閾値のまま）
+    const airCatch = type === 'GB' && !!(gbAir && gbAir[fielderPos]);
+    return { result: 'out', type, expOut, fielderPos, airCatch, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
   }
   const base = decideBases(bb, type, cfg, rng);
   bb.result = base;
-  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
+  return { result: base, type, expOut, fielderPos, airCatch: false, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
 }

@@ -75,6 +75,19 @@ export const MLB_PHYSICS = {
   // SF/チーム41(162G)、GIDP/チーム115.5(162G)、外野補殺/チーム24.5(162G)、SB%80.2%(2023=ピッチクロック元年)
 };
 
+// 内野ライナーの現実参照（2026-07-12収集: Savant statcast_search CSV 2024年2,056試合を自己集計。
+// クエリURLは再現可能・収集エージェントの出典参照）。NPBの「直飛」公開集計は存在せず（確認済み）。
+export const MLB_LINEOUT = {
+  season: '2024（3/28-9/30・2,056試合の自己集計）',
+  source: 'baseballsavant.mlb.com/statcast_search（bb_type=line_drive × hit_location 1-6/7-9）',
+  infielderShare: 0.287, // ライナーアウトのうち内野手捕球のシェア（外野71.3%）
+  ifLineoutPerTeamGame: 0.652, // 内野ライナーアウト/チーム試合（両軍計~1.30/試合）
+  ldOutRate: 0.374, // LD分類のアウト率（インプレーLDの37.4%がアウト）
+  linedIntoDpPerGame: 0.0992, // ライナー併殺（両軍計/試合・約10試合に1件）。※シム未モデル（ダブルオフなし）
+  la0to10Ev140plusLdOutPct: 0.337, // LA0-10°×EV≥140km/hのLD分類打球のアウト率（66%は安打）
+  note: 'Statcastのbb_typeは低LA帯でGB/LDが混在する独自分類（純粋なLA閾値ではない）。simのairCatch(GB分類の初バウンド前迎撃)との厳密な突き合わせには定義差があるため、帯は発現保証レベルに留める',
+};
+
 // npb.jp 公式チーム成績（2023-2025・セパ12球団・143試合）。収集: 2026-07-12 Web調査
 // エージェントが tmb_c/tmb_p/tmf_c/tmf_p.html を直接取得しパース（全ページ200 OK・原データ保存済み）。
 // mean=12球団平均 / teamLo,teamHi=3年間の全チーム個別値の最小/最大（帯設定用）。

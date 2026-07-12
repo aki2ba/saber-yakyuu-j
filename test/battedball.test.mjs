@@ -266,6 +266,24 @@ test('expectedBases(realism_r1 §6): GBもdecideBasesと同一分岐の確率版
   assert.ok(Math.abs(c3 / n - eb.p3) < tol, `p3整合 期待${eb.p3.toFixed(3)} 実測${(c3 / n).toFixed(3)}`);
 });
 
+test('airCatch(realism 2026-07-12): 痛烈な低いライナー(LA<10)の初バウンド前迎撃は実質ライナー捕球として返る', () => {
+  // ショート正面(spray=-16・SSはr44,t-16)への EV160/LA8: 初バウンド(弾道55.4m)より手前(44m)で
+  // 迎撃・迎撃点高さ1.27m ≤ グラブ2.1m ＝ 空中でキャッチ＝現実の記録は「遊直」。
+  const rng = { next: () => 0.9 }; // アウト側に倒す（effPHitは小さい）
+  const bb = { evKmh: 160, laDeg: 8, sprayDeg: -16, runnerSpeed: 50 };
+  const r = resolveBattedBall(bb, cfg, rng, undefined);
+  assert.equal(r.result, 'out');
+  assert.equal(r.fielderPos, 'SS', 'ショートが処理');
+  assert.equal(r.airCatch, true, '初バウンド前の迎撃=airCatch');
+
+  // 弱いゴロ(LA2)は初バウンド(6.7m)がSSよりずっと手前＝バウンド後の処理＝通常のゴロ
+  const rng2 = { next: () => 0.9 };
+  const bb2 = { evKmh: 110, laDeg: 2, sprayDeg: -16, runnerSpeed: 50 };
+  const r2 = resolveBattedBall(bb2, cfg, rng2, undefined);
+  assert.equal(r2.result, 'out');
+  assert.equal(r2.airCatch, false, 'バウンド後の処理はゴロのまま');
+});
+
 test('generateBattedBall: EV/LA/方向を生成し結果は未確定', () => {
   const bb = generateBattedBall(avgBatter(), avgPitcher(), cfg, makeRng(5));
   assert.ok(bb.evKmh > 40);

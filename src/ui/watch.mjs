@@ -639,7 +639,7 @@ export function watchResShort(e) {
   if (e.fc) return '野選'; // フィールダースチョイス（打者は出塁・realism_r1 §A）
   // アウトになった打球は責任野手(fielderPos)で略記する（三ゴ・一飛・中直…）
   const f = watchFielderChar(e);
-  if (e.battedType === 'GB') return f + 'ゴ';
+  if (e.battedType === 'GB') return f + (e.airCatch ? '直' : 'ゴ'); // 初バウンド前迎撃はライナー捕球（遊直等）
   if (e.battedType === 'LD') return f + '直';
   return f + '飛';
 }
@@ -667,10 +667,12 @@ export function watchPaBody(e, lastCall) {
   const sf = e.sacFly === true; // エンジンのctx.sacFlyを唯一の真実とする（realism_r1 §F-2）
   // アウトになった打球は責任野手(fielderPos)で言語化する（ショートゴロ／ファーストフライ等）
   const spot = watchFielderName(e) || '内野';
+  // airCatch=GB分類だが初バウンド前に迎撃された実質ライナー（「痛烈なライナー、ショートが好捕」）
+  const typeJp = e.airCatch ? 'ライナー' : WATCH_BATTED_JP[e.battedType] || '打球';
   const body = sf ? `${spot}へ犠牲フライ`
     : dp ? `${spot}ゴロで併殺（ダブルプレー）`
     : e.fc ? `${spot}への内野ゴロ、フィールダースチョイスで一塁に生きる`
-    : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
+    : `${spot}${typeJp}でアウト`;
   return { cls: e.fc ? 'ev-hit' : '', body };
 }
 

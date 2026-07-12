@@ -2368,7 +2368,11 @@ function reqSpeedAir(f, landX, landY, hangS, g) {
 /**
  * ゴロの内野処理。迎撃点は野手を打球ベクトルへ射影した点（Statcast の "intercept point"）。
  * 迎撃点での打球高度が gloveHeightM を超える（頭上を通過）なら処理不能。
- * @returns {{reqSpeed:number, pThrow:number}|null}
+ * air=true は「迎撃点が初バウンドより手前」＝ボールがまだ空中にある＝実質ライナー捕球
+ * （LA<10°でGB分類だが、現実の記録では『直』＝ラインドライブアウトになるプレー。
+ *   realism検証 2026-07-12: GB分類アウトの約19%・1試合1.3件がこれに該当し、旧実装は
+ *   すべて「ゴロ」と表示し走者もゴロ意味論（進塁打/併殺）で動かしていた）。
+ * @returns {{reqSpeed:number, pThrow:number, air:boolean}|null}
  */
 function groundChance(f, bb, g, runnerToFirstS) {
   const dx = Math.sin(bb.sprayDeg * FG_RAD);
@@ -2377,12 +2381,17 @@ function groundChance(f, bb, g, runnerToFirstS) {
   if (s <= g.gbMinDepth || s > g.gbMaxDepth) return null; // 背後 / 内野を抜けた
 
   const v = bb.evKmh / 3.6;
+  let air = false;
   if (bb.laDeg > 0) {
     const vx = v * Math.cos(bb.laDeg * FG_RAD);
     if (vx > 1e-6) {
       const h = s * Math.tan(bb.laDeg * FG_RAD) - (FG_G * s * s) / (2 * vx * vx);
       if (h > g.gloveHeightM) return null; // 頭上を通過
     }
+    // 初バウンドまでの弾道距離（生の放物線）より手前で迎撃＝空中でキャッチ（ライナー捕球）
+    const laRad = bb.laDeg * FG_RAD;
+    const firstBounceM = (v * v * Math.sin(2 * laRad)) / FG_G;
+    air = s < firstBounceM;
   }
 
   const ix = s * dx;
@@ -2397,10 +2406,11 @@ function groundChance(f, bb, g, runnerToFirstS) {
   const reqSpeed = move <= 0 ? 0 : move / tAvail / Math.max(0.02, dir);
 
   // 送球アウト: 捕球時刻 + 持ち替え + 送球飛行 < 打者走者の一塁到達
+  // （air=trueの捕球は本来送球不要の即アウトだが、該当打球は痛烈でpThrow≈1のため補正は省略）
   const tField = Math.max(tBall, g.reactionS + Math.max(0, move) / g.smaxBase);
   const throwDist = Math.hypot(FIRST_BASE.x - ix, FIRST_BASE.y - iy);
   const tOut = tField + g.transferS + throwDist / g.throwSpeed;
-  return { reqSpeed, pThrow: expit((runnerToFirstS - tOut) / g.throwWidth) };
+  return { reqSpeed, pThrow: expit((runnerToFirstS - tOut) / g.throwWidth), air };
 }
 
 /** 打者走者の一塁到達時間[s]。speed 50 = リーグ平均。速い打者ほど内野安打が湧く */
@@ -2412,13 +2422,15 @@ function runnerToFirst(runnerSpeed, cfg) {
 /**
  * 打球1つに対する各野手の「必要走速度」と「送球アウト確率」。
  * 野手個人の能力を含まない（＝ Statcast catch probability と同じくリーグ中立）。
- * @returns {{reqSpeed: Object<string,number>, pThrow: Object<string,number>}}
+ * gbAir[pos]=true はGB分類の打球をそのポジションが「初バウンド前に迎撃」＝実質ライナー捕球。
+ * @returns {{reqSpeed: Object<string,number>, pThrow: Object<string,number>, gbAir: Object<string,boolean>}}
  */
 function fieldingChances(bb, type, cfg) {
   const g = cfg.tuning.field;
   const F = fielderPositions(cfg);
   const reqSpeed = {};
   const pThrow = {};
+  const gbAir = {};
 
   const v = bb.evKmh / 3.6;
   const hangS = bb.laDeg > 0 ? (2 * v * Math.sin(bb.laDeg * FG_RAD)) / FG_G : 0;
@@ -2430,6 +2442,7 @@ function fieldingChances(bb, type, cfg) {
     const f = F[pos];
     let rs = Infinity;
     let pt = 1;
+    let air = false;
     if (type === 'GB') {
       // ゴロは内野手のみアウト機会を持つ（外野へ抜けたら安打。外野の処理は ARM の領分）
       if (IS_INFIELD.has(pos)) {
@@ -2437,6 +2450,7 @@ function fieldingChances(bb, type, cfg) {
         if (gc) {
           rs = gc.reqSpeed;
           pt = gc.pThrow;
+          air = gc.air;
         }
       }
     } else {
@@ -2445,8 +2459,9 @@ function fieldingChances(bb, type, cfg) {
     }
     reqSpeed[pos] = rs;
     pThrow[pos] = pt;
+    gbAir[pos] = air;
   }
-  return { reqSpeed, pThrow };
+  return { reqSpeed, pThrow, gbAir };
 }
 
 /**
@@ -4200,13 +4215,13 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
     if (hrDist * cfg.tuning.hrScale >= fence) {
       bb.fielderPos = assignFielder(bb, type, cfg);
       bb.result = 'HR';
-      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
+      return { result: 'HR', type, expOut: 0, fielderPos: bb.fielderPos, airCatch: false, distanceM: bb.distanceM, xB1: 0, xB2: 0, xB3: 0, xHR: 1 };
     }
   }
 
   // --- インプレー: Distance-Time モデルで各野手のアウト化確率を出し、責任野手を決める ---
   // 各野手の「必要走速度」「送球アウト確率」は野手の能力を含まない（＝Statcast catch probability）。
-  const { reqSpeed, pThrow } = fieldingChances(bb, type, cfg);
+  const { reqSpeed, pThrow, gbAir } = fieldingChances(bb, type, cfg);
   const smaxBase = cfg.tuning.field.smaxBase;
 
   // 責任野手 = リーグ中立 p の argmax（DRS の流儀・正典§9.2）。
@@ -4243,11 +4258,15 @@ function resolveBattedBall(bb, cfg, rng, park = NEUTRAL_PARK, fielderRangeFor) {
 
   if (rng.next() >= effPHit) {
     bb.result = 'out';
-    return { result: 'out', type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
+    // airCatch: GB分類(LA<10°)だが初バウンド前に迎撃＝実質ライナー捕球（記録上は「直」・
+    // 走者はゴロ意味論でなく帰塁。realism検証 2026-07-12 で「痛烈な内野ライナーが全て
+    // ゴロ表記になっている」穴として発覚。統計上の打球分類(bbGB)はStatcast準拠のLA閾値のまま）
+    const airCatch = type === 'GB' && !!(gbAir && gbAir[fielderPos]);
+    return { result: 'out', type, expOut, fielderPos, airCatch, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
   }
   const base = decideBases(bb, type, cfg, rng);
   bb.result = base;
-  return { result: base, type, expOut, fielderPos, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
+  return { result: base, type, expOut, fielderPos, airCatch: false, distanceM: bb.distanceM, xB1, xB2, xB3, xHR: 0 };
 }
 
 
@@ -5113,6 +5132,10 @@ function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ctx) 
   }
 
   if (result === 'out') {
+    // 実質ライナー捕球（GB分類だが初バウンド前迎撃）: 走者は帰塁して自重。
+    // ゴロ意味論（進塁打・FC・併殺）もタッグアップも適用しない（内野の目の前で捕られた
+    // ライナーから走者は進めない。逆走(ダブルオフ)は未モデル・将来の拡張余地）。
+    if (ctx && ctx.gbAirCatch) return runs;
     // 空中アウト（LD/FB/PU）: タッグアップは飛距離依存（realism_r1_baserunning_spec §B）。
     // 内野フライ/浅い飛球（本塁付近のポップ含む）では走者は自重し、犠飛は成立しない
     // （旧実装は深さ非依存で三塁走者が無条件生還し、内野フライでも犠飛が付いていた＝穴）。
@@ -5861,6 +5884,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     let isAirOut = false;
     let bType = null;
     let hitFielderPos = null; // ARM（外野送球）用: 安打を処理した野手ポジション（§B3b）
+    let gbAirCatch = false; // GB分類(LA<10°)だが初バウンド前迎撃＝実質ライナー捕球（表示は「直」・走者は帰塁）
     if (outcome === 'K') {
       result = 'out';
       bStat.batting.ab++;
@@ -5888,6 +5912,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       result = r.result;
       bType = battedType(bb.laDeg);
       isAirOut = result === 'out' && bType !== 'GB';
+      gbAirCatch = result === 'out' && r.airCatch === true;
       hitFielderPos = r.fielderPos; // 追加進塁機会での外野ARM帰属に使う（§B3b）
       recordBattedBallStat(bStat, pStat, result);
       // 追加系指標の打球集計（§B3a）: 期待out率/塁打分布(r)＋EV/LA/spray を積む。rng消費なし＝決定論不変。
@@ -5904,6 +5929,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           errorInInning = true;
           result = 'E';
           isAirOut = false;
+          gbAirCatch = false; // 落球＝アウトでなくなったのでライナー捕球扱いも解除
         }
       }
       // OAA累積: ポジション平均の期待アウトからの差分＝レンジ成分（§7.2）。
@@ -5960,6 +5986,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       def: ubrDef,
       battedBall,
       bType, // ゴロアウト分岐の判定に使う（realism_r1 §A）
+      gbAirCatch, // 実質ライナー捕球（GB分類）: 走者は帰塁＝ゴロ意味論(進塁打/併殺)を適用しない
       fieldingDefense: fielding.defense, // DP統計(2B/SS)の帰属先（§A）
       fieldingTeamId: fielding.teamId,
       errorFielderPos: result === 'E' ? hitFielderPos : null, // 失策を犯した野手（外野/内野の判定・§C）
@@ -6060,6 +6087,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         runsOnPlay: runs,
         sacFly: ubrCtx.sacFly, // 犠飛の唯一の真実（realism_r1 §F-2・UI側の再導出を廃止）
         fc: ubrCtx.fcBatterSafe, // フィールダースチョイス（打者は一塁で生きたがabのみ・§F-2）
+        airCatch: gbAirCatch, // GB分類だが実質ライナー捕球（表示は「遊直」等・§realism 2026-07-12）
         basesAfter: baseBits(bases),
         basesPids: bases.slice(), // 塁上走者の playerId（E2・走者名表示）
         batScore: batting.score,
@@ -13742,7 +13770,7 @@ function watchResShort(e) {
   if (e.fc) return '野選'; // フィールダースチョイス（打者は出塁・realism_r1 §A）
   // アウトになった打球は責任野手(fielderPos)で略記する（三ゴ・一飛・中直…）
   const f = watchFielderChar(e);
-  if (e.battedType === 'GB') return f + 'ゴ';
+  if (e.battedType === 'GB') return f + (e.airCatch ? '直' : 'ゴ'); // 初バウンド前迎撃はライナー捕球（遊直等）
   if (e.battedType === 'LD') return f + '直';
   return f + '飛';
 }
@@ -13770,10 +13798,12 @@ function watchPaBody(e, lastCall) {
   const sf = e.sacFly === true; // エンジンのctx.sacFlyを唯一の真実とする（realism_r1 §F-2）
   // アウトになった打球は責任野手(fielderPos)で言語化する（ショートゴロ／ファーストフライ等）
   const spot = watchFielderName(e) || '内野';
+  // airCatch=GB分類だが初バウンド前に迎撃された実質ライナー（「痛烈なライナー、ショートが好捕」）
+  const typeJp = e.airCatch ? 'ライナー' : WATCH_BATTED_JP[e.battedType] || '打球';
   const body = sf ? `${spot}へ犠牲フライ`
     : dp ? `${spot}ゴロで併殺（ダブルプレー）`
     : e.fc ? `${spot}への内野ゴロ、フィールダースチョイスで一塁に生きる`
-    : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
+    : `${spot}${typeJp}でアウト`;
   return { cls: e.fc ? 'ev-hit' : '', body };
 }
 

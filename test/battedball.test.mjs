@@ -158,22 +158,22 @@ test('decideBases(監査B1・realism_r1 §6): 浅い空中安打は単打、外�
   for (let i = 0; i < 50; i++) assert.equal(based(130, 10, 80), '2B', '正面最深球は二塁打止まり');
 });
 
-test('decideBases(realism_r1 §6): 外野手の目の前/手前のポトリは必ず単打（発端バグの回帰・CF定位置ライナー）', () => {
+test('decideBases(realism_r1 §6・R1b改): 外野手の正面/手前のポトリはほぼ必ず単打（発端バグの回帰・CF定位置ライナー）', () => {
   // ユーザー報告の再現ケース: CF(r=98)の15.5m手前(spray=0)に落ちるライナー(EV165/LA10)。
-  // 旧実装は落下距離(gapDistM=76超)だけで無条件に二塁打にしていた（100%が2B）。
-  // frontDropRadiusM(15)のすぐ外側(dNear=15.5)の境界ケースだが、それでも旧実装(100%2B)から
-  // 大幅に改善（単打が過半数）していることを確認する（正確な閾値は較正フェーズで調整）。
+  // 旧実装①は落下距離(gapDistM=76超)だけで無条件二塁打（100%が2B）。
+  // 旧実装②(dNear判定)は「正面の手前15m」と「ギャップの横15m」を同一視し57%が2Bだった
+  // （ユーザー再指摘）。ロール線モデル: 正面(dPerp=0)はボールがCFに向かって転がるため
+  // どれだけ手前でも必ずカット＝ほぼ100%単打。
   const rng = makeRng(777);
-  let singles = 0;
-  const n = 400;
-  for (let i = 0; i < n; i++) {
-    if (decideBases(mkLandedBB(82.5, 0, 50), 'LD', cfg, rng) === '1B') singles++;
-  }
-  assert.ok(singles / n > 0.3, `旧実装の100%二塁打から大幅に改善 (単打率=${(singles / n).toFixed(2)})`);
-  // CFの目の前(beyond=-4・dNear=4<=frontDropRadiusM)は明確に単打（半径内）
-  for (let i = 0; i < 100; i++) {
-    assert.equal(decideBases(mkLandedBB(94, 0, 50), 'FB', cfg, rng), '1B', 'CF正面手前(半径内)は単打');
-  }
+  const rate = (dist, type) => {
+    let singles = 0;
+    const n = 1000;
+    for (let i = 0; i < n; i++) if (decideBases(mkLandedBB(dist, 0, 50), type, cfg, rng) === '1B') singles++;
+    return singles / n;
+  };
+  assert.ok(rate(82.5, 'LD') >= 0.97, `CF手前15.5mの前落ちライナーはほぼ単打 (単打率=${rate(82.5, 'LD').toFixed(3)})`);
+  assert.ok(rate(94, 'FB') >= 0.95, `CF正面手前4mのポトリもほぼ単打 (単打率=${rate(94, 'FB').toFixed(3)})`);
+  assert.ok(rate(88, 'LD') >= 0.95, `CF正面手前10mもほぼ単打 (単打率=${rate(88, 'LD').toFixed(3)})`);
 });
 
 test('decideBases(realism_r1 §6): 外野手の頭上を僅かに越えた打球は単打止まりの余地がある（追いつかれる）', () => {
@@ -188,16 +188,20 @@ test('decideBases(realism_r1 §6): 外野手の頭上を僅かに越えた打球
   assert.ok(rate > 0.5 && rate < 0.9, `僅かに越えた打球は単打止まりの余地がある (2B率=${rate.toFixed(2)})`);
 });
 
-test('decideBases(realism_r1 §6): ギャップの深い打球は転がる余地があり二塁打になりやすい', () => {
+test('decideBases(realism_r1 §6・R1b改): 真のギャップ(spray±14)へ深く落ちた打球は転がり抜けて二塁打になりやすい', () => {
   const rng = makeRng(2028);
-  let doubles = 0;
-  const n = 1000;
-  // gapDistM(76)以上・spray=20でdNear=16.56(外野手からやや離れたギャップ)
-  for (let i = 0; i < n; i++) {
-    if (decideBases(mkLandedBB(76, 20, 50), 'LD', cfg, rng) === '2B') doubles++;
-  }
-  const rate = doubles / n;
-  assert.ok(rate > 0.5, `ギャップ球は二塁打率が高い (2B率=${rate.toFixed(2)})`);
+  const rate2B = (dist, spray) => {
+    let doubles = 0;
+    const n = 1000;
+    for (let i = 0; i < n; i++) if (decideBases(mkLandedBB(dist, spray, 50), 'LD', cfg, rng) === '2B') doubles++;
+    return doubles / n;
+  };
+  // 右中間ど真ん中(spray=14)・アーク際(85m): ロール線への横ズレが両翼とも21m超＝誰も遮断できない
+  assert.ok(rate2B(85, 14) > 0.6, `右中間の深いギャップ球は二塁打が多数 (2B率=${rate2B(85, 14).toFixed(2)})`);
+  // ライン際(spray=40)のアーク際: RFの横ズレ18m＝コーナーへ転がる
+  assert.ok(rate2B(82, 40) > 0.5, `ライン際の深い打球も二塁打が多数 (2B率=${rate2B(82, 40).toFixed(2)})`);
+  // 同じギャップ角でも浅い落下(76m)は野手が収束する時間があり2B率が下がる（深さ補正）
+  assert.ok(rate2B(76, 14) < rate2B(85, 14), '浅いギャップ球ほど遮断されやすい（深さ補正が効く）');
 });
 
 test('decideBases(realism_r1 §6): ゴロはライン際×強い打球ほど二塁打（正面はほぼ単打・俊足のライン際は三塁打もありうる）', () => {

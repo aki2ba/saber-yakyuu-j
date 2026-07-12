@@ -9,6 +9,7 @@
     "build": "node tools/build.mjs",
     "verify": "node tools/build.mjs && node tools/verify-identity.mjs",
     "smoke": "node tools/build.mjs && node tools/smoke-ui.mjs",
-    "calibrate": "node tools/calibrate.mjs"
+    "calibrate": "node tools/calibrate.mjs",
+    "realism": "node tools/realism-check.mjs"
   }
 }

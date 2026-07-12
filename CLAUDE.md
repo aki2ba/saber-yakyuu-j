@@ -22,9 +22,11 @@ npm test              # node --test（281テスト）。構造・不変量・決
 npm run verify        # build.mjs + verify-identity.mjs（Node↔ブラウザ同一性=決定論）
 npm run smoke         # build.mjs + smoke-ui.mjs（UI/ゲームシェルのヘッドレス描画検証）
 npm run calibrate     # 12seed平均でNPB目標帯とPASS/FAIL機械判定（53指標）
+npm run realism       # リアリズム恒常ゲート（打球イベント単位の現実不変量＋NPB公開値との帯比較。
+                      #   GATE=修正済みの穴の再発防止 / WATCH=audit既知の未修正穴の観測。修正したらGATE昇格）
 npm run build         # dist/pennant.html（全モジュールをインライン化した自己完結HTML）
 ```
-**変更後は必ず `npm test` → `npm run calibrate` を通す**（コミット条件）。
+**変更後は必ず `npm test` → `npm run calibrate` を通す**（コミット条件）。シム挙動（打球・走塁・守備・采配）に触れた場合は `npm run realism` も通すこと。
 
 ## アーキテクチャ
 ```

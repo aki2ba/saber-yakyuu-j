@@ -61,22 +61,34 @@ export function assignFielder(bb, type, cfg) {
 }
 
 /**
- * 落下点と最寄り外野手の位置関係（realism_r1_baserunning_spec §6）。
- * dNear=落下点から最寄り外野手までの距離。beyond=本塁からの距離が外野手の定位置より
- * 深い(正)か手前(負・0以下)か。塁打決定を「落下距離だけ」でなく守備隊形から創発させる
- * （外野手の目の前/手前のポトリが無条件で二塁打になっていた穴の根治）。
+ * 落下点・打球のロール線と外野守備隊形の位置関係（realism_r1_baserunning_spec §6・R1b改）。
+ * - dNear: 落下点から最寄り外野手までのユークリッド距離
+ * - beyond: 本塁からの落下距離が最寄り外野手の定位置より深い(正)か手前(負・0以下)か
+ * - dPerpMin: 打球のロール線（spray方向の延長＝落下後にボールが転がっていく直線）に対する
+ *   各外野手の垂線距離の最小値
+ *
+ * 【重要】前落ち球（beyond<=0）の単打/二塁打を分けるのは dNear ではなく dPerpMin。
+ * 落下後のボールは外野手「に向かって」転がるため、ロール線上に野手がいれば（横ズレが小さければ）
+ * どれだけ手前に落ちても必ずカットされ単打になる。二塁打になるのは横ズレの大きい真のギャップ/
+ * ライン際だけ（旧: dNearで判定→「CF正面の手前15m」と「左中間の横15m」を同一視して
+ * 正面の前落ちライナーが57%二塁打になる穴があった。ユーザー指摘で発覚）。
  */
-function nearestOutfielder(bb, cfg) {
+export function outfieldGeometry(bb, cfg) {
   const F = fielderPositions(cfg);
+  const landR = Math.hypot(bb.landingX, bb.landingY);
+  const ux = bb.landingX / landR; // ロール線の単位ベクトル（本塁→落下点方向）
+  const uy = bb.landingY / landR;
   let dNear = Infinity;
   let r = 0;
+  let dPerpMin = Infinity;
   for (const pos of FG_OUTFIELD) {
     const f = F[pos];
     const d = Math.hypot(bb.landingX - f.x, bb.landingY - f.y);
     if (d < dNear) { dNear = d; r = f.r; }
+    const dPerp = Math.abs(f.x * uy - f.y * ux); // ロール線への垂線距離（外積の大きさ）
+    if (dPerp < dPerpMin) dPerpMin = dPerp;
   }
-  const landR = Math.hypot(bb.landingX, bb.landingY);
-  return { dNear, beyond: landR - r };
+  return { dNear, beyond: landR - r, dPerpMin };
 }
 
 /**
@@ -105,16 +117,19 @@ export function decideBases(bb, type, cfg, rng) {
   }
   // 外野手到達圏(gapDistM)手前に前落ちする空中安打は単打
   if (bb.distanceM < g.gapDistM) return '1B';
-  const { dNear, beyond } = nearestOutfielder(bb, cfg);
-  if (beyond <= 0 && dNear <= g2.frontDropRadiusM) return '1B'; // 外野手の目の前/手前のポトリ
+  const { dNear, beyond, dPerpMin } = outfieldGeometry(bb, cfg);
   let isDouble;
   if (beyond > 0) {
     // 頭上/後方を抜けた: 至近なら追いつかれて単打止まりになりうる
     const pStay1 = clamp(g2.behindStay1Base - g2.behindStay1DistW * dNear, 0, 0.5);
     isDouble = rng.next() >= pStay1;
   } else {
-    // ギャップ/ライン際: 外野手から離れているほど転がる余地がある
-    isDouble = rng.next() < expit((dNear - g2.gapPivotM) / g2.gapWidthM);
+    // 前落ち: ボールはロール線に沿って外野手側へ転がる。ロール線への横ズレ(dPerpMin)が
+    // 小さければカットされ単打（正面の前落ちは必ず単打）、大きければ真のギャップ/ライン際で
+    // 転がり抜けて二塁打。浅く落ちるほど(frontM大)野手が収束する時間があり閾値が上がる。
+    const frontM = -beyond;
+    const pivot = g2.frontPerpPivotM + g2.frontDepthW * frontM;
+    isDouble = rng.next() < expit((dPerpMin - pivot) / g2.frontPerpWidthM);
   }
   if (!isDouble) return '1B';
   // さらに深いギャップ/ライン際(|spray|>18)は打者speedで三塁打になりうる
@@ -146,14 +161,15 @@ export function expectedBases(bb, type, cfg) {
     return { p1: 1 - pCorner, p2: pCorner - p3, p3 };
   }
   if (bb.distanceM < g.gapDistM) return { p1: 1, p2: 0, p3: 0 };
-  const { dNear, beyond } = nearestOutfielder(bb, cfg);
-  if (beyond <= 0 && dNear <= g2.frontDropRadiusM) return { p1: 1, p2: 0, p3: 0 };
+  const { dNear, beyond, dPerpMin } = outfieldGeometry(bb, cfg);
   let pDouble;
   if (beyond > 0) {
     const pStay1 = clamp(g2.behindStay1Base - g2.behindStay1DistW * dNear, 0, 0.5);
     pDouble = 1 - pStay1;
   } else {
-    pDouble = expit((dNear - g2.gapPivotM) / g2.gapWidthM);
+    const frontM = -beyond;
+    const pivot = g2.frontPerpPivotM + g2.frontDepthW * frontM;
+    pDouble = expit((dPerpMin - pivot) / g2.frontPerpWidthM);
   }
   let p3 = 0;
   if (bb.distanceM >= g.tripleDistM && Math.abs(bb.sprayDeg) > 18) {

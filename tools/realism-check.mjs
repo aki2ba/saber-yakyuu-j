@@ -15,7 +15,7 @@
 // 現実側の参照値の出典はコメントに明記する（NPB公式集計・Statcast公開値・正典research/*.md）。
 // 使い方: `npm run realism`（変更後は npm test → npm run calibrate → npm run realism を通す）
 // ============================================================================
-import { createConfig } from '../src/config.mjs';
+import { createConfig, METRICS_CONST } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
 import { simulateGame } from '../src/sim/game.mjs';
@@ -23,9 +23,11 @@ import { buildDepthChart } from '../src/sim/team.mjs';
 import { leagueSummary } from '../src/sim/leagueStats.mjs';
 import { generateBattedBall } from '../src/sim/battedBall.mjs';
 import { resolveBattedBall, battedType, outfieldGeometry } from '../src/sim/battedBallResult.mjs';
+import { isBarrel } from '../src/sim/battedBallStats.mjs';
 import { makeRng, hashSeed } from '../src/rng.mjs';
 import { NEUTRAL_PARK } from '../src/model/battedball.mjs';
 import { createPlayerSeason } from '../src/model/statline.mjs';
+import { MLB_PHYSICS, NPB_SEASON } from './realism-refs.mjs';
 
 const cfg = createConfig();
 let gatePass = 0;
@@ -182,10 +184,14 @@ console.log('\n--- B. イベント不変量（80試合の全プレー走査） -
 // Part C: シーズン集計 vs 現実の公開集計値（2シード）
 //   出典: NPB公式の年度別チーム成績（近年143試合）・正典 thyroxin/research/*.md
 // ============================================================================
-console.log('\n--- C. シーズン集計 vs 現実参照値（2シード平均） ---');
+console.log('\n--- C. シーズン集計 vs NPB公式チーム成績（2シード平均・出典: realism-refs.mjs） ---');
 {
   const seeds = [1, 2];
-  const acc = { b2: 0, b3: 0, sf: 0, gdp: 0, oob: 0, a1t3Taken: 0, a1t3Opp: 0, gb3hTaken: 0, gb3hOpp: 0, tagTaken: 0, tagOpp: 0 };
+  const acc = {
+    b2: 0, b3: 0, sf: 0, sh: 0, gdp: 0, sb: 0, cs: 0, hbp: 0, e: 0, h: 0,
+    oob: 0, a1t3Taken: 0, a1t3Opp: 0, gb3hTaken: 0, gb3hOpp: 0, tagTaken: 0, tagOpp: 0,
+    avg: 0, rpg: 0, hr: 0,
+  };
   for (const seed of seeds) {
     const lg = generateLeague(seed, cfg);
     const res = simulateSeason(lg, cfg, { season: 2026, seed, postseason: false });
@@ -193,8 +199,17 @@ console.log('\n--- C. シーズン集計 vs 現実参照値（2シード平均�
     acc.b2 += s.batting.b2 / cfg.league.numTeams;
     acc.b3 += s.batting.b3 / cfg.league.numTeams;
     acc.sf += s.batting.sf / cfg.league.numTeams;
+    acc.h += s.batting.h / cfg.league.numTeams;
+    acc.avg += s.batting.h / s.batting.ab;
+    acc.rpg += s.runsPerTeamPerGame;
+    acc.hr += s.hrPerTeam;
     for (const ps of res.playerSeasons) {
-      acc.gdp += ps.batting.gdp || 0; // leagueBattingはgdpを集計しないため直接合算
+      acc.gdp += ps.batting.gdp || 0; // leagueBattingが集計しないカウンタは直接合算
+      acc.sb += ps.batting.sb || 0;
+      acc.cs += ps.batting.cs || 0;
+      acc.sh += ps.batting.sh || 0;
+      acc.hbp += ps.batting.hbp || 0;
+      acc.e += ps.fielding.e || 0;
       const br = ps.baserunning;
       acc.oob += br.outsOnBase || 0;
       acc.a1t3Taken += br.adv1t3bTaken || 0;
@@ -207,23 +222,115 @@ console.log('\n--- C. シーズン集計 vs 現実参照値（2シード平均�
   }
   const n = seeds.length;
   const nT = cfg.league.numTeams;
-  // 二塁打/球団: NPB近年（143試合）の実測は 170-230（出典: npb.jp 年度別チーム打撃成績）。
-  // 本ハーネス初回実行（2026-07-12）で ~260 と上限超過を検出＝新発見の実穴。修正には
-  // 2B→1Bミックスの組み替え（AVG/SLG帯との同時再較正＝得点環境ベースライン見直し）が必要な
-  // ため次の較正パス送り。それまでWATCHで観測し、修正後に[150,240]でGATE化すること。
-  watch('二塁打/球団', acc.b2 / n, '現実(NPB)170-230 / 実測~260=本ハーネスが検出した新しい穴（未修正）', 1);
-  gate('三塁打/球団', acc.b3 / n, 8, 35, 1);
+  const perTeam = (k) => acc[k] / n / nT;
+  const R = NPB_SEASON;
+
+  // --- 時代整合の明示（最重要の設計判断・config CALIBRATION_TARGETS 注記と連動） ---
+  // シムの得点環境はNPB 2015-19「飛ぶボール」時代へ較正されている（config注記で自覚済み）。
+  // 現在のNPB(2023-25)は AVG.242-.244 / R/G 3.29-3.48 / HR 81-104 と大幅に低反発側。
+  // 三原則②「現状のセパ近似」に照らした再ベースラインは大規模較正のため独立の設計判断（未着手）。
+  info(`【時代整合】sim AVG ${fmt(acc.avg / n)} / R/G ${fmt(acc.rpg / n, 2)} / HR ${fmt(acc.hr / n, 0)} ⇔ NPB2023-25実測 AVG .242-.244 / R/G 3.29-3.48 / HR 81-104（＝シムは2015-19時代を選択中・再ベースラインは別課題）`);
+
+  // --- 時代にロバストな比率・総量（NPB公式2023-25の帯でGATE/WATCH） ---
+  // 二塁打シェア: NPB実測 2B/H = .165-.173（era非依存に安定）。sim ~.206 = 本ハーネスが検出した実穴。
+  watch('二塁打シェア (2B/H)', (acc.b2 / n) / (acc.h / n), `NPB実測 .165-.173（3年）/ sim超過=既知の穴（2B→1Bミックス再較正待ち）`, 3);
+  info(`  （絶対数: 二塁打/球団 sim ${fmt(acc.b2 / n, 1)} ⇔ NPB平均 ${R.b2PerTeam.means.join('/')}）`);
+  gate('三塁打シェア (3B/H)', (acc.b3 / n) / (acc.h / n), 0.008, 0.03);
+  // 盗塁: NPB実測 66-77個/球団・成功率.67-.71（2023-25公式）。2026-07-12検証で乖離を検出（未修正）
+  watch('盗塁/球団', perTeam('sb'), `NPB実測 平均66-77・チーム最大110 / sim超過=新発見の穴（企図が過剰）`, 1);
+  watch('盗塁成功率', acc.sb / (acc.sb + acc.cs), 'NPB実測 .672/.688/.707（2023/24/25公式）', 3);
+  // 犠飛: NPB実測 31.1/31.1/31.6（3年とも31前後で極めて安定・チーム帯20-47）
+  watch('犠飛/球団', acc.sf / n, 'NPB実測 平均31.1（帯20-47）/ R1直後~21=不足（sfBase/tagMinDistM再較正待ち）', 1);
+  // 犠打: NPB実測 平均93-111/球団・チーム帯57-137（パ・リーグ球団も85+が普通の年あり）
+  watch('犠打/球団（両リーグ計平均）', perTeam('sh'), 'NPB実測 平均93-111（チーム帯57-137）/ simは特にDH有リーグで過少', 1);
+  // 失策: NPB実測 平均69-74/球団（チーム帯52-96）。チーム帯でGATE
+  gate('失策/球団', perTeam('e'), 50, 96, 1);
+  // 死球: NPB実測 平均47-51/球団（チーム帯25-65）。チーム帯でGATE
+  gate('死球/球団', perTeam('hbp'), 25, 70, 1);
+  // 併殺打: NPB実測 平均87-99/球団（チーム帯66-120）
+  gate('併殺打/球団', perTeam('gdp'), 66, 120, 1);
   // 単打での一塁→三塁進塁率: 文献実測 25-40%（正典 baserunning_metrics_reference.md §XBT）
   gate('一塁→三塁進塁率（単打時）', acc.a1t3Taken / Math.max(1, acc.a1t3Opp), 0.18, 0.45);
   // ゴロゴー（三塁走者がゴロアウトの間に生還を試みる機会での生還率）: 中間守備前提で~4-6割
   gate('三塁走者のゴロゴー生還率', acc.gb3hTaken / Math.max(1, acc.gb3hOpp), 0.35, 0.75);
   // タッグアップ本塁生還率（深い犠飛機会）: 現実の犠飛機会は大半が成功（自重込みの機会率）
   gate('タッグアップ本塁生還率', acc.tagTaken / Math.max(1, acc.tagOpp), 0.45, 0.9);
-  // 併殺打/球団: NPB近年 90-120（143試合）
-  gate('併殺打/球団', acc.gdp / n / nT, 60, 140, 1);
-  // 犠飛/球団: NPB近年 ~25-40。走塁再設計（R1）で深さ依存化した直後は下振れ気味＝WATCHで観測継続
-  watch('犠飛/球団', acc.sf / n, '現実(NPB)~25-40 / R1直後は~20前後。次の較正パスで判断', 1);
-  watch('走塁死(outsOnBase)/球団', acc.oob / n / nT, '参考値（NPB公式は本塁憤死等の分計なし）', 1);
+  watch('走塁死(outsOnBase)/球団', perTeam('oob'), '参考値（NPB公式は本塁憤死等の分計なし）', 1);
+}
+
+// ============================================================================
+// Part D: MLB Statcast 物理プロキシ比較（EV/LA→結果の条件付き分布・ユーザー指示 2026-07-12）
+//   NPBには一球粒度の公開データが存在しないため、打球物理の現実整合は MLB Statcast/FanGraphs
+//   の公開実測値を代理参照とする。比較するのは「条件付き分布」（この打球ならどうなるか）のみ。
+//   総量（得点環境・頻度）はNPB較正（calibrate）の管轄で、ここでは物理の写像だけを見る。
+//   参照値は tools/realism-refs.mjs（出典URL・シーズン付き）。ref未収載の項目はWATCH表示。
+// ============================================================================
+console.log('\n--- D. MLB Statcast 物理プロキシ比較（30万球・条件付き分布） ---');
+{
+  const lg = generateLeague(777, cfg);
+  const rng = makeRng(20260712);
+  const batters = lg.players.filter((p) => p.role === 'fielder');
+  const pitchers = lg.players.filter((p) => p.role === 'pitcher');
+  const mk = () => ({ n: 0, h: 0, hr: 0, tb: 0 });
+  const byType = { GB: mk(), LD: mk(), FB: mk(), PU: mk() };
+  const cats = { barrel: mk(), hardHit: mk(), sweetSpot: mk() };
+  const TB = { '1B': 1, '2B': 2, '3B': 3, HR: 4 };
+  let hrLaSum = 0, hrN = 0, hrLdBand = 0; // HRの打球角度分布（LD帯15-25°に偏っていないかの検証）
+  const N = 300000;
+  for (let i = 0; i < N; i++) {
+    // 打者/投手を一様サンプル（才能の分散込みの打球分布。PA加重でない近似はband幅で吸収）
+    const batter = batters[rng.int(batters.length)];
+    const pitcher = pitchers[rng.int(pitchers.length)];
+    const bb = generateBattedBall(batter, pitcher, cfg, rng);
+    const r = resolveBattedBall(bb, cfg, rng, NEUTRAL_PARK);
+    const type = battedType(bb.laDeg);
+    const isHit = r.result !== 'out';
+    const isHr = r.result === 'HR';
+    const tb = TB[r.result] || 0;
+    const bump = (s) => { s.n++; if (isHit) s.h++; if (isHr) s.hr++; s.tb += tb; };
+    bump(byType[type]);
+    if (isHr) { hrLaSum += bb.laDeg; hrN++; if (bb.laDeg < 25) hrLdBand++; }
+    if (isBarrel(bb.evKmh, bb.laDeg, METRICS_CONST)) bump(cats.barrel);
+    if (bb.evKmh >= METRICS_CONST.hardHitKmh) bump(cats.hardHit);
+    if (bb.laDeg >= METRICS_CONST.sweetSpotLoLA && bb.laDeg <= METRICS_CONST.sweetSpotHiLA) bump(cats.sweetSpot);
+  }
+  const babipExHr = (s) => (s.n - s.hr ? (s.h - s.hr) / (s.n - s.hr) : 0); // BABIP: HRを分子分母から除外
+  const ba = (s) => (s.n ? s.h / s.n : 0); // インプレー打率（HR込み・ROEなし＝現実よりわずかに高め方向）
+  const slg = (s) => (s.n ? s.tb / s.n : 0);
+  const total = byType.GB.n + byType.LD.n + byType.FB.n + byType.PU.n;
+
+  // 比較器: refs に band があれば GATE。watchNote（既知の穴/新発見の乖離）なら WATCH。
+  const cmp = (name, simVal, refKey, digits = 3) => {
+    const ref = !MLB_PHYSICS.pending && MLB_PHYSICS[refKey];
+    if (ref && ref.band) {
+      gate(`${name}`, simVal, ref.band[0], ref.band[1], digits);
+      info(`  現実(MLB ${ref.season}): ${ref.value}  出典: ${ref.source}`);
+    } else if (ref && ref.watchNote) {
+      watch(name, simVal, `現実(MLB ${ref.season}): ${ref.value}`, digits);
+      info(`  ${ref.watchNote}`);
+    } else {
+      watch(name, simVal, 'MLB参照値の収載待ち（realism-refs.mjs）', digits);
+    }
+  };
+  cmp('GB BABIP（ゴロのインプレー打率）', babipExHr(byType.GB), 'gbBabip');
+  cmp('LD BABIP（ライナー）', babipExHr(byType.LD), 'ldBabip');
+  cmp('FB BABIP（フライ・HR除く）', babipExHr(byType.FB), 'fbBabipExHr');
+  cmp('PU 被打率（ポップ）', ba(byType.PU), 'puBa');
+  cmp('Barrel打率（Statcast公式定義そのまま）', ba(cats.barrel), 'barrelBa');
+  cmp('Barrel SLG', slg(cats.barrel), 'barrelSlg', 2);
+  cmp('Hard-Hit打率（EV≥152km/h≈95mph）', ba(cats.hardHit), 'hardHitBa');
+  cmp('Sweet-Spot打率（LA8-32°）', ba(cats.sweetSpot), 'sweetSpotBa');
+  cmp('HR/FB（FB=LA25-50°のHR化率）', byType.FB.n ? byType.FB.hr / byType.FB.n : 0, 'hrPerFb');
+  info(`  （HRのLA分布: 平均${hrN ? (hrLaSum / hrN).toFixed(1) : '-'}° / LA<25°(LD帯)のHR比率 ${hrN ? (hrLdBand / hrN * 100).toFixed(0) : '-'}%。MLBのHR平均LAは~28°・LD帯HRは少数派）`);
+  info(`（打球プロファイル: GB ${(byType.GB.n / total * 100).toFixed(1)}% / LD ${(byType.LD.n / total * 100).toFixed(1)}% / FB ${(byType.FB.n / total * 100).toFixed(1)}% / PU ${(byType.PU.n / total * 100).toFixed(1)}%・Barrel/BBE ${(cats.barrel.n / total * 100).toFixed(1)}%）`);
+  const profRef = !MLB_PHYSICS.pending && MLB_PHYSICS.profile;
+  if (profRef) {
+    // Statcast 2023実測（LA閾値分類＝simと同一定義）: GB43.1/LD23.9/FB26.2/PU6.9%
+    gate('GB%（打球プロファイル）', byType.GB.n / total, profRef.gb[0], profRef.gb[1]);
+    gate('LD%', byType.LD.n / total, profRef.ld[0], profRef.ld[1]);
+    gate('FB%', byType.FB.n / total, profRef.fb[0], profRef.fb[1]);
+    gate('PU%', byType.PU.n / total, profRef.pu[0], profRef.pu[1]);
+  }
 }
 
 // ============================================================================

@@ -47,6 +47,40 @@ function playGame(seed, dh) {
   return { res, stats };
 }
 
+test('犠飛(sacFly)はゴロ/三振等では絶対に立たない・浅い飛球の暴投得点で偽犠飛が付かない（realism_r1 §F-1回帰）', () => {
+  // 旧実装は isAirOut && runs>0（wpRuns混入込み）でSFを判定していたため、打席中の暴投得点で
+  // 無関係の外野フライが犠飛として記録される穴があった。ctx.sacFlyはR3のタッグアップ成功時のみ
+  // 立つため、GB/三振/四球等では常にfalseになることをイベント列で確認する。
+  let sacFlyEvents = 0;
+  for (let seed = 0; seed < 60; seed++) {
+    const events = [];
+    const stats = new Map();
+    const statFor = (pid, teamId) => {
+      let s = stats.get(pid);
+      if (!s) { s = createPlayerSeason(pid, 2026); s.teamId = teamId; stats.set(pid, s); }
+      return s;
+    };
+    simulateGame(
+      { teamId: A.id, depth: cA.dh, starterIdx: seed, manager: A.manager, dh: true },
+      { teamId: B.id, depth: cB.dh, starterIdx: seed, manager: B.manager, dh: true },
+      cfg,
+      makeRng(hashSeed(888, 'sf', seed)),
+      statFor,
+      NEUTRAL_PARK,
+      undefined,
+      { onEvent: (e) => events.push(e) },
+    );
+    for (const e of events) {
+      if (e.type !== 'pa' || !e.sacFly) continue;
+      sacFlyEvents++;
+      assert.equal(e.result, 'out', `犠飛はoutのはず (seed=${seed})`);
+      assert.ok(e.battedType && e.battedType !== 'GB', `犠飛はゴロでは絶対に発生しない (seed=${seed} battedType=${e.battedType})`);
+      assert.ok(e.runsOnPlay > 0, `犠飛は得点を伴う (seed=${seed})`);
+    }
+  }
+  assert.ok(sacFlyEvents > 0, `検証に足る犠飛が発生しなかった (got ${sacFlyEvents})`);
+});
+
 test('simulateGame: 同一seedで完全に決定論（スコア・投手ログ・交代ログ）', () => {
   const a = playGame(3, false);
   const b = playGame(3, false);

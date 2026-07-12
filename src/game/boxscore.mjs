@@ -114,7 +114,8 @@ export function buildBoxScore(events) {
       const p = pitcherOf(e.pitcherId, fSide);
       const isHit = BOX_HIT_SET.has(e.result);
       // 打者ライン: 打数（四死球/犠飛を除く）・安打・本・打点・四死球・三振
-      const sacFly = e.result === 'out' && e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB';
+      // 犠飛はエンジンのe.sacFly（ctx.sacFly）が唯一の真実（realism_r1 §F-2・再導出の重複を解消）
+      const sacFly = e.sacFly === true;
       if (!(e.outcome === 'BB' || e.outcome === 'HBP' || sacFly)) b.ab++;
       if (isHit) { b.h++; box.hits[bSide]++; }
       if (e.result === 'HR') b.hr++;

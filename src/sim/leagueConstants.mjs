@@ -144,7 +144,11 @@ export function deriveLeagueConstants(res, cfg = null) {
   // lgAdvRateは後方互換の全シナリオ合算（XBT%表示用）、各シナリオ別のリーグ率を別途算出する。
   let totAdv = 0;
   let totAdvOpp = 0;
-  const scenarioTotals = { adv2h1b: [0, 0], adv1h2b: [0, 0], adv1t3b: [0, 0], tag: [0, 0] };
+  const scenarioTotals = {
+    adv2h1b: [0, 0], adv1h2b: [0, 0], adv1t3b: [0, 0], tag: [0, 0],
+    // realism_r1_baserunning_spec §A/§B: ゴロ進塁・タッグアップ深さ依存化の新シナリオ
+    gbAdv3h: [0, 0], gbAdv2t3: [0, 0], tag3h: [0, 0],
+  };
   for (const ps of res.playerSeasons) {
     const br = ps.baserunning;
     totAdv += br.advTaken;

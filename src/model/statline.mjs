@@ -150,6 +150,10 @@ export function createBaserunningLine() {
     adv1h2bOpp: 0, adv1h2bTaken: 0, // 二塁打での一塁走者本塁突入
     adv1t3bOpp: 0, adv1t3bTaken: 0, // 単打での一塁走者三塁進塁（NEW）
     tagOpp: 0, tagTaken: 0, // 犠飛以外のタッグアップ進塁（外野フライで2塁→3塁等・NEW）
+    // --- realism_r1_baserunning_spec §A/§B: ゴロ進塁・タッグアップ深さ依存化の新シナリオ ---
+    gbAdv3hOpp: 0, gbAdv3hTaken: 0, // ゴロアウトの間の三塁走者ゴロゴー（FC/進塁打/フォース対象外時）
+    gbAdv2t3Opp: 0, gbAdv2t3Taken: 0, // ゴロアウト(走者一塁なし)での二塁走者の三進
+    tag3hOpp: 0, tag3hTaken: 0, // タッグアップ本塁生還（犠飛の唯一の情報源＝ctx.sacFly）
     outsOnBase: 0, // 走塁死
     gdpOpp: 0, // 併殺機会（wGDPの分母）
     // --- B2 文脈指標（走塁イベントのRE24/WPA・§B2）: 盗塁/追加進塁は走者へ ΔRE/ΔWE を付与 ---

@@ -11,6 +11,7 @@ import {
   assignFielder,
   resolveBattedBall,
   decideBases,
+  expectedBases,
 } from '../src/sim/battedBallResult.mjs';
 import { FIELD_POSITIONS } from '../src/model/positions.mjs';
 import { neutralResponsible, fieldingChances, outProb, smaxOf } from '../src/sim/fieldingGeometry.mjs';
@@ -127,25 +128,138 @@ test('個人のRangeはSmaxに乗り、五分五分のプレーで最も効く',
   assert.ok(hGood - hBad < good - bad, '絶望的な打球では巧拙の差が小さい');
 });
 
-test('decideBases(監査B1): 浅い空中安打は単打、深い打球は二塁打、最深ギャップは脚力で三塁打化', () => {
+/** decideBases/expectedBasesは落下点(landingX/Y)を要求する（realism_r1 §6）。computeGeometryと同じ式で作る。 */
+function mkLandedBB(distanceM, sprayDeg, runnerSpeed, evKmh = 150) {
+  const rad = (sprayDeg * Math.PI) / 180;
+  return {
+    distanceM,
+    sprayDeg,
+    runnerSpeed,
+    evKmh,
+    landingX: distanceM * Math.sin(rad),
+    landingY: distanceM * Math.cos(rad),
+  };
+}
+
+test('decideBases(監査B1・realism_r1 §6): 浅い空中安打は単打、外野手到達圏を大きく越えた深い打球は二塁打', () => {
   const g = cfg.tuning.bb;
   const rng = makeRng(2026);
   const based = (distanceM, sprayDeg, runnerSpeed) =>
-    decideBases({ distanceM, sprayDeg, runnerSpeed }, 'FB', cfg, rng);
+    decideBases(mkLandedBB(distanceM, sprayDeg, runnerSpeed), 'FB', cfg, rng);
   // gapDistM 手前に前落ちする空中安打は必ず単打
   for (let i = 0; i < 50; i++) assert.equal(based(g.gapDistM - 5, 20, 50), '1B', '浅い前落ちは単打');
-  // gapDistM〜tripleDistM は二塁打（三塁打条件の深さ未満）
-  for (let i = 0; i < 50; i++) assert.equal(based(g.tripleDistM - 1, 20, 50), '2B', '中深度は二塁打');
+  // CF正面(spray=0)を大きく越えた深い打球(dNear=32)は必ず二塁打（pStay1が0に張り付く）
+  for (let i = 0; i < 50; i++) assert.equal(based(130, 0, 50), '2B', 'CFを大きく越えた深い打球は二塁打');
   // 最深ギャップ(|spray|>18)＋俊足なら三塁打が一定割合で出る
   let triples = 0;
-  for (let i = 0; i < 400; i++) if (based(g.tripleDistM + 3, 25, 80) === '3B') triples++;
+  for (let i = 0; i < 400; i++) if (based(130, 25, 80) === '3B') triples++;
   assert.ok(triples > 0, `最深ギャップ×俊足で三塁打が発生 (${triples}/400)`);
   // 正面(|spray|≤18)の最深球は俊足でも三塁打にならず二塁打
-  for (let i = 0; i < 50; i++) assert.equal(based(g.tripleDistM + 3, 10, 80), '2B', '正面最深球は二塁打止まり');
-  // GBは正面なら必ず単打（|spray|≤38 で二塁打分岐に入らない）
-  for (let i = 0; i < 50; i++) {
-    assert.equal(decideBases({ distanceM: 30, sprayDeg: 5, runnerSpeed: 50 }, 'GB', cfg, rng), '1B', 'GB正面は単打');
+  for (let i = 0; i < 50; i++) assert.equal(based(130, 10, 80), '2B', '正面最深球は二塁打止まり');
+});
+
+test('decideBases(realism_r1 §6): 外野手の目の前/手前のポトリは必ず単打（発端バグの回帰・CF定位置ライナー）', () => {
+  // ユーザー報告の再現ケース: CF(r=98)の15.5m手前(spray=0)に落ちるライナー(EV165/LA10)。
+  // 旧実装は落下距離(gapDistM=76超)だけで無条件に二塁打にしていた（100%が2B）。
+  // frontDropRadiusM(15)のすぐ外側(dNear=15.5)の境界ケースだが、それでも旧実装(100%2B)から
+  // 大幅に改善（単打が過半数）していることを確認する（正確な閾値は較正フェーズで調整）。
+  const rng = makeRng(777);
+  let singles = 0;
+  const n = 400;
+  for (let i = 0; i < n; i++) {
+    if (decideBases(mkLandedBB(82.5, 0, 50), 'LD', cfg, rng) === '1B') singles++;
   }
+  assert.ok(singles / n > 0.3, `旧実装の100%二塁打から大幅に改善 (単打率=${(singles / n).toFixed(2)})`);
+  // CFの目の前(beyond=-4・dNear=4<=frontDropRadiusM)は明確に単打（半径内）
+  for (let i = 0; i < 100; i++) {
+    assert.equal(decideBases(mkLandedBB(94, 0, 50), 'FB', cfg, rng), '1B', 'CF正面手前(半径内)は単打');
+  }
+});
+
+test('decideBases(realism_r1 §6): 外野手の頭上を僅かに越えた打球は単打止まりの余地がある（追いつかれる）', () => {
+  const rng = makeRng(2027);
+  let doubles = 0;
+  const n = 1000;
+  for (let i = 0; i < n; i++) {
+    // CF(r=98)を2m越えた地点(dNear=2)。pStay1=clamp(0.35-0.03*2,0,0.5)=0.29 → 約71%が二塁打。
+    if (decideBases(mkLandedBB(100, 0, 50), 'FB', cfg, rng) === '2B') doubles++;
+  }
+  const rate = doubles / n;
+  assert.ok(rate > 0.5 && rate < 0.9, `僅かに越えた打球は単打止まりの余地がある (2B率=${rate.toFixed(2)})`);
+});
+
+test('decideBases(realism_r1 §6): ギャップの深い打球は転がる余地があり二塁打になりやすい', () => {
+  const rng = makeRng(2028);
+  let doubles = 0;
+  const n = 1000;
+  // gapDistM(76)以上・spray=20でdNear=16.56(外野手からやや離れたギャップ)
+  for (let i = 0; i < n; i++) {
+    if (decideBases(mkLandedBB(76, 20, 50), 'LD', cfg, rng) === '2B') doubles++;
+  }
+  const rate = doubles / n;
+  assert.ok(rate > 0.5, `ギャップ球は二塁打率が高い (2B率=${rate.toFixed(2)})`);
+});
+
+test('decideBases(realism_r1 §6): ゴロはライン際×強い打球ほど二塁打（正面はほぼ単打・俊足のライン際は三塁打もありうる）', () => {
+  const rng = makeRng(2026);
+  // 正面(spray=5)はpCornerがほぼ0＝ほぼ確実に単打
+  for (let i = 0; i < 100; i++) {
+    assert.equal(decideBases({ evKmh: 150, sprayDeg: 5, runnerSpeed: 50 }, 'GB', cfg, rng), '1B', 'GB正面は単打');
+  }
+  // ライン際×強い打球×俊足は二塁打・三塁打が一定割合で出る
+  let doubles = 0, triples = 0;
+  const n = 1000;
+  for (let i = 0; i < n; i++) {
+    const r = decideBases({ evKmh: 165, sprayDeg: 45, runnerSpeed: 80 }, 'GB', cfg, rng);
+    if (r === '2B') doubles++;
+    else if (r === '3B') triples++;
+  }
+  assert.ok(doubles + triples > n * 0.3, `ライン際の強い打球は長打になりやすい (${doubles + triples}/${n})`);
+  assert.ok(triples > 0, `俊足のライン際ゴロは三塁打も出る (${triples}/${n})`);
+});
+
+test('expectedBases(realism_r1 §6): decideBasesと同一分岐の確率版・モンテカルロで整合する', () => {
+  const rng = makeRng(9999);
+  const cases = [
+    mkLandedBB(60, 20, 50), // 前落ち単打
+    mkLandedBB(82.5, 0, 50), // 発端ケース(単打)
+    mkLandedBB(100, 0, 50), // 僅かに越えた(混在)
+    mkLandedBB(70, 20, 50), // ギャップ(混在)
+    mkLandedBB(130, 0, 50), // 大きく越えた(確定2B)
+    mkLandedBB(130, 25, 80), // 深いギャップ×俊足(混在3B)
+  ];
+  for (const bb of cases) {
+    const type = 'FB';
+    const eb = expectedBases(bb, type, cfg);
+    assert.ok(Math.abs(eb.p1 + eb.p2 + eb.p3 - 1) < 1e-9, `確率の和は1 (${JSON.stringify(eb)})`);
+    const n = 4000;
+    let c1 = 0, c2 = 0, c3 = 0;
+    for (let i = 0; i < n; i++) {
+      const r = decideBases({ ...bb }, type, cfg, rng);
+      if (r === '1B') c1++; else if (r === '2B') c2++; else c3++;
+    }
+    const tol = 0.05;
+    assert.ok(Math.abs(c1 / n - eb.p1) < tol, `p1整合 期待${eb.p1.toFixed(3)} 実測${(c1 / n).toFixed(3)}`);
+    assert.ok(Math.abs(c2 / n - eb.p2) < tol, `p2整合 期待${eb.p2.toFixed(3)} 実測${(c2 / n).toFixed(3)}`);
+    assert.ok(Math.abs(c3 / n - eb.p3) < tol, `p3整合 期待${eb.p3.toFixed(3)} 実測${(c3 / n).toFixed(3)}`);
+  }
+});
+
+test('expectedBases(realism_r1 §6): GBもdecideBasesと同一分岐の確率版と整合する', () => {
+  const rng = makeRng(1234);
+  const bb = { evKmh: 165, sprayDeg: 45, runnerSpeed: 80 };
+  const eb = expectedBases(bb, 'GB', cfg);
+  assert.ok(Math.abs(eb.p1 + eb.p2 + eb.p3 - 1) < 1e-9);
+  const n = 4000;
+  let c1 = 0, c2 = 0, c3 = 0;
+  for (let i = 0; i < n; i++) {
+    const r = decideBases({ ...bb }, 'GB', cfg, rng);
+    if (r === '1B') c1++; else if (r === '2B') c2++; else c3++;
+  }
+  const tol = 0.05;
+  assert.ok(Math.abs(c1 / n - eb.p1) < tol, `p1整合 期待${eb.p1.toFixed(3)} 実測${(c1 / n).toFixed(3)}`);
+  assert.ok(Math.abs(c2 / n - eb.p2) < tol, `p2整合 期待${eb.p2.toFixed(3)} 実測${(c2 / n).toFixed(3)}`);
+  assert.ok(Math.abs(c3 / n - eb.p3) < tol, `p3整合 期待${eb.p3.toFixed(3)} 実測${(c3 / n).toFixed(3)}`);
 });
 
 test('generateBattedBall: EV/LA/方向を生成し結果は未確定', () => {

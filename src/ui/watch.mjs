@@ -110,7 +110,7 @@ function watchBattingDelta(e, cfg) {
     else if (e.outcome === 'fail') { d.ab = 1; }
     return d; // 'success'（送りバント成功）は打数に含めない
   }
-  const sacFly = e.result === 'out' && e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB';
+  const sacFly = e.sacFly === true; // エンジンのctx.sacFlyを唯一の真実とする（realism_r1 §F-2）
   if (e.outcome === 'BB') { d.bb = 1; if (e.isIBB) d.ibb = 1; }
   else if (e.outcome === 'HBP') d.hbp = 1;
   else if (e.result === '1B') { d.ab = 1; d.h = 1; d.b1 = 1; }
@@ -554,7 +554,7 @@ function watchReconstruct(w, u) {
       if (WATCH_HITS.has(e.result)) v[e.batTeam === v.home ? 'hitsH' : 'hitsA']++;
       if (e.result === 'E') v[e.batTeam === v.home ? 'errA' : 'errH']++; // 失策は守備側に計上
       const d = dailyOf(e.batterId);
-      const sacFly = e.result === 'out' && e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB';
+      const sacFly = e.sacFly === true; // エンジンのctx.sacFlyを唯一の真実とする（realism_r1 §F-2）
       if (!(e.outcome === 'BB' || e.outcome === 'HBP' || sacFly)) d.ab++;
       if (WATCH_HITS.has(e.result)) d.h++;
       d.res.push(watchResShort(e));
@@ -635,7 +635,8 @@ export function watchResShort(e) {
   if (e.result === '3B') return d + '3';
   if (e.result === 'HR') return d + '本';
   if (e.result === 'E') return d + '失';
-  if (e.runsOnPlay > 0 && e.battedType && e.battedType !== 'GB') return '犠飛';
+  if (e.sacFly) return '犠飛';
+  if (e.fc) return '野選'; // フィールダースチョイス（打者は出塁・realism_r1 §A）
   // アウトになった打球は責任野手(fielderPos)で略記する（三ゴ・一飛・中直…）
   const f = watchFielderChar(e);
   if (e.battedType === 'GB') return f + 'ゴ';
@@ -663,13 +664,14 @@ export function watchPaBody(e, lastCall) {
   if (e.result === '1B') return { cls: 'ev-hit', body: `${dir}前へ${e.runsOnPlay ? 'タイムリーヒット！' : 'ヒット'}` };
   if (!e.battedType) return { cls: '', body: '凡退' };
   const dp = e.outsAfter - e.outsBefore >= 2;
-  const sf = e.runsOnPlay > 0 && e.battedType !== 'GB';
+  const sf = e.sacFly === true; // エンジンのctx.sacFlyを唯一の真実とする（realism_r1 §F-2）
   // アウトになった打球は責任野手(fielderPos)で言語化する（ショートゴロ／ファーストフライ等）
   const spot = watchFielderName(e) || '内野';
   const body = sf ? `${spot}へ犠牲フライ`
     : dp ? `${spot}ゴロで併殺（ダブルプレー）`
+    : e.fc ? `${spot}への内野ゴロ、フィールダースチョイスで一塁に生きる`
     : `${spot}${WATCH_BATTED_JP[e.battedType] || '打球'}でアウト`;
-  return { cls: '', body };
+  return { cls: e.fc ? 'ev-hit' : '', body };
 }
 
 /**

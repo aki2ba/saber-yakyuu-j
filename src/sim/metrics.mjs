@@ -192,7 +192,11 @@ export function playerBaserunning(ps, cfg, lc) {
     ubrScenario(br, lc, 'adv2h1b', rw.runUBR) +
     ubrScenario(br, lc, 'adv1h2b', rw.runUBR) +
     ubrScenario(br, lc, 'adv1t3b', rw.runUBR1t3b) +
-    ubrScenario(br, lc, 'tag', rw.runUBRTag);
+    ubrScenario(br, lc, 'tag', rw.runUBRTag) +
+    // realism_r1_baserunning_spec §A/§B: ゴロ進塁・タッグアップ本塁生還の新シナリオ
+    ubrScenario(br, lc, 'gbAdv3h', rw.runGbAdv3h) +
+    ubrScenario(br, lc, 'gbAdv2t3', rw.runGbAdv2t3) +
+    ubrScenario(br, lc, 'tag3h', rw.runTag3h);
   return {
     sb: b.sb,
     cs: b.cs,

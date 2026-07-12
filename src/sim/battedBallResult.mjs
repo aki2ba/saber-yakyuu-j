@@ -14,7 +14,8 @@
 // ============================================================================
 import { fenceDistanceAt, NEUTRAL_PARK } from '../model/battedball.mjs';
 import { clamp } from '../model/util.mjs';
-import { neutralResponsible, fieldingChances, outProb, smaxOf, FIELD_POS } from './fieldingGeometry.mjs';
+import { neutralResponsible, fieldingChances, outProb, smaxOf, FIELD_POS, FG_OUTFIELD, fielderPositions } from './fieldingGeometry.mjs';
+import { expit } from './rates.mjs';
 
 const G = 9.8;
 
@@ -59,15 +60,64 @@ export function assignFielder(bb, type, cfg) {
   return neutralResponsible(bb, type, cfg).pos;
 }
 
-/** 安打種別を落下点から決める（監査B1: 単打/二塁打境界＝gapDistM、深いギャップ球は打者脚力で三塁打化） */
+/**
+ * 落下点と最寄り外野手の位置関係（realism_r1_baserunning_spec §6）。
+ * dNear=落下点から最寄り外野手までの距離。beyond=本塁からの距離が外野手の定位置より
+ * 深い(正)か手前(負・0以下)か。塁打決定を「落下距離だけ」でなく守備隊形から創発させる
+ * （外野手の目の前/手前のポトリが無条件で二塁打になっていた穴の根治）。
+ */
+function nearestOutfielder(bb, cfg) {
+  const F = fielderPositions(cfg);
+  let dNear = Infinity;
+  let r = 0;
+  for (const pos of FG_OUTFIELD) {
+    const f = F[pos];
+    const d = Math.hypot(bb.landingX - f.x, bb.landingY - f.y);
+    if (d < dNear) { dNear = d; r = f.r; }
+  }
+  const landR = Math.hypot(bb.landingX, bb.landingY);
+  return { dNear, beyond: landR - r };
+}
+
+/**
+ * 安打種別を落下点と守備隊形から決める（realism_r1_baserunning_spec §6）。
+ * ゴロ: ライン際×強い打球ほどコーナーまで転がり二塁打（さらに俊足なら三塁打）。
+ * 空中球: 外野手到達圏(gapDistM)手前の前落ちは単打。それ以降は最寄り外野手との距離関係で
+ *   前落ち単打帯（外野手の目の前/手前）・頭上を抜けても至近なら単打止まり・ギャップ/ライン際の
+ *   二塁打化、をそれぞれ創発させる（旧実装は落下距離だけで無条件二塁打にしていた＝穴）。
+ */
 export function decideBases(bb, type, cfg, rng) {
   const g = cfg.tuning.bb;
+  const g2 = cfg.tuning.run2b;
   if (type === 'GB') {
-    return Math.abs(bb.sprayDeg) > 38 && rng.next() < 0.2 ? '2B' : '1B';
+    const pCorner =
+      expit((Math.abs(bb.sprayDeg) - g2.gbLinePivotDeg) / g2.gbLineWidthDeg) *
+      clamp(g2.gbEvBase + g2.gbEvW * (bb.evKmh - 140), 0.2, 1);
+    if (rng.next() < pCorner) {
+      if (Math.abs(bb.sprayDeg) > 40) {
+        const speed = bb.runnerSpeed ?? 50;
+        const pTriple = clamp(g2.gbTripleBase + (speed - 50) * g.tripleSpeedW, 0, 0.1);
+        if (rng.next() < pTriple) return '3B';
+      }
+      return '2B';
+    }
+    return '1B';
   }
   // 外野手到達圏(gapDistM)手前に前落ちする空中安打は単打
   if (bb.distanceM < g.gapDistM) return '1B';
-  // 深い打球は二塁打ベース。さらに深いギャップ/ライン際(|spray|>18)は打者speedで三塁打になりうる
+  const { dNear, beyond } = nearestOutfielder(bb, cfg);
+  if (beyond <= 0 && dNear <= g2.frontDropRadiusM) return '1B'; // 外野手の目の前/手前のポトリ
+  let isDouble;
+  if (beyond > 0) {
+    // 頭上/後方を抜けた: 至近なら追いつかれて単打止まりになりうる
+    const pStay1 = clamp(g2.behindStay1Base - g2.behindStay1DistW * dNear, 0, 0.5);
+    isDouble = rng.next() >= pStay1;
+  } else {
+    // ギャップ/ライン際: 外野手から離れているほど転がる余地がある
+    isDouble = rng.next() < expit((dNear - g2.gapPivotM) / g2.gapWidthM);
+  }
+  if (!isDouble) return '1B';
+  // さらに深いギャップ/ライン際(|spray|>18)は打者speedで三塁打になりうる
   if (bb.distanceM >= g.tripleDistM && Math.abs(bb.sprayDeg) > 18) {
     const speed = bb.runnerSpeed ?? 50;
     const pTriple = clamp(g.tripleBase + (speed - 50) * g.tripleSpeedW, 0.02, 0.55);
@@ -83,17 +133,34 @@ export function decideBases(bb, type, cfg, rng) {
  */
 export function expectedBases(bb, type, cfg) {
   const g = cfg.tuning.bb;
+  const g2 = cfg.tuning.run2b;
   if (type === 'GB') {
-    const p2 = Math.abs(bb.sprayDeg) > 38 ? 0.2 : 0;
-    return { p1: 1 - p2, p2, p3: 0 };
+    const pCorner =
+      expit((Math.abs(bb.sprayDeg) - g2.gbLinePivotDeg) / g2.gbLineWidthDeg) *
+      clamp(g2.gbEvBase + g2.gbEvW * (bb.evKmh - 140), 0.2, 1);
+    let p3 = 0;
+    if (Math.abs(bb.sprayDeg) > 40) {
+      const speed = bb.runnerSpeed ?? 50;
+      p3 = pCorner * clamp(g2.gbTripleBase + (speed - 50) * g.tripleSpeedW, 0, 0.1);
+    }
+    return { p1: 1 - pCorner, p2: pCorner - p3, p3 };
   }
   if (bb.distanceM < g.gapDistM) return { p1: 1, p2: 0, p3: 0 };
+  const { dNear, beyond } = nearestOutfielder(bb, cfg);
+  if (beyond <= 0 && dNear <= g2.frontDropRadiusM) return { p1: 1, p2: 0, p3: 0 };
+  let pDouble;
+  if (beyond > 0) {
+    const pStay1 = clamp(g2.behindStay1Base - g2.behindStay1DistW * dNear, 0, 0.5);
+    pDouble = 1 - pStay1;
+  } else {
+    pDouble = expit((dNear - g2.gapPivotM) / g2.gapWidthM);
+  }
+  let p3 = 0;
   if (bb.distanceM >= g.tripleDistM && Math.abs(bb.sprayDeg) > 18) {
     const speed = bb.runnerSpeed ?? 50;
-    const pTriple = clamp(g.tripleBase + (speed - 50) * g.tripleSpeedW, 0.02, 0.55);
-    return { p1: 0, p2: 1 - pTriple, p3: pTriple };
+    p3 = pDouble * clamp(g.tripleBase + (speed - 50) * g.tripleSpeedW, 0.02, 0.55);
   }
-  return { p1: 0, p2: 1, p3: 0 };
+  return { p1: 1 - pDouble, p2: pDouble - p3, p3 };
 }
 
 /**

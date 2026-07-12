@@ -43,14 +43,18 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
   let runs = 0;
   if (ctx) {
     ctx.outs = outs; // ARM補殺の可否判定（3アウト目は作らない）
-    ctx.outsAdded = 0; // 外野補殺で増えたアウト。呼び出し側が outs へ加算する
+    ctx.outsAdded = 0; // 外野補殺/走塁死/併殺で増えたアウト。呼び出し側が outs へ加算する
+    // realism_r1_baserunning_spec: 毎打席リセットする出力フラグ（caller が読む）
+    ctx.sacFly = false; // 犠飛が成立したか（§B・唯一の情報源）
+    ctx.gbDp = false; // ゴロ併殺が成立したか（§A）
+    ctx.fcBatterSafe = false; // ゴロがフィールダースチョイスで打者が生きたか（§A）
   }
   const b1 = bases[0];
   const b2 = bases[1];
   const b3 = bases[2];
 
-  if (result === 'BB' || result === 'HBP' || result === 'E') {
-    // 押し出し（フォース）のみ。失策(E)も batter は一塁到達＝フォース進塁で近似
+  if (result === 'BB' || result === 'HBP') {
+    // 押し出し（フォース）のみ。
     if (b1) {
       if (b2) {
         if (b3) runs++; // 満塁押し出し
@@ -67,26 +71,73 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
     return runs;
   }
 
+  if (result === 'E') {
+    // 失策時の進塁（realism_r1_baserunning_spec §C）: 外野失策=単打相当・内野失策=進塁打相当
+    // （フォース走者は連鎖で1個進み、フォース対象外のR3のみゴロゴー判定の機会球）。
+    // 旧実装はBB/HBPと同じ押し出しのみで、外野の落球でも非フォース走者が1個も進めなかった＝穴。
+    return resolveErrorAdvance(bases, batterId, b1, b2, b3, ctx, cfg, rng);
+  }
+
   if (result === 'out') {
-    // 犠飛: 空中アウト・2アウト未満・三塁走者 → 生還
+    // 空中アウト（LD/FB/PU）: タッグアップは飛距離依存（realism_r1_baserunning_spec §B）。
+    // 内野フライ/浅い飛球（本塁付近のポップ含む）では走者は自重し、犠飛は成立しない
+    // （旧実装は深さ非依存で三塁走者が無条件生還し、内野フライでも犠飛が付いていた＝穴）。
+    const bType = ctx && ctx.bType;
+    if (bType === 'GB') {
+      return resolveGroundOutAdvance(bases, batterId, outs, b1, b2, b3, ctx, cfg, rng);
+    }
     if (isAirOut && outs < 2) {
-      if (b3) {
-        runs++;
-        bases[2] = null;
+      const bb = ctx && ctx.battedBall;
+      if (!bb) {
+        // ctxからbattedBallを渡さない呼び出し（ctxなしの単体テスト等）はレガシー挙動へ
+        // フォールバック: 深さ非依存の無条件犠飛＋旧tagBase方式。
+        if (b3) {
+          runs++;
+          bases[2] = null;
+          if (ctx) ctx.sacFly = true;
+        }
+        if (b2 && !bases[2]) {
+          const r = resolveAdv(b2, cfg ? cfg.tuning.bb.tagBase : 0.4, ctx, cfg, rng, 'tag');
+          if (r === ADV_TAKEN) {
+            bases[2] = b2;
+            bases[1] = null;
+          } else if (r === ADV_OUT) {
+            bases[1] = null; // 三塁を狙って刺された（走塁死）
+          }
+        }
+        return runs;
       }
-      // タッグアップ（§req_20260708 UBR強化・NEW）: 二塁走者が三塁が空いていれば進塁を狙う
-      // （EqGAR/タッグアップ系シナリオの近似。走者Speed/IQ依存）。
-      if (b2 && !bases[2]) {
-        const r = resolveAdv(b2, cfg ? cfg.tuning.bb.tagBase : 0.4, ctx, cfg, rng, 'tag');
-        if (r === ADV_TAKEN) {
-          bases[2] = b2;
-          bases[1] = null;
-        } else if (r === ADV_OUT) {
-          bases[1] = null; // 三塁を狙って刺された（走塁死）
+      const run = cfg.tuning.run;
+      if (bb.distanceM >= run.tagMinDistM) {
+        // 本塁タッグアップ: 深いほど生還しやすい。浅くて還れなければ自重（犠飛不成立）、
+        // 憤死もありうる（本塁補殺・§ARM実イベント化）。
+        if (b3) {
+          const p = clamp(run.sfBase + run.sfDistW * (bb.distanceM - run.sfPivotM), 0.05, 0.95);
+          const r = resolveAdv(b3, p, ctx, cfg, rng, 'tag3h');
+          if (r === ADV_TAKEN) {
+            runs++;
+            bases[2] = null;
+            if (ctx) ctx.sacFly = true;
+          } else if (r === ADV_OUT) {
+            bases[2] = null; // 本塁憤死（犠飛不成立）
+          }
+          // ADV_HOLD: 三塁に残る（浅くて還れず・犠飛不成立）
+        }
+        // 三塁タッグアップ（二塁→三塁・§req_20260708 UBR強化）: 三塁が空いていれば狙う
+        if (b2 && !bases[2]) {
+          const r = resolveAdv(b2, cfg.tuning.bb.tagBase, ctx, cfg, rng, 'tag');
+          if (r === ADV_TAKEN) {
+            bases[2] = b2;
+            bases[1] = null;
+          } else if (r === ADV_OUT) {
+            bases[1] = null;
+          }
         }
       }
+      // bb.distanceM < tagMinDistM: 内野フライ/浅い飛球・全走者自重・犠飛なし
+      return runs;
     }
-    return runs; // それ以外は走者そのまま（併殺/進塁打は wGDP/UBR で後日）
+    return runs; // それ以外は走者そのまま（併殺/進塁打はA/Cで扱う）
   }
 
   if (result === '1B') {
@@ -150,9 +201,10 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
 }
 
 /**
- * 追加進塁の判定（§6 UBR, 2-5／§req_20260708強化）。走者Speed/走塁IQで基準確率を上下し、
- * ctx があれば進塁機会(advOpp)と成否(advTaken)を走者に記録する（ctxなし=能力非依存・テスト互換）。
- * @param {string} scenario シナリオ別内訳キー（'adv2h1b'|'adv1h2b'|'adv1t3b'|'tag'）。
+ * 追加進塁の判定（§6 UBR, 2-5／§req_20260708強化／realism_r1_baserunning_spec §D）。
+ * 走者Speed/走塁IQで基準確率を上下し、ctx があれば進塁機会(advOpp)と成否(advTaken)を
+ * 走者に記録する（ctxなし=能力非依存・テスト互換）。
+ * @param {string} scenario シナリオ別内訳キー（'adv2h1b'|'adv1h2b'|'adv1t3b'|'tag'|'gbAdv3h'|'gbAdv2t3'|'tag3h'）。
  *   全シナリオ合算のadvOpp/advTakenに加え、statline.mjsの${scenario}Opp/${scenario}Takenへも計上し、
  *   UBRのリーグ基準をシナリオごとに正しく分離できるようにする（Fangraphs UBR/BP EqBRR準拠）。
  */
@@ -165,6 +217,9 @@ const ADV_OUT = 'out'; // 走って刺された（走塁死・塁からは消え
  * 塁にも残る（幽霊走者）ため、呼び出し側は必ず ADV_OUT を分岐すること。
  */
 function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
+  // プレー死後（3アウト到達後）の進塁は発生しない。乱数を消費せず自重として扱う
+  // （realism_r1_baserunning_spec §D-1）。
+  if (ctx && ctx.outs + ctx.outsAdded >= 3) return ADV_HOLD;
   const def = ctx && ctx.def; // 打球を拾った外野手（ARMの主語）。内野処理なら null
   let p = baseProb;
   if (ctx) {
@@ -172,24 +227,44 @@ function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
     const tool = (t.common.speed + t.baserunning.baserunIQ) / 2;
     // 強肩の外野手ほど走者は自重する（進塁抑止・§ARM実イベント化）
     const armSup = def ? (def.arm - 50) * cfg.tuning.field.armAdvSuppress : 0;
-    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope - armSup, 0.05, 0.95);
+    // 2死ボーナス（§D-2）: 打球と同時にスタートできるため2死は積極的に進塁を狙う
+    const outBonus = ctx.outs === 2 ? cfg.tuning.run.adv2OutBonus : 0;
+    p = clamp(baseProb + (tool - 50) * cfg.tuning.run.ubrSlope - armSup + outBonus, 0.05, 0.95);
     const bs = ctx.statFor(pid, ctx.teamId).baserunning;
     bs.advOpp++;
     bs[`${scenario}Opp`]++;
     const took = (rng ? rng.next() : 1) < p;
     if (def) def.line.armOpp++;
     if (took) {
-      // 走った → 強肩なら刺せる（補殺）。走塁死で3アウト目を作ると、この打席で先に計上した
-      // 得点との順序が壊れるため、既に2アウト相当なら刺さない（NPBの外野補殺リーダー年6〜9本の水準）。
-      // ctx.outsAdded を含めて数えることで、1打席で2度刺して3アウトになることも防ぐ。
-      const canKill = def && ctx.outs + ctx.outsAdded < 2;
+      // 走った → 強肩なら刺せる（補殺）。3アウト目の走塁死（本塁突入死等）も許可する
+      // （§D-3）: advanceRunnersは先頭走者から順に解決し、runsは解決済みぶんだけ数えるため、
+      // 先に数えた得点は「アウトより先に本塁を踏んだ」＝公認野球規則の時間プレーと同義で正しい
+      // （フォースの3アウト目による得点取り消しはここでは発生しない。killは常にタッグプレー）。
+      // ctx.outsAdded を含めて数えることで、1打席で複数回刺して3アウトを超えることはない
+      // （冒頭ガードで自動的に打ち切られる）。
+      const outsSoFar = ctx.outs + ctx.outsAdded;
+      // ゴロゴー（内野処理・外野手不在）でも本塁憤死は起こりうる（gbAdv3h・肩補正なし・§2.3）
+      const canKill = outsSoFar < 3 && (def || scenario === 'gbAdv3h');
       const f = cfg.tuning.field;
-      const pKill = canKill ? clamp(f.armKillBase + (def.arm - 50) * f.armKillSlope, 0, f.armKillMax) : 0;
+      const r = cfg.tuning.run;
+      // tag3h（本塁タッグアップ補殺）はヒット進塁系(adv2h1b等)より機会が桁違いに多いため
+      // （深い犠飛はほぼ毎試合発生）、共有armKillBaseのままでは外野補殺リーダーが帯を大きく
+      // 超過する（較正で確認）。既存シナリオのARM較正を壊さないよう専用の低い基準値を持つ。
+      const pKill = !canKill
+        ? 0
+        : !def
+          ? r.gbKillBase
+          : scenario === 'tag3h'
+            ? clamp(r.tag3hKillBase + (def.arm - 50) * r.tag3hKillSlope, 0, r.tag3hKillMax)
+            : clamp(f.armKillBase + (def.arm - 50) * f.armKillSlope, 0, f.armKillMax);
       const killed = canKill && rng && rng.next() < pKill;
       if (killed) {
-        def.line.armKill++;
-        def.line.a++; // 補殺
+        if (def) {
+          def.line.armKill++;
+          def.line.a++; // 補殺
+        }
         ctx.outsAdded++;
+        bs.outsOnBase++; // 走塁死（§F-3・盗塁死csは含めない=定義どおり）
         return ADV_OUT;
       }
       bs.advTaken++;
@@ -200,6 +275,147 @@ function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
     return ADV_HOLD;
   }
   return (rng ? rng.next() : 1) < baseProb ? ADV_TAKEN : ADV_HOLD;
+}
+
+/**
+ * ゴロアウトの走者処理（DP/FC/進塁打の3分岐・realism_r1_baserunning_spec §A）。
+ * outsBefore=打者アウト計上前のアウト数（caller側の outs++ はこの後に実行される）。
+ * @param {number} outsBefore
+ */
+function resolveGroundOutAdvance(bases, batterId, outsBefore, b1, b2, b3, ctx, cfg, rng) {
+  if (outsBefore >= 2) return 0; // 2アウト後は打者アウトで攻守交代・走者そのまま
+
+  if (!b1) {
+    // 走者一塁なし: フォース不成立。三塁走者のゴロゴー・二塁走者の三進のみ。
+    let runs = 0;
+    if (b3) {
+      const r = resolveAdv(b3, cfg.tuning.run.gbScore3, ctx, cfg, rng, 'gbAdv3h');
+      if (r === ADV_TAKEN) { runs++; bases[2] = null; }
+      else if (r === ADV_OUT) { bases[2] = null; }
+    }
+    if (b2 && !bases[2]) {
+      const r = resolveAdv(b2, cfg.tuning.run.gbAdv2t3, ctx, cfg, rng, 'gbAdv2t3');
+      if (r === ADV_TAKEN) { bases[2] = b2; bases[1] = null; }
+      else if (r === ADV_OUT) { bases[1] = null; }
+    }
+    return runs;
+  }
+
+  // 走者一塁あり（フォース状況）。ctx/fieldingDefense が無い呼び出し（ctxなしの単体テスト等）は
+  // レガシー挙動（走者凍結）へフォールバックする（§2.1・既存テスト互換）。
+  if (!ctx || !ctx.fieldingDefense) return 0;
+
+  ctx.statFor(batterId, ctx.teamId).baserunning.gdpOpp++;
+  // DPR（二遊間の併殺転換・§B3b）: 機会を2B/SS双方に計上（対平均runはmetrics側）。乱数非消費。
+  const dp2 = ctx.fieldingDefense['2B'];
+  const dpS = ctx.fieldingDefense.SS;
+  if (dp2) ctx.statFor(dp2, ctx.fieldingTeamId).fielding.dpOpp++;
+  if (dpS) ctx.statFor(dpS, ctx.fieldingTeamId).fielding.dpOpp++;
+
+  const gdp = cfg.tuning.gdp;
+  const runT = cfg.tuning.run;
+  const batter = ctx.byId.get(batterId);
+  const pDp = clamp(gdp.base - (batter.trueAbility.common.speed - 50) * gdp.speedW, 0.02, 0.45);
+  const u = rng.next();
+
+  if (u < pDp) {
+    // 併殺: R1アウト＋打者アウト（打者アウトはcaller側で計上）。
+    ctx.outsAdded++;
+    ctx.gbDp = true;
+    ctx.statFor(batterId, ctx.teamId).batting.gdp++;
+    if (dp2) ctx.statFor(dp2, ctx.fieldingTeamId).fielding.dpTurned++;
+    if (dpS) ctx.statFor(dpS, ctx.fieldingTeamId).fielding.dpTurned++;
+    bases[0] = null; // R1除去（フォース）
+    let runs = 0;
+    // 時間プレー: 併殺が3アウト目にならない限り、先に本塁を踏んだ得点は数える（併殺が3アウト目＝
+    // フォースの3アウト目は得点を無効化する公認野球規則5.08(b)と同義。それ以外は数える）。
+    if (outsBefore + 2 < 3) {
+      if (b3) runs++;
+      bases[2] = null;
+      if (b2) { bases[2] = b2; bases[1] = null; }
+    }
+    return runs;
+  }
+
+  if (u < pDp + runT.gbForceFc) {
+    // FC（二塁封殺のみ）: R1のみアウト（force）。打者は一塁に生きる＝caller側の打者アウト計上
+    // 1つで実際の総アウト数と整合する（打者は安全に1塁を占有・R1が除去される＝人数の出入りが
+    // 一致する。ctx.outsAdded は加算しない）。
+    ctx.fcBatterSafe = true;
+    bases[0] = null;
+    let runs = 0;
+    if (b3) {
+      const r = resolveAdv(b3, runT.gbScore3, ctx, cfg, rng, 'gbAdv3h');
+      if (r === ADV_TAKEN) { runs++; bases[2] = null; }
+      else if (r === ADV_OUT) { bases[2] = null; }
+    }
+    if (b2 && !bases[2]) { bases[2] = b2; bases[1] = null; }
+    bases[0] = batterId;
+    return runs;
+  }
+
+  // 進塁打: 打者は一塁で刺される（caller側で計上）。R3→ゴロゴー、R2→R3が空けば確定三進、
+  // R1→R2が空けば確定二進（連鎖・三塁が塞がっていればR2もR1も動けない）。
+  let runs = 0;
+  if (b3) {
+    const r = resolveAdv(b3, runT.gbScore3, ctx, cfg, rng, 'gbAdv3h');
+    if (r === ADV_TAKEN) { runs++; bases[2] = null; }
+    else if (r === ADV_OUT) { bases[2] = null; }
+  }
+  if (b2 && !bases[2]) { bases[2] = b2; bases[1] = null; }
+  if (!bases[1]) { bases[1] = b1; bases[0] = null; }
+  // bases[1]がまだ塞がっていれば(R2が動けなかった) R1は1塁に残る（bases[0]は未変更=b1のまま）
+  return runs;
+}
+
+/**
+ * 失策(E)時の走者進塁（realism_r1_baserunning_spec §C）。
+ * 外野失策=単打相当の進塁（既存1B分岐と同型のUBR判断）。
+ * 内野失策=進塁打相当: 打者は一塁に生きる（フォース発生）。R1/R2はBB/HBPと同型の押し出しで
+ * 進み、R3はフォース連鎖が届く時（満塁）のみ確定生還、それ以外は機会球（resolveAdv gbAdv3h）。
+ */
+function resolveErrorAdvance(bases, batterId, b1, b2, b3, ctx, cfg, rng) {
+  const errPos = ctx && ctx.errorFielderPos;
+  if (errPos && IS_OUTFIELD.has(errPos)) {
+    const nb = [null, null, null];
+    let runs = 0;
+    if (b3) runs++;
+    let thirdTaken = false;
+    if (b2) {
+      const r = resolveAdv(b2, cfg ? cfg.tuning.bb.singleScore2 : 0.55, ctx, cfg, rng, 'adv2h1b');
+      if (r === ADV_TAKEN) runs++;
+      else if (r === ADV_HOLD) { nb[2] = b2; thirdTaken = true; }
+    }
+    if (b1) {
+      const r = thirdTaken ? ADV_HOLD : resolveAdv(b1, cfg ? cfg.tuning.bb.singleScore1to3 : 0.3, ctx, cfg, rng, 'adv1t3b');
+      if (r === ADV_TAKEN) nb[2] = b1;
+      else if (r === ADV_HOLD) nb[1] = b1;
+    }
+    nb[0] = batterId;
+    bases[0] = nb[0];
+    bases[1] = nb[1];
+    bases[2] = nb[2];
+    return runs;
+  }
+  let runs = 0;
+  const r3Forced = !!(b1 && b2 && b3); // フォース連鎖が3塁まで届く=満塁のみ
+  if (r3Forced) {
+    runs++;
+    bases[2] = null;
+  } else if (b3) {
+    const r = resolveAdv(b3, cfg ? cfg.tuning.run.gbScore3 : 0.55, ctx, cfg, rng, 'gbAdv3h');
+    if (r === ADV_TAKEN) { runs++; bases[2] = null; }
+    else if (r === ADV_OUT) { bases[2] = null; }
+    // ADV_HOLD: 3塁に残る（フォース対象外）
+  }
+  if (b1) {
+    if (b2) bases[2] = b2; // フォースで3塁へ（3塁はr3Forced分岐で既に空済み）
+    bases[1] = b1;
+  } else {
+    bases[1] = b2; // R1不在=フォース不成立。R2は現状維持（非フォースのR2は進まない）
+  }
+  bases[0] = batterId;
+  return runs;
 }
 
 function baseBits(bases) {
@@ -703,7 +919,19 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       }
     }
 
-    const ubrCtx = { byId: batting.byId, statFor, teamId: batting.teamId, def: ubrDef, outs, outsAdded: 0 };
+    const ubrCtx = {
+      byId: batting.byId,
+      statFor,
+      teamId: batting.teamId,
+      def: ubrDef,
+      battedBall,
+      bType, // ゴロアウト分岐の判定に使う（realism_r1 §A）
+      fieldingDefense: fielding.defense, // DP統計(2B/SS)の帰属先（§A）
+      fieldingTeamId: fielding.teamId,
+      errorFielderPos: result === 'E' ? hitFielderPos : null, // 失策を犯した野手（外野/内野の判定・§C）
+      outs,
+      outsAdded: 0,
+    };
     const advRuns = advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg, ubrCtx);
     // 外野補殺で増えたアウト（走塁死）を反映する
     if (ubrCtx.outsAdded) {
@@ -717,39 +945,18 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
 
     let gbDp = false;
     if (result === 'out') {
-      if (isAirOut && runs > 0) {
-        // 犠飛: ABを取り消してSF計上
+      if (ubrCtx.sacFly) {
+        // 犠飛: ABを取り消してSF計上（ctx.sacFlyが唯一の情報源・realism_r1 §F-1。
+        // 打席中の暴投/捕逸の得点(wpRuns)はここに混入しない＝偽犠飛の根絶）
         bStat.batting.ab--;
         bStat.batting.sf++;
       }
-      const outsBefore = outs;
       outs++;
       fielding.cur.outs++;
       pStat.pitching.outs++;
-      // 併殺（GB・走者一塁・2アウト未満）§6 wGDP。打者の足で回避。
-      if (bType === 'GB' && bases[0] && outsBefore < 2) {
-        bStat.baserunning.gdpOpp++;
-        // DPR（二遊間の併殺転換・§B3b）: 機会と成立を 2B/SS 双方に計上（対平均runはmetrics側）。乱数非消費。
-        const dp2 = fielding.defense['2B'];
-        const dpS = fielding.defense.SS;
-        if (dp2) statFor(dp2, fielding.teamId).fielding.dpOpp++;
-        if (dpS) statFor(dpS, fielding.teamId).fielding.dpOpp++;
-        const gp = clamp(
-          cfg.tuning.gdp.base - (batter.trueAbility.common.speed - 50) * cfg.tuning.gdp.speedW,
-          0.02,
-          0.45,
-        );
-        if (rng.next() < gp) {
-          bases[0] = null; // 一塁走者もアウト
-          bStat.batting.gdp++;
-          outs++;
-          fielding.cur.outs++;
-          pStat.pitching.outs++;
-          if (dp2) statFor(dp2, fielding.teamId).fielding.dpTurned++;
-          if (dpS) statFor(dpS, fielding.teamId).fielding.dpTurned++;
-        }
-      }
-      gbDp = outs - outsBefore >= 2;
+      // 併殺/フィールダースチョイス/進塁打の分岐・gdpOpp/dpOpp/dpTurned等の統計計上は
+      // advanceRunners内（resolveGroundOutAdvance・realism_r1 §A）に集約済み。
+      gbDp = ubrCtx.gbDp;
     }
     if (runs > 0) {
       batting.score += runs;
@@ -765,7 +972,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     // スプリット計上（§B3b・乱数非消費）: 打席の最終結果からデルタを作り、対左右・得点圏・
     // ホーム/ビジターへ配る。トップレベルの生カウント（ab/h/…）と厳密に対応させる。
     {
-      const sacFly = result === 'out' && isAirOut && runs > 0;
+      const sacFly = ubrCtx.sacFly;
       let dab = 0, dh = 0, d1 = 0, d2 = 0, d3 = 0, dhr = 0, dbb = 0, dhbp = 0, dso = 0, dsf = 0;
       if (result === 'BB') dbb = 1;
       else if (result === 'HBP') dhbp = 1;
@@ -817,6 +1024,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
         outsBefore: paOuts,
         outsAfter: outs,
         runsOnPlay: runs,
+        sacFly: ubrCtx.sacFly, // 犠飛の唯一の真実（realism_r1 §F-2・UI側の再導出を廃止）
+        fc: ubrCtx.fcBatterSafe, // フィールダースチョイス（打者は一塁で生きたがabのみ・§F-2）
         basesAfter: baseBits(bases),
         basesPids: bases.slice(), // 塁上走者の playerId（E2・走者名表示）
         batScore: batting.score,
@@ -1047,14 +1256,19 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
     return { outs: outs + 1, dab: 0, dh: 0, d1: 0 };
   }
   if (u < t.successProb + t.failProb) {
-    // 失敗: 先頭走者が封殺（フィールダースチョイス＝AB計上・安打なし）
-    if (bases[1]) bases[1] = null;
-    else bases[0] = null;
-    if (bases[0] && !bases[1]) {
-      bases[1] = bases[0];
-      bases[0] = null;
+    // 失敗: フォースが存在する時（打者が一塁へ生きて走者を押し出す＝R1あり）のみ
+    // 先頭の強制走者を封殺（フィールダースチョイス＝AB計上・安打なし）。
+    // R2単独（R1不在）はフォース不成立＝三塁へのフォースプレーは存在しないため、
+    // 打者が普通にアウトになるだけ（走者は動かない・§F-4）。
+    if (bases[0]) {
+      if (bases[1]) bases[1] = null;
+      else bases[0] = null;
+      if (bases[0] && !bases[1]) {
+        bases[1] = bases[0];
+        bases[0] = null;
+      }
+      bases[0] = batterId;
     }
-    bases[0] = batterId;
     bStat.batting.ab++;
     fielding.cur.outs++;
     pStat.pitching.outs++;

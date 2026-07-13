@@ -2306,6 +2306,12 @@ const GAME_DEFAULT = {
   //   内訳を落として save の肥大を防ぐ（20年プレイで数十MBになる）。指標/表彰/記録/査定は
   //   トップレベルの生カウントのみを使うので影響しない。
   keepDetailYears: 2,
+  // ★R5: ゲーム（UI）が世界を作るときに回す「前史」の年数。生成直後のリーグは
+  //   「誰も故障したことがなく・通算記録も引退者もドラフト史も無い」冷えた世界なので、
+  //   20年ぶんのドラフト→成長→故障→引退のサイクルを先に回してからプレイヤーに渡す。
+  //   ※エンジンの newGame の既定は 0（＝較正/テストの土台は生成直後のリーグのまま）。
+  //     UI だけがこの値を newGame に渡す（src/ui.mjs startNewGame）。
+  burnInYears: 30, // 山本昌の実働29年が丸ごと収まる長さ（1世代が完全に入れ替わる）
   daysPerWeek: 7, // advanceTo('weekEnd') の週境界
   daysPerMonth: 26, // advanceTo('monthEnd') の月境界（143試合≈6か月）
   rookieAgeMin: 18, // 新人（ドラフト補充）の最小年齢（高卒相当）
@@ -10568,17 +10574,19 @@ function processFarmPromotions(rt, teamId, day, out) {
  * @returns {boolean} 入替を実行できたか（upId/downIdが見つからなければfalse・安全弁）
  */
 function applyFarmPromotionSwap(league, upId, downId) {
-  const up = league.farm.find((d) => d.id === upId);
-  const down = league.players.find((p) => p.id === downId);
-  if (!up || !down) return false;
+  const fi = league.farm.findIndex((d) => d.id === upId);
+  const pi = league.players.findIndex((p) => p.id === downId);
+  if (fi < 0 || pi < 0) return false;
+  const up = league.farm[fi];
+  const down = league.players[pi];
   up.rosterStatus = 'active';
   down.rosterStatus = 'minor';
-  const fi = league.farm.findIndex((d) => d.id === up.id);
-  if (fi >= 0) league.farm.splice(fi, 1);
-  league.players.push(up);
-  const pi = league.players.findIndex((p) => p.id === down.id);
-  if (pi >= 0) league.players.splice(pi, 1);
-  league.farm.push(down);
+  // ★R5: **配列の位置をそのまま入れ替える**（splice+push で末尾へ動かさない）。
+  //   league.players の並び順は selectActiveRoster/buildDepthChart の同点解決に効くため、
+  //   昇格のたびに並びが変わると「同じ入替を巻き戻しても元のリーグに戻らない」。
+  //   位置を保存する入替にすると、逆スワップが厳密に元へ戻す＝セーブの開幕時点復元が成立する。
+  league.players[pi] = up;
+  league.farm[fi] = down;
   return true;
 }
 
@@ -11354,6 +11362,107 @@ function summarizeRetiree(p, retiredAfterYear) {
 }
 
 
+// ===== src/game/statcodec.mjs =====
+// ============================================================================
+// R5: 成績集計（careerStats / careerFarmStats）の数値エンコード
+//
+// 問題: playerSeason は {batting:{pa,ab,h,...}, pitching:{...}, fielding:{positionOuts:{...}},
+//   baserunning:{...}} という **キー名だらけの入れ子オブジェクト** で、1行 ≈ 2,000B のうち大半が
+//   キー名の繰り返し。前史30年＋長期プレイでは数万行になり、save が十数MBに膨らむ。
+//   （保存先は IndexedDB なので容量は足りるが、**日次オートセーブで毎回それを直列化する**コストが痛い）
+//
+// 方式: 数値の位置を固定した「列指向」エンコード。
+//   paths（数値リーフのパス一覧）を1回だけ書き、各行は [playerId, season, teamId, ...数値] の配列にする。
+//   キー名が行ごとに消えるので 1/3 以下になる。**値は一切丸めない**（丸めると load 後の
+//   オフシーズン査定が無セーブ通しと食い違い、決定論が壊れる）。
+//
+//   スプリット/カウント別（表示専用の入れ子。直近2年のみ保持・index.mjs compactCareerStats）は
+//   数が少ないので、行番号をキーにした detail としてそのまま持つ。
+// ============================================================================
+
+
+const SECTIONS = ['batting', 'pitching', 'fielding', 'baserunning'];
+const SKIP = new Set(['splits', 'byCount']); // 表示専用の入れ子（detail 側で持つ）
+
+/** テンプレートから「数値リーフのパス」を決定論的に列挙する（キー順＝挿入順で安定）。 */
+function collectPaths(obj, prefix, out) {
+  for (const k of Object.keys(obj)) {
+    if (SKIP.has(k)) continue;
+    const v = obj[k];
+    if (v === null || typeof v === 'number') out.push(prefix ? `${prefix}.${k}` : k);
+    else if (v && typeof v === 'object' && !Array.isArray(v)) collectPaths(v, prefix ? `${prefix}.${k}` : k, out);
+  }
+}
+
+/** playerSeason の数値パス一覧（モジュール初期化時に1回だけ作る）。 */
+function statPaths() {
+  const tpl = createPlayerSeason('x', 0);
+  const out = [];
+  for (const sec of SECTIONS) if (tpl[sec]) collectPaths(tpl[sec], sec, out);
+  return out;
+}
+const PATHS = statPaths();
+
+function getPath(row, path) {
+  let cur = row;
+  for (const k of path.split('.')) {
+    if (cur == null) return 0;
+    cur = cur[k];
+  }
+  return typeof cur === 'number' ? cur : 0;
+}
+
+function setPath(row, path, val) {
+  const keys = path.split('.');
+  let cur = row;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (cur[keys[i]] == null || typeof cur[keys[i]] !== 'object') cur[keys[i]] = {};
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = val;
+}
+
+/**
+ * playerSeason[] → 列指向のエンコード済みブロブ。
+ * @returns {{v:number, paths:string[], rows:Array, detail:Object}}
+ */
+function encodeSeasons(seasons) {
+  const rows = [];
+  const detail = {};
+  seasons.forEach((s, i) => {
+    const vals = PATHS.map((p) => getPath(s, p));
+    rows.push([s.playerId, s.season, s.teamId ?? null, ...vals]);
+    // 表示専用の入れ子（直近年のみ存在）はそのまま退避
+    const d = {};
+    if (s.batting?.splits) d.splits = s.batting.splits;
+    if (s.batting?.byCount) d.byCount = s.batting.byCount;
+    if (s.pitching?.byCount) d.pByCount = s.pitching.byCount;
+    if (Object.keys(d).length) detail[i] = d;
+  });
+  return { v: 1, paths: PATHS, rows, detail };
+}
+
+/** エンコード済みブロブ → playerSeason[]（未エンコードの配列がそのまま来たら素通し＝旧セーブ互換）。 */
+function decodeSeasons(blob) {
+  if (!blob) return [];
+  if (Array.isArray(blob)) return blob; // 生配列（旧形式/テスト）
+  const { paths, rows, detail = {} } = blob;
+  return rows.map((r, i) => {
+    const [playerId, season, teamId, ...vals] = r;
+    const ps = createPlayerSeason(playerId, season);
+    ps.teamId = teamId;
+    for (let k = 0; k < paths.length; k++) setPath(ps, paths[k], vals[k] ?? 0);
+    const d = detail[i];
+    if (d) {
+      if (d.splits) ps.batting.splits = d.splits;
+      if (d.byCount) ps.batting.byCount = d.byCount;
+      if (d.pByCount) ps.pitching.byCount = d.pByCount;
+    }
+    return ps;
+  });
+}
+
+
 // ===== src/game/era.mjs =====
 // ============================================================================
 // フェーズD3: 時代トレンドと王朝均衡（§11.3「集団・時代系」・多年運用）
@@ -11650,7 +11759,39 @@ const asMvp = (r) => (r ? { playerId: r.id, war: r.v } : null);
  * 選手の受賞履歴（全年の表彰を再計算して収集）。determinism: careerStats/teamHistory から純関数で復元。
  * @returns {Array} [{year, kind, label, pos?}]（kind='mvp'|'roty'|'title'|'bestNine'|'glove'）
  */
-function playerAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg }) {
+function playerAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg, awardsHistory = null }) {
+  // ★R5: 実際に確定した受賞（awardsHistory）が保存されていればそれを使う。
+  //   前史(burn-in)では引退選手の成績を保持しないため、careerStats からの**再計算は嘘の受賞者を出す**
+  //   （当時のMVPが引退して名簿から消えていると、別人が繰り上がってしまう）。確定値を優先する。
+  if (awardsHistory && awardsHistory.length) {
+    const out = [];
+    for (const rec of awardsHistory) out.push(...collectAwardsFor(playerId, rec.year, rec.awards));
+    // 保存が無い年（旧セーブ/前史外）だけ従来どおり再計算して足す
+    const covered = new Set(awardsHistory.map((r) => r.year));
+    const rest = recomputeAwardHistory(playerId, { careerStats, teamHistory: teamHistory.filter((h) => !covered.has(h.year)), playersById, cfg });
+    return out.concat(rest).sort((a, b) => a.year - b.year);
+  }
+  return recomputeAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg });
+}
+
+/** 確定済みの受賞オブジェクト（computeSeasonAwards の返値）から、その選手が獲ったものを抜き出す。 */
+function collectAwardsFor(playerId, year, awards) {
+  const out = [];
+  if (!awards) return out;
+  for (const lg of awards.leagues ?? []) {
+    if (lg.mvp && lg.mvp.playerId === playerId) out.push({ year, kind: 'mvp', label: 'MVP' });
+    if (lg.roty && lg.roty.playerId === playerId) out.push({ year, kind: 'roty', label: '新人王' });
+    for (const k of Object.keys(lg.titles ?? {})) {
+      const t = lg.titles[k];
+      if (t && t.playerId === playerId) out.push({ year, kind: 'title', label: TITLE_LABELS[k], titleKey: k, value: t.value });
+    }
+    for (const b of lg.bestNine ?? []) if (b.playerId === playerId) out.push({ year, kind: 'bestNine', label: 'ベストナイン', pos: b.pos });
+    for (const g of lg.gloves ?? []) if (g.playerId === playerId) out.push({ year, kind: 'glove', label: DEF_AWARD_NAME, pos: g.pos });
+  }
+  return out;
+}
+
+function recomputeAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg }) {
   const byYear = new Map();
   for (const s of careerStats) {
     if (!byYear.has(s.season)) byYear.set(s.season, []);
@@ -12084,6 +12225,7 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 
 
 
+
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
 //   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
 //   ここで 
@@ -12095,8 +12237,14 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
  *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。
  *  v3（F2-2）: 出場登録29人＋二軍リーグ導入。一軍デプスチャートが70人全員→登録29人からの編成に
  *  変わり season replay の結果が v2 と非互換（＝v2 セーブは明示拒否）。セーブに二軍の順位/集計
- *  （seasonState.farm / farmPlayers / careerFarmStats）を追加。 */
-const SCHEMA_VERSION = 3;
+ *  （seasonState.farm / farmPlayers / careerFarmStats）を追加。
+ *  ★v4（R5・前史 burn-in 30年）: **復元方式を「過去オフの再計算」から「開幕時点のリーグを直接保存」へ変更**。
+ *    理由: 前史30年を回すと、過去オフの再計算に必要な careerStats が30年ぶん（引退者含む全員）必要になり
+ *    save が100MB級に膨らむ。ユーザー判断で「前史で引退した選手の記録は保持しない」としたため、
+ *    再計算の入力そのものが失われる＝replay 方式が原理的に成立しない。
+ *    真値をセーブに含めることになるが、**情報漏洩は増えない**（masterSeed が既にセーブにあり、
+ *    そこから同じ真値を再生成できる）。むしろ replay 由来の復元ズレ（実際に2度踏んだ）が構造的に消える。 */
+const SCHEMA_VERSION = 4;
 
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
@@ -12311,6 +12459,9 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     // R3: 完了年ぶんの故障ログ（試合中に発生した離脱）。オフの後遺/故障歴の適用に使う。
     //   §17: 集計値のみ（生の打球ログは持たない）。load はこれを replay に渡して真値を再構築する。
     injuryLog: [],
+    // R5: 確定した年度別受賞（MVP/タイトル/ベストナイン/守備賞）。前史で成績を刈っても
+    //   「実際に誰が獲ったか」を失わないための永続記録（再計算に頼らない）。
+    awardsHistory: [],
     // 育成→支配下の季節中昇格ログ（§req_20260708・完了年ぶんのみ蓄積。save/replayで再現。
     // 当年ぶんは state.rt.farmPromotionLog にあり、advanceYear で年ごとに畳み込む）。
     farmPromotionLog: [],
@@ -12325,7 +12476,27 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     while (!state.rt.finished) advanceDay(state);
     advanceYear(state);
   }
+  if (burnIn > 0) pruneBurnInHistory(state);
   return state;
+}
+
+/**
+ * ★R5: 前史（burn-in）の履歴を刈る。**前史で引退した選手の記録は保持しない**（ユーザー判断）。
+ * 30年ぶんの全選手の成績を抱えると save が100MB級に膨らむため、
+ *   - 開幕時点でリーグに居る選手（支配下＋育成）の成績だけを残す（現役ベテランの通算記録は保つ）
+ *   - 出場が無い行（PA=0かつBF=0）は落とす
+ *   - 引退者サマリは空にする（前史の引退者は「居なかったこと」になる）
+ * 受賞は awardsHistory に確定値を持っているので、成績を刈っても過去の受賞者は正しいまま
+ * （careerStats からの再計算に頼ると、引退者が消えた名簿で別人が繰り上がってしまう）。
+ */
+function pruneBurnInHistory(state) {
+  const alive = new Set([...state.league.players, ...(state.league.farm ?? [])].map((p) => p.id));
+  const played = (s) => (s.batting?.pa ?? 0) > 0 || (s.pitching?.bf ?? 0) > 0;
+  state.careerStats = state.careerStats.filter((s) => alive.has(s.playerId) && played(s));
+  state.careerFarmStats = state.careerFarmStats.filter((s) => alive.has(s.playerId) && played(s));
+  state.retiredPlayers = [];
+  state.injuryLog = state.injuryLog.filter((e) => alive.has(e.id));
+  state.farmPromotionLog = [];
 }
 
 /**
@@ -12525,7 +12696,9 @@ function advanceYear(state) {
     year: completedYear,
   });
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
-  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
+  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ
+  // R5: 確定した受賞をそのまま永続する（前史で成績を刈っても過去の受賞者が変わらないように）
+  state.awardsHistory.push({ year: completedYear, awards: off.awards });
   state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
   compactCareerStats(state); // R4: 古いシーズンの表示専用内訳を落とす（save 肥大の防止・下記）
   state.yearIndex += 1;
@@ -12590,22 +12763,53 @@ function save(state) {
     yearIndex: state.yearIndex,
     year: state.year,
     // 現行シーズンの選手集計（§17集計値。UI表示/スキーマ準拠。復元は replay 由来で厳密再現）
-    players: rt ? [...rt.stats.stats.values()] : [],
+    players: encodeSeasons(rt ? [...rt.stats.stats.values()] : []),
     // 現行シーズンの二軍選手集計（F2-2 farmStats・一軍と分離。復元は replay 由来で厳密再現）
-    farmPlayers: rt && rt.farm ? [...rt.farm.stats.stats.values()] : [],
-    careerStats: state.careerStats, // 完了シーズン集計（永続）
-    careerFarmStats: state.careerFarmStats, // 完了シーズンの二軍集計（F2-2・永続）
+    farmPlayers: encodeSeasons(rt && rt.farm ? [...rt.farm.stats.stats.values()] : []),
+    // R5: 列指向の数値エンコード（キー名の繰り返しを落とす。値は丸めない＝決定論を壊さない）
+    careerStats: encodeSeasons(state.careerStats),
+    careerFarmStats: encodeSeasons(state.careerFarmStats),
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
-    farmPromotionLog: state.farmPromotionLog, // 育成→支配下季節中昇格ログ（完了年ぶん・§req_20260708）
-    // R3: 故障が試合由来になったため、過去年のオフ replay（season を再シムしない）はログが無いと
-    //   同一の真値（後遺・故障歴）を再構築できない。開幕IL(pendingInjuries) も同様に永続する。
-    injuryLog: state.injuryLog,
+    // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
+    //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
+    leagueSnapshot: seasonStartLeague(state),
+    retiredPlayers: state.retiredPlayers, // 引退者サマリ（前史ぶんは pruneBurnInHistory で空）
+    awardsHistory: state.awardsHistory, // 確定した年度別受賞（再計算に頼らない）
+    injuryLog: state.injuryLog, // 故障歴の記録（復元には不要だが表示/記録用に保持）
     pendingInjuries: state.pendingInjuries,
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
+}
+
+/**
+ * ★R5: 「開幕時点」のリーグを作る（load はここから当季の日次 replay を始める）。
+ * 当季に起きた育成→支配下の季節中昇格は **逆順に巻き戻して** 開幕時点のロスターへ戻す
+ * （日次 replay がもう一度同じ昇格を再現するため、巻き戻さないと二重に適用される）。
+ * 真値はシーズン中に動かない（鉄則7・R3で担保）ので、真値はそのまま保存してよい。
+ */
+function seasonStartLeague(state) {
+  const clone = JSON.parse(JSON.stringify({
+    masterSeed: state.masterSeed,
+    teams: state.league.teams,
+    players: state.league.players,
+    farm: state.league.farm ?? [],
+  }));
+  // 当季の育成→支配下昇格を逆順に巻き戻す（日次 replay が同じ昇格をもう一度再現するため）。
+  //   applyFarmPromotionSwap は配列の位置を保存する入替なので、逆スワップで厳密に元へ戻る。
+  const log = state.rt ? state.rt.farmPromotionLog : [];
+  for (let i = log.length - 1; i >= 0; i--) applyFarmPromotionSwap(clone, log[i].downId, log[i].upId);
+  rebuildTeamRosters(clone);
+  // 采配介入（人間の監督プロファイル差し替え）は interventions ログから日次 replay で再適用される。
+  //   スナップショットには **介入前の素の監督** を入れる（介入後の監督を保存すると、
+  //   介入日より前の試合まで介入後の采配で再走されてしまい、無セーブ通しと食い違う）。
+  if (state.baseManager) {
+    const my = clone.teams.find((t) => t.id === state.playerTeamId);
+    if (my) my.manager = { ...state.baseManager };
+  }
+  return clone;
 }
 
 /** 復元した順位が保存 snapshot と一致するか検査（セーブ破損検出＋決定論の門番）。 */
@@ -12635,9 +12839,16 @@ function load(blob, options = {}) {
     throw new Error(`load: 未対応のスキーマ版 ${data.schemaVersion}（現行 ${SCHEMA_VERSION}）`);
   }
   const cfg = options.cfg ?? createConfig();
-  const league = generateLeague(data.masterSeed >>> 0, cfg);
-  // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）。F2-1: 初期分は generateLeague が
-  // masterSeed から決定論再生成し、過去オフの増減は下の offseasonTransition replay が再現する。
+  // ★R5: 開幕時点のリーグを save から直接復元する（旧 v3 の「過去オフを再計算して再構築」は撤去）。
+  //   前史30年では再計算の入力（30年ぶん全選手の成績）が save に必要になり成立しないため。
+  const snap = data.leagueSnapshot;
+  if (!snap) throw new Error('load: leagueSnapshot が無い（v3以前のセーブ）');
+  const league = {
+    masterSeed: data.masterSeed >>> 0,
+    teams: snap.teams,
+    players: snap.players,
+    farm: snap.farm ?? [],
+  };
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -12649,10 +12860,11 @@ function load(blob, options = {}) {
     year: data.year,
     cfg,
     league,
-    careerStats: data.careerStats ?? [],
-    careerFarmStats: data.careerFarmStats ?? [], // 完了シーズンの二軍集計（F2-2・blob から復元）
+    careerStats: decodeSeasons(data.careerStats),
+    careerFarmStats: decodeSeasons(data.careerFarmStats), // 完了シーズンの二軍集計（F2-2・blob から復元）
     teamHistory: data.teamHistory ?? [],
-    retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
+    retiredPlayers: data.retiredPlayers ?? [], // R5: 直接復元（前史ぶんは保持しない）
+    awardsHistory: data.awardsHistory ?? [], // R5: 確定した年度別受賞
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
@@ -12660,38 +12872,12 @@ function load(blob, options = {}) {
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
     rt: null,
   };
-  // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
-  // 再適用し、真値もロスター（引退・補充）も保存時点へ復元する。trueAbility とロスター構成は §17
-  // （集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
-  // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
-  let lastOff = null;
-  for (let y = 0; y < state.yearIndex; y++) {
-    // §req_20260708: league.players/farmを直接動かす育成→支配下の季節中昇格は、day単位の再シムを
-    // しないこの過去年replayでは再現できないため、完了年ぶんのログから直接適用する
-    // （offseasonTransition＝引退/ドラフト等より前＝そのシーズン終了時点の状態に復元してから渡す）。
-    for (const m of state.farmPromotionLog) {
-      if (m.year === y) applyFarmPromotionSwap(state.league, m.upId, m.downId);
-    }
-    const off = offseasonTransition(state.league, cfg, {
-      masterSeed: state.masterSeed,
-      yearIndex: y,
-      year: state.firstSeason + y,
-      // ウェーバー順の素 = 完了年の順位。teamHistory は blob から復元済み＝live と同一値（決定論）。
-      standings: standingsForYear(state, state.firstSeason + y),
-      // 放出/契約更改の "実観測" は careerStats（blob 復元済み）を season==year で絞る＝live と同一部分集合。
-      careerStats: state.careerStats,
-      careerFarmStats: state.careerFarmStats, // 育成昇格の二軍実成績（F2-3・blob 復元済み＝live と同一）
-      marketInterventions: state.marketInterventions,
-      // R3: その年に試合中発生した故障（永続ログ）。live の advanceYear と同一入力＝同一の
-      //   後遺/故障歴を再構築する（season を再シムせずに真値を復元できる唯一の経路）。
-      seasonInjuries: state.injuryLog.filter((e) => e.year === y),
-    });
-    state.retiredPlayers.push(...off.retirees);
-    lastOff = off;
-  }
-  // R3: 当年の開幕IL（pendingInjuries）は blob から復元済み（試合由来の故障は replay で再導出
-  //   できないため save に含める）。lastOff は retirees の再構築にのみ使う。
-  void lastOff;
+  // ★R5: 過去年のオフシーズン再計算（replay）は撤去した。開幕時点のリーグを save から直接
+  //   復元しているので、真値もロスターも既に保存時点の姿になっている。
+  //   （旧方式は「masterSeed から再生成 → 過去オフを全部やり直す」で、30年の前史では
+  //     その入力である30年ぶん・引退者含む全選手の成績が save に必要になり成立しない。
+  //     加えて replay 由来の復元ズレを実際に2度踏んでいる＝構造的な脆さでもあった）
+  //   当季の日次 replay（下の seasonState 復元）は従来どおり行い、順位で検算する。
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;
@@ -16161,8 +16347,29 @@ function leagueNameOf(cfg, lid) {
 }
 
 function startNewGame(seed, teamId) {
-  const cfg = createConfig();
-  game.gs = newGame(seed >>> 0, teamId, { cfg });
+  // 設定オーバーライド（smoke/デバッグ用の注入点。通常は空＝既定の config）。
+  const cfg = createConfig(globalThis.SABER_CFG_OVERRIDES ?? {});
+  const burnIn = cfg.game.burnInYears ?? 0;
+  const root = typeof document !== 'undefined' ? document.getElementById('app') : null;
+  // ローディング表示は実ブラウザでのみ（ヘッドレスの簡易DOMには replaceChildren が無い）。
+  if (burnIn > 0 && typeof setTimeout === 'function' && root && typeof root.replaceChildren === 'function') {
+    // ★R5 前史（burn-in）: 20年ぶんのシーズンを先に回すため十数秒かかる。同期実行だと画面が
+    //   固まったまま無反応に見えるので、先にローディングを描いてから次のタスクで実行する。
+    root.replaceChildren(
+      el('section', { class: 'card' }, [
+        el('h2', {}, 'リーグの歴史を生成しています'),
+        el('p', { class: 'muted' }, `${burnIn}年ぶんのドラフト・成長・故障・引退のサイクルを回しています…`),
+        el('p', { class: 'muted' }, '（この世界には通算記録・引退者・ドラフト史・故障歴が既に存在します）'),
+      ]),
+    );
+    setTimeout(() => finishNewGame(seed, teamId, cfg, burnIn), 0);
+    return;
+  }
+  finishNewGame(seed, teamId, cfg, burnIn);
+}
+
+function finishNewGame(seed, teamId, cfg, burnIn) {
+  game.gs = newGame(seed >>> 0, teamId, { cfg, burnInYears: burnIn });
   bindGameContext(game.gs);
   // G5a: 成績タブの列グループ既定を「キャリアモード='basic'」に戻す（クイックシミュレート等で
   //   既に'all'へ初期化されていた場合の巻き戻り対策。次回 renderBatting/Pitching で再初期化される）。

@@ -1237,8 +1237,29 @@ function leagueNameOf(cfg, lid) {
 }
 
 function startNewGame(seed, teamId) {
-  const cfg = createConfig();
-  game.gs = newGame(seed >>> 0, teamId, { cfg });
+  // 設定オーバーライド（smoke/デバッグ用の注入点。通常は空＝既定の config）。
+  const cfg = createConfig(globalThis.SABER_CFG_OVERRIDES ?? {});
+  const burnIn = cfg.game.burnInYears ?? 0;
+  const root = typeof document !== 'undefined' ? document.getElementById('app') : null;
+  // ローディング表示は実ブラウザでのみ（ヘッドレスの簡易DOMには replaceChildren が無い）。
+  if (burnIn > 0 && typeof setTimeout === 'function' && root && typeof root.replaceChildren === 'function') {
+    // ★R5 前史（burn-in）: 20年ぶんのシーズンを先に回すため十数秒かかる。同期実行だと画面が
+    //   固まったまま無反応に見えるので、先にローディングを描いてから次のタスクで実行する。
+    root.replaceChildren(
+      el('section', { class: 'card' }, [
+        el('h2', {}, 'リーグの歴史を生成しています'),
+        el('p', { class: 'muted' }, `${burnIn}年ぶんのドラフト・成長・故障・引退のサイクルを回しています…`),
+        el('p', { class: 'muted' }, '（この世界には通算記録・引退者・ドラフト史・故障歴が既に存在します）'),
+      ]),
+    );
+    setTimeout(() => finishNewGame(seed, teamId, cfg, burnIn), 0);
+    return;
+  }
+  finishNewGame(seed, teamId, cfg, burnIn);
+}
+
+function finishNewGame(seed, teamId, cfg, burnIn) {
+  game.gs = newGame(seed >>> 0, teamId, { cfg, burnInYears: burnIn });
   bindGameContext(game.gs);
   // G5a: 成績タブの列グループ既定を「キャリアモード='basic'」に戻す（クイックシミュレート等で
   //   既に'all'へ初期化されていた場合の巻き戻り対策。次回 renderBatting/Pitching で再初期化される）。

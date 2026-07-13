@@ -24,6 +24,7 @@ import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
 import { runMarket, teamEvalProfile } from './market.mjs';
 import { applyFarmPromotionSwap } from './roster_moves.mjs';
+import { encodeSeasons, decodeSeasons } from './statcodec.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './transactions.mjs';
 import { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
@@ -43,8 +44,14 @@ import { detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMove
  *  「加齢のみ」replay とは復元結果が異なる。→ v1 セーブは明示的に弾く（誤復元を防ぐ）。
  *  v3（F2-2）: 出場登録29人＋二軍リーグ導入。一軍デプスチャートが70人全員→登録29人からの編成に
  *  変わり season replay の結果が v2 と非互換（＝v2 セーブは明示拒否）。セーブに二軍の順位/集計
- *  （seasonState.farm / farmPlayers / careerFarmStats）を追加。 */
-export const SCHEMA_VERSION = 3;
+ *  （seasonState.farm / farmPlayers / careerFarmStats）を追加。
+ *  ★v4（R5・前史 burn-in 30年）: **復元方式を「過去オフの再計算」から「開幕時点のリーグを直接保存」へ変更**。
+ *    理由: 前史30年を回すと、過去オフの再計算に必要な careerStats が30年ぶん（引退者含む全員）必要になり
+ *    save が100MB級に膨らむ。ユーザー判断で「前史で引退した選手の記録は保持しない」としたため、
+ *    再計算の入力そのものが失われる＝replay 方式が原理的に成立しない。
+ *    真値をセーブに含めることになるが、**情報漏洩は増えない**（masterSeed が既にセーブにあり、
+ *    そこから同じ真値を再生成できる）。むしろ replay 由来の復元ズレ（実際に2度踏んだ）が構造的に消える。 */
+export const SCHEMA_VERSION = 4;
 
 // --- 年ごとのシード（1年目=masterSeed で simulateSeason と同一。2年目以降は派生） -------
 function seasonSeed(state) {
@@ -259,6 +266,9 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     // R3: 完了年ぶんの故障ログ（試合中に発生した離脱）。オフの後遺/故障歴の適用に使う。
     //   §17: 集計値のみ（生の打球ログは持たない）。load はこれを replay に渡して真値を再構築する。
     injuryLog: [],
+    // R5: 確定した年度別受賞（MVP/タイトル/ベストナイン/守備賞）。前史で成績を刈っても
+    //   「実際に誰が獲ったか」を失わないための永続記録（再計算に頼らない）。
+    awardsHistory: [],
     // 育成→支配下の季節中昇格ログ（§req_20260708・完了年ぶんのみ蓄積。save/replayで再現。
     // 当年ぶんは state.rt.farmPromotionLog にあり、advanceYear で年ごとに畳み込む）。
     farmPromotionLog: [],
@@ -273,7 +283,27 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     while (!state.rt.finished) advanceDay(state);
     advanceYear(state);
   }
+  if (burnIn > 0) pruneBurnInHistory(state);
   return state;
+}
+
+/**
+ * ★R5: 前史（burn-in）の履歴を刈る。**前史で引退した選手の記録は保持しない**（ユーザー判断）。
+ * 30年ぶんの全選手の成績を抱えると save が100MB級に膨らむため、
+ *   - 開幕時点でリーグに居る選手（支配下＋育成）の成績だけを残す（現役ベテランの通算記録は保つ）
+ *   - 出場が無い行（PA=0かつBF=0）は落とす
+ *   - 引退者サマリは空にする（前史の引退者は「居なかったこと」になる）
+ * 受賞は awardsHistory に確定値を持っているので、成績を刈っても過去の受賞者は正しいまま
+ * （careerStats からの再計算に頼ると、引退者が消えた名簿で別人が繰り上がってしまう）。
+ */
+function pruneBurnInHistory(state) {
+  const alive = new Set([...state.league.players, ...(state.league.farm ?? [])].map((p) => p.id));
+  const played = (s) => (s.batting?.pa ?? 0) > 0 || (s.pitching?.bf ?? 0) > 0;
+  state.careerStats = state.careerStats.filter((s) => alive.has(s.playerId) && played(s));
+  state.careerFarmStats = state.careerFarmStats.filter((s) => alive.has(s.playerId) && played(s));
+  state.retiredPlayers = [];
+  state.injuryLog = state.injuryLog.filter((e) => alive.has(e.id));
+  state.farmPromotionLog = [];
 }
 
 /**
@@ -473,7 +503,9 @@ export function advanceYear(state) {
     year: completedYear,
   });
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
-  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
+  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ
+  // R5: 確定した受賞をそのまま永続する（前史で成績を刈っても過去の受賞者が変わらないように）
+  state.awardsHistory.push({ year: completedYear, awards: off.awards });
   state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
   compactCareerStats(state); // R4: 古いシーズンの表示専用内訳を落とす（save 肥大の防止・下記）
   state.yearIndex += 1;
@@ -538,22 +570,53 @@ export function save(state) {
     yearIndex: state.yearIndex,
     year: state.year,
     // 現行シーズンの選手集計（§17集計値。UI表示/スキーマ準拠。復元は replay 由来で厳密再現）
-    players: rt ? [...rt.stats.stats.values()] : [],
+    players: encodeSeasons(rt ? [...rt.stats.stats.values()] : []),
     // 現行シーズンの二軍選手集計（F2-2 farmStats・一軍と分離。復元は replay 由来で厳密再現）
-    farmPlayers: rt && rt.farm ? [...rt.farm.stats.stats.values()] : [],
-    careerStats: state.careerStats, // 完了シーズン集計（永続）
-    careerFarmStats: state.careerFarmStats, // 完了シーズンの二軍集計（F2-2・永続）
+    farmPlayers: encodeSeasons(rt && rt.farm ? [...rt.farm.stats.stats.values()] : []),
+    // R5: 列指向の数値エンコード（キー名の繰り返しを落とす。値は丸めない＝決定論を壊さない）
+    careerStats: encodeSeasons(state.careerStats),
+    careerFarmStats: encodeSeasons(state.careerFarmStats),
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
-    farmPromotionLog: state.farmPromotionLog, // 育成→支配下季節中昇格ログ（完了年ぶん・§req_20260708）
-    // R3: 故障が試合由来になったため、過去年のオフ replay（season を再シムしない）はログが無いと
-    //   同一の真値（後遺・故障歴）を再構築できない。開幕IL(pendingInjuries) も同様に永続する。
-    injuryLog: state.injuryLog,
+    // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
+    //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
+    leagueSnapshot: seasonStartLeague(state),
+    retiredPlayers: state.retiredPlayers, // 引退者サマリ（前史ぶんは pruneBurnInHistory で空）
+    awardsHistory: state.awardsHistory, // 確定した年度別受賞（再計算に頼らない）
+    injuryLog: state.injuryLog, // 故障歴の記録（復元には不要だが表示/記録用に保持）
     pendingInjuries: state.pendingInjuries,
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
+}
+
+/**
+ * ★R5: 「開幕時点」のリーグを作る（load はここから当季の日次 replay を始める）。
+ * 当季に起きた育成→支配下の季節中昇格は **逆順に巻き戻して** 開幕時点のロスターへ戻す
+ * （日次 replay がもう一度同じ昇格を再現するため、巻き戻さないと二重に適用される）。
+ * 真値はシーズン中に動かない（鉄則7・R3で担保）ので、真値はそのまま保存してよい。
+ */
+function seasonStartLeague(state) {
+  const clone = JSON.parse(JSON.stringify({
+    masterSeed: state.masterSeed,
+    teams: state.league.teams,
+    players: state.league.players,
+    farm: state.league.farm ?? [],
+  }));
+  // 当季の育成→支配下昇格を逆順に巻き戻す（日次 replay が同じ昇格をもう一度再現するため）。
+  //   applyFarmPromotionSwap は配列の位置を保存する入替なので、逆スワップで厳密に元へ戻る。
+  const log = state.rt ? state.rt.farmPromotionLog : [];
+  for (let i = log.length - 1; i >= 0; i--) applyFarmPromotionSwap(clone, log[i].downId, log[i].upId);
+  rebuildTeamRosters(clone);
+  // 采配介入（人間の監督プロファイル差し替え）は interventions ログから日次 replay で再適用される。
+  //   スナップショットには **介入前の素の監督** を入れる（介入後の監督を保存すると、
+  //   介入日より前の試合まで介入後の采配で再走されてしまい、無セーブ通しと食い違う）。
+  if (state.baseManager) {
+    const my = clone.teams.find((t) => t.id === state.playerTeamId);
+    if (my) my.manager = { ...state.baseManager };
+  }
+  return clone;
 }
 
 /** 復元した順位が保存 snapshot と一致するか検査（セーブ破損検出＋決定論の門番）。 */
@@ -583,9 +646,16 @@ export function load(blob, options = {}) {
     throw new Error(`load: 未対応のスキーマ版 ${data.schemaVersion}（現行 ${SCHEMA_VERSION}）`);
   }
   const cfg = options.cfg ?? createConfig();
-  const league = generateLeague(data.masterSeed >>> 0, cfg);
-  // 育成枠は save に含めず replay で再構築（§17: 集計のみ永続）。F2-1: 初期分は generateLeague が
-  // masterSeed から決定論再生成し、過去オフの増減は下の offseasonTransition replay が再現する。
+  // ★R5: 開幕時点のリーグを save から直接復元する（旧 v3 の「過去オフを再計算して再構築」は撤去）。
+  //   前史30年では再計算の入力（30年ぶん全選手の成績）が save に必要になり成立しないため。
+  const snap = data.leagueSnapshot;
+  if (!snap) throw new Error('load: leagueSnapshot が無い（v3以前のセーブ）');
+  const league = {
+    masterSeed: data.masterSeed >>> 0,
+    teams: snap.teams,
+    players: snap.players,
+    farm: snap.farm ?? [],
+  };
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -597,10 +667,11 @@ export function load(blob, options = {}) {
     year: data.year,
     cfg,
     league,
-    careerStats: data.careerStats ?? [],
-    careerFarmStats: data.careerFarmStats ?? [], // 完了シーズンの二軍集計（F2-2・blob から復元）
+    careerStats: decodeSeasons(data.careerStats),
+    careerFarmStats: decodeSeasons(data.careerFarmStats), // 完了シーズンの二軍集計（F2-2・blob から復元）
     teamHistory: data.teamHistory ?? [],
-    retiredPlayers: [], // 過去年のオフを replay して再構築（save には含めない・§17）
+    retiredPlayers: data.retiredPlayers ?? [], // R5: 直接復元（前史ぶんは保持しない）
+    awardsHistory: data.awardsHistory ?? [], // R5: 確定した年度別受賞
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
@@ -608,38 +679,12 @@ export function load(blob, options = {}) {
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
     rt: null,
   };
-  // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
-  // 再適用し、真値もロスター（引退・補充）も保存時点へ復元する。trueAbility とロスター構成は §17
-  // （集計のみ永続）に従い save に含めない＝masterSeed から再構築するのが正。
-  // yearIndex=0（1年目セーブ）ではループ非実行＝既存の1年目セーブと完全に同一挙動（回帰安全）。
-  let lastOff = null;
-  for (let y = 0; y < state.yearIndex; y++) {
-    // §req_20260708: league.players/farmを直接動かす育成→支配下の季節中昇格は、day単位の再シムを
-    // しないこの過去年replayでは再現できないため、完了年ぶんのログから直接適用する
-    // （offseasonTransition＝引退/ドラフト等より前＝そのシーズン終了時点の状態に復元してから渡す）。
-    for (const m of state.farmPromotionLog) {
-      if (m.year === y) applyFarmPromotionSwap(state.league, m.upId, m.downId);
-    }
-    const off = offseasonTransition(state.league, cfg, {
-      masterSeed: state.masterSeed,
-      yearIndex: y,
-      year: state.firstSeason + y,
-      // ウェーバー順の素 = 完了年の順位。teamHistory は blob から復元済み＝live と同一値（決定論）。
-      standings: standingsForYear(state, state.firstSeason + y),
-      // 放出/契約更改の "実観測" は careerStats（blob 復元済み）を season==year で絞る＝live と同一部分集合。
-      careerStats: state.careerStats,
-      careerFarmStats: state.careerFarmStats, // 育成昇格の二軍実成績（F2-3・blob 復元済み＝live と同一）
-      marketInterventions: state.marketInterventions,
-      // R3: その年に試合中発生した故障（永続ログ）。live の advanceYear と同一入力＝同一の
-      //   後遺/故障歴を再構築する（season を再シムせずに真値を復元できる唯一の経路）。
-      seasonInjuries: state.injuryLog.filter((e) => e.year === y),
-    });
-    state.retiredPlayers.push(...off.retirees);
-    lastOff = off;
-  }
-  // R3: 当年の開幕IL（pendingInjuries）は blob から復元済み（試合由来の故障は replay で再導出
-  //   できないため save に含める）。lastOff は retirees の再構築にのみ使う。
-  void lastOff;
+  // ★R5: 過去年のオフシーズン再計算（replay）は撤去した。開幕時点のリーグを save から直接
+  //   復元しているので、真値もロスターも既に保存時点の姿になっている。
+  //   （旧方式は「masterSeed から再生成 → 過去オフを全部やり直す」で、30年の前史では
+  //     その入力である30年ぶん・引退者含む全選手の成績が save に必要になり成立しない。
+  //     加えて replay 由来の復元ズレを実際に2度踏んでいる＝構造的な脆さでもあった）
+  //   当季の日次 replay（下の seasonState 復元）は従来どおり行い、順位で検算する。
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;

@@ -66,6 +66,9 @@ vm.runInContext(scripts[1].replace(/\n?initApp\(\);\s*$/, ''), sandbox, { filena
 
 // 1) 初期化（セットアップ画面）
 vm.runInContext('initApp();', sandbox);
+// R5: UI の既定は前史20年（16秒）だが、smoke では 1年に縮めてコードパスだけ通す
+//   （前史そのものの検証は test/game_c2b.test.mjs / probe で行う）。
+globalThis.SABER_CFG_OVERRIDES = { game: { burnInYears: 1 } };
 const simBtn = walk(appDiv).find((n) => n.tag === 'button' && n._onclick);
 assert.ok(simBtn, 'シミュレートボタンが描画される');
 

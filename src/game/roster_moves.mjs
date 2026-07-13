@@ -451,17 +451,19 @@ function processFarmPromotions(rt, teamId, day, out) {
  * @returns {boolean} 入替を実行できたか（upId/downIdが見つからなければfalse・安全弁）
  */
 export function applyFarmPromotionSwap(league, upId, downId) {
-  const up = league.farm.find((d) => d.id === upId);
-  const down = league.players.find((p) => p.id === downId);
-  if (!up || !down) return false;
+  const fi = league.farm.findIndex((d) => d.id === upId);
+  const pi = league.players.findIndex((p) => p.id === downId);
+  if (fi < 0 || pi < 0) return false;
+  const up = league.farm[fi];
+  const down = league.players[pi];
   up.rosterStatus = 'active';
   down.rosterStatus = 'minor';
-  const fi = league.farm.findIndex((d) => d.id === up.id);
-  if (fi >= 0) league.farm.splice(fi, 1);
-  league.players.push(up);
-  const pi = league.players.findIndex((p) => p.id === down.id);
-  if (pi >= 0) league.players.splice(pi, 1);
-  league.farm.push(down);
+  // ★R5: **配列の位置をそのまま入れ替える**（splice+push で末尾へ動かさない）。
+  //   league.players の並び順は selectActiveRoster/buildDepthChart の同点解決に効くため、
+  //   昇格のたびに並びが変わると「同じ入替を巻き戻しても元のリーグに戻らない」。
+  //   位置を保存する入替にすると、逆スワップが厳密に元へ戻す＝セーブの開幕時点復元が成立する。
+  league.players[pi] = up;
+  league.farm[fi] = down;
   return true;
 }
 

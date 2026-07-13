@@ -178,7 +178,8 @@ test('F2-2: 途中セーブ/ロードで二軍が復元され、続行が無セ�
   const blob = JSON.parse(JSON.stringify(save(live)));
   assert.equal(blob.schemaVersion, SCHEMA_VERSION);
   assert.ok(blob.seasonState.farm && blob.seasonState.farm.cursor > 0, '二軍の進行がセーブに載る');
-  assert.ok(Array.isArray(blob.farmPlayers) && blob.farmPlayers.length > 0, '二軍の当年集計がセーブに載る');
+  // R5: 集計は列指向の数値エンコードで保存される（{v,paths,rows,detail}）
+  assert.ok(blob.farmPlayers && Array.isArray(blob.farmPlayers.rows) && blob.farmPlayers.rows.length > 0, '二軍の当年集計がセーブに載る');
   const restored = load(blob, { cfg: createConfig() });
   assert.equal(restored.rt.farm.cursor, live.rt.farm.cursor, '二軍cursorが復元される');
   assert.equal(farmSig(restored), farmSig(live), '二軍順位が復元される');

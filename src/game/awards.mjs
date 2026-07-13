@@ -185,7 +185,39 @@ const asMvp = (r) => (r ? { playerId: r.id, war: r.v } : null);
  * 選手の受賞履歴（全年の表彰を再計算して収集）。determinism: careerStats/teamHistory から純関数で復元。
  * @returns {Array} [{year, kind, label, pos?}]（kind='mvp'|'roty'|'title'|'bestNine'|'glove'）
  */
-export function playerAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg }) {
+export function playerAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg, awardsHistory = null }) {
+  // ★R5: 実際に確定した受賞（awardsHistory）が保存されていればそれを使う。
+  //   前史(burn-in)では引退選手の成績を保持しないため、careerStats からの**再計算は嘘の受賞者を出す**
+  //   （当時のMVPが引退して名簿から消えていると、別人が繰り上がってしまう）。確定値を優先する。
+  if (awardsHistory && awardsHistory.length) {
+    const out = [];
+    for (const rec of awardsHistory) out.push(...collectAwardsFor(playerId, rec.year, rec.awards));
+    // 保存が無い年（旧セーブ/前史外）だけ従来どおり再計算して足す
+    const covered = new Set(awardsHistory.map((r) => r.year));
+    const rest = recomputeAwardHistory(playerId, { careerStats, teamHistory: teamHistory.filter((h) => !covered.has(h.year)), playersById, cfg });
+    return out.concat(rest).sort((a, b) => a.year - b.year);
+  }
+  return recomputeAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg });
+}
+
+/** 確定済みの受賞オブジェクト（computeSeasonAwards の返値）から、その選手が獲ったものを抜き出す。 */
+function collectAwardsFor(playerId, year, awards) {
+  const out = [];
+  if (!awards) return out;
+  for (const lg of awards.leagues ?? []) {
+    if (lg.mvp && lg.mvp.playerId === playerId) out.push({ year, kind: 'mvp', label: 'MVP' });
+    if (lg.roty && lg.roty.playerId === playerId) out.push({ year, kind: 'roty', label: '新人王' });
+    for (const k of Object.keys(lg.titles ?? {})) {
+      const t = lg.titles[k];
+      if (t && t.playerId === playerId) out.push({ year, kind: 'title', label: TITLE_LABELS[k], titleKey: k, value: t.value });
+    }
+    for (const b of lg.bestNine ?? []) if (b.playerId === playerId) out.push({ year, kind: 'bestNine', label: 'ベストナイン', pos: b.pos });
+    for (const g of lg.gloves ?? []) if (g.playerId === playerId) out.push({ year, kind: 'glove', label: DEF_AWARD_NAME, pos: g.pos });
+  }
+  return out;
+}
+
+function recomputeAwardHistory(playerId, { careerStats, teamHistory, playersById, cfg }) {
   const byYear = new Map();
   for (const s of careerStats) {
     if (!byYear.has(s.season)) byYear.set(s.season, []);

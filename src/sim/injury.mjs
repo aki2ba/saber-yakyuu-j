@@ -40,11 +40,16 @@ export function injuryHazard(p, cfg) {
   }
   if (p.primaryPos === 'C') h += inj.catcher; // R3: 割増は0（捕手の負傷"頻度"は他ポジより低い・Guy 2015）
   // 故障歴（再発・最大リスク）: 件数×重症度で将来リスクが上がる。
+  //   ★R4: 合計に上限（recurCap）を設ける。無制限に累積すると、試合中の故障（R3）で履歴が
+  //   早く積み上がり、多年運用でリーグ全体が壊れやすくなって出場時間が削れる（規定到達が
+  //   較正帯を割る）。「前回の故障が最大の予測因子」は事実だが、青天井ではない。
   let priorMajor = false;
+  let recur = 0;
   for (const e of hist) {
-    h += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
+    recur += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
     if (e.severity === 'major') priorMajor = true;
   }
+  h += Math.min(recur, inj.recurCap ?? Infinity);
   // 投手の大怪我経験は以後の恒常的な将来リスク（非対称・§10.5）。
   if (p.role === 'pitcher' && priorMajor) h += inj.pitcherMajorLegacy;
   return clamp(h, 0, inj.cap);

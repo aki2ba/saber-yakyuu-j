@@ -119,6 +119,40 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   return { injuries, breakouts, retirees, rookies, promotions, draftLog, fa, trades, pickups, contracts };
 }
 
+/**
+ * ★R4: 古い完了シーズンから「表示専用の内訳」を落として save の肥大を防ぐ。
+ *
+ * 1シーズンの careerStats は約1.4MB（542行×2.6KB）で、その **6割が batting.splits（対左右/得点圏/
+ * ホームビジター）と batting.byCount（カウント別）** ＝ どちらも選手モーダルで直近シーズンを表示する
+ * ためだけの内訳。20年プレイすると save が数十MBに膨らむ（burn-in で顕在化したが、burn-in を
+ * 使わずに20年遊んでも同じ）。指標の算出・表彰・記録・オフの査定は **トップレベルの生カウント**
+ * （pa/ab/h/hr/bb/so, outs/r/er …）だけを使うので、直近 keepDetailYears 年より古い行からは
+ * 内訳を落としてよい（battingSplits は欠損時に0行を返す＝表示が壊れない）。§17「集計値のみ保存」の趣旨に沿う。
+ */
+function compactCareerStats(state) {
+  const keep = state.cfg.game.keepDetailYears ?? 2;
+  const cutoff = state.year - keep; // これより古いシーズンの内訳を落とす
+  for (const s of state.careerStats) {
+    if (s.season >= cutoff) continue;
+    if (s.batting) {
+      delete s.batting.splits;
+      delete s.batting.byCount;
+    }
+    if (s.pitching) delete s.pitching.byCount;
+  }
+  // 二軍（careerFarmStats）も表示専用の内訳だけを落とす。
+  //   ★守備(fielding)・走塁(baserunning) は **絶対に落とさない**: R4 でこれらは
+  //   二軍サブタブの指標表示にも、球団AIの昇格査定（UZR/BsR）にも使う（＝機能データ）。
+  for (const s of state.careerFarmStats ?? []) {
+    if (s.season >= cutoff) continue;
+    if (s.batting) {
+      delete s.batting.splits;
+      delete s.batting.byCount;
+    }
+    if (s.pitching) delete s.pitching.byCount;
+  }
+}
+
 /** 完了年 y（=firstSeason+y）の最終順位を teamHistory から取り出す（ウェーバー順の素）。 */
 function standingsForYear(state, year) {
   const hist = state.teamHistory.find((h) => h.year === year);
@@ -178,9 +212,19 @@ function captureBaseManager(state) {
 
 /**
  * 新規ゲームを開始する。
+ *
+ * ★R4 burnInYears（世界の"前史"）: >0 なら、プレイ開始前に N 年ぶんのシーズンを自動消化してから
+ *   プレイヤーに引き渡す（開幕年は firstSeason のまま。前史は firstSeason-N 〜 firstSeason-1 年）。
+ *   生成直後のリーグは「誰も故障したことがなく・通算記録も引退者もドラフト歴も無い」冷えた世界で、
+ *   ドラフト→成長→故障→引退のサイクルが一度も回っていない。burn-in はその履歴を作る。
+ *   【計測（20年・2seed）】年齢/平均能力/得点環境は **1年目とほぼ同一**（R2 で生成と加齢を同一
+ *   カーブにしたため母集団が既に定常）。差が出るのは履歴だけ:
+ *     故障歴を持つ選手 0% → 58%／通算記録・引退者・ドラフト履歴・受賞歴が存在する
+ *   所要は 1世界あたり約16秒（20年）。0 なら従来どおり生成直後から開始（＝較正の土台と同一）。
+ *
  * @param {number} masterSeed リーグ生成＋進行のマスターシード（決定論の起点）
  * @param {string} playerTeamId 自チーム（'T1'..'T12'）
- * @param {{cfg?:Object, autoManage?:boolean}} options
+ * @param {{cfg?:Object, autoManage?:boolean, burnInYears?:number}} options
  * @returns {Object} GameState
  */
 export function newGame(masterSeed, playerTeamId, options = {}) {
@@ -190,15 +234,17 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
   if (!league.teams.some((t) => t.id === playerTeamId)) {
     throw new Error(`playerTeamId ${playerTeamId} がリーグに存在しない`);
   }
+  const burnIn = Math.max(0, Math.floor(options.burnInYears ?? 0));
   const state = {
     schemaVersion: SCHEMA_VERSION,
     engineVersion: ENGINE_VERSION,
     masterSeed: masterSeed >>> 0,
     playerTeamId,
     settings: { autoManage: options.autoManage ?? true }, // C1a は全おまかせ（人間介入は後段UI）
-    firstSeason: cfg.game.firstSeason,
+    // burn-in（前史）を回す場合、初年度を N 年前へ巻き戻す＝プレイヤーの開幕は firstSeason のまま。
+    firstSeason: cfg.game.firstSeason - burnIn,
     yearIndex: 0,
-    year: cfg.game.firstSeason,
+    year: cfg.game.firstSeason - burnIn,
     cfg,
     league,
     careerStats: [], // 完了シーズンの選手集計（永続・§17）
@@ -220,6 +266,13 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
   startYear(state);
+  // ★R4 前史（burn-in）: プレイヤーに渡す前に N 年ぶんを自動消化する。決定論（同一 masterSeed なら
+  //   同一の前史）。消化後の state は「20年ぶんの通算記録・引退者・故障歴・ドラフト履歴を持つ、
+  //   firstSeason 開幕直前のリーグ」になる（yearIndex=burnIn / year=cfg.game.firstSeason）。
+  for (let y = 0; y < burnIn; y++) {
+    while (!state.rt.finished) advanceDay(state);
+    advanceYear(state);
+  }
   return state;
 }
 
@@ -422,6 +475,7 @@ export function advanceYear(state) {
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
+  compactCareerStats(state); // R4: 古いシーズンの表示専用内訳を落とす（save 肥大の防止・下記）
   state.yearIndex += 1;
   state.year += 1;
   startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）

@@ -14,7 +14,7 @@
 //     ui.mjs のヘルパー（el/td/openModal/state/game 等）は名前衝突とNode循環importを避けるため
 //     引数 u（deps オブジェクト・ui.mjs の teamTabDeps()）で受け取る。
 // ============================================================================
-import { playerBatting, playerPitching, hitterWAR, pitcherWAR, makeRng, hashSeed, deriveLeagueConstants } from '../engine.mjs';
+import { playerBatting, playerPitching, hitterWAR, pitcherWAR, makeRng, hashSeed, deriveLeagueConstants, uzrRuns, totalFieldInnings, playerBaserunning } from '../engine.mjs';
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -37,9 +37,13 @@ const TEAM_PIT_COLS = [
   ['war', 'WAR'], ['grade', '等級'], ['status', '状態', 'left'],
 ];
 // F2-4: 二軍サブタブの列＝**二軍成績列**（farmStats観測値）。WAR/wRC+はリーグ水準差のため非表示。
+// ★R4: 二軍の守備(UZR)・走塁(BsR)も表示する。集計器は積んでいたのに表にも査定にも出しておらず、
+//   「守備の上手い二軍野手」が可視化されず球団AIも見ていなかった（ユーザー指摘）。
+//   得点値は二軍のリーグ定数（farmStats＋二軍順位表から導出）基準＝二軍平均に対する上積み。
 const FARM_BAT_COLS = [
   ['name', '選手', 'left'], ['pos', '位置', 'left'], ['age', '年齢'], ['pa', '二軍打席'],
   ['avg', '二軍打率'], ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['hr', '本'], ['rbi', '打点'], ['sb', '盗塁'],
+  ['uzr', '守備'], ['bsr', '走塁'],
   ['grade', '等級'], ['status', '状態', 'left'],
 ];
 const FARM_PIT_COLS = [
@@ -50,6 +54,7 @@ const FARM_PIT_COLS = [
 // セル書式（キー別）。無観測（null）は '-'。
 const TEAM_COL_FMT3 = new Set(['avg', 'obp', 'slg', 'ops']);
 const TEAM_COL_F2 = new Set(['era', 'fip', 'whip']);
+const TEAM_COL_F1 = new Set(['uzr', 'bsr']); // R4: 二軍の守備/走塁（得点値・小数1桁）
 const TEAM_COL_PCT = new Set(['kbbPct']);
 const TEAM_COL_ASC = new Set(['era', 'fip', 'whip', 'age']); // クリック時に昇順が自然な列
 
@@ -214,11 +219,16 @@ function buildFarmRosterRows(players, u) {
     } else {
       const has = !!s && s.batting.pa > 0;
       const m = has ? playerBatting(s, flc) : null;
+      // R4: 二軍の守備(UZR)・走塁(BsR)。守備は出場イニングがある選手のみ（DH専任は '-'）。
+      const inn = has ? totalFieldInnings(s.fielding) : 0;
+      const uzr = has && inn > 0 ? uzrRuns(s, state.cfg, flc) : null;
+      const bsr = has ? playerBaserunning(s, state.cfg, flc).bsr : null;
       bat.push({
         id: p.id, name: p.name, age: p.age, minor, pos: u.posJP(u.primaryPos(p)),
         pa: m ? m.pa : null, avg: m ? finiteOrNull(m.avg) : null, obp: m ? finiteOrNull(m.obp) : null,
         slg: m ? finiteOrNull(m.slg) : null, ops: m ? finiteOrNull(m.ops) : null,
         hr: m ? m.hr : null, rbi: m ? m.rbi : null, sb: m ? m.sb : null,
+        uzr: finiteOrNull(uzr), bsr: finiteOrNull(bsr),
         grade, status,
       });
     }
@@ -270,6 +280,7 @@ function teamRosterCell(k, d, u) {
   if (typeof v !== 'number') return v;
   if (TEAM_COL_FMT3.has(k)) return u.fmt3(v);
   if (TEAM_COL_F2.has(k)) return v.toFixed(2);
+  if (TEAM_COL_F1.has(k)) return (v >= 0 ? '+' : '') + v.toFixed(1);
   if (TEAM_COL_PCT.has(k)) return u.pct(v);
   if (k === 'ip') return v.toFixed(1);
   if (k === 'war') return v.toFixed(1);

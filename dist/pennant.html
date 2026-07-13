@@ -1591,22 +1591,36 @@ const TUNING_DEFAULT = {
   //   三層構造: 判定は一軍/二軍の観測statline＋スカウト評価（決定論ノイズ）のみ（真値不参照）。
   //   鉄則7: 1年目は enableMoves が立たず一切不作動（simulateSeason と bit 同一を維持）。
   moves: {
-    swapCooldownDays: 10, // 入替クールダウン（NPB10日ルールの簡略化）: 登録/抹消から再移動までの日数
+    swapCooldownDays: 10, // 入替クールダウン（NPB10日ルール＝抹消日を含み10日は再登録不可・協約84条）
     ilMinDays: 4, // IL補充を出す最低の残り離脱日数（数日の離脱では登録を動かさない）
-    reviewInterval: 25, // 成績入替チェックの周期（チーム消化試合数。既存の25試合レビューと同周期）
+    // ★R4: 成績入替の周期。旧25試合は粗すぎた（NPBの登録抹消は随時）。10試合ごと＝年14回。
+    reviewInterval: 10,
+    // ★R4「ダメなら落とす」の絶対評価（旧実装は相対評価のみ＝二軍に実績十分な上位互換が居ないと
+    //   打ち込まれた投手が一軍に居座り続けた。ユーザー指摘「打ち込まれて二軍に落ちている」）。
+    relegateRelieverRA9: 6.3, // 救援: 観測RA9がこれ以上なら二軍へ（リーグ平均RA9は約4.3）
+    relegateStarterRA9: 5.6, // 先発: 同（緩衝を厚く＝先発は簡単には外さない）
+    relegateWoba: 0.288, // 野手: 観測混合評価(blendedWoba)がこれ以下なら二軍へ
+    maxPitchSwapsPerReview: 2, // 1レビューで落とす投手の上限（総入替を暴走させない）
+    maxFieldSwapsPerReview: 1, // 同・野手
+    fieldMinPA: 50, // 野手の不振判定に要する最低PA（代打専任等の少標本では動かさない）
     perfSwapMargin: 0.008, // 野手の成績入替に要する実効wOBA差（二軍評価−レベル差割引 > 一軍評価＋これ）
     farmGapWoba: 0.02, // 二軍観測wOBAのレベル差割引（二軍の投手レベルは低い＝観測は甘く出る）
-    farmMinPA: 40, // 昇格候補野手に要する二軍観測の最低PA（標本不足では動かさない）
+    farmMinPA: 40, // 「相対評価」で二軍野手の成績を信じるのに要する最低PA（昇格の必須条件ではない）
     pitchSwapRA9: 1.2, // 投手の成績入替に要するRA9差（一軍RA9 −（二軍RA9＋割引）> これ）
     farmGapRA9: 0.7, // 二軍観測RA9のレベル差割引
-    pitchMinBF: 40, // 一軍不振投手の判定に要する最低対戦打者数
-    farmPitchMinOuts: 45, // 昇格候補投手に要する二軍観測の最低アウト数（15回）
+    pitchMinBF: 25, // 救援の不振判定に要する最低対戦打者数（R4: 40→25。数試合打ち込まれれば抹消）
+    farmPitchMinOuts: 45, // 「相対評価」で二軍投手の成績を信じるのに要する最低アウト数（昇格の必須条件ではない）
     // IL補充の球団AI評価（callupScore = evaluateProspect＋二軍観測の加点。観測＋スカウト）
     callupWobaW: 250, // 二軍観測wOBA偏差 → 球団AI評価点の換算（野手）
     callupRa9W: 6, // 二軍観測RA9偏差 → 球団AI評価点の換算（投手）
     callupRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
     callupTrustPA: 80, // 二軍観測の信頼度半飽和PA（野手・少PAはスカウト評価優位）
     callupTrustOuts: 90, // 同（投手・アウト数）
+    // ★R4: 守備・走塁の観測を査定に入れる（旧実装は打撃/防御率しか見ず、守備の上手い二軍野手が
+    //   永遠に上がってこなかった／守備で稼ぐ一軍野手が打撃だけで落とされていた）。
+    callupDefW: 0.9, // 二軍の観測守備(UZR)＋走塁(BsR) 1得点あたりの球団AI評価点
+    defTrustInnings: 200, // 守備観測の信頼度半飽和イニング（少イニングのUZRは信じない）
+    defWobaMinPA: 120, // 守備/走塁の得点をwOBA相当へ割るときのPA下限（少PAでの発散を防ぐ）
     // --- §req_20260708: ローテ投手の成績入替（旧実装はローテ全除外＝不振先発が固定化する欠陥） ---
     rotationMinBF: 100, // ローテ投手の判定に要する最低対戦打者数（救援pitchMinBF=40より緩衝を厚く＝数試合の不調では動かさない）
     rotationSwapRA9: 1.8, // ローテ入替に要するRA9差（救援pitchSwapRA9=1.2より大きく＝先発は簡単には外さない）
@@ -2035,9 +2049,16 @@ const TUNING_DEFAULT = {
     //   PubMed 26320222）。Carr 2022 でも捕手は負傷burdenが最低(11.0%)。ただし膝・頭頸部の負傷は
     //   重症化しやすい → **頻度でなく重症度で差をつける**（下の majorCatcher）。
     catcher: 0.0,
-    recurMinor: 0.020, // 軽症の故障歴1件ごとの再発リスク加算
-    recurMajor: 0.050, // 重症の故障歴1件ごとの再発リスク加算（最大リスク）
-    pitcherMajorLegacy: 0.050, // 投手が過去に大怪我＝以後の恒常的な将来リスク（非対称）
+    // ★R4 再発リスクの上限（故障歴スパイラルの遮断）:
+    //   旧実装は故障歴1件ごとにハザードを**無制限に累積**していた。R3で故障が試合中に発生する
+    //   ようになり、1選手が1年に複数回壊れうるようになったため、キャリアを通じて履歴が積み上がり
+    //   **20年後のリーグは全員が壊れやすい**状態になっていた（実測: 規定到達/球団が 5.8→3.9 と
+    //   較正帯[5,9]を割り、防御率も 3.98→4.16 へ悪化）。現実の「前回の故障が最大の予測因子」は
+    //   事実だが、10年前の肉離れが今日のリスクを上げ続けることはない。→ 合計に上限を設ける。
+    recurMinor: 0.008, // 軽症の故障歴1件ごとの再発リスク加算
+    recurMajor: 0.022, // 重症の故障歴1件ごとの再発リスク加算（最大リスク）
+    recurCap: 0.040, // 故障歴による加算の合計上限（＝故障がちな選手でも2倍弱に留める）
+    pitcherMajorLegacy: 0.030, // 投手が過去に大怪我＝以後の恒常的な将来リスク（非対称。上限の外側）
     cap: 0.55, // ハザードの上限
     // ★R3 重症率の再較正: 現実は「シーズン絶望級＝全故障の 8-11%」（Esquivel 2019・MLB HITS
     //   n=51,548・確度高）。旧値 0.22 は過大だった。
@@ -2187,6 +2208,9 @@ const TUNING_DEFAULT = {
       //   （二軍で打った/抑えた育成ほど昇格しやすい。標本が薄いと信頼度加重で効きが弱まる）。
       promotePerfTrustPA: 100, // 二軍打撃観測の信頼度半飽和PA
       promotePerfTrustOuts: 120, // 二軍投球観測の信頼度半飽和アウト数（40回）
+      // ★R4: 育成の昇格査定に二軍の守備(UZR)・走塁(BsR)の観測を入れる（旧実装は打撃/防御率のみ）。
+      promoteDefW: 0.9, // 二軍の観測守備＋走塁 1得点あたりの昇格評価点
+      promoteDefTrustInnings: 200, // 守備観測の信頼度半飽和イニング
       promoteWobaW: 60, // 二軍観測wOBA偏差 → 昇格観測点の換算（野手）
       promoteRa9W: 1.5, // 二軍観測RA9偏差 → 昇格観測点の換算（投手）
       promoteRa9Ref: 4.5, // 二軍観測RA9の基準（これより良ければ加点）
@@ -2278,6 +2302,10 @@ const TUNING_DEFAULT = {
 const GAME_DEFAULT = {
   schemaVersion: 2, // セーブJSONのスキーマ版（load時の互換判定。C2bでオフシーズン意味論拡張→v2）
   firstSeason: 2026, // キャリア1年目の年
+  // R4: careerStats に「表示専用の内訳（スプリット/カウント別）」を残す直近年数。これより古い年は
+  //   内訳を落として save の肥大を防ぐ（20年プレイで数十MBになる）。指標/表彰/記録/査定は
+  //   トップレベルの生カウントのみを使うので影響しない。
+  keepDetailYears: 2,
   daysPerWeek: 7, // advanceTo('weekEnd') の週境界
   daysPerMonth: 26, // advanceTo('monthEnd') の月境界（143試合≈6か月）
   rookieAgeMin: 18, // 新人（ドラフト補充）の最小年齢（高卒相当）
@@ -5320,11 +5348,16 @@ function injuryHazard(p, cfg) {
   }
   if (p.primaryPos === 'C') h += inj.catcher; // R3: 割増は0（捕手の負傷"頻度"は他ポジより低い・Guy 2015）
   // 故障歴（再発・最大リスク）: 件数×重症度で将来リスクが上がる。
+  //   ★R4: 合計に上限（recurCap）を設ける。無制限に累積すると、試合中の故障（R3）で履歴が
+  //   早く積み上がり、多年運用でリーグ全体が壊れやすくなって出場時間が削れる（規定到達が
+  //   較正帯を割る）。「前回の故障が最大の予測因子」は事実だが、青天井ではない。
   let priorMajor = false;
+  let recur = 0;
   for (const e of hist) {
-    h += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
+    recur += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
     if (e.severity === 'major') priorMajor = true;
   }
+  h += Math.min(recur, inj.recurCap ?? Infinity);
   // 投手の大怪我経験は以後の恒常的な将来リスク（非対称・§10.5）。
   if (p.role === 'pitcher' && priorMajor) h += inj.pitcherMajorLegacy;
   return clamp(h, 0, inj.cap);
@@ -9280,6 +9313,9 @@ function agePitch(pitch, ctx) {
 
 
 
+
+
+
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
 function byId(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -9574,14 +9610,24 @@ function signDevelopment(league, cfg, undrafted, order) {
  * @param {Object} d 育成選手
  * @param {?Object} obs 当年の二軍 statline（{batting,pitching}・careerFarmStats 由来）
  */
-function farmPerfBonus(d, obs, cfg) {
+function farmPerfBonus(d, obs, cfg, farmLc = null) {
   if (!obs) return 0;
   const f = cfg.tuning.market.farm;
   if (d.role === 'fielder') {
     const b = obs.batting;
     if (!b || !(b.pa > 0)) return 0;
     const trust = b.pa / (b.pa + f.promotePerfTrustPA);
-    return f.promoteWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+    let v = f.promoteWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+    // ★R4: 二軍の守備(UZR)・走塁(BsR)の観測も昇格査定に入れる（旧実装は打撃だけを見ていた）。
+    //   farmLc（二軍のリーグ定数）が渡された場合のみ作動（旧構成/二軍不成立では 0＝従来と同一）。
+    if (farmLc && obs.fielding) {
+      const inn = totalFieldInnings(obs.fielding);
+      const uzr = inn > 0 ? uzrRuns(obs, cfg, farmLc) : 0;
+      const bsr = playerBaserunning(obs, cfg, farmLc).bsr || 0;
+      const dTrust = inn / (inn + f.promoteDefTrustInnings);
+      v += f.promoteDefW * (uzr * dTrust + bsr);
+    }
+    return v;
   }
   const pi = obs.pitching;
   if (!pi || !(pi.outs > 0)) return 0;
@@ -9637,12 +9683,16 @@ function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, d
   const promoted = [];
   const promotions = [];
   const stillFarm = [];
+  // R4: 二軍のリーグ定数（当年の二軍観測から導出）。守備(UZR)・走塁(BsR)を得点換算して昇格査定に
+  //   入れるために必要。farmObs が無い旧構成（二軍リーグ不成立）では null＝従来の判定と同一。
+  const farmSeasons = farmObs ? [...farmObs.values()].filter((s) => s && s.fielding) : [];
+  const farmLc = farmSeasons.length ? deriveLeagueConstants({ playerSeasons: farmSeasons, standings: [] }) : null;
   for (const d of league.farm.slice().sort(byId)) {
     const tk = `${d.role}:${d.primaryPos}`;
     const r = makeRng(hashSeed(masterSeed, 'promote', yearIndex, d.id));
     const observed =
       overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd) +
-      farmPerfBonus(d, farmObs ? farmObs.get(d.id) : null, cfg);
+      farmPerfBonus(d, farmObs ? farmObs.get(d.id) : null, cfg, farmLc);
     const vi = remainingVac.findIndex((v) => v.teamId === d.teamId && `${v.role}:${v.primaryPos}` === tk);
     const hasRoom = (controlledCount.get(d.teamId) ?? 0) < cap; // 支配下70枠の空き（F2-3枠管理）
     if (observed >= mk.farm.promoteThreshold && vi >= 0 && hasRoom) {
@@ -10096,9 +10146,65 @@ function runContractRenewal(league, cfg, { obs }) {
 
 
 
+
+
+
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
 function byId(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+// ============================================================================
+// ★R4: 守備・走塁の「観測」を球団AIの査定に入れる（ユーザー指摘）。
+//
+// 旧実装の欠陥: 二軍選手の査定（callupScore / farmPerfBonus）も、一軍選手の降格判定も、
+//   **打撃（wOBA）と防御率（RA9）しか見ていなかった**。二軍の守備・走塁は集計器が
+//   ちゃんと積んでいる（UZR成分・UBR/wSB/wGDP の生カウント）のに、査定でも表示でも捨てていた。
+//   結果「守備の上手い二軍野手は永遠に上がってこない」「守備で稼ぐ一軍野手が打撃だけで
+//   二軍に落とされる」という、現実にあり得ない編成AIになっていた。
+// 三層構造: 見るのは**観測成績**（rt.stats / rt.farm.stats）だけ＝真値は覗かない。
+// ============================================================================
+
+/** 当季の観測から一軍/二軍のリーグ定数を導出する（レビュー時に作り直す・水準が違うので別々に）。 */
+function refreshLeagueConstants(rt) {
+  const top = [...rt.stats.stats.values()];
+  rt.moves.lc = top.length
+    ? deriveLeagueConstants({ playerSeasons: top, standings: [...rt.standings.values()] })
+    : null;
+  const farm = rt.farm ? [...rt.farm.stats.stats.values()] : [];
+  rt.moves.farmLc = farm.length
+    ? deriveLeagueConstants({ playerSeasons: farm, standings: [...rt.farm.standings.values()] })
+    : null;
+}
+
+/**
+ * 観測された守備＋走塁の価値（得点）。標本が薄いうちは信頼度で縮める（UZRは少イニングで暴れる）。
+ * @returns {number} runs above average（守備UZR＋走塁BsR）
+ */
+function obsDefRunRuns(ps, cfg, lc) {
+  if (!ps || !lc) return 0;
+  const inn = totalFieldInnings(ps.fielding);
+  const uzr = inn > 0 ? uzrRuns(ps, cfg, lc) : 0;
+  const bsr = playerBaserunning(ps, cfg, lc).bsr || 0;
+  const mv = cfg.tuning.moves;
+  const trust = inn / (inn + mv.defTrustInnings); // 少イニングの守備評価は信じない
+  return uzr * trust + bsr;
+}
+
+/** 得点 → wOBA 相当（打撃評価と足せる単位へ）。PA が少ないと発散するので下限を噛ませる。 */
+function runsToWoba(runs, pa, lc, cfg) {
+  if (!lc || !lc.wobaScale) return 0;
+  const denom = Math.max(pa, cfg.tuning.moves.defWobaMinPA);
+  return (runs / denom) * lc.wobaScale;
+}
+
+/** 一軍野手の「打撃＋守備＋走塁」の観測混合評価（降格判定の物差し）。 */
+function fielderValue(rt, pid, cfg) {
+  const u = rt.usageByTeam.get(rt.moves.byId.get(pid).teamId);
+  const bat = blendedWoba(u, pid, rt.stats.getBat, cfg);
+  const ps = rt.stats.stats.get(pid);
+  if (!ps) return bat;
+  return bat + runsToWoba(obsDefRunRuns(ps, cfg, rt.moves.lc), ps.batting.pa, rt.moves.lc, cfg);
 }
 
 /** 観測RA9（未出場/アウト0は null＝判定対象外）。 */
@@ -10143,6 +10249,9 @@ function callupScore(rt, teamId, p, cfg) {
       const trust = b.pa / (b.pa + mv.callupTrustPA);
       score += mv.callupWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
     }
+    // ★R4: 二軍の守備・走塁の観測も査定に入れる（旧実装は打撃だけを見ていた＝守備の上手い
+    //   二軍野手が永遠に上がってこなかった）。UZR＋BsR の得点をそのまま評価点へ換算する。
+    score += mv.callupDefW * obsDefRunRuns(rt.farm.stats.stats.get(p.id), cfg, rt.moves.farmLc);
   } else {
     const ra9 = obsRA9(rt.farm.stats.getPitch(p.id));
     if (ra9 != null) {
@@ -10323,60 +10432,72 @@ function processPerfSwaps(rt, teamId, day, out) {
   const fu = () => rt.farm.usageByTeam.get(teamId);
   const u = () => rt.usageByTeam.get(teamId);
 
-  // --- 野手: 混合評価の最下位から順に、同ポジションの二軍好調者と比較 ---
-  const downFielders = activeRosterOf(rt, teamId)
+  // 二軍から誰を上げるか＝球団AI評価（スカウト＋二軍観測の信頼度加重。IL補充と同じ物差し）。
+  //   ★R4: 旧実装は「二軍で farmMinPA/farmPitchMinOuts 以上を消化し、かつ一軍の選手より明確に
+  //   良い成績を残した選手」しか昇格候補にしなかった（＝**相対比較のみ**）。そのため
+  //   「打ち込まれた中継ぎ」も、二軍に実績十分な上位互換が居なければ一軍に居座り続けた。
+  //   現実の球団は「ダメなら落とす」→「二軍から誰かを上げる」（上げる相手は実績が薄くても
+  //   スカウト評価で選ぶ）。昇格側の下限標本を外し、callupScore（真値を見ないスカウト観測＋
+  //   二軍成績の加点）で選ぶ。
+  const bestFarmFor = (p, extra) =>
+    bestBy(farmCandidates(rt, teamId, p, day), (q) => callupScore(rt, teamId, q, cfg) + (extra ? extra(q) : 0));
+  const doSwap = (up, down) => {
+    swapRegistration(rt, teamId, up, down, day);
+    logMove(rt, out, { day, teamId, type: 'perfSwap', up, down });
+  };
+
+  // --- (a) 打ち込まれた投手を二軍へ落とす -------------------------------------------
+  //   救援は少ない対戦打者数で判断される（数試合打ち込まれれば抹消＝NPBの実務）。
+  //   先発は緩衝を厚く取り、数試合の不調では動かさない（実際に先発は簡単には外されない）。
+  const rot = new Set(rt.chartsByTeam.get(teamId).dh.rotation);
+  const pitchers = activeRosterOf(rt, teamId)
+    .filter((p) => p.role === 'pitcher' && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
+    .map((p) => ({ p, line: rt.stats.getPitch(p.id), starter: rot.has(p.id) }))
+    .filter(({ line, starter }) => obsRA9(line) != null && line.bf >= (starter ? mv.rotationMinBF : mv.pitchMinBF))
+    .sort((a, b) => obsRA9(b.line) - obsRA9(a.line) || byId(a.p, b.p));
+  let nPitchSwaps = 0;
+  for (const { p, line, starter } of pitchers) {
+    if (nPitchSwaps >= mv.maxPitchSwapsPerReview) break;
+    const ra9 = obsRA9(line);
+    const best = bestFarmFor(p, starter ? (q) => starterScore(q) * mv.rotationStarterScoreW : null);
+    if (!best) continue; // 同型の代わりが二軍に居ない（枠を壊せない）
+    const farmRa9 = obsRA9(rt.farm.stats.getPitch(best.id));
+    // ①絶対評価: 観測RA9が「打ち込まれた」水準（＝二軍の実績を問わず落とす）
+    const shelled = ra9 >= (starter ? mv.relegateStarterRA9 : mv.relegateRelieverRA9);
+    // ②相対評価: 二軍に明確に良い投手が居る（レベル差割引 farmGapRA9 込み）
+    const outclassed =
+      farmRa9 != null &&
+      (rt.farm.stats.getPitch(best.id).outs ?? 0) >= mv.farmPitchMinOuts &&
+      ra9 - (farmRa9 + mv.farmGapRA9) > (starter ? mv.rotationSwapRA9 : mv.pitchSwapRA9);
+    if (!shelled && !outclassed) continue;
+    doSwap(best, p);
+    nPitchSwaps++;
+  }
+
+  // --- (b) 打てない野手を二軍へ落とす -----------------------------------------------
+  const fielders = activeRosterOf(rt, teamId)
     .filter((p) => p.role === 'fielder' && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
-    .map((p) => ({ p, v: blendedWoba(u(), p.id, rt.stats.getBat, cfg) }))
+    .map((p) => ({ p, bat: rt.stats.getBat(p.id), v: fielderValue(rt, p.id, cfg) }))
+    .filter(({ bat }) => bat.pa >= mv.fieldMinPA) // 標本不足（代打専任等）は判断しない
     .sort((a, b) => a.v - b.v || byId(a.p, b.p));
-  for (const { p, v } of downFielders) {
-    const cands = farmCandidates(rt, teamId, p, day).filter((q) => rt.farm.stats.getBat(q.id).pa >= mv.farmMinPA);
-    const best = bestBy(cands, (q) => blendedWoba(fu(), q.id, rt.farm.stats.getBat, cfg));
+  let nFieldSwaps = 0;
+  for (const { p, v } of fielders) {
+    if (nFieldSwaps >= mv.maxFieldSwapsPerReview) break;
+    const best = bestFarmFor(p, null);
     if (!best) continue;
-    const qv = blendedWoba(fu(), best.id, rt.farm.stats.getBat, cfg) - mv.farmGapWoba;
-    if (qv - v > mv.perfSwapMargin) {
-      swapRegistration(rt, teamId, best, p, day);
-      logMove(rt, out, { day, teamId, type: 'perfSwap', up: best, down: p });
-      break; // 1レビュー1件まで
-    }
-  }
-
-  // --- 投手: ローテ外の観測RA9最悪から順に、二軍の観測RA9最良と比較 ---
-  const rot = new Set(rt.chartsByTeam.get(teamId).dh.rotation); // ローテは以下の別ループで扱うので対象外
-  const downPitchers = activeRosterOf(rt, teamId)
-    .filter((p) => p.role === 'pitcher' && !rot.has(p.id) && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
-    .map((p) => ({ p, line: rt.stats.getPitch(p.id) }))
-    .filter(({ line }) => line.bf >= mv.pitchMinBF && obsRA9(line) != null)
-    .sort((a, b) => obsRA9(b.line) - obsRA9(a.line) || byId(a.p, b.p));
-  for (const { p, line } of downPitchers) {
-    const cands = farmCandidates(rt, teamId, p, day).filter((q) => (rt.farm.stats.getPitch(q.id).outs ?? 0) >= mv.farmPitchMinOuts);
-    const best = bestBy(cands, (q) => -obsRA9(rt.farm.stats.getPitch(q.id)));
-    if (!best) continue;
-    if (obsRA9(line) - (obsRA9(rt.farm.stats.getPitch(best.id)) + mv.farmGapRA9) > mv.pitchSwapRA9) {
-      swapRegistration(rt, teamId, best, p, day);
-      logMove(rt, out, { day, teamId, type: 'perfSwap', up: best, down: p });
-      break; // 1レビュー1件まで
-    }
-  }
-
-  // --- 投手(ローテ): 観測RA9が長期に悪い先発を、二軍の先発適性ある好投手と入替（§req_20260708）。
-  //     旧実装はローテ投手を一切入替対象にしておらず「ERAが高い投手が居座る」構造的欠陥だった。
-  //     rotationMinBF/rotationSwapRA9 は救援より緩衝を大きく取り、数試合の不調では動かさない
-  //     （実際の運用でも先発は簡単には外されない・§req_20260708ユーザー指摘）。
-  const downStarters = activeRosterOf(rt, teamId)
-    .filter((p) => p.role === 'pitcher' && rot.has(p.id) && !isInjured(u(), p.id, day) && !inCooldown(rt, p.id, day))
-    .map((p) => ({ p, line: rt.stats.getPitch(p.id) }))
-    .filter(({ line }) => line.bf >= mv.rotationMinBF && obsRA9(line) != null)
-    .sort((a, b) => obsRA9(b.line) - obsRA9(a.line) || byId(a.p, b.p));
-  for (const { p, line } of downStarters) {
-    const cands = farmCandidates(rt, teamId, p, day).filter((q) => (rt.farm.stats.getPitch(q.id).outs ?? 0) >= mv.farmPitchMinOuts);
-    // 先発適性（starterScore=真値）を軽く加点した観測評価で選ぶ（編成時のローテ選抜と同じ物差しを併用）。
-    const best = bestBy(cands, (q) => callupScore(rt, teamId, q, cfg) + starterScore(q) * mv.rotationStarterScoreW);
-    if (!best) continue;
-    if (obsRA9(line) - (obsRA9(rt.farm.stats.getPitch(best.id)) + mv.farmGapRA9) > mv.rotationSwapRA9) {
-      swapRegistration(rt, teamId, best, p, day);
-      logMove(rt, out, { day, teamId, type: 'perfSwap', up: best, down: p });
-      break; // 1レビュー1件まで（野手/救援枠とは独立）
-    }
+    const fb = rt.farm.stats.getBat(best.id);
+    const fps = rt.farm.stats.stats.get(best.id);
+    const farmV =
+      fb.pa >= mv.farmMinPA
+        ? blendedWoba(fu(), best.id, rt.farm.stats.getBat, cfg)
+          + runsToWoba(obsDefRunRuns(fps, cfg, rt.moves.farmLc), fb.pa, rt.moves.farmLc, cfg)
+          - mv.farmGapWoba
+        : null;
+    const slumping = v <= mv.relegateWoba; // ①絶対評価: 観測混合評価が「打てない」水準
+    const outclassed = farmV != null && farmV - v > mv.perfSwapMargin; // ②相対評価: 二軍に明確に良い打者
+    if (!slumping && !outclassed) continue;
+    doSwap(best, p);
+    nFieldSwaps++;
   }
 }
 
@@ -10399,8 +10520,10 @@ function processFarmPromotions(rt, teamId, day, out) {
   let bestScore = -Infinity;
   for (const d of candidates.slice().sort(byId)) {
     const r = makeRng(hashSeed(rt.masterSeed, 'inseasonPromote', rt.season, day, d.id));
-    const obs = d.role === 'fielder' ? { batting: rt.farm.stats.getBat(d.id) } : { pitching: rt.farm.stats.getPitch(d.id) };
-    const score = overallRating(d) + mk.promoteObsBias + r.normal(0, mk.promoteObsNoiseSd) + farmPerfBonus(d, obs, cfg);
+    // R4: 守備(UZR)・走塁(BsR)も査定に入れるので playerSeason 丸ごと渡す（無出場は従来どおり0点）
+    const obs = rt.farm.stats.stats.get(d.id)
+      ?? (d.role === 'fielder' ? { batting: rt.farm.stats.getBat(d.id) } : { pitching: rt.farm.stats.getPitch(d.id) });
+    const score = overallRating(d) + mk.promoteObsBias + r.normal(0, mk.promoteObsNoiseSd) + farmPerfBonus(d, obs, cfg, rt.moves.farmLc);
     if (score > bestScore) {
       bestScore = score;
       best = d;
@@ -10474,6 +10597,11 @@ function applyRosterMovesForDay(rt, day) {
     const reviewIdx = Math.floor(rt.usageByTeam.get(team.id).games / rt.cfg.tuning.moves.reviewInterval);
     if (reviewIdx > (rt.moves.lastReviewIdx.get(team.id) ?? 0)) {
       rt.moves.lastReviewIdx.set(team.id, reviewIdx);
+      // R4: 守備/走塁の観測を得点換算するためのリーグ定数（一軍・二軍で水準が違うので別々に導出）
+      if (rt.moves.lcDay !== day) {
+        refreshLeagueConstants(rt);
+        rt.moves.lcDay = day;
+      }
       processPerfSwaps(rt, team.id, day, out);
       processFarmPromotions(rt, team.id, day, out); // §req_20260708: 育成→支配下の季節中昇格
     }
@@ -10497,6 +10625,9 @@ function createMovesState(league, { enableMoves, masterSeed, season, farm }) {
     ilSwaps: new Map(), // 離脱者 pid → {teamId, subId}（復帰時の再入替に使う）
     lastReviewIdx: new Map(), // teamId → 処理済みレビュー番号（25試合周期）
     profiles: new Map(), // teamId → teamEvalProfile（遅延キャッシュ・キャリア中固定と同値）
+    lc: null, // R4: 一軍のリーグ定数（守備/走塁の観測を得点換算する）
+    farmLc: null, // R4: 二軍のリーグ定数（水準が違うので別々に導出）
+    lcDay: -1, // 上記を作り直した day
   };
 }
 
@@ -12040,6 +12171,40 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   return { injuries, breakouts, retirees, rookies, promotions, draftLog, fa, trades, pickups, contracts };
 }
 
+/**
+ * ★R4: 古い完了シーズンから「表示専用の内訳」を落として save の肥大を防ぐ。
+ *
+ * 1シーズンの careerStats は約1.4MB（542行×2.6KB）で、その **6割が batting.splits（対左右/得点圏/
+ * ホームビジター）と batting.byCount（カウント別）** ＝ どちらも選手モーダルで直近シーズンを表示する
+ * ためだけの内訳。20年プレイすると save が数十MBに膨らむ（burn-in で顕在化したが、burn-in を
+ * 使わずに20年遊んでも同じ）。指標の算出・表彰・記録・オフの査定は **トップレベルの生カウント**
+ * （pa/ab/h/hr/bb/so, outs/r/er …）だけを使うので、直近 keepDetailYears 年より古い行からは
+ * 内訳を落としてよい（battingSplits は欠損時に0行を返す＝表示が壊れない）。§17「集計値のみ保存」の趣旨に沿う。
+ */
+function compactCareerStats(state) {
+  const keep = state.cfg.game.keepDetailYears ?? 2;
+  const cutoff = state.year - keep; // これより古いシーズンの内訳を落とす
+  for (const s of state.careerStats) {
+    if (s.season >= cutoff) continue;
+    if (s.batting) {
+      delete s.batting.splits;
+      delete s.batting.byCount;
+    }
+    if (s.pitching) delete s.pitching.byCount;
+  }
+  // 二軍（careerFarmStats）も表示専用の内訳だけを落とす。
+  //   ★守備(fielding)・走塁(baserunning) は **絶対に落とさない**: R4 でこれらは
+  //   二軍サブタブの指標表示にも、球団AIの昇格査定（UZR/BsR）にも使う（＝機能データ）。
+  for (const s of state.careerFarmStats ?? []) {
+    if (s.season >= cutoff) continue;
+    if (s.batting) {
+      delete s.batting.splits;
+      delete s.batting.byCount;
+    }
+    if (s.pitching) delete s.pitching.byCount;
+  }
+}
+
 /** 完了年 y（=firstSeason+y）の最終順位を teamHistory から取り出す（ウェーバー順の素）。 */
 function standingsForYear(state, year) {
   const hist = state.teamHistory.find((h) => h.year === year);
@@ -12099,9 +12264,19 @@ function captureBaseManager(state) {
 
 /**
  * 新規ゲームを開始する。
+ *
+ * ★R4 burnInYears（世界の"前史"）: >0 なら、プレイ開始前に N 年ぶんのシーズンを自動消化してから
+ *   プレイヤーに引き渡す（開幕年は firstSeason のまま。前史は firstSeason-N 〜 firstSeason-1 年）。
+ *   生成直後のリーグは「誰も故障したことがなく・通算記録も引退者もドラフト歴も無い」冷えた世界で、
+ *   ドラフト→成長→故障→引退のサイクルが一度も回っていない。burn-in はその履歴を作る。
+ *   【計測（20年・2seed）】年齢/平均能力/得点環境は **1年目とほぼ同一**（R2 で生成と加齢を同一
+ *   カーブにしたため母集団が既に定常）。差が出るのは履歴だけ:
+ *     故障歴を持つ選手 0% → 58%／通算記録・引退者・ドラフト履歴・受賞歴が存在する
+ *   所要は 1世界あたり約16秒（20年）。0 なら従来どおり生成直後から開始（＝較正の土台と同一）。
+ *
  * @param {number} masterSeed リーグ生成＋進行のマスターシード（決定論の起点）
  * @param {string} playerTeamId 自チーム（'T1'..'T12'）
- * @param {{cfg?:Object, autoManage?:boolean}} options
+ * @param {{cfg?:Object, autoManage?:boolean, burnInYears?:number}} options
  * @returns {Object} GameState
  */
 function newGame(masterSeed, playerTeamId, options = {}) {
@@ -12111,15 +12286,17 @@ function newGame(masterSeed, playerTeamId, options = {}) {
   if (!league.teams.some((t) => t.id === playerTeamId)) {
     throw new Error(`playerTeamId ${playerTeamId} がリーグに存在しない`);
   }
+  const burnIn = Math.max(0, Math.floor(options.burnInYears ?? 0));
   const state = {
     schemaVersion: SCHEMA_VERSION,
     engineVersion: ENGINE_VERSION,
     masterSeed: masterSeed >>> 0,
     playerTeamId,
     settings: { autoManage: options.autoManage ?? true }, // C1a は全おまかせ（人間介入は後段UI）
-    firstSeason: cfg.game.firstSeason,
+    // burn-in（前史）を回す場合、初年度を N 年前へ巻き戻す＝プレイヤーの開幕は firstSeason のまま。
+    firstSeason: cfg.game.firstSeason - burnIn,
     yearIndex: 0,
-    year: cfg.game.firstSeason,
+    year: cfg.game.firstSeason - burnIn,
     cfg,
     league,
     careerStats: [], // 完了シーズンの選手集計（永続・§17）
@@ -12141,6 +12318,13 @@ function newGame(masterSeed, playerTeamId, options = {}) {
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
   startYear(state);
+  // ★R4 前史（burn-in）: プレイヤーに渡す前に N 年ぶんを自動消化する。決定論（同一 masterSeed なら
+  //   同一の前史）。消化後の state は「20年ぶんの通算記録・引退者・故障歴・ドラフト履歴を持つ、
+  //   firstSeason 開幕直前のリーグ」になる（yearIndex=burnIn / year=cfg.game.firstSeason）。
+  for (let y = 0; y < burnIn; y++) {
+    while (!state.rt.finished) advanceDay(state);
+    advanceYear(state);
+  }
   return state;
 }
 
@@ -12343,6 +12527,7 @@ function advanceYear(state) {
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
   state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
+  compactCareerStats(state); // R4: 古いシーズンの表示専用内訳を落とす（save 肥大の防止・下記）
   state.yearIndex += 1;
   state.year += 1;
   startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
@@ -13380,9 +13565,13 @@ const TEAM_PIT_COLS = [
   ['war', 'WAR'], ['grade', '等級'], ['status', '状態', 'left'],
 ];
 // F2-4: 二軍サブタブの列＝**二軍成績列**（farmStats観測値）。WAR/wRC+はリーグ水準差のため非表示。
+// ★R4: 二軍の守備(UZR)・走塁(BsR)も表示する。集計器は積んでいたのに表にも査定にも出しておらず、
+//   「守備の上手い二軍野手」が可視化されず球団AIも見ていなかった（ユーザー指摘）。
+//   得点値は二軍のリーグ定数（farmStats＋二軍順位表から導出）基準＝二軍平均に対する上積み。
 const FARM_BAT_COLS = [
   ['name', '選手', 'left'], ['pos', '位置', 'left'], ['age', '年齢'], ['pa', '二軍打席'],
   ['avg', '二軍打率'], ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['hr', '本'], ['rbi', '打点'], ['sb', '盗塁'],
+  ['uzr', '守備'], ['bsr', '走塁'],
   ['grade', '等級'], ['status', '状態', 'left'],
 ];
 const FARM_PIT_COLS = [
@@ -13393,6 +13582,7 @@ const FARM_PIT_COLS = [
 // セル書式（キー別）。無観測（null）は '-'。
 const TEAM_COL_FMT3 = new Set(['avg', 'obp', 'slg', 'ops']);
 const TEAM_COL_F2 = new Set(['era', 'fip', 'whip']);
+const TEAM_COL_F1 = new Set(['uzr', 'bsr']); // R4: 二軍の守備/走塁（得点値・小数1桁）
 const TEAM_COL_PCT = new Set(['kbbPct']);
 const TEAM_COL_ASC = new Set(['era', 'fip', 'whip', 'age']); // クリック時に昇順が自然な列
 
@@ -13557,11 +13747,16 @@ function buildFarmRosterRows(players, u) {
     } else {
       const has = !!s && s.batting.pa > 0;
       const m = has ? playerBatting(s, flc) : null;
+      // R4: 二軍の守備(UZR)・走塁(BsR)。守備は出場イニングがある選手のみ（DH専任は '-'）。
+      const inn = has ? totalFieldInnings(s.fielding) : 0;
+      const uzr = has && inn > 0 ? uzrRuns(s, state.cfg, flc) : null;
+      const bsr = has ? playerBaserunning(s, state.cfg, flc).bsr : null;
       bat.push({
         id: p.id, name: p.name, age: p.age, minor, pos: u.posJP(u.primaryPos(p)),
         pa: m ? m.pa : null, avg: m ? finiteOrNull(m.avg) : null, obp: m ? finiteOrNull(m.obp) : null,
         slg: m ? finiteOrNull(m.slg) : null, ops: m ? finiteOrNull(m.ops) : null,
         hr: m ? m.hr : null, rbi: m ? m.rbi : null, sb: m ? m.sb : null,
+        uzr: finiteOrNull(uzr), bsr: finiteOrNull(bsr),
         grade, status,
       });
     }
@@ -13613,6 +13808,7 @@ function teamRosterCell(k, d, u) {
   if (typeof v !== 'number') return v;
   if (TEAM_COL_FMT3.has(k)) return u.fmt3(v);
   if (TEAM_COL_F2.has(k)) return v.toFixed(2);
+  if (TEAM_COL_F1.has(k)) return (v >= 0 ? '+' : '') + v.toFixed(1);
   if (TEAM_COL_PCT.has(k)) return u.pct(v);
   if (k === 'ip') return v.toFixed(1);
   if (k === 'war') return v.toFixed(1);

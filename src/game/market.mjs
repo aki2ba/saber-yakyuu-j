@@ -23,6 +23,9 @@ import { clamp, clampRating } from '../model/util.mjs';
 import { generateRookie, applyEraToRookie } from '../generate.mjs';
 import { applyAging } from './aging.mjs';
 import { observedWoba } from '../sim/manager.mjs';
+import { uzrRuns, totalFieldInnings } from '../sim/fielding.mjs';
+import { playerBaserunning } from '../sim/metrics.mjs';
+import { deriveLeagueConstants } from '../sim/leagueConstants.mjs';
 import { POSITION_ADJUST_PER_162G } from '../model/positions.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
@@ -319,14 +322,24 @@ function signDevelopment(league, cfg, undrafted, order) {
  * @param {Object} d 育成選手
  * @param {?Object} obs 当年の二軍 statline（{batting,pitching}・careerFarmStats 由来）
  */
-export function farmPerfBonus(d, obs, cfg) {
+export function farmPerfBonus(d, obs, cfg, farmLc = null) {
   if (!obs) return 0;
   const f = cfg.tuning.market.farm;
   if (d.role === 'fielder') {
     const b = obs.batting;
     if (!b || !(b.pa > 0)) return 0;
     const trust = b.pa / (b.pa + f.promotePerfTrustPA);
-    return f.promoteWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+    let v = f.promoteWobaW * (observedWoba(b, cfg) - cfg.tuning.mgr.wobaPrior) * trust;
+    // ★R4: 二軍の守備(UZR)・走塁(BsR)の観測も昇格査定に入れる（旧実装は打撃だけを見ていた）。
+    //   farmLc（二軍のリーグ定数）が渡された場合のみ作動（旧構成/二軍不成立では 0＝従来と同一）。
+    if (farmLc && obs.fielding) {
+      const inn = totalFieldInnings(obs.fielding);
+      const uzr = inn > 0 ? uzrRuns(obs, cfg, farmLc) : 0;
+      const bsr = playerBaserunning(obs, cfg, farmLc).bsr || 0;
+      const dTrust = inn / (inn + f.promoteDefTrustInnings);
+      v += f.promoteDefW * (uzr * dTrust + bsr);
+    }
+    return v;
   }
   const pi = obs.pitching;
   if (!pi || !(pi.outs > 0)) return 0;
@@ -382,12 +395,16 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
   const promoted = [];
   const promotions = [];
   const stillFarm = [];
+  // R4: 二軍のリーグ定数（当年の二軍観測から導出）。守備(UZR)・走塁(BsR)を得点換算して昇格査定に
+  //   入れるために必要。farmObs が無い旧構成（二軍リーグ不成立）では null＝従来の判定と同一。
+  const farmSeasons = farmObs ? [...farmObs.values()].filter((s) => s && s.fielding) : [];
+  const farmLc = farmSeasons.length ? deriveLeagueConstants({ playerSeasons: farmSeasons, standings: [] }) : null;
   for (const d of league.farm.slice().sort(byId)) {
     const tk = `${d.role}:${d.primaryPos}`;
     const r = makeRng(hashSeed(masterSeed, 'promote', yearIndex, d.id));
     const observed =
       overallRating(d) + mk.farm.promoteObsBias + r.normal(0, mk.farm.promoteObsNoiseSd) +
-      farmPerfBonus(d, farmObs ? farmObs.get(d.id) : null, cfg);
+      farmPerfBonus(d, farmObs ? farmObs.get(d.id) : null, cfg, farmLc);
     const vi = remainingVac.findIndex((v) => v.teamId === d.teamId && `${v.role}:${v.primaryPos}` === tk);
     const hasRoom = (controlledCount.get(d.teamId) ?? 0) < cap; // 支配下70枠の空き（F2-3枠管理）
     if (observed >= mk.farm.promoteThreshold && vi >= 0 && hasRoom) {

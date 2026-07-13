@@ -22,7 +22,7 @@ import { simulateGame } from '../src/sim/game.mjs';
 import { buildDepthChart } from '../src/sim/team.mjs';
 import { buildTeamCharts } from '../src/sim/season.mjs';
 import { applyAging } from '../src/game/aging.mjs';
-import { newGame, advanceTo } from '../src/game/index.mjs';
+import { newGame, advanceTo, advanceYear } from '../src/game/index.mjs';
 import { leagueSummary } from '../src/sim/leagueStats.mjs';
 import { generateBattedBall } from '../src/sim/battedBall.mjs';
 import { resolveBattedBall, battedType, outfieldGeometry } from '../src/sim/battedBallResult.mjs';
@@ -512,6 +512,52 @@ console.log('\n--- F. 故障（試合中の発生・離脱・IL補充） ---');
   gate('IL関連の登録入替/球団/年（旧実装 0件）', ilMoves / n / nT, 2, 30, 1);
   gate('登録入替/球団/年（NPB 実入替50-70回）', moves / n / nT, 15, 70, 1);
   info(`一軍出場の異なり選手 ${(used / n).toFixed(1)}人/球団（NPB実測 61人・旧実装 35.8人）`);
+}
+
+// ============================================================================
+// Part G: R7（draft_timeline_evidence §決定1/2）— 高卒新人の1年目デビュー時間軸・ドラフト量
+//   出典: note/ハマノンタン（2010-2019・NPB）「高卒野手の1年目50打席以上」= 10年で12人＝年1.2人
+//   （全12球団換算で 5.5%）。旧実装は年齢と無関係に「即戦力寄り」に育ち 12.9% で約2.3倍甘かった
+//   （thyroxin/research/draft_timeline_evidence.md 決定1・2026-07-13修正）。
+// ============================================================================
+console.log('\n--- G. R7: 高卒新人の1年目デビュー時間軸・ドラフト量 ---');
+{
+  const HS_SEEDS = [4242, 7, 99, 2024, 555, 8080];
+  const HS_YEARS = 12;
+  let hsF = 0;
+  let hsF50 = 0;
+  let hsFQual = 0;
+  let rookiesTotal = 0;
+  let rookieYears = 0;
+  for (const seed of HS_SEEDS) {
+    const st = newGame(seed, 'T1', { cfg });
+    const rk = new Map();
+    for (let y = 0; y < HS_YEARS; y++) {
+      advanceTo(st, 'seasonEnd');
+      const off = advanceYear(st);
+      rookiesTotal += off.rookies.length;
+      rookieYears++;
+      for (const r of off.rookies ?? []) rk.set(r.id, { draftYear: st.year, age: r.age, role: r.role });
+    }
+    const y1 = new Map();
+    for (const s of st.careerStats) {
+      const r = rk.get(s.playerId);
+      if (!r || s.season !== r.draftYear) continue;
+      y1.set(s.playerId, s.batting?.pa ?? 0);
+    }
+    for (const [id, r] of rk) {
+      if (r.age > 19 || r.role !== 'fielder') continue;
+      hsF++;
+      const pa = y1.get(id) ?? 0;
+      if (pa >= 50) hsF50++;
+      if (pa >= 443) hsFQual++;
+    }
+  }
+  gate('高卒野手「1年目50打席以上」率（実測5.5%＝年1.2人/12球団）', hsF ? hsF50 / hsF : 0, 0.03, 0.09, 3);
+  gate('高卒新人が1年目に規定打席到達（過去実測: 確実な例なし）', hsF ? hsFQual / hsF : 0, 0, 0.02, 3);
+  // NPB実態は支配下~10人/球団年だが、6以上への較正ヘッドルーム（多年ERA帯[3.3,4.6]）の制約で
+  // targetVacanciesPerTeam=6 に抑制済み（thyroxin/research/draft_timeline_evidence.md 決定2参照）。
+  gate('新人/球団年（引退のみの~4.8人/球団年より明確に増加）', rookieYears ? rookiesTotal / rookieYears / cfg.league.numTeams : 0, 5, 7.5, 1);
 }
 
 // ============================================================================

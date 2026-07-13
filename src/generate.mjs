@@ -314,8 +314,32 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
   //   球団は surplus 付きプールから自評価の最良を指名するため、指名された新人のポテンシャルは
   //   プール平均より高く出る。これを補正しないと毎年リーグへ「平均より強い個体」が注入され続け、
   //   多年で能力が単調インフレする（実測: 15年で一軍EV +1.5pt → SLG +0.03）。
-  if (cfg) applyMaturity(p, cfg, cfg.tuning.market.rookiePotentialLift ?? 0);
+  if (cfg) {
+    const mk = cfg.tuning.market;
+    // R7（決定1）: 高卒(refAge未満)ほど「期限付き未成熟負債」を積む。負債は applyAging が
+    //   毎年 youthDebtRepayPerYear ずつ返済して0へ収束させる＝一時的な弱さ（恒久劣化ではない）。
+    const youthDebt = -(mk.youthDebtPerYear ?? 0) * Math.max(0, (mk.youthDebtRefAge ?? 0) - p.age);
+    p.trueAbility.career.youthDebt = youthDebt;
+    applyMaturity(p, cfg, (mk.rookiePotentialLift ?? 0) + draftSkew(seed, id, cfg) + youthDebt);
+  }
   return p;
+}
+
+/**
+ * R7（決定2）: 新人の真値分布に右の歪みを入れる（現行=正規分布。現実=大多数が凡庸/少数の大当たり・
+ * 97%がWAR5未満・§draft_timeline_evidence）。独立シードで駆動＝メイン生成列を乱さない（決定論）。
+ * 期待値0で設計する（bustProb の確率で mean=-skewBustMag/2 の凡庸オフセット、残りは平均 starScale
+ * ＝ p*m/(2*(1-p)) の指数裾「大当たり」オフセット）＝多年平均に系統ドリフトを起こさない。
+ */
+function draftSkew(seed, id, cfg) {
+  const dk = cfg.tuning.market.draft;
+  if (!dk?.skewBustProb) return 0;
+  const r = makeRng(hashSeed(seed, id, 'skew'));
+  const p = dk.skewBustProb;
+  const m = dk.skewBustMag;
+  if (r.chance(p)) return -m * r.next(); // 凡庸〜伸び悩み: uniform(-m, 0)
+  const starScale = (p * m) / (2 * (1 - p)); // E[skew]=0 になるよう解析的に導出
+  return -starScale * Math.log(1 - r.next()); // 大当たり: 指数裾（稀に大きく化ける）
 }
 
 // 1チームの守備位置配分（F2-1: 支配下70人＝投手33-36＋野手34-37）。

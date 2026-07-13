@@ -33,16 +33,17 @@ import { clamp, clampRating } from '../model/util.mjs';
  */
 export function applyAging(players, cfg, { seed }) {
   const aging = cfg.tuning.aging;
+  const veloPerRating = cfg.tuning.maturity.veloPerRating;
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
-    agePlayer(p, prng, aging);
+    agePlayer(p, prng, aging, veloPerRating);
   }
   return players;
 }
 
 /** 1選手を1年ぶん加齢させる（trueAbility を動かし age++）。 */
-function agePlayer(p, prng, aging) {
+function agePlayer(p, prng, aging, veloPerRating) {
   const t = p.trueAbility;
   const peak = t.career.peakAge;
   const dr = t.career.declineRate;
@@ -58,7 +59,19 @@ function agePlayer(p, prng, aging) {
     gm = clamp(gm, aging.growthMultMin, aging.growthMultMax);
   }
 
-  const ctx = { age, peak, dr, gm, young, prng, aging };
+  // R7（決定1・draft_timeline_evidence）: 高卒新人の「期限付き未成熟負債」の返済。generateRookie が
+  //   積んだ負債（career.youthDebt<0）を毎年 youthDebtRepayPerYear ずつ全軸へ均等に足し戻す＝
+  //   一時的な弱さが数年で自然に解消する（aging.profiles を動かす方式と違い、初期ロスター生成には
+  //   一切影響しない＝1年目較正・多年ドリフト帯を破らない）。
+  const debt = t.career.youthDebt ?? 0;
+  let flatBonus = 0;
+  if (debt < 0) {
+    const repay = Math.min(-debt, aging.youthDebtRepayPerYear ?? 0);
+    flatBonus = repay;
+    t.career.youthDebt = debt + repay;
+  }
+
+  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating };
 
   // 共通素材（§2.2）
   ageRating(t.common, 'speed', 'speed', ctx);
@@ -124,7 +137,8 @@ function drift(ctx) {
 /** 1レーティング(20-80)を加齢で更新（in-place）。profKey 未登録なら default プロファイル。 */
 function ageRating(obj, key, profKey, ctx) {
   const prof = ctx.aging.profiles[profKey] ?? ctx.aging.profiles.default;
-  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx) + drift(ctx));
+  // R7（決定1）: flatBonus=高卒未成熟負債の当年ぶん返済額（負債が無い選手は0＝既存挙動と bit 同一）。
+  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx) + drift(ctx) + ctx.flatBonus);
 }
 
 /** 球速（km/h 実数）を加齢で更新（in-place）。高球速×高declineRate ほど早く落ちる（§10.2）。 */
@@ -136,6 +150,7 @@ function ageVelocity(pitching, ctx) {
   if (ctx.age < growEnd) d += v.grow * (ctx.young ? ctx.gm : 1);
   if (ctx.age >= onset) d -= v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
   d += ctx.prng.normal(0, ctx.young ? v.driftSdYoung : v.driftSdOld);
+  d += ctx.flatBonus * ctx.veloPerRating; // R7: rating単位の返済額を球速換算
   pitching.velocityKmh = clamp(pitching.velocityKmh + d, v.min, v.max);
 }
 
@@ -143,6 +158,6 @@ function ageVelocity(pitching, ctx) {
 function agePitch(pitch, ctx) {
   const prof = ctx.aging.profiles.pitchStuff;
   for (const k of ['current', 'whiff', 'hrSuppress', 'contactQuality']) {
-    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx) + drift(ctx));
+    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx) + drift(ctx) + ctx.flatBonus);
   }
 }

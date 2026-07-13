@@ -22,10 +22,10 @@ import { applyAging } from './aging.mjs';
 import { applySeasonInjuries } from './injury.mjs';
 import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
-import { runMarket, teamEvalProfile } from './market.mjs';
+import { runMarket, teamEvalProfile, teamWindowState } from './market.mjs';
 import { applyFarmPromotionSwap } from './roster_moves.mjs';
 import { encodeSeasons, decodeSeasons } from './statcodec.mjs';
-import { runFA, runTrades, runReleaseAndPickup, runContractRenewal } from './transactions.mjs';
+import { runFA, runTrades, runReleaseAndPickup, runContractRenewal, releaseScore } from './transactions.mjs';
 import { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
 //   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
@@ -80,7 +80,45 @@ function offseasonSeed(masterSeed, yearIndex) {
  * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
  * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
+/**
+ * R7（決定2・draft_timeline_evidence）: ドラフトを「大量に獲って淘汰する」構造にするための
+ * 追加戦力外。引退枠だけでは NPB実態（支配下約10人/球団年の入れ替わり）に届かないため、
+ * 伸び悩んだ若手（cullMinAge-cullMaxAge・真の新人/確立ベテランは対象外）を当季実観測の低い順に
+ * 追加で戦力外にし、そのぶんの枠もドラフトで埋める（70人枠は不変＝1:1同型・淘汰が生まれる）。
+ * 引退と違い trueAbility ではなく "当季の実観測成績"（releaseScore）で判定する三層構造（§12.2と同じ作法）。
+ * 観測が無い（未出場）選手は最も切られやすい（-Infinity）＝出場機会すら得られなかった証拠として扱う。
+ * @returns {Array<{teamId,role,primaryPos}>} 追加で生まれた空き枠（vacancies と同じ形）
+ */
+function runProspectCulling(league, cfg, { obs, retireVacancies }) {
+  const dk = cfg.tuning.market.draft;
+  if (!dk?.targetVacanciesPerTeam) return [];
+  const retireCountByTeam = new Map();
+  for (const v of retireVacancies) retireCountByTeam.set(v.teamId, (retireCountByTeam.get(v.teamId) ?? 0) + 1);
+  const byTeam = new Map();
+  for (const p of league.players) {
+    if (!byTeam.has(p.teamId)) byTeam.set(p.teamId, []);
+    byTeam.get(p.teamId).push(p);
+  }
+  const culled = [];
+  for (const t of league.teams) {
+    const need = Math.max(0, dk.targetVacanciesPerTeam - (retireCountByTeam.get(t.id) ?? 0));
+    if (!need) continue;
+    const cands = (byTeam.get(t.id) ?? [])
+      .filter((p) => p.age >= dk.cullMinAge && p.age <= dk.cullMaxAge)
+      .map((p) => ({ p, score: releaseScore(p, obs, cfg) ?? -Infinity }))
+      .sort((a, b) => a.score - b.score || (a.p.id < b.p.id ? -1 : 1));
+    for (const c of cands.slice(0, need)) culled.push(c.p);
+  }
+  const cullSet = new Set(culled.map((p) => p.id));
+  league.players = league.players.filter((p) => !cullSet.has(p.id));
+  rebuildTeamRosters(league);
+  return culled
+    .slice()
+    .sort((a, b) => (a.id < b.id ? -1 : 1))
+    .map((p) => ({ teamId: p.teamId, role: p.role, primaryPos: p.primaryPos }));
+}
+
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
@@ -102,10 +140,18 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
 
   // 引退（生存者を league.players へ・空き枠 vacancies を得る）。
-  const { retirees, vacancies } = runRetirement(league, cfg, { seed: hashSeed(masterSeed, 'retire', yearIndex), debutYear: year + 1 });
+  const { retirees, vacancies: retireVac } = runRetirement(league, cfg, { seed: hashSeed(masterSeed, 'retire', yearIndex), debutYear: year + 1 });
+  // R7（決定2）: 引退枠だけでは届かないぶんを追加淘汰し、ドラフトを「大量獲得→淘汰」構造にする。
+  const cullVac = runProspectCulling(league, cfg, { obs, retireVacancies: retireVac });
+  const vacancies = retireVac.concat(cullVac);
+  // R7（決定3）: 球団の「優勝の窓」= teamHistory だけから毎年純関数で導出（新規の永続状態なし）。
+  //   teamHistory 無し（旧テスト呼び出し）は null＝窓関連ボーナスは常に0＝既存挙動と bit 同一。
+  const windowByTeam = teamHistory
+    ? new Map(league.teams.map((t) => [t.id, teamWindowState(t.id, teamHistory, cfg)]))
+    : null;
   // FA → トレード（引退後の生存者を同型1:1スワップ・構成恒常・ドラフト枠に非干渉）。
   const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
-  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
+  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, windowByTeam });
   rebuildTeamRosters(league);
   // 時代トレンド（D3・§11.3）: 翌年（debut年）の世代の波・球速の経年上昇＝computeEra(yearIndex+1)。
   //   ＋王朝均衡: 完了年順位から弱球団の新人再分配 boost（戦力の平均回帰＝振り子）。
@@ -114,7 +160,7 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   const rookieEra = computeEra(masterSeed, yearIndex + 1, cfg);
   const balanceBoost = teamBalanceBoost(standings, cfg);
   // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
-  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost, farmObs });
+  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost, farmObs, teamHistory });
   league.players = league.players.concat(promoted, rookies);
   rebuildTeamRosters(league);
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
@@ -489,6 +535,7 @@ export function advanceYear(state) {
     yearIndex: state.yearIndex,
     year: state.year,
     standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
+    teamHistory: state.teamHistory, // R7（決定3）: 優勝の窓の判定に使う（teamHistoryは既に完了年を含む）
     careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
     careerFarmStats: state.careerFarmStats, // 当年の二軍 statline（F2-3: 育成昇格の実成績判定）
     marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用

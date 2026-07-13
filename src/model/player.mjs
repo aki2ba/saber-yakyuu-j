@@ -95,6 +95,12 @@ export function createTrueAbility(over = {}) {
       durability: 50,
       injuryHistory: [], // 故障歴（{year,site,severity,gamesLost}・再発の"観測値"・§10.5）
       breakEvents: [], // ブレイクイベント履歴（上下, §10.4）
+      // R7（draft_timeline_evidence §決定1）: 高卒新人だけの追加未成熟を「期限付きの負債」として持つ。
+      //   0（負でない）＝負債なし。generateRookie が若いほど負の値を積み、applyAging が毎年
+      //   一定額を返済して0へ収束させる（＝一時的にだけ弱く、数年で自然に追いつく。恒久劣化ではない）。
+      //   aging.profiles.grow をいじる方式（生成と加齢が同じ値を対称に読む前提）は、初期ロスター
+      //   生成にも同じ grow が使われ 1年目較正・多年ドリフト帯を破ったため不採用（実測で確認済み）。
+      youthDebt: 0,
     },
   };
   return deepMerge(base, over);

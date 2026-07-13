@@ -77,6 +77,8 @@ export function teamEvalProfile(masterSeed, teamId, cfg) {
     wDef: clamp(r.normal(pc.wDefMean, pc.wDefSd), pc.wDefMin, pc.wDefMax),
     ageBias: clamp(r.normal(pc.ageBiasMean, pc.ageBiasSd), pc.ageBiasMin, pc.ageBiasMax),
     noiseSd: Math.max(pc.noiseSdMin, r.normal(pc.noiseSdMean, pc.noiseSdSd)),
+    // R7（決定5）: 救援過大評価の重み（多くが>1＝過大評価。稀に≈1の球団が救援に金をかけず勝つ）。
+    wReliever: clamp(r.normal(pc.wRelieverMean, pc.wRelieverSd), pc.wRelieverMin, pc.wRelieverMax),
   };
 }
 
@@ -107,7 +109,16 @@ export function evaluateProspect(profile, p, cfg, ctx = null) {
     const ctrl = obsTool(t.pitching.control, profile, ctx, 'control', id);
     const stam = obsTool(t.pitching.stamina, profile, ctx, 'stamina', id);
     const stuff = obsTool(pitchStuff(t), profile, ctx, 'stuff', id);
-    return profile.wBat * (velo + ctrl + stam + stuff) - ageK;
+    // R7（決定5）: 救援シェイプ（低スタミナ）の stuff/velo を球団が過大評価する癖（wReliever）。
+    //   実際の勝利貢献はスタミナに比例して薄い（R²=0.051）のに、市場は「電光石火の球威」に
+    //   引かれて過大な値を付ける＝救援を軽視する球団(wReliever≈1)が安く勝てる構造の土台。
+    const shape = clamp(
+      (m.relieverShapeFull - stam) / Math.max(1, m.relieverShapeFull - m.relieverShapeStamina),
+      0,
+      1,
+    );
+    const reliefBonus = shape * Math.max(0, (velo + stuff) / 2 - 50) * m.relieverOvervalueW * ((profile.wReliever ?? 1) - 1);
+    return profile.wBat * (velo + ctrl + stam + stuff) - ageK + reliefBonus;
   }
   const b = t.batting;
   const c = t.common;
@@ -133,6 +144,32 @@ export function evaluateProspect(profile, p, cfg, ctx = null) {
  */
 export function trueValue(p, cfg) {
   return evaluateProspect({ wBat: 1, wEye: 1, wDef: 1, ageBias: 0, noiseSd: 0 }, p, cfg, null);
+}
+
+/**
+ * R7（決定3）: 球団の「優勝の窓」を teamHistory だけから純関数で導出する（新規の永続状態は
+ * 持たない＝save/loadに一切手を入れない）。SABR BRJ 2018（Jordan）の実測に整合させる:
+ *   - contending: 直近年の勝率が contendWinPct 以上
+ *   - rebuilding: 直近 lookbackYears 年が**すべて**非contending（＝2年連続で初めて閉じる時間的
+ *     ヒステリシス。1年の不振だけでは閉じない）
+ *   - neutral: 上記どちらでもない（履歴不足・混在シグナル）
+ * @param {string} teamId
+ * @param {Array<{year:number, standings:Array}>} teamHistory 完了年の順位（新しい順である必要はない）
+ * @returns {'contending'|'neutral'|'rebuilding'}
+ */
+export function teamWindowState(teamId, teamHistory, cfg) {
+  const wc = cfg.tuning.market.window;
+  const winPct = (s) => { const d = (s.w ?? 0) + (s.l ?? 0); return d ? s.w / d : 0.5; };
+  const rows = (teamHistory ?? [])
+    .slice()
+    .sort((a, b) => b.year - a.year)
+    .map((h) => h.standings?.find((s) => s.teamId === teamId))
+    .filter(Boolean)
+    .slice(0, wc.lookbackYears);
+  if (!rows.length) return 'neutral';
+  if (winPct(rows[0]) >= wc.contendWinPct) return 'contending';
+  if (rows.length >= wc.lookbackYears && rows.every((s) => winPct(s) < wc.contendWinPct)) return 'rebuilding';
+  return 'neutral';
 }
 
 /** 前年順位からのウェーバー逆順（勝率の低い順＝弱いチームが先）。standings 無しは teams 順。 */
@@ -195,7 +232,7 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = n
  * 各球団は自分の空き枠と同型(role:pos)の prospect しか獲れない（構成恒常）。
  * @returns {{rookies:Array, undrafted:Array, draftLog:Object}}
  */
-function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex }) {
+function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex, windowByTeam = null }) {
   const teamVac = new Map(); // teamId → [{role,primaryPos}]（残り空き枠のキュー）
   for (const t of order) teamVac.set(t, []);
   for (const v of vacancies) {
@@ -206,6 +243,19 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
   for (const [k, arr] of pool) available.set(k, arr.slice());
   const rookies = [];
   const draftLog = { order: order.slice(), picks: [], lotteries: [] };
+  const wc = cfg.tuning.market.window;
+  const mk = cfg.tuning.market;
+
+  // R7（決定3）: 窓状態に応じた指名の傾き（即戦力=大社 vs 素材=高卒）。三層構造は崩さない
+  //   （trueAbility 非参照・年齢は公開情報）。窓を持たない旧テスト呼び出し（windowByTeam無し）は
+  //   ボーナス0＝既存挙動と bit 同一。
+  const draftWindowBonus = (teamId, pr) => {
+    if (!windowByTeam) return 0;
+    const w = windowByTeam.get(teamId);
+    if (w === 'contending' && pr.age >= mk.cohort.colAge) return wc.draftBonus;
+    if (w === 'rebuilding' && pr.age <= mk.cohort.hsAge) return wc.draftBonus;
+    return 0;
+  };
 
   // 球団の「残り空き枠の型のうち、自評価が最高の available prospect」を返す。
   const bestFor = (teamId) => {
@@ -219,7 +269,7 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
     for (const tk of types) {
       const arr = available.get(tk) || [];
       for (const pr of arr) {
-        const val = evaluateProspect(profile, pr, cfg, { masterSeed, yearIndex, teamId });
+        const val = evaluateProspect(profile, pr, cfg, { masterSeed, yearIndex, teamId }) + draftWindowBonus(teamId, pr);
         if (val > bestVal || (val === bestVal && (best === null || pr.id < best.id))) {
           bestVal = val;
           best = pr;
@@ -375,11 +425,16 @@ function pruneFarm(league, cfg) {
  * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
  * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
  */
-export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null, farmObs = null }) {
+export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null, farmObs = null, teamHistory = null }) {
   const mk = cfg.tuning.market;
   if (!league.farm) league.farm = [];
   const profiles = new Map();
   for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+  // R7（決定3）: 窓状態は teamHistory だけから毎年純関数で導出（新規の永続状態を持たない）。
+  //   teamHistory 無し（旧テスト呼び出し）は null＝draftWindowBonus が常に0で既存挙動と bit 同一。
+  const windowByTeam = teamHistory
+    ? new Map(league.teams.map((t) => [t.id, teamWindowState(t.id, teamHistory, cfg)]))
+    : null;
 
   // 1. 育成枠の発達（加齢）。独立シード座標＝支配下選手の加齢ストリームを一切乱さない。
   applyAging(league.farm, cfg, { seed: hashSeed(masterSeed, 'farmaging', yearIndex) });
@@ -422,7 +477,7 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
   // 3. ドラフト（残り枠）。era＝世代の波/球速上昇を pool 生成時に反映（D3・§11.3）。
   const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
   const order = waiverOrder(standings, league);
-  const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex });
+  const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex, windowByTeam });
   // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
   //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
   if (balanceBoost && balanceBoost.size) {

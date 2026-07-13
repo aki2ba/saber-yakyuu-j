@@ -205,14 +205,32 @@ export function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventi
 // トレード（§15）
 // ============================================================================
 /**
+ * R7（決定4）: 「今⇄将来」の意図的な非効率（窓状態バイアス）。Dayn Perry/Neil Painesの実証
+ * （デッドライン補強の実際の貢献は総VORPの2.2%・WS制覇との相関はほぼ無/マイナス）に基づき、
+ * contending は即戦力(veteranAge以上)を受け取る評価を、rebuilding は若手(youthAge以下)を
+ * 受け取る評価を、それぞれ windowPremium だけ過大評価する（＝双方winのmargin判定を通りやすくし、
+ * 買い手が将来を安く手放す/売り手が即戦力を安く手放す構造を作る）。windowByTeam 無し（旧テスト
+ * 呼び出し）は常に0＝既存挙動と bit 同一。
+ */
+function windowPremium(teamId, incoming, windowByTeam, cfg) {
+  if (!windowByTeam) return 0;
+  const tc = cfg.tuning.market.trade;
+  const w = windowByTeam.get(teamId);
+  if (w === 'contending' && incoming.age >= tc.veteranAge) return tc.windowPremium;
+  if (w === 'rebuilding' && incoming.age <= tc.youthAge) return tc.windowPremium;
+  return 0;
+}
+
+/**
  * トレード。AI同士は "各自の評価関数の差" から双方が得だと見なせば成立（双方win）。同(role,primaryPos)の
  * 1:1スワップ（構成恒常）。プレイヤー起案は marketInterventions で受け、AIは自評価で受諾判定する。
  *
  * 双方win の直観: A の余剰選手 Xa（A評価で最低）と B の余剰選手 Xb を、A が「Xb>Xa（A評価）」かつ
  * B が「Xa>Xb（B評価）」と見なせば、評価関数の違いから両者とも純利得＝成立。宝の再分配が起きる。
+ * @param {Map<string,string>|null} windowByTeam teamId→'contending'|'neutral'|'rebuilding'（決定3・§決定4で使用）
  * @returns {Array} 成立したトレードの記録
  */
-export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions }) {
+export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions, windowByTeam = null }) {
   const tc = cfg.tuning.market.trade;
   const order = teamIds(league);
   const rosters = activeByTeam(league);
@@ -245,7 +263,9 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
     if (typeKey(a) !== typeKey(b)) continue; // 同型のみ（構成恒常）
     // AI 相手（bTeam）の受諾判定: 受け取る a を、放出する b より margin 超で高評価なら受諾。
     const aiTeam = iv.bTeam;
-    const gain = assess(profiles, aiTeam, a, cfg, masterSeed, yearIndex) - assess(profiles, aiTeam, b, cfg, masterSeed, yearIndex);
+    const gain =
+      assess(profiles, aiTeam, a, cfg, masterSeed, yearIndex) + windowPremium(aiTeam, a, windowByTeam, cfg) -
+      assess(profiles, aiTeam, b, cfg, masterSeed, yearIndex);
     if (gain > tc.margin) swap(a, b, 'player');
     else trades.push({ aPlayer: a.id, aTeam: iv.aTeam, bPlayer: b.id, bTeam: iv.bTeam, via: 'player', rejected: true });
   }
@@ -272,8 +292,12 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
         const Xa = cand.get(A);
         const Xb = cand.get(B);
         if (!Xa || !Xb || moved.has(Xa.id) || moved.has(Xb.id)) continue;
-        const aGain = assess(profiles, A, Xb, cfg, masterSeed, yearIndex) - assess(profiles, A, Xa, cfg, masterSeed, yearIndex);
-        const bGain = assess(profiles, B, Xa, cfg, masterSeed, yearIndex) - assess(profiles, B, Xb, cfg, masterSeed, yearIndex);
+        const aGain =
+          assess(profiles, A, Xb, cfg, masterSeed, yearIndex) + windowPremium(A, Xb, windowByTeam, cfg) -
+          assess(profiles, A, Xa, cfg, masterSeed, yearIndex);
+        const bGain =
+          assess(profiles, B, Xa, cfg, masterSeed, yearIndex) + windowPremium(B, Xa, windowByTeam, cfg) -
+          assess(profiles, B, Xb, cfg, masterSeed, yearIndex);
         if (aGain > tc.margin && bGain > tc.margin) {
           swap(Xa, Xb, 'ai');
           if (trades.filter((t) => !t.rejected).length >= tc.maxPerYear) break outer;

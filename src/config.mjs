@@ -893,6 +893,9 @@ export const TUNING_DEFAULT = {
     growthMultMin: -0.6, // gm の下限（bust で退行しうる）
     growthMultMax: 2.4, // gm の上限（覚醒的な急成長の上振れ）
     declineAccel: 0.12, // 衰えの加速（onset 超過1年ごとに衰え幅を増やす＝終盤の急落）
+    // R7（決定1）: 高卒新人の期限付き未成熟負債（market.draft.youthDebt*）の毎年の返済額(rating)。
+    //   全軸へ均等加算し career.youthDebt を0へ収束させる（高卒の負債-3.2なら約4年で完済）。
+    youthDebtRepayPerYear: 0.9,
 
     // 球速（km/h 実数・レーティングと別枠）: 加齢で落ちる。高球速×高declineRate ほど早く落ちる。
     velo: {
@@ -1149,6 +1152,15 @@ export const TUNING_DEFAULT = {
     //   （実測: 無補正だと15年で一軍EV +1.5pt → SLG .402→.433）。生存バイアス（弱個体の引退）と
     //   合わせた正の圧力を打ち消し、リーグ平均を定常に保つノブ（§11.3 の「有界な揺れ」の担保）。
     rookiePotentialLift: -2.5,
+    // R7（draft_timeline_evidence §決定1）: 高卒新人だけの「期限付き未成熟負債」。
+    //   実測（note/ハマノンタン 2010-2019 定義に整合: 高卒野手の「1年目50打席以上」率）:
+    //   シム12.9% vs 現実5.5%＝約2.3倍甘い。aging.profiles.grow を上げる方式は初期ロスター
+    //   生成にも同じ値が使われて1年目較正・多年ドリフト帯を破る（実測で確認・不採用）ため、
+    //   generateRookie 限定で refAge未満の年齢ぶんの負債を積み、applyAging が毎年 repayPerYear
+    //   ずつ返済して0へ収束させる（＝一時的な未成熟。大卒/社会人はrefAge以上＝負債0で据え置き）。
+    youthDebtRefAge: 22,
+    youthDebtPerYear: 0.8, // refAge未満 1歳ごとの初期負債(rating)。高卒(18)は最大4年分
+    // 返済ペース(youthDebtRepayPerYear)は applyAging が消費するため cfg.tuning.aging 側に置く
     // 世代生成（§15 ドラフト）: 新人の年齢層。高卒18/大卒22/社会人25相当の混合分布。
     cohort: {
       hsAge: 18, // 高卒相当
@@ -1159,6 +1171,26 @@ export const TUNING_DEFAULT = {
     },
     surplusPerType: 3, // ドラフトプールの余剰（各(role,pos)型で 空き数＋これ）。選択肢＝評価差の発現＝宝の源
 
+    // R7（draft_timeline_evidence §決定2）: ドラフトを「大量に獲って淘汰する」構造にする。
+    //   引退枠だけでは NPB実態（支配下約10人/球団年の入れ替わり）に届かないため、伸び悩んだ
+    //   若手（cullMinAge-cullMaxAge・真の新人/確立ベテランは対象外）の当季実観測が低い順へ
+    //   追加で戦力外にし、そのぶんの枠もドラフトで埋める（70人枠は不変＝淘汰が生まれる）。
+    //   see: src/game/index.mjs runProspectCulling
+    draft: {
+      targetVacanciesPerTeam: 6, // 引退＋追加淘汰で毎年これに届くまで空ける（較正ヘッドルーム制約で6に抑制。NPB実態は約10）
+      cullMinAge: 23, // これ未満（デビュー数年目）は追加淘汰の対象外＝新人保護
+      cullMaxAge: 29, // これ超は通常の引退/FA/トレードに任せる
+      // 新人の真値分布に右の歪みを入れる案（現行=正規分布。現実=大多数が凡庸/少数の大当たり）。
+      //   bustProb の確率で mean=-skewBustMag/2 の「伸び悩み」オフセット、残りは平均 starScale
+      //   （p*m/(2*(1-p))・解析的にE[skew]=0を狙う）の指数裾「大当たり」オフセットを足す設計。
+      //   ★不採用（skewBustProb=0で無効化）: E[skew]=0 は clampRating(20-80) の前提であり、
+      //   実際は下限20に張り付く負側が上限80に張り付く正側より多く裾を失う（非対称クリップ）ため
+      //   実測で系統的な負ドリフトが生じ、多年ERA帯[3.3,4.6]を破った（test/game_multiyear で検出）。
+      //   クリップを考慮した再設計をしない限り復活させないこと。
+      skewBustProb: 0,
+      skewBustMag: 3.0,
+    },
+
     // 球団AI評価関数の球団差（§13/§15）: 各球団が生成時に固定で引く「評価の癖」。
     //   wDef<1 の球団が多数＝守備/位置価値の系統的な過小評価（市場の非効率）。
     //   稀に wDef>1 の「守備を正しく重める球団」が混じり、他球団の捨てた宝を拾う（守備版マネーボール）。
@@ -1168,6 +1200,10 @@ export const TUNING_DEFAULT = {
       wDefMean: 0.62, wDefSd: 0.42, wDefMin: 0.05, wDefMax: 1.8, // 守備/位置価値の重み（多くが<1＝過小評価）
       ageBiasMean: 0.5, ageBiasSd: 0.35, ageBiasMin: 0, ageBiasMax: 1.6, // 年齢バイアス（若手志向のペナルティ/歳）
       noiseSdMean: 6, noiseSdSd: 2, noiseSdMin: 2, // スカウト観測ノイズSD（rating単位・球団ごとの評価の荒さ）
+      // R7（決定5）: 救援の過大評価（R²=0.051 が先発0.315/野手0.399に対し桁違いに小さいのに
+      //   市場は高く買う）。多くの球団が過大評価(>1)し、稀に正しく評価(≈1)する球団が
+      //   救援に金をかけず安く勝つ（レイズ型）の土台になる。
+      wRelieverMean: 1.3, wRelieverSd: 0.35, wRelieverMin: 0.4, wRelieverMax: 2.4,
     },
     // 評価成分のスケール（守備/出塁/位置価値の rating 換算）。
     eval: {
@@ -1175,6 +1211,11 @@ export const TUNING_DEFAULT = {
       posScale: 1.4, // 位置価値(posAdj)→rating換算スケール（守備マインド球団だけが重める）
       armW: 0.5, // 守備成分への肩(arm)寄与
       laW: 0.5, // 打撃成分へのLA寄与
+      // R7（決定5）: 救援シェイプ（低スタミナ＝救援適性）ほど「stuff/velo」が球団の目に眩しく映る
+      //   （実際の勝利貢献はスタミナに比例して薄いのに、市場は電光石火の球速/球威に過大な値を付ける）。
+      relieverShapeStamina: 35, // これ以下のスタミナを「救援シェイプ」とみなす（0-1に正規化する下端）
+      relieverShapeFull: 50, // これ以上のスタミナは「先発シェイプ」＝救援過大評価バイアスは0
+      relieverOvervalueW: 0.5, // 救援シェイプ度 × (stuff/velo超過分) → 過大評価点への換算
     },
 
     // 育成/支配下 二層（§12.1）: 育成枠＝観測ノイズ大＆下振れで安く獲れる箱。
@@ -1207,6 +1248,15 @@ export const TUNING_DEFAULT = {
     //   放出（戦力外）判定だけは "実際の観測成績"（当該シーズンの生 statline）で下す＝出場機会に
     //   依存して歪む（少PA→ショボく見える＝上林型、不振→板山型）。査定を違える他球団が拾って生き返る。
     // ------------------------------------------------------------------------
+    // R7（決定3）: 球団の「優勝の窓」— 前年までの成績だけから毎年純関数で導出する（新規の永続
+    //   状態は持たない＝save/loadに一切手を入れない）。SABR BRJ 2018（Jordan）の実測に整合:
+    //   窓の平均長6.14年・中央値5年、閉鎖判定は「2年連続で非contention」の時間的ヒステリシス。
+    //   src/game/market.mjs の teamWindowState(teamId, teamHistory, cfg) が消費。
+    window: {
+      contendWinPct: 0.5, // これ以上の勝率(前年)を「contending」とみなす下限
+      lookbackYears: 2, // 判定に使う直近年数（この年数ぶんteamHistoryを遡る）
+      draftBonus: 6, // contending→大社(即戦力)/rebuilding→高卒(素材) への指名時ボーナス(rating)
+    },
     fa: {
       minAge: 30, // 国内FA権発生の下限年齢（年数条件の簡略代理・§15）
       maxAge: 36, // これ超は市場価値が薄く宣言しない（引退圏）
@@ -1220,6 +1270,15 @@ export const TUNING_DEFAULT = {
       margin: 6, // 双方winに必要な各球団の純利得の下駄（churn抑制）
       maxPerYear: 6, // AI-AI 成立トレードの年間上限
       protectCount: 28, // 放出プールのプロテクト（非プロテクト同型のみ交換可）
+      // R7（決定4）: 「今⇄将来」の意図的な非効率（Dayn Perry/Neil Painesの実証:
+      //   デッドライン補強の実際の貢献は総VORPの2.2%・WS制覇との相関はほぼ無/マイナスなのに
+      //   contending球団は上位プロスペクトを過大な代償で払う）。
+      //   contending は「即戦力(veteranAge以上)」を受け取る時だけ評価にプレミアムを乗せて
+      //   過大評価（＝将来を安く手放す）、rebuilding は「若手(youthAge以下)」を受け取る時に
+      //   同様のプレミアムを乗せる（＝即戦力を安く手放す）。twin-winの margin 判定にだけ効く。
+      veteranAge: 30, // これ以上を「即戦力」とみなす（contendingの買い対象）
+      youthAge: 24, // これ以下を「将来」とみなす（rebuildingの買い対象）
+      windowPremium: 10, // 窓に合致する獲得選手の自己評価への上乗せ（買い手の過大評価分）
     },
     release: {
       replacementWoba: 0.29, // 代替水準（観測貢献量 =（観測wOBA−これ）×PA）＝拾い上げ後の "観測改善" の物差し

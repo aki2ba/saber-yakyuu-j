@@ -478,7 +478,8 @@ export function advanceYear(state) {
   for (const m of state.rt.farmPromotionLog) state.farmPromotionLog.push({ year: state.yearIndex, ...m });
   // R3: 当季に試合中発生した故障を永続ログへ畳み込む（オフの後遺/故障歴の素・load の replay 入力）。
   const seasonInjuries = state.rt.injuryLog.map((e) => ({
-    id: e.playerId, teamId: e.teamId, severity: e.severity, gamesLost: e.gamesLost, day: e.day, farm: !!e.farm,
+    id: e.playerId, teamId: e.teamId, site: e.site, siteName: e.siteName,
+    severity: e.severity, gamesLost: e.gamesLost, day: e.day, farm: !!e.farm,
   }));
   for (const e of seasonInjuries) state.injuryLog.push({ year: state.yearIndex, ...e });
   // 癒えないままシーズンが終わった故障 → 翌季の開幕IL（「9月の大怪我で開幕に間に合わない」）

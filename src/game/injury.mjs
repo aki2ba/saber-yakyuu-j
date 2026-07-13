@@ -36,27 +36,43 @@ export function applySeasonInjuries(players, events, cfg, year) {
     const p = byId.get(ev.id);
     if (!p) continue; // 引退/移籍で league.players に居ない（＝安全弁）
     const hist = p.trueAbility.career.injuryHistory ?? (p.trueAbility.career.injuryHistory = []);
-    hist.push({ year, severity: ev.severity, gamesLost: ev.gamesLost });
-    applyAftereffect(p, ev.severity, cfg.tuning.injury);
-    applied.push({ id: p.id, year, severity: ev.severity, gamesLost: ev.gamesLost });
+    hist.push({ year, site: ev.site ?? null, siteName: ev.siteName ?? null, severity: ev.severity, gamesLost: ev.gamesLost });
+    applyAftereffect(p, ev, cfg.tuning.injury);
+    applied.push({ id: p.id, year, site: ev.site ?? null, siteName: ev.siteName ?? null, severity: ev.severity, gamesLost: ev.gamesLost });
   }
   return applied;
 }
 
 /**
- * 後遺（§10.5）: 復帰後の一時的な能力減を真値へ反映する。身体系（走力・初動・パワー）を
- * 中心に落とし、技巧系は残す（＝技巧派の生存に効く）。投手の重症は球速低下の始まり（非対称）。
- * ここで落ちた分は以後の加齢カーブ（成長ドリフト）で部分的に回復しうる（点でなく幅で・§10.3）。
+ * 後遺（§10.5・★R6 文献調査に基づく再設計）。
+ *
+ * 【旧実装の誤り】故障するたびに走力・初動・パワー・EV を恒久的に削っていた。
+ *   これは実証と食い違う。**「率は戻るが、出場量は戻らない」**（Camp et al., n=216 / Lansdown & Feeley, n=80）:
+ *     - トミー・ジョン術後: **K%/BB%/FIP は有意差なし（＝率は戻る）**。球速だけ −0.7mph
+ *       （35歳以上は −2.9mph と大きい）
+ *     - 一方 **登板数 120.7→72.6・投球回 338.1→223.6 は術後3年平均でも回復しない（P<.001）**
+ *     - ACL再建後も ERA/WHIP/打率/OBP/SLG はすべて有意差なし（Erickson, n=124）
+ *     - 肩関節唇修復後は **キャリア長そのものが短縮**（投手 2.3年 vs 対照 5.8年）
+ *
+ * 【新実装】削るのは "出場量" の側:
+ *   - 軽症: 恒久的な能力低下なし（率は戻る）
+ *   - 重症の投手: **スタミナ**（＝登板数/イニングの上限）と球速を削る。35歳以上は球速を大きく削る
+ *   - 重症の下肢（ハム/膝/足首/鼠径）: 走力・初動を削る（走塁・守備範囲＝身体的な"量"）
+ *   - 重症の肩: 引退圧を上げる（キャリア長が縮む）
+ *   打撃の"率"（contact/eye/la）とパワー/EV は **触らない**。
  */
-function applyAftereffect(p, severity, inj) {
-  const mag = severity === 'major' ? inj.aftMajor : inj.aftMinor;
+function applyAftereffect(p, ev, inj) {
+  const A = inj.aftereffect;
+  if (ev.severity !== 'major') return; // 軽症は率も量も戻る（A.minorNone）
   const t = p.trueAbility;
-  t.common.speed = clampRating(t.common.speed - mag);
-  t.common.reaction = clampRating(t.common.reaction - mag);
-  t.common.power = clampRating(t.common.power - mag * 0.6);
-  t.batting.ev = clampRating(t.batting.ev - mag * 0.6);
-  if (p.role === 'pitcher' && severity === 'major') {
-    t.pitching.velocityKmh = clamp(t.pitching.velocityKmh - inj.aftVeloMajor, 130, 165);
-    t.pitching.control = clampRating(t.pitching.control - mag * 0.5);
+  if (p.role === 'pitcher') {
+    // 出場量: スタミナ恒久減（登板数・投球回が戻らない）
+    t.pitching.stamina = clampRating(t.pitching.stamina - A.majorStamina);
+    const dv = p.age >= A.oldAge ? A.majorVeloKmhOld : A.majorVeloKmh;
+    t.pitching.velocityKmh = clamp(t.pitching.velocityKmh - dv, 130, 165);
+  }
+  if (A.lowerBodySites.includes(ev.site)) {
+    t.common.speed = clampRating(t.common.speed - A.majorLowerBodySpeed);
+    t.common.reaction = clampRating(t.common.reaction - A.majorLowerBodyReaction);
   }
 }

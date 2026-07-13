@@ -255,6 +255,12 @@ export function playScheduledGame(ctx, g, gi) {
       availableRelievers: bullpenAvailable(u, g.day, cfg, pass.getPitch, makeRng(hashSeed(seed, 'penGuard', gi, sideIdx))),
       manager: teamById.get(teamId).manager,
       dh: gameDh,
+      // R6: 先発が中4日以下で投げるか（故障リスク増・PubMed 39292010 IRR=0.78 の裏返し）。
+      //   ローテが故障で枯れて代役先発を立てた日などに立つ。
+      starterShortRest: (() => {
+        const last = u.lastStartDay.get(starterPid);
+        return last != null && g.day - last - 1 < cfg.tuning.injury.shortRestDays;
+      })(),
     };
   };
   const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
@@ -276,6 +282,7 @@ export function playScheduledGame(ctx, g, gi) {
     gameContext: pass.gameContext,
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
     onInjury,
+    season: ctx.season ?? null, // R6: 直近故障の残債（指数減衰）の計算に使う
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
@@ -416,7 +423,7 @@ export function simulateSeason(league, cfg, opts = {}) {
    */
   const runPass = (pass) => {
     const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
-    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass, dayScale: dayScaleOf(schedule, cfg) };
+    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass, dayScale: dayScaleOf(schedule, cfg), season };
     schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
     return usageByTeam;
   };

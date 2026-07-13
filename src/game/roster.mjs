@@ -86,7 +86,10 @@ function decideRetire(p, cfg, prng) {
     rt.base +
     Math.max(0, age - rt.rampAge) * rt.agePerYear +
     Math.max(0, rt.abilityRef - ability) * rt.abilityPerPt +
-    (p.trueAbility.career.injuryHistory?.length ?? 0) * rt.injuryPerHist;
+    (p.trueAbility.career.injuryHistory?.length ?? 0) * rt.injuryPerHist +
+    // R6: 肩の重症はキャリア長そのものを縮める（関節唇修復後: 投手2.3年 vs 対照5.8年）
+    (p.trueAbility.career.injuryHistory ?? []).filter((e) => e.severity === 'major' && e.site === 'shoulder').length
+      * (cfg.tuning.injury.aftereffect.shoulderRetireBias ?? 0);
   pr -= Math.max(0, ability - rt.abilityRef) * rt.eliteRetain; // 鉄人ほど残る
   return prng.chance(clamp(pr, 0, rt.cap));
 }

@@ -170,6 +170,7 @@ function advanceFarmThrough(rt, throughDay) {
     usageByTeam: f.usageByTeam,
     pass,
     dayScale: f.dayScale,
+    season: rt.season, // R6
     // 二軍戦の故障も当季ログへ積む（R3）: 二軍で壊れた選手はそのまま昇格候補から外れる。
     onInjury: (ev) => rt.injuryLog.push({ ...ev, farm: true }),
   };
@@ -327,6 +328,7 @@ export function advanceRuntimeDay(rt, opts = {}) {
     usageByTeam: rt.usageByTeam,
     pass,
     dayScale: rt.dayScale,
+    season: rt.season, // R6: 直近故障の残債（指数減衰）の計算に使う
     // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
     //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
     onInjury: (ev) => rt.injuryLog.push(ev),

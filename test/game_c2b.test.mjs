@@ -83,41 +83,68 @@ test('C2b: 故障が確率事象として発生する（§10.5）', () => {
   assert.ok(agg.yearsWithInjury >= YEARS - 2, 'ほぼ毎年どこかで故障が起きる（確率事象）');
 });
 
-test('C2b: 故障歴があると再発リスク（ハザード）が上がる／捕手・速球投手は高い（§10.5）', () => {
+test('R6: 故障ハザードは「潜在durability＋直近故障の減衰する残債」で決まる（累積しない・§10.5）', () => {
+  // ★R6 文献調査（Wei et al., Am J Epidemiol 2011, n=1,281）:
+  //   「故障回数が増えるほど故障率が上がる」という用量反応は、個体の潜在的脆弱性(frailty)を
+  //   調整すると **消失する**＝観察される累積効果は因果でなく **選択効果**。
+  //   → 故障歴を足し算するのは誤り。二層（生涯不変のdurability＋指数減衰する直近の残債）に分解する。
   const mk = (over, o = {}) => createPlayer({ id: 'H', age: 31, trueAbility: createTrueAbility(over), ...o });
-  // 再発: 同一条件で故障歴（重症1件）ありのハザードが上がる。
-  const healthy = mk({ pitching: { velocityKmh: 150 } }, { role: 'pitcher', primaryPos: 'P' });
-  const scarred = mk(
-    { pitching: { velocityKmh: 150 }, career: { injuryHistory: [{ year: 2030, severity: 'major', gamesLost: 100 }] } },
-    { role: 'pitcher', primaryPos: 'P' },
-  );
-  assert.ok(injuryHazard(scarred, cfg) > injuryHazard(healthy, cfg), '故障歴ありのハザードが高い（再発）');
-  // 履歴が積み増すほど単調に上がる。
-  const twice = mk(
-    {
-      pitching: { velocityKmh: 150 },
-      career: { injuryHistory: [{ year: 2030, severity: 'major', gamesLost: 100 }, { year: 2031, severity: 'minor', gamesLost: 20 }] },
-    },
-    { role: 'pitcher', primaryPos: 'P' },
-  );
-  assert.ok(injuryHazard(twice, cfg) > injuryHazard(scarred, cfg), '故障歴が増えるほどハザード増');
-  // 役割の構造: 速球投手 > 制球投手（同年齢）＝投球負荷。
-  const fast = mk({ pitching: { velocityKmh: 156 } }, { role: 'pitcher', primaryPos: 'P' });
-  const soft = mk({ pitching: { velocityKmh: 140 } }, { role: 'pitcher', primaryPos: 'P' });
-  assert.ok(injuryHazard(fast, cfg) > injuryHazard(soft, cfg), '速球投手ほど投球負荷でハザード高');
+  const P = (over = {}, career = {}) =>
+    mk({ pitching: { velocityKmh: 150 }, career: { durability: 50, ...career } }, { role: 'pitcher', primaryPos: 'P' });
+  const NOW = 2035;
 
-  // ★R3: 「捕手は壊れる（頻度が高い）」は**定量データに支持されない**ので撤回した。
-  //   捕手の負傷率 2.75/1000 Athlete-Exposure は他ポジションより低い（Guy 2015・MLB 2001-10・
-  //   PubMed 26320222）。Carr 2022 でも捕手の負傷burdenは最低(11.0%)。
-  //   現実は「頻度は低いが、膝・頭頸部の負傷は重症化しやすい」→ 差は **重症度** に置いた。
-  const catcher = mk({}, { role: 'fielder', primaryPos: 'C' });
-  const firstBase = mk({}, { role: 'fielder', primaryPos: '1B' });
-  assert.equal(
-    injuryHazard(catcher, cfg),
-    injuryHazard(firstBase, cfg),
-    '捕手の故障"頻度"は他の野手と同じ（割増しない・Guy 2015）',
+  // ① 潜在durability（生涯不変の真値）: 低いほど壊れやすい。累積しない。
+  const glass = P({}, { durability: 25 });
+  const iron = P({}, { durability: 75 });
+  assert.ok(injuryHazard(glass, cfg, NOW) > injuryHazard(iron, cfg, NOW) * 1.5, 'durability が低いほど壊れやすい');
+
+  // ② 直近の故障は残債としてリスクを上げる（RR≈2・Green 2020 の「直近」RR=4.8 / 「ever」RR=2.7）
+  const healthy = P();
+  const justHurt = P({}, { injuryHistory: [{ year: NOW - 1, severity: 'major', gamesLost: 100 }] });
+  assert.ok(injuryHazard(justHurt, cfg, NOW) > injuryHazard(healthy, cfg, NOW), '直近の故障はリスクを上げる');
+
+  // ③ ★その効果は時間とともに減衰し、古い故障はほぼ寄与しない
+  //    （Arthur LASSO: 前年0.18 / 2年前0.10 / 3年前0.02≒無視できる。ランニング疫学も12か月超で有意性消失）
+  const oldHurt = P({}, { injuryHistory: [{ year: NOW - 6, severity: 'major', gamesLost: 100 }] });
+  assert.ok(
+    Math.abs(injuryHazard(oldHurt, cfg, NOW) - injuryHazard(healthy, cfg, NOW)) < 1e-9,
+    '6年前の故障は今日のリスクを上げない（減衰しきる）',
   );
-  assert.ok(cfg.tuning.injury.majorCatcher > 0, '捕手の差は重症度（膝・頭頸部は離脱が長い）に置く');
+  assert.ok(injuryHazard(justHurt, cfg, NOW) > injuryHazard(oldHurt, cfg, NOW), '直近 > 古い故障');
+
+  // ④ ★累積しない: 故障歴が何件あっても、残債は幾何級数で **有限に収束する**
+  //    （＝人為的な上限を付けなくても発散しない。これが旧実装の青天井を構造的に解決している）
+  //    「毎年1回ずつ20年壊れ続けた選手」でも、残債は Σ exp(−k/τ) の幾何級数で収束する。
+  const many = P({}, {
+    injuryHistory: Array.from({ length: 20 }, (_, i) => ({ year: NOW - i, severity: 'major', gamesLost: 100 })),
+  });
+  // recurMaxYears=3 ＝ 経過0〜3年ぶんだけが寄与する（4年以上前は完全にゼロ）
+  const recent = P({}, {
+    injuryHistory: [0, 1, 2, 3].map((k) => ({ year: NOW - k, severity: 'major', gamesLost: 100 })),
+  });
+  const ratio = injuryHazard(many, cfg, NOW) / injuryHazard(healthy, cfg, NOW);
+  assert.ok(ratio < 5, `20年壊れ続けてもハザードは有界（${ratio.toFixed(1)}倍。旧実装は青天井だった）`);
+  // 直近3年ぶんでほぼ飽和する（4年目以降の故障は寄与しない）＝上限(clamp)を人為的に付ける必要がない
+  assert.equal(
+    injuryHazard(many, cfg, NOW),
+    injuryHazard(recent, cfg, NOW),
+    '直近3年で飽和する（それより古い故障は一切寄与しない）＝上限(clamp)が要らない',
+  );
+
+  // ⑤ 球速の重みは小さい（Fleisig 2025・前向きn=305 で HR=1.02＝有意差なし。旧実装は過大評価だった）
+  const fast = P({ pitching: { velocityKmh: 156 } });
+  const soft = P({ pitching: { velocityKmh: 140 } });
+  assert.ok(injuryHazard(fast, cfg, NOW) >= injuryHazard(soft, cfg, NOW), '速球はリスクを上げうる');
+  assert.ok(
+    injuryHazard(fast, cfg, NOW) < injuryHazard(soft, cfg, NOW) * 1.15,
+    '球速の効果は小さい（最良質のエビデンスでは有意差なし）',
+  );
+
+  // ⑥ 捕手の故障"頻度"は割増さない（Guy 2015: 捕手の負傷率は他ポジションより低い）
+  const catcher = mk({ career: { durability: 50 } }, { role: 'fielder', primaryPos: 'C' });
+  const firstBase = mk({ career: { durability: 50 } }, { role: 'fielder', primaryPos: '1B' });
+  assert.equal(injuryHazard(catcher, cfg, NOW), injuryHazard(firstBase, cfg, NOW), '捕手の頻度は割増さない');
+  assert.ok(cfg.tuning.injury.aftereffect.shoulderRetireBias > 0, '肩の重症はキャリア長を削る（関節唇修復後の実測）');
 });
 
 test('C2b: ブレイクが上下両方 "稀に" 出る（§10.4/§11.1）', () => {
@@ -215,7 +242,8 @@ test('R3: 故障は試合中に発生し、その場で退場し、以後の試�
   for (const e of log.slice(0, 20)) {
     assert.ok(Number.isInteger(e.day) && e.day >= 0, '故障は試合日に発生する');
     assert.ok(['perPA', 'perBF', 'perFieldPlay', 'perCatcherPA'].includes(e.cause), `契機が露出イベント: ${e.cause}`);
-    assert.ok(e.gamesLost >= cfg.tuning.injury.minorGamesLo, '離脱は最小離脱以上（NPBの10日ルール相当）');
+    assert.ok(e.gamesLost >= cfg.tuning.injury.minGamesLost, '離脱は最小離脱以上（NPBの10日ルール相当）');
+    assert.ok(e.site && e.siteName, 'R6: 故障には部位がある（肩/肘UCL/ハムストリング…）');
     assert.ok(['minor', 'major'].includes(e.severity));
   }
   // 離脱者は実際に出場から外れる（usage.injuredUntil が立つ）

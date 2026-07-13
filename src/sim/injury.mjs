@@ -1,98 +1,168 @@
 // ============================================================================
 // 故障ハザード（§10.5）— シム層（試合中の発生）とゲーム層（オフの後遺処理）の共有定義
 //
-// ★R3 再設計（2026-07-13・ユーザー指示「シーズン中、何なら試合中の故障は実装してください」）:
-//   旧実装は「オフシーズンに“その年に故障したか”を1選手1回の確率で決め、**翌年の開幕IL**として
-//   持ち込む」という簡略化だった（src/game/injury.mjs）。そのため
-//     ・1年目は故障者が皆無（プレイヤーが最初に遊ぶ年に誰も壊れない）
-//     ・2年目以降も「開幕時点で既に離脱している」選手しか存在せず、**シーズン中に壊れない**
-//     ・結果、一軍/二軍の入替が NPB の 1/5（実測 9.8件/球団年 ⇔ NPB 実入替 50-70回）に留まり、
-//       一軍出場の異なり選手も 35.8人（NPB 61人）しか出なかった
-//   → 故障は「試合中の露出イベント（打席・投球・守備機会）ごとのハザード」として発生させる。
-//     壊れた選手はその場で退き（投手は即降板・野手はベンチと交代）、以後の試合を離脱する。
-//     離脱者は roster_moves の IL補充（既存機能）で二軍から補充される＝入替が自然に湧く。
+// 発生は「試合中の露出イベント（打席・投球・守備機会）ごとのハザード」（R3）。壊れた選手はその場で
+// 退き、以後の試合を離脱し、二軍から補充される（roster_moves の IL補充）。
+//
+// ★R6 再設計（文献調査 2026-07-13・thyroxin/research/injury_evidence.md）:
+//
+// 【旧実装の構造的誤り】故障歴1件ごとにハザードを加算していた（青天井 → 暫定で上限を付けて凌いだ）。
+//   これは **因果効果と選択効果の二重計上** だった。
+//   Wei et al., *Past Injury as a Risk Factor: An Illustrative Example Where Appearances Are
+//   Deceiving*, Am J Epidemiol 2011;173(8):941（n=1,281）:
+//     「故障回数が増えるほど故障率が上がる」という用量反応関係は、**個体の潜在的脆弱性(frailty)を
+//       調整すると消失する**。＝観察される累積効果の大部分は「壊れやすい個体が繰り返し選ばれてくる」
+//       選択効果であって、「故障したから壊れやすくなった」わけではない。
+//   → 故障歴を足し算する根拠は存在しない。二層に分解するのが正しい。
+//
+// 【新しい構造】
+//   ① 潜在durability（trueAbility.career.durability・生涯不変の真値）… 累積しない
+//   ② 直近の故障の残債（指数減衰）                                  … 数か月〜2年で消える
+//
+//   h = base × durabilityMult × ageMult(role) × 役割/投球負荷 × (1 + recurW × decaySum)
+//
+//   decaySum = Σ_i exp(−(今年 − 故障年)/τ) は **幾何級数なので有限に収束する**（毎年壊れ続けても
+//   頭打ち）。＝ **人為的な上限(clamp)が要らなくなる**。これが求めていた本質的な形。
+//
+// 【減衰の速さ】τ≈1.2年（半減期≈0.8年／3年でほぼ消滅）。根拠:
+//   - Arthur (BP・MLB野手LASSO): 前年の故障日数の係数 0.18 / 2年前 0.10 / 3年前 0.02（≒無視できる）
+//     → 相対 1 : 0.56 : 0.11 に exp(−t/τ) を当てると τ≈0.9-1.7年【導出】
+//   - Green et al., BJSM 2020（メタ解析 78研究・n=71,324）: ハムストリング再受傷は「既往あり(ever)」
+//     RR=2.7 に対し **「直近」RR=4.8** ＝ 時間減衰の直接証拠
+//   - ランニング疫学: 直近12か月以内の既往のみが調整後に有意（それより古いものは有意性を失う）
+//   ※野球特化の直接検証は **未確認**（隣接領域からの外挿）＝ config のノブとして露出し較正で詰める。
+//
+// 【球速の重みを下げた】Fleisig et al., OJSM 2025（**前向きコホート** n=305・UCL手術31例）:
+//   球速とUCL損傷は **HR=1.02（95%CI 0.91-1.14）＝有意差なし**。代わりに肘内反トルクが有意
+//   （10Nm差で HR=1.26）。支持側の Chalmers 2016 ですら説明力は分散の 7%。
+//   → 「速球派ほど壊れる」は最良質のエビデンスに支持されていない。重みを大幅に下げた。
+//
+// 【捕手の割増は撤去済み】Guy et al. 2015（PubMed 26320222）: 捕手の負傷"頻度"は他ポジションより低い。
+//
+// 【入れなかったもの（エビデンス不足のため）】
+//   - Verducci効果（前年比イニング急増）: 複数の独立分析が一致して否定（THT: 急増群のERAはむしろ良好）
+//   - ACWR（急性:慢性ワークロード比）: 野球特化研究は n=9 の記述研究のみ。総説が「野球への適用は
+//     problematic」と明記。「ACWR>1.27 で14.9倍」は一次論文を特定できず（未確認）
 //
 // 設計原則:
-//   - 予測でなくハザード（§10.5）: 誰が壊れるかは確率事象。合わせるのは集団の分布（§1）。
-//   - 決定論: 乱数は試合の階層シード rng のみ（Date.now/Math.random 禁止）。
-//   - **真値はシーズン中に動かさない**（鉄則7の実装上の含意・C2a テストの不変量）:
-//     試合中に決まるのは「離脱の事実（severity/gamesLost）」だけ。後遺（能力減）と故障歴の
-//     積み上げは**オフシーズンに当季の故障ログを消費して**適用する（game/injury.mjs）。
-//   - 三層構造: ハザードは真値（年齢・球速・故障歴）で決まる（＝身体の事実であって観測ではない）。
+//   - 決定論: 乱数は試合の階層シード rng のみ。
+//   - **真値はシーズン中に動かさない**: 試合中に決まるのは「離脱の事実」だけ。後遺と故障歴の
+//     積み上げはオフに当季ログを消費して適用する（game/injury.mjs）。
+//   - 三層構造: durability は真値。球団AI/起用AIが見られるのは「故障歴」というノイズの多い観測値だけ。
+//     → Ramkumar 2019(OJSM,n=1,890): ドラフト前の故障歴は指名オッズを下げる(OR=0.738)のに指名後の
+//       故障率は予測しない ＝ **実在する市場の非効率**（鉄則5「球団AIをわざと間違わせる」の実証的裏付け）。
 // ============================================================================
 import { clamp } from '../model/util.mjs';
 
 /**
- * 1選手の「1シーズンあたり」故障ハザード（0..cap）。年齢・守備位置・投球負荷・故障歴（再発）で上下。
- * 故障歴が増える／重症化するほど再発リスクが上がる（§10.5「最大リスク・再発」）。
- * R3ではこの値を **露出イベント1回あたりの確率へ正規化する係数** としても使う（exposureProb）。
- * @returns {number} このシーズンに故障する確率のスケール（refHazard=平均的選手の基準値）
+ * 年齢による故障リスク倍率（§10.5）。
+ *   投手: **U字型**（21-22歳は高リスク → 24歳付近が谷 → 25歳以降は緩やかに上昇）
+ *         Carroll & Silver, BP 2003「The Injury Nexus」※二次分析（確度中）
+ *   野手: 緩やかな線形増加（1歳あたり欠場日数 +6.4%）
+ * 旧実装の「30歳超から線形に増える」だけの形は、少なくとも投手については実証と乖離していた。
  */
-export function injuryHazard(p, cfg) {
+function ageMult(p, inj) {
+  const a = inj.age;
+  if (p.role === 'pitcher') {
+    const d = p.age - a.pitcherTroughAge; // 谷（≈24歳）からの距離
+    return 1 + (d < 0 ? -d * a.pitcherYoungPerYear : d * a.pitcherOldPerYear);
+  }
+  return 1 + Math.max(0, p.age - a.fielderRampAge) * a.fielderPerYear;
+}
+
+/**
+ * 直近の故障の残債（指数減衰）。幾何級数なので有限に収束する＝人為的な上限が要らない。
+ * @param {?number} season 現在のシーズン（年）。null なら 0（生成直後/単体テスト）
+ */
+function recentLoad(p, inj, season) {
+  const hist = p.trueAbility.career.injuryHistory ?? [];
+  if (!hist.length || season == null) return 0;
+  let sum = 0;
+  for (const e of hist) {
+    const dt = season - (e.year ?? season); // 経過年
+    if (dt < 0 || dt > inj.recurMaxYears) continue; // 古すぎる故障は寄与ゼロ（3年でほぼ消滅）
+    sum += (e.severity === 'major' ? inj.recurMajorW : 1) * Math.exp(-dt / inj.recurTauYears);
+  }
+  return sum;
+}
+
+/**
+ * 1選手の「1シーズンあたり」故障ハザードのスケール（露出確率の倍率としても使う）。
+ * @param {?number} season 現在のシーズン（省略時は再発の残債を考慮しない）
+ */
+export function injuryHazard(p, cfg, season = null) {
   const inj = cfg.tuning.injury;
   const t = p.trueAbility;
-  const hist = t.career.injuryHistory ?? [];
   let h = inj.base;
-  h += Math.max(0, p.age - inj.ageRamp) * inj.agePerYear;
+  // ① 潜在durability（生涯不変の真値・50中心）: 高いほど壊れにくい。累積しない。
+  h *= clamp(
+    1 + (50 - (t.career.durability ?? 50)) * inj.durabilityPerPt,
+    inj.durabilityMultMin,
+    inj.durabilityMultMax,
+  );
+  h *= ageMult(p, inj); // 年齢（投手U字／野手は緩やかな線形）
   if (p.role === 'pitcher') {
-    h += inj.pitcher;
-    h += Math.max(0, t.pitching.velocityKmh - inj.veloRef) * inj.veloPerKmh; // 球速＝投球負荷の代理
+    h *= inj.pitcherMult; // 投手の上乗せ（件数比は 1.0-1.3:1 と穏やか＝NPB実測）
+    // R6: 球速の重みは大幅に下げた（Fleisig 2025 で HR=1.02＝有意差なし）
+    h *= 1 + Math.max(0, t.pitching.velocityKmh - inj.veloRef) * inj.veloPerKmh;
   }
-  if (p.primaryPos === 'C') h += inj.catcher; // R3: 割増は0（捕手の負傷"頻度"は他ポジより低い・Guy 2015）
-  // 故障歴（再発・最大リスク）: 件数×重症度で将来リスクが上がる。
-  //   ★R4: 合計に上限（recurCap）を設ける。無制限に累積すると、試合中の故障（R3）で履歴が
-  //   早く積み上がり、多年運用でリーグ全体が壊れやすくなって出場時間が削れる（規定到達が
-  //   較正帯を割る）。「前回の故障が最大の予測因子」は事実だが、青天井ではない。
-  let priorMajor = false;
-  let recur = 0;
-  for (const e of hist) {
-    recur += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
-    if (e.severity === 'major') priorMajor = true;
-  }
-  h += Math.min(recur, inj.recurCap ?? Infinity);
-  // 投手の大怪我経験は以後の恒常的な将来リスク（非対称・§10.5）。
-  if (p.role === 'pitcher' && priorMajor) h += inj.pitcherMajorLegacy;
+  // ② 直近故障の残債（指数減衰・収束するので上限不要）
+  h *= 1 + inj.recurW * recentLoad(p, inj, season);
   return clamp(h, 0, inj.cap);
 }
 
 /**
- * 露出イベント1回あたりの故障確率（R3）。
+ * 露出イベント1回あたりの故障確率。
  *   kind: 'perPA'（打者の1打席＝スイング・走塁） / 'perBF'（投手の対戦打者1人＝肩肘の消耗）
- *       / 'perFieldPlay'（野手が処理した打球1つ） / 'perCatcherPA'（捕手の守備1打席＝ファウルチップ/ブロッキング）
- * 個体差は injuryHazard を refHazard で割った倍率で入れる（＝ハザードの形を1箇所に集約する）。
- * これにより「高球速ほど壊れる」「加齢で壊れる」「再発する」が試合中の発生にもそのまま効く。
- *
- * 【契機の配分について】現実の"試合中"の負傷は 投球23%/打撃24%/守備23%/走塁22% とほぼ均等
- * （Esquivel 2019）。本モデルは走塁を perPA に含め、さらに **投手の perBF に「試合外の投げ込み
- * （現実の故障の37%が試合外・うち29.8%が throwing）」を吸収させている**（＝投球回数に比例する
- * 消耗の代理）。そのため契機の内訳は投球側に寄るが、**観測される投手:野手の件数比 1.0-1.3:1
- * （NPB実測）に一致する**ことを較正の対象とする（realism-check Part F）。
+ *       / 'perFieldPlay'（野手が処理した打球1つ） / 'perCatcherPA'（捕手の守備1打席）
+ * @param {number} restMult 登板間隔の補正（投手のみ）。2024年研究（PubMed 39292010）:
+ *   登板間隔5日超のチームは筋骨格系IL日数が **IRR=0.78（22%減）** ＝ 中4日以下は risk↑。
  */
-export function exposureProb(p, kind, cfg) {
+export function exposureProb(p, kind, cfg, season = null, restMult = 1) {
   const IS = cfg.tuning.injury.inSeason;
   const base = IS[kind] ?? 0;
   if (!base) return 0;
-  return base * (injuryHazard(p, cfg) / IS.refHazard);
+  return base * (injuryHazard(p, cfg, season) / IS.refHazard) * restMult;
 }
 
 /**
- * 故障の重さと離脱試合数を引く（故障が起きたと決まった後に呼ぶ）。
- * 故障歴があると重症化しやすく、投手の大怪我経験は更に重くなりやすい（再発の悪循環・§10.5）。
- * @returns {{severity:'minor'|'major', gamesLost:number}}
+ * 故障部位を引く。役割で分布が大きく違う（Posner et al., AJSM 2011・MLB DL 2002-2008）:
+ *   投手は上肢 **67.0%** / 下肢 16.9%、野手は上肢 32.1% / 下肢 **47.5%**。
+ * 再発（同一部位 > 同一運動連鎖 >> 無関係な部位≈0）は **同じ部位を引きやすくする** ことで表す
+ * （ハザード本体は部位を持たず単純に保つ）。ハムストリング再受傷率 16.3%（Okoroha 2019, n=2,633）。
+ */
+export function drawInjurySite(p, cfg, prng) {
+  const inj = cfg.tuning.injury;
+  const table = p.role === 'pitcher' ? inj.sites.pitcher : inj.sites.fielder;
+  const prior = new Set((p.trueAbility.career.injuryHistory ?? []).map((e) => e.site).filter(Boolean));
+  let total = 0;
+  const w = [];
+  for (const s of table) {
+    const weight = s.share * (prior.has(s.id) ? inj.siteRecurBias : 1);
+    w.push(weight);
+    total += weight;
+  }
+  let u = prng.next() * total;
+  for (let i = 0; i < table.length; i++) {
+    u -= w[i];
+    if (u <= 0) return table[i];
+  }
+  return table[table.length - 1];
+}
+
+/**
+ * 故障の部位・重さ・離脱試合数を引く。
+ * 離脱期間は **右裾の重い分布**（Camp et al., AJSM 2018・n=49,955: 平均16日 / 中央値6日 ＝
+ * 平均が中央値の2.6倍）。部位ごとに中央値が桁違い（ハムストリング 14.5日 ⇔ UCL損傷 274.9日）なので
+ * **部位別の対数正規**で引く（分布族そのものの実証は未確認＝設計上の選択）。
+ * severity は「シーズン規模の離脱か」で決める（シーズン絶望級は全故障の 8-11%・Esquivel 2019）。
+ * @returns {{site:string, siteName:string, severity:'minor'|'major', gamesLost:number}}
  */
 export function rollInjurySeverity(p, cfg, prng) {
   const inj = cfg.tuning.injury;
-  const hist = p.trueAbility.career.injuryHistory ?? [];
-  const priorMajor = hist.some((e) => e.severity === 'major');
-  let majorP = inj.majorGivenInjury;
-  if (hist.length) majorP += inj.majorHistBonus;
-  // R3: 投手・捕手は「頻度」でなく「重症度」で差がつく（肩肘/膝・頭頸部は離脱が長い）。
-  if (p.role === 'pitcher') majorP += inj.majorPitcher ?? 0;
-  if (p.primaryPos === 'C') majorP += inj.majorCatcher ?? 0;
-  if (p.role === 'pitcher' && priorMajor) majorP += inj.majorPitcherLegacy;
-  const major = prng.chance(clamp(majorP, 0, 0.95));
-  const gamesLost = major
-    ? inj.majorGamesLo + prng.int(inj.majorGamesHi - inj.majorGamesLo + 1)
-    : inj.minorGamesLo + prng.int(inj.minorGamesHi - inj.minorGamesLo + 1);
-  return { severity: major ? 'major' : 'minor', gamesLost };
+  const site = drawInjurySite(p, cfg, prng);
+  const days = site.medianDays * Math.exp(prng.normal(0, inj.durationSigma)); // 対数正規
+  const gamesLost = Math.max(inj.minGamesLost, Math.round(days / inj.daysPerGameLost));
+  const severity = gamesLost >= inj.majorGamesThreshold ? 'major' : 'minor';
+  return { site: site.id, siteName: site.name, severity, gamesLost };
 }

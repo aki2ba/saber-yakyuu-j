@@ -126,6 +126,9 @@ export function generatePitcher(rng, id) {
     },
   });
 
+  // R6: 潜在的な故障耐性（生涯不変の真値）。独立シード(id基準)で引き、メインの生成ストリームを
+  //   一切消費しない＝既存リーグ生成は byte 不変（较正53指標に非干渉）。
+  t.career.durability = clampRating(makeRng(hashSeed(id, 'durability')).normal(50, 10));
   return createPlayer({
     id,
     name: generateName(rng),
@@ -239,6 +242,7 @@ export function generateFielder(rng, id, primaryPos) {
   // （既存リーグ生成をバイト一致で保つ＝B1の変更を「一球シム化」だけに閉じる）。非捕手は既定50=WP/PB非関与。
   if (primaryPos === 'C') t.fielding.blocking = clampRating(makeRng(hashSeed(id, 'block')).normal(50, 10));
 
+  t.career.durability = clampRating(makeRng(hashSeed(id, 'durability')).normal(50, 10)); // R6（同上・独立シード）
   return createPlayer({
     id,
     name: generateName(rng),

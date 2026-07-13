@@ -514,6 +514,8 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   const onInjury = opts.onInjury ?? null;
   home.onInjury = onInjury;
   away.onInjury = onInjury;
+  home.season = opts.season ?? null; // R6: 直近故障の残債（指数減衰）の計算に使う
+  away.season = opts.season ?? null;
   if (onEvent) {
     onEvent({
       type: 'start',
@@ -631,6 +633,7 @@ function initSide(init, cfg) {
     roles, // ブルペン役割 closer/setup8/setup7/middle/long（継投v2）
     pendingPitcher: false, // 投手への代打→次の守備から新投手（§S2-2）
     injuryPending: new Set(), // R3: 負傷したが塁上に居るため退場を次のハーフへ持ち越す打者
+    starterShortRest: !!init.starterShortRest, // R6: 先発が中4日以下（故障リスク増・IRR=0.78）
     pregame: buildPregameEval(d.byId, cfg), // 監督の当日メモ（編成時評価。以降trueAbilityは見ない）
     // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
     cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1, wpa: 0 },
@@ -1066,6 +1069,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       cfg, rng, statFor, inning, bases, outs,
       batterId,
       fielderPos: hitFielderPos,
+      season: fielding.season ?? null, // R6: 直近故障の残債（指数減衰）の計算に必要
     });
 
     // 代走（§S2-3）: PA解決後、塁上の鈍足走者をベンチ最速と交代
@@ -1332,14 +1336,18 @@ function tryInjure(side, pid, kind, ctx) {
   const p = side.byId.get(pid);
   if (!p || side.retired.has(pid) || side.injuryPending.has(pid)) return;
   const { cfg, rng } = ctx;
-  if (!rng.chance(exposureProb(p, kind, cfg))) return;
-  const { severity, gamesLost } = rollInjurySeverity(p, cfg, rng);
+  // R6: 登板間隔（中4日以下はリスク増・IRR=0.78 の逆数）。先発のみ（救援は別の疲労管理）。
+  const restMult = kind === 'perBF' && side.starterShortRest && pid === side.starterId
+    ? cfg.tuning.injury.shortRestMult
+    : 1;
+  if (!rng.chance(exposureProb(p, kind, cfg, ctx.season, restMult))) return;
+  const { site, siteName, severity, gamesLost } = rollInjurySeverity(p, cfg, rng);
   // 離脱の事実を外へ（season 層が usage.injuredUntil を立て、二軍から補充する）
   if (side.onInjury) {
-    side.onInjury({ playerId: pid, teamId: side.teamId, severity, gamesLost, inning: ctx.inning, cause: kind });
+    side.onInjury({ playerId: pid, teamId: side.teamId, site, siteName, severity, gamesLost, inning: ctx.inning, cause: kind });
   }
   if (side.onEvent) {
-    side.onEvent({ type: 'injury', team: side.teamId, inning: ctx.inning, playerId: pid, severity, gamesLost, cause: kind });
+    side.onEvent({ type: 'injury', team: side.teamId, inning: ctx.inning, playerId: pid, site, siteName, severity, gamesLost, cause: kind });
   }
   if (pid === side.curPid) {
     injuryExitPitcher(side, pid, ctx);

@@ -201,20 +201,40 @@ test('reviewAssignments: 好調の控えがシェアを漸増し、share≥1で�
 const lg = generateLeague(2026, cfg);
 const res = simulateSeason(lg, cfg, { seed: 2026 });
 
-test('シーズン統合: 先発の登板間隔は中5日以上（日差≥6日）（S3）', () => {
+test('シーズン統合: 先発の登板間隔は中5日以上（例外は投手陣が故障で枯れた非常時のみ）（S3 / R3）', () => {
+  // R3（試合中の故障）を入れる前は「例外ゼロ」を要求していた。故障が入ると、ローテ6人のうち
+  // 複数が同時離脱した球団は **健康な先発だけでは中6日を物理的に守れない**（5人で毎日の日程を
+  // 回せない）。現実の球団は二軍から先発を上げるが、**sim層(simulateSeason)は farm を持たない**
+  // ＝補充ができない構造上の最悪ケースになる（ゲーム層では roster_moves の IL補充が動く）。
+  // selectStarter は中6日を割るくらいならブルペンから代役先発を立てる（pickSpotStarter）が、
+  // ブルペンまで連投で枯れた日はどうにもならない。その「非常時の中5日」だけを許容し、
+  // **規則が構造的に破られていないこと（例外は稀・かつ投手陣が実際に枯れている）** を検証する。
   let checked = 0;
-  for (const [, u] of res.usageByTeam) {
+  const violations = [];
+  for (const [tid, u] of res.usageByTeam) {
     for (const [pid, days] of u.startDaysByPid) {
       for (let i = 1; i < days.length; i++) {
-        assert.ok(
-          days[i] - days[i - 1] >= cfg.tuning.fatigue.starterRestDays + 1,
-          `${pid} の先発間隔 (${days[i - 1]}→${days[i]})`,
-        );
+        const gap = days[i] - days[i - 1];
+        if (gap < cfg.tuning.fatigue.starterRestDays + 1) {
+          // その日に離脱していた自軍の投手数（＝非常時であることの証拠）
+          const injured = [...u.charts.dh.byId.values()].filter(
+            (p) => p.role === 'pitcher' && (u.injuredUntil.get(p.id) ?? 0) > days[i],
+          ).length;
+          violations.push({ tid, pid, gap, day: days[i], injured });
+        }
         checked++;
       }
     }
   }
   assert.ok(checked > 200, `先発間隔を十分検証した (got ${checked})`);
+  const rate = violations.length / checked;
+  assert.ok(rate < 0.005, `中6日を割る先発は稀（${violations.length}/${checked} = ${(rate * 100).toFixed(2)}%）`);
+  for (const v of violations) {
+    assert.ok(
+      v.injured >= 3,
+      `${v.pid} の中${v.gap - 1}日は投手陣が枯れた非常時のみ（同日の離脱投手 ${v.injured}人）`,
+    );
+  }
 });
 
 test('シーズン統合: 3連投なし・前日30球以上の翌日登板なし（S3）', () => {

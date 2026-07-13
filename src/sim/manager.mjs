@@ -225,6 +225,31 @@ export function chooseDefensiveSub(ctx, cfg) {
   return { pos: worstPos, pid: best };
 }
 
+/**
+ * 負傷退場の代替を選ぶ（R3・§S2-3と同輪）。壊れた選手のポジションを継げるベンチ最良。
+ *   守備位置 → その位置の守備評価（pregame.def）が最良 ／ DH → 打撃評価が最良。
+ * ベンチが枯れていれば null（＝痛みを押して出場継続。翌日以降に抹消される）。
+ * 決定論: 乱数不使用・bench 配列順で安定（同値は先着）。
+ */
+export function chooseInjuryReplacement(side, pos, cfg) {
+  if (!side.bench.length) return null;
+  const evalOf = (pid) => {
+    const pg = side.pregame.get(pid);
+    if (!pg) return -Infinity;
+    return pos === 'DH' ? pg.hit : pg.def[pos] ?? -Infinity;
+  };
+  let best = null;
+  let bestV = -Infinity;
+  for (const pid of side.bench) {
+    const v = evalOf(pid);
+    if (v > bestV) {
+      bestV = v;
+      best = pid;
+    }
+  }
+  return best;
+}
+
 // --- 継投v2（§S2-7） ---------------------------------------------------------
 
 /** 先発の球数上限（スタミナ×監督quickHook。高quickHookほど早く代える） */

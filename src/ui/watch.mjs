@@ -595,6 +595,14 @@ function watchReconstruct(w, u) {
       const inn = e.inning != null ? e.inning : v.inning;
       const hf = e.half || v.half;
       v.lines.push({ kind: 'steal', cls: e.success ? 'ev-run' : 'ev-err', parts: [`[${inn}回${watchHalfJP(hf)}] `, u.playerLink(e.runnerId), e.success ? ': 盗塁成功！（二塁へ）' : ': 盗塁失敗（盗塁死）'] });
+    } else if (e.type === 'injury') {
+      // R3: 故障の発生（§10.5）。退場の有無に関わらず「離脱」の事実を実況に出す。
+      const sev = e.severity === 'major' ? '重傷' : '負傷';
+      v.lines.push({
+        kind: 'injury',
+        cls: 'ev-err',
+        parts: [`　[${tname(e.team)}] `, u.playerLink(e.playerId), `: ${sev}（全治 約${e.gamesLost}試合）`],
+      });
     } else if (e.type === 'sub') {
       const side = sideOf(e.team);
       const lu = v.lineups[side];
@@ -613,6 +621,9 @@ function watchReconstruct(w, u) {
         else if (e.kind === 'PR') {
           if (e.basesPids) v.basesPids = e.basesPids.slice();
           v.lines.push({ kind: 'sub', cls: 'ev-sub', parts: [`　[${tname(e.team)}] 代走 `, u.playerLink(e.inPid), `（← ${u.pname(e.outPid)}）`] });
+        } else if (e.kind === 'INJ') {
+          // R3: 負傷退場（試合中の故障）。ベンチから同ポジションの最良が入る。
+          v.lines.push({ kind: 'sub', cls: 'ev-err', parts: [`　[${tname(e.team)}] `, u.playerLink(e.outPid), ` 負傷退場 → `, u.playerLink(e.inPid), `（${u.posJP(e.pos || '')}）`] });
         } else v.lines.push({ kind: 'sub', cls: 'ev-sub', parts: [`　[${tname(e.team)}] 守備固め `, u.playerLink(e.inPid), `（${u.posJP(e.pos || '')}・← ${u.pname(e.outPid)}）`] });
       }
     } else if (e.type === 'end') {

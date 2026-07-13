@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
 import { newGame, advanceDay, advanceTo, advanceYear, save, load } from '../src/game/index.mjs';
-import { injuryHazard } from '../src/game/injury.mjs';
+import { injuryHazard } from '../src/sim/injury.mjs'; // R3: ハザード定義はシム層（試合中の発生と共有）
 import { createPlayer, createTrueAbility } from '../src/model/player.mjs';
 
 const cfg = createConfig();
@@ -101,13 +101,23 @@ test('C2b: 故障歴があると再発リスク（ハザード）が上がる／
     { role: 'pitcher', primaryPos: 'P' },
   );
   assert.ok(injuryHazard(twice, cfg) > injuryHazard(scarred, cfg), '故障歴が増えるほどハザード増');
-  // ポジション/役割の構造: 捕手 > 一塁手、速球投手 > 制球投手（同年齢）。
-  const catcher = mk({}, { role: 'fielder', primaryPos: 'C' });
-  const firstBase = mk({}, { role: 'fielder', primaryPos: '1B' });
-  assert.ok(injuryHazard(catcher, cfg) > injuryHazard(firstBase, cfg), '捕手は壊れる（ハザード高）');
+  // 役割の構造: 速球投手 > 制球投手（同年齢）＝投球負荷。
   const fast = mk({ pitching: { velocityKmh: 156 } }, { role: 'pitcher', primaryPos: 'P' });
   const soft = mk({ pitching: { velocityKmh: 140 } }, { role: 'pitcher', primaryPos: 'P' });
   assert.ok(injuryHazard(fast, cfg) > injuryHazard(soft, cfg), '速球投手ほど投球負荷でハザード高');
+
+  // ★R3: 「捕手は壊れる（頻度が高い）」は**定量データに支持されない**ので撤回した。
+  //   捕手の負傷率 2.75/1000 Athlete-Exposure は他ポジションより低い（Guy 2015・MLB 2001-10・
+  //   PubMed 26320222）。Carr 2022 でも捕手の負傷burdenは最低(11.0%)。
+  //   現実は「頻度は低いが、膝・頭頸部の負傷は重症化しやすい」→ 差は **重症度** に置いた。
+  const catcher = mk({}, { role: 'fielder', primaryPos: 'C' });
+  const firstBase = mk({}, { role: 'fielder', primaryPos: '1B' });
+  assert.equal(
+    injuryHazard(catcher, cfg),
+    injuryHazard(firstBase, cfg),
+    '捕手の故障"頻度"は他の野手と同じ（割増しない・Guy 2015）',
+  );
+  assert.ok(cfg.tuning.injury.majorCatcher > 0, '捕手の差は重症度（膝・頭頸部は離脱が長い）に置く');
 });
 
 test('C2b: ブレイクが上下両方 "稀に" 出る（§10.4/§11.1）', () => {
@@ -189,4 +199,50 @@ test('C2b: 引退込みの多年セーブ/ロードが決定論（replay で世�
   advanceTo(restored, 'seasonEnd');
   assert.equal(standSig(restored.rt.table), refStand, '最終順位が無セーブ通しと一致');
   assert.equal(statsSig(restored.rt.stats.stats.values()), refStats, '最終集計が無セーブ通しと一致');
+});
+
+// ============================================================================
+// R3: 試合中の故障（§10.5「シーズン中、何なら試合中に壊れる」）
+//   旧実装は「オフに1回ロール→翌年の開幕IL」で、シーズン中に誰も壊れなかった。
+//   ＝1年目は故障者ゼロ／二軍からのIL補充が一切湧かない、という破綻だった。
+// ============================================================================
+test('R3: 故障は試合中に発生し、その場で退場し、以後の試合を離脱する', () => {
+  const st = newGame(20260713, 'T1', { cfg });
+  const steps = advanceTo(st, 'seasonEnd');
+  const log = st.rt.injuryLog;
+  assert.ok(log.length > 0, '1年目のシーズン中に故障が発生する（旧実装は0件）');
+  // 発生は試合中（day を持ち、契機が露出イベント）
+  for (const e of log.slice(0, 20)) {
+    assert.ok(Number.isInteger(e.day) && e.day >= 0, '故障は試合日に発生する');
+    assert.ok(['perPA', 'perBF', 'perFieldPlay', 'perCatcherPA'].includes(e.cause), `契機が露出イベント: ${e.cause}`);
+    assert.ok(e.gamesLost >= cfg.tuning.injury.minorGamesLo, '離脱は最小離脱以上（NPBの10日ルール相当）');
+    assert.ok(['minor', 'major'].includes(e.severity));
+  }
+  // 離脱者は実際に出場から外れる（usage.injuredUntil が立つ）
+  const anyIl = [...st.rt.usageByTeam.values()].some((u) => u.injuredUntil.size > 0);
+  assert.ok(anyIl, '故障者は起用AIの離脱リストに載る（スタメン/ローテ/救援から外れる）');
+  // 二軍からのIL補充が湧く（旧実装は 0件）
+  const moves = steps.flatMap((s) => s.rosterMoves ?? []);
+  assert.ok(moves.some((m) => m.type === 'ilReplace'), '離脱者は二軍から補充される（IL補充）');
+  assert.ok(moves.some((m) => m.type === 'ilReturn'), '復帰した選手は再登録される');
+});
+
+test('R3: 真値はシーズン中に動かない（後遺はオフに当季ログを消費して適用する）', () => {
+  // 鉄則7の実装上の含意: 試合中に確定するのは「離脱の事実」だけ。能力への影響（後遺）は
+  // オフシーズンに入る（＝C2a の不変量「1年目シーズン中に真値/年齢は動かない」を壊さない）。
+  const st = newGame(4242, 'T1', { cfg });
+  const before = new Map(st.league.players.map((p) => [p.id, p.trueAbility.common.speed]));
+  advanceTo(st, 'seasonEnd');
+  assert.ok(st.rt.injuryLog.length > 0, '前提: 当季に故障が発生している');
+  for (const p of st.league.players) {
+    const b = before.get(p.id);
+    if (b == null) continue; // 育成→支配下の季節中昇格
+    assert.equal(p.trueAbility.common.speed, b, `${p.id}: シーズン中に真値は動かない`);
+  }
+  // オフを跨ぐと、故障した選手に後遺（身体系の低下）と故障歴が入る
+  const injured = st.rt.injuryLog.filter((e) => !e.farm).map((e) => e.playerId);
+  advanceYear(st);
+  const survivors = new Map(st.league.players.map((p) => [p.id, p]));
+  const withHistory = injured.filter((pid) => (survivors.get(pid)?.trueAbility.career.injuryHistory ?? []).length > 0);
+  assert.ok(withHistory.length > 0, 'オフを跨ぐと故障歴が真値に積まれる（再発リスク・引退圧の入力）');
 });

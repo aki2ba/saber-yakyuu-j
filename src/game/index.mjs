@@ -17,9 +17,9 @@ import { hashSeed } from '../rng.mjs';
 import { createConfig } from '../config.mjs';
 import { generateLeague } from '../generate.mjs';
 import { ENGINE_VERSION } from '../engine.mjs';
-import { startSeasonRuntime, advanceRuntimeDay, pendingDay } from './season_runtime.mjs';
+import { startSeasonRuntime, advanceRuntimeDay, pendingDay, carryOverInjuries } from './season_runtime.mjs';
 import { applyAging } from './aging.mjs';
-import { applyInjuries } from './injury.mjs';
+import { applySeasonInjuries } from './injury.mjs';
 import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
 import { runMarket, teamEvalProfile } from './market.mjs';
@@ -73,8 +73,10 @@ function offseasonSeed(masterSeed, yearIndex) {
  * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
  * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [] }) {
-  const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
+  // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
+  //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
+  const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
 
@@ -205,7 +207,12 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
-    pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
+    // R3: 前季の故障の「開幕時点の残り離脱 day 数」（開幕ILの素）。故障が試合由来になったため
+    //   replay では再導出できない（season を再シムしない）→ save に永続する。
+    pendingInjuries: [],
+    // R3: 完了年ぶんの故障ログ（試合中に発生した離脱）。オフの後遺/故障歴の適用に使う。
+    //   §17: 集計値のみ（生の打球ログは持たない）。load はこれを replay に渡して真値を再構築する。
+    injuryLog: [],
     // 育成→支配下の季節中昇格ログ（§req_20260708・完了年ぶんのみ蓄積。save/replayで再現。
     // 当年ぶんは state.rt.farmPromotionLog にあり、advanceYear で年ごとに畳み込む）。
     farmPromotionLog: [],
@@ -386,6 +393,13 @@ export function advanceYear(state) {
   // §req_20260708: 完了年ぶんの育成→支配下季節中昇格ログを永続配列へ畳み込む（load時はこのログから
   // replay適用し、league.players/farmを動かす day 単位の再シムを不要にする＝index.mjs load() 参照）。
   for (const m of state.rt.farmPromotionLog) state.farmPromotionLog.push({ year: state.yearIndex, ...m });
+  // R3: 当季に試合中発生した故障を永続ログへ畳み込む（オフの後遺/故障歴の素・load の replay 入力）。
+  const seasonInjuries = state.rt.injuryLog.map((e) => ({
+    id: e.playerId, teamId: e.teamId, severity: e.severity, gamesLost: e.gamesLost, day: e.day, farm: !!e.farm,
+  }));
+  for (const e of seasonInjuries) state.injuryLog.push({ year: state.yearIndex, ...e });
+  // 癒えないままシーズンが終わった故障 → 翌季の開幕IL（「9月の大怪我で開幕に間に合わない」）
+  const carried = carryOverInjuries(state.rt);
   const off = offseasonTransition(state.league, state.cfg, {
     masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
@@ -394,6 +408,7 @@ export function advanceYear(state) {
     careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
     careerFarmStats: state.careerFarmStats, // 当年の二軍 statline（F2-3: 育成昇格の実成績判定）
     marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
+    seasonInjuries, // R3: 当季の故障ログ（後遺・故障歴をここで真値へ落とす）
   });
   // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
   off.awards = computeSeasonAwards({
@@ -406,7 +421,7 @@ export function advanceYear(state) {
   });
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
-  state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
+  state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
   state.yearIndex += 1;
   state.year += 1;
   startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
@@ -478,6 +493,10 @@ export function save(state) {
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
     farmPromotionLog: state.farmPromotionLog, // 育成→支配下季節中昇格ログ（完了年ぶん・§req_20260708）
+    // R3: 故障が試合由来になったため、過去年のオフ replay（season を再シムしない）はログが無いと
+    //   同一の真値（後遺・故障歴）を再構築できない。開幕IL(pendingInjuries) も同様に永続する。
+    injuryLog: state.injuryLog,
+    pendingInjuries: state.pendingInjuries,
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -531,7 +550,8 @@ export function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
-    pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
+    injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
+    pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
     rt: null,
   };
   // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
@@ -556,13 +576,16 @@ export function load(blob, options = {}) {
       careerStats: state.careerStats,
       careerFarmStats: state.careerFarmStats, // 育成昇格の二軍実成績（F2-3・blob 復元済み＝live と同一）
       marketInterventions: state.marketInterventions,
+      // R3: その年に試合中発生した故障（永続ログ）。live の advanceYear と同一入力＝同一の
+      //   後遺/故障歴を再構築する（season を再シムせずに真値を復元できる唯一の経路）。
+      seasonInjuries: state.injuryLog.filter((e) => e.year === y),
     });
     state.retiredPlayers.push(...off.retirees);
     lastOff = off;
   }
-  // 保存時点シーズン（yearIndex）の開幕ILは「直前オフ（yearIndex-1）」の故障で決まる。
-  // 上記 replay の最終反復がまさにそれ＝live の advanceYear と同一 off から再構築（決定論）。
-  state.pendingInjuries = lastOff ? lastOff.injuries : [];
+  // R3: 当年の開幕IL（pendingInjuries）は blob から復元済み（試合由来の故障は replay で再導出
+  //   できないため save に含める）。lastOff は retirees の再構築にのみ使う。
+  void lastOff;
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;

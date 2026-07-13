@@ -207,6 +207,7 @@ function processIlReturns(rt, teamId, day, out) {
     if (!p || p.teamId !== teamId) continue; // 安全弁（シーズン中の移籍は無い）
     const reg = rt.registeredByTeam.get(teamId);
     if (reg.has(pid)) continue; // 既に登録済み（想定外の安全弁）
+    if (p.rosterStatus === 'minor') continue; // 育成契約の選手は出場登録できない（支配下70枠の管理・安全弁）
     // 復帰と入替で抹消する相手: 原則は補充選手。成績入替で既に降格済みなら同型の観測最下位。
     let down = rt.moves.byId.get(swap.subId);
     if (!down || !reg.has(swap.subId)) {
@@ -345,7 +346,12 @@ function processFarmPromotions(rt, teamId, day, out) {
   const reg = rt.registeredByTeam.get(teamId);
   const sameType = rt.league.players.filter(
     (p) => p.teamId === teamId && !reg.has(p.id) && p.role === best.role &&
-      (best.role === 'pitcher' || p.primaryPos === best.primaryPos) && !inCooldown(rt, p.id, day),
+      (best.role === 'pitcher' || p.primaryPos === best.primaryPos) && !inCooldown(rt, p.id, day) &&
+      // ★R3: 故障でIL入替中の選手を育成落ちさせない。旧実装は「登録外＋当季観測が不振」だけで選ぶため、
+      //   **故障で登録を外れた選手が（出場が少ないので観測が不振に見え）育成契約へ落とされ**、
+      //   IL明けの再登録（processIlReturns）で **育成選手が一軍登録に混ざる** 不変量違反を起こした。
+      //   現実にも「故障者を育成契約に落として即再登録」は起こらない（療養は支配下のまま）。
+      !rt.moves.ilSwaps.has(p.id),
   );
   if (!sameType.length) return; // 交換相手が居ない（枠を崩せない・稀）
   const obsMap = { get: (pid) => ({ batting: rt.stats.getBat(pid), pitching: rt.stats.getPitch(pid) }) };

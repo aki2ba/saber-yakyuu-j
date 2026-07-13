@@ -139,6 +139,18 @@ function serializeDays(flat, teams, maxConsec) {
  * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map, registeredByTeam:Map}}
  *   registeredByTeam: teamId → Set(登録選手id)（二軍ロスターの補集合判定に使う）
  */
+/**
+ * 離脱の単位換算（R3）: gamesLost（試合数）→ 日程の day 数。日程には全休日があるので day > game。
+ * 実際の日程から実測する（cfg のフォールバック値には依存しない）。
+ * @returns {number} 1試合あたりの day 数（例: 143試合が 170日なら 1.19）
+ */
+export function dayScaleOf(schedule, cfg) {
+  const games = cfg.league.gamesPerSeason ?? 143;
+  if (!schedule.length || !games) return cfg.tuning.injury?.inSeason?.daysPerGame ?? 1;
+  const lastDay = schedule[schedule.length - 1].day;
+  return (lastDay + 1) / games;
+}
+
 export function buildTeamCharts(league, cfg) {
   const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
   const teamById = new Map(league.teams.map((t) => [t.id, t]));
@@ -248,9 +260,22 @@ export function playScheduledGame(ctx, g, gi) {
   const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
   const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
 
+  // 故障（R3・§10.5）: 試合中に発生した離脱を usage.injuredUntil へ立てる（以後の日程で
+  //   スタメン/ローテ/救援可用から自動的に外れる）。ゲーム層ではさらに ctx.onInjury が
+  //   ログへ積み、二軍からのIL補充（roster_moves）が動く。
+  //   gamesLost(試合数) → day 数の換算は ctx.dayScale（日程には全休日があるので day > game）。
+  const onInjury = (ev) => {
+    const u = usageByTeam.get(ev.teamId);
+    const days = Math.max(1, Math.round(ev.gamesLost * (ctx.dayScale ?? cfg.tuning.injury.inSeason.daysPerGame)));
+    const until = g.day + days;
+    if (u && (u.injuredUntil.get(ev.playerId) ?? 0) < until) u.injuredUntil.set(ev.playerId, until);
+    if (ctx.onInjury) ctx.onInjury({ ...ev, day: g.day, until });
+  };
+
   const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, gamePark, pass.onBattedBall, {
     gameContext: pass.gameContext,
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
+    onInjury,
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
@@ -391,7 +416,7 @@ export function simulateSeason(league, cfg, opts = {}) {
    */
   const runPass = (pass) => {
     const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
-    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
+    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass, dayScale: dayScaleOf(schedule, cfg) };
     schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
     return usageByTeam;
   };

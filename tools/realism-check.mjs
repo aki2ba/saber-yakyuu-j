@@ -22,6 +22,7 @@ import { simulateGame } from '../src/sim/game.mjs';
 import { buildDepthChart } from '../src/sim/team.mjs';
 import { buildTeamCharts } from '../src/sim/season.mjs';
 import { applyAging } from '../src/game/aging.mjs';
+import { newGame, advanceTo } from '../src/game/index.mjs';
 import { leagueSummary } from '../src/sim/leagueStats.mjs';
 import { generateBattedBall } from '../src/sim/battedBall.mjs';
 import { resolveBattedBall, battedType, outfieldGeometry } from '../src/sim/battedBallResult.mjs';
@@ -30,7 +31,7 @@ import { isBarrel } from '../src/sim/battedBallStats.mjs';
 import { makeRng, hashSeed } from '../src/rng.mjs';
 import { NEUTRAL_PARK } from '../src/model/battedball.mjs';
 import { createPlayerSeason } from '../src/model/statline.mjs';
-import { MLB_PHYSICS, NPB_SEASON, NPB_ROSTER_AGE } from './realism-refs.mjs';
+import { MLB_PHYSICS, NPB_SEASON, NPB_ROSTER_AGE, NPB_INJURY } from './realism-refs.mjs';
 
 const cfg = createConfig();
 let gatePass = 0;
@@ -445,6 +446,72 @@ console.log('\n--- E. 年齢構造（R2: 生成の年齢×能力・一軍の年�
   const before = mean(rookies.map(overallOf));
   for (let y = 0; y < 9; y++) applyAging(rookies, cfg, { seed: hashSeed(41, 'grow', y) });
   gate('高卒新人の9年間の成長pt（旧実装 +1.8）', mean(rookies.map(overallOf)) - before, 6, 16, 1);
+}
+
+// ============================================================================
+// Part F: 故障（R3・§10.5「試合中に壊れる」／NPB_INJURY）
+//   旧実装は「オフに1回ロール→翌年の開幕IL」で、**シーズン中に誰も壊れなかった**。
+//   ここでは「試合中に発生し、その場で退き、二軍から補充される」ことを恒常ゲートで見張る。
+// ============================================================================
+console.log('\n--- F. 故障（試合中の発生・離脱・IL補充） ---');
+{
+  const I = NPB_INJURY;
+  let inj = 0;
+  let injTop = 0;
+  let major = 0;
+  let days = 0;
+  let pit = 0;
+  let fld = 0;
+  let catcherInj = 0;
+  let cornerInj = 0;
+  let moves = 0;
+  let ilMoves = 0;
+  let used = 0;
+  let games = 0;
+  let exits = 0;
+  const SEEDS = [11, 12];
+  for (const seed of SEEDS) {
+    const st = newGame(seed, 'T1', { cfg });
+    const steps = advanceTo(st, 'seasonEnd');
+    const byId = new Map([...st.league.players, ...st.league.farm].map((p) => [p.id, p]));
+    for (const e of st.rt.injuryLog) {
+      inj++;
+      if (!e.farm) injTop++;
+      if (e.severity === 'major') major++;
+      days += e.gamesLost * st.rt.dayScale;
+      const p = byId.get(e.playerId);
+      if (!p) continue;
+      if (p.role === 'pitcher') pit++;
+      else fld++;
+      if (p.primaryPos === 'C') catcherInj++;
+      if (p.primaryPos === '1B' || p.primaryPos === 'LF') cornerInj++;
+      if (!e.farm) exits++;
+    }
+    const ms = steps.flatMap((x) => x.rosterMoves ?? []);
+    moves += ms.length;
+    ilMoves += ms.filter((m) => m.type === 'ilReplace' || m.type === 'ilReturn').length;
+    games += st.rt.schedule.length;
+    const byTeam = new Map();
+    for (const s of st.careerStats.filter((x) => x.season === st.year)) {
+      if (!((s.batting?.pa ?? 0) > 0 || (s.pitching?.bf ?? 0) > 0)) continue;
+      if (!byTeam.has(s.teamId)) byTeam.set(s.teamId, new Set());
+      byTeam.get(s.teamId).add(s.playerId);
+    }
+    used += [...byTeam.values()].reduce((a, x) => a + x.size, 0) / byTeam.size;
+  }
+  const n = SEEDS.length;
+  const nT = cfg.league.numTeams;
+  gate('故障/球団/年（一軍・NPB実測 7.3人）', injTop / n / nT, I.perTeamSeason.band[0], I.perTeamSeason.band[1], 1);
+  gate('重症(シーズン絶望級)の割合', inj ? major / inj : 0, I.majorShare.band[0], I.majorShare.band[1], 3);
+  gate('投手:野手の故障件数比（NPB 1.10-1.18:1）', fld ? pit / fld : 0, I.pitcherToFielderCount.band[0], I.pitcherToFielderCount.band[1], 2);
+  gate('1件あたりの平均離脱日数', inj ? days / inj : 0, I.meanDaysLost.band[0], I.meanDaysLost.band[1], 0);
+  gate('試合中の負傷退場/試合（両軍計・導出値）', games ? exits / (games / n) : 0, I.inGameExitsPerGame.band[0], I.inGameExitsPerGame.band[1], 3);
+  // ★捕手は「壊れやすい」わけではない（Guy 2015）: 捕手の故障件数がコーナー(1B/LF)を大きく超えない
+  gate('捕手の故障件数 / コーナー(1B+LF)の故障件数', cornerInj ? catcherInj / cornerInj : 0, 0, 1.6, 2);
+  // ★IL補充が実際に湧いている（旧実装は1年目に0件＝故障者が一軍に居座り続けた）
+  gate('IL関連の登録入替/球団/年（旧実装 0件）', ilMoves / n / nT, 2, 30, 1);
+  gate('登録入替/球団/年（NPB 実入替50-70回）', moves / n / nT, 15, 70, 1);
+  info(`一軍出場の異なり選手 ${(used / n).toFixed(1)}人/球団（NPB実測 61人・旧実装 35.8人）`);
 }
 
 // ============================================================================

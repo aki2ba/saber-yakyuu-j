@@ -170,7 +170,7 @@ function diffBatCounts(cur, snap) {
 /** 当日の先発投手（中 starterRestDays 日以上のローテ投手をローテ順に）。§S3-2投手可用性 */
 export function selectStarter(state, day, cfg) {
   const rot = state.charts.dh.rotation;
-  const need = cfg.tuning.fatigue.starterRestDays;
+  const needRest = cfg.tuning.fatigue.starterRestDays;
   let fallback = rot[state.rotIdx % rot.length];
   let fallbackRest = -1;
   for (let k = 0; k < rot.length; k++) {
@@ -178,13 +178,63 @@ export function selectStarter(state, day, cfg) {
     if (isInjured(state, pid, day)) continue; // 離脱中の先発は飛ばす（次のローテ投手が繰り上がる）
     const last = state.lastStartDay.get(pid);
     const rest = last == null ? Infinity : day - last - 1;
-    if (rest >= need) return pid;
+    if (rest >= needRest) return pid;
     if (rest > fallbackRest) {
       fallbackRest = rest;
       fallback = pid;
     }
   }
-  return fallback; // 1日1試合×ローテ6なら理論上ここへは来ない（安全弁: 最も休めた投手）
+  // ★R3 代替先発: 故障でローテが枯れると、健康な先発が全員「中6日未満」になる
+  //   （ローテ6人から1人抜ければ5人で回さざるを得ない＝構造的に中5日になる）。
+  //   旧実装はここで短い中5日の先発を強行していた（登板間隔の不変量を破っていた）。
+  //   現実の球団は二軍から先発を上げるか、**ブルペンの長いイニング要員に代役先発させる**。
+  //   ゲーム層では IL補充（roster_moves）が二軍から昇格させるが、それが効くまでの隙間と、
+  //   farm を持たない sim 層（＝較正の土台）では、ここでブルペンから代役を立てる。
+  if (fallbackRest < needRest) {
+    const spot = pickSpotStarter(state, day, cfg);
+    if (spot) return spot;
+  }
+  return fallback; // 全員が枯れている（安全弁: 最も休めた投手）
+}
+
+/**
+ * 代替先発（R3）: 十分に休養したブルペン投手を1人選ぶ（long＝敗戦処理/ロングリリーフを優先）。
+ * 連投・前日の球数・離脱を避ける（bullpenAvailable と同じ疲労の物差し）。
+ * 決定論: 乱数不使用・bullpen の配列順で安定。
+ */
+function pickSpotStarter(state, day, cfg) {
+  const f = cfg.tuning.fatigue;
+  const pen = state.charts.dh.bullpen;
+  const roles = state.charts.dh.bullpenRoles ?? {};
+  /** restDays 日以内に投げておらず、直近の先発から中6日空いていて、離脱していない投手か。 */
+  const rested = (pid, restDays) => {
+    if (isInjured(state, pid, day)) return false;
+    const last = state.lastStartDay.get(pid);
+    if (last != null && day - last - 1 < need(cfg)) return false; // 代役先発の連投も禁止
+    const m = state.pitchedByDay.get(pid);
+    if (!m) return true;
+    for (let d = 1; d <= restDays; d++) if ((m.get(day - d) ?? 0) > 0) return false;
+    return true;
+  };
+  // 1st: long（ロングリリーフ）→ middle（非役割）。勝ちパターン（closer/setup）は崩さない。
+  const skip = new Set([roles.closer, roles.setup8, roles.setup7].filter(Boolean));
+  const order = [roles.long, ...(roles.middle ?? []), ...pen].filter(Boolean);
+  for (const pid of order) {
+    if (skip.has(pid)) continue;
+    if (rested(pid, f.spotStarterRestDays)) return pid;
+  }
+  // 2nd: それでも見つからない（故障＋連投でブルペンまで枯れた）＝勝ちパターンも含め、
+  //   前日に投げていない健康な投手なら誰でも立てる。ここまでやって初めて「中6日を割る先発」より
+  //   代役先発を優先する（登板間隔の不変量を守るのが目的）。
+  for (const pid of order) {
+    if (rested(pid, 1)) return pid;
+  }
+  return null;
+}
+
+/** 先発の必要休養日数（中6日＝日差6以上なら rest>=starterRestDays）。 */
+function need(cfg) {
+  return cfg.tuning.fatigue.starterRestDays;
 }
 
 /**

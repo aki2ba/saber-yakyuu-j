@@ -19,12 +19,35 @@ import {
   makeSeasonStats,
   playScheduledGame,
   finalizeStandings,
+  dayScaleOf,
 } from '../sim/season.mjs';
 import { createUsageState } from '../sim/usage.mjs';
 import { buildDepthChart } from '../sim/team.mjs';
 import { simulatePostseason } from '../sim/postseason.mjs';
 import { buildBoxScore } from './boxscore.mjs';
 import { applyRosterMovesForDay, createMovesState } from './roster_moves.mjs';
+
+/**
+ * シーズン終了時点でまだ癒えていない故障を、翌シーズンの開幕IL（pendingInjuries）へ持ち越す（R3）。
+ * 「9月に全治半年の大怪我 → 翌年の開幕も出られない」を表現する。
+ * @returns {Array<{id:string, daysLost:number}>} 翌季開幕時点の残り離脱 day 数
+ */
+export function carryOverInjuries(rt) {
+  const out = [];
+  const push = (usageByTeam) => {
+    for (const u of usageByTeam.values()) {
+      for (const [pid, until] of u.injuredUntil) {
+        const remain = until - rt.finalDay;
+        if (remain > 0) out.push({ id: pid, daysLost: remain });
+      }
+    }
+  };
+  push(rt.usageByTeam);
+  if (rt.farm) push(rt.farm.usageByTeam);
+  // 決定論・順序非依存（Map の走査順に依らない）
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return out;
+}
 
 /**
  * 二軍リーグのランタイムを組む（F2-2・phaseF_spec F2-2）。
@@ -79,8 +102,9 @@ function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injurie
     for (const [tid, r] of rosterByTeam) for (const p of r) teamOf.set(p.id, tid);
     for (const ev of injuries) {
       const tid = teamOf.get(ev.id);
-      if (tid == null || !ev.gamesLost) continue;
-      usageByTeam.get(tid)?.injuredUntil.set(ev.id, ev.gamesLost);
+      const days = ev.daysLost ?? ev.gamesLost; // R3: 開幕IL＝前季の故障の「残り離脱 day 数」
+      if (tid == null || !days) continue;
+      usageByTeam.get(tid)?.injuredUntil.set(ev.id, days);
     }
   }
   // 日程: buildSchedule を farm 用の試合数ノブで再利用（リーグ内22×5相手=110試合・交流戦なし）。
@@ -101,6 +125,7 @@ function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injurie
   }
   return {
     seed: farmSeed,
+    dayScale: dayScaleOf(schedule, cfg), // R3: gamesLost→day 換算（二軍日程は~110試合）
     teams,
     teamById,
     leagueDh,
@@ -144,6 +169,9 @@ function advanceFarmThrough(rt, throughDay) {
     chartsByTeam: f.chartsByTeam,
     usageByTeam: f.usageByTeam,
     pass,
+    dayScale: f.dayScale,
+    // 二軍戦の故障も当季ログへ積む（R3）: 二軍で壊れた選手はそのまま昇格候補から外れる。
+    onInjury: (ev) => rt.injuryLog.push({ ...ev, farm: true }),
   };
   const games = [];
   while (f.cursor < f.schedule.length && f.schedule[f.cursor].day <= throughDay) {
@@ -191,10 +219,11 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
   const seasonInjuries = [];
   for (const ev of injuries) {
     const p = byId.get(ev.id);
-    if (!p || !ev.gamesLost) continue; // 引退で消えた選手（pid不在）は無視
+    const days = ev.daysLost ?? ev.gamesLost; // R3: 前季の故障の「残り離脱 day 数」
+    if (!p || !days) continue; // 引退で消えた選手（pid不在）は無視
     const u = usageByTeam.get(p.teamId);
-    if (u) u.injuredUntil.set(ev.id, ev.gamesLost);
-    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, gamesLost: ev.gamesLost });
+    if (u) u.injuredUntil.set(ev.id, days);
+    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, daysLost: days });
   }
   const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
   const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
@@ -224,6 +253,10 @@ export function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_P
     // offseasonTransitionのみのreplay近道が効かない。年末にGameState.farmPromotionLogへ畳み込んで
     // 永続化し、load時は「その年の分」をこのログからreplay適用する（day単位の再シムは不要）。
     farmPromotionLog: [],
+    // 故障（R3）: gamesLost→day 換算と、当季に試合中発生した故障のログ（一軍＋二軍）。
+    //   §17: 当該シーズンのみ（save には GameState 側で年ごとに畳み込んで永続）。
+    dayScale: dayScaleOf(schedule, cfg),
+    injuryLog: [],
     schedule,
     standings,
     stats,
@@ -293,6 +326,10 @@ export function advanceRuntimeDay(rt, opts = {}) {
     chartsByTeam: rt.chartsByTeam,
     usageByTeam: rt.usageByTeam,
     pass,
+    dayScale: rt.dayScale,
+    // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
+    //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
+    onInjury: (ev) => rt.injuryLog.push(ev),
   };
   const games = [];
   const playerGames = [];

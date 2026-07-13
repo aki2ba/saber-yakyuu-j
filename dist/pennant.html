@@ -1506,7 +1506,10 @@ const TUNING_DEFAULT = {
 
   // 休養（S3 日次スタメンAI。正捕手100-135試合へ）
   rest: {
-    catcherRestProb: 0.085, // 捕手の休養基本率/試合 ※S5較正（正捕手100-135試合へ）
+    // R3再較正: 0.085→0.070。試合中の故障を導入したことで正捕手が年に数試合〜数十試合を
+    //   故障で欠くようになり、休養と故障の二重取りで先発数が帯(100-135)の下限を割った。
+    //   「休ませる」ぶんを減らし、欠場の主因を休養から故障へ移す（現実の正捕手に近い）。
+    catcherRestProb: 0.070, // 捕手の休養基本率/試合 ※S5較正（正捕手100-135試合へ）
     fielderRestProb: 0.026, // 野手の休養基本率/試合 ※S5較正
     streakW: 0.004, // 連続出場1試合ごとの休養率加算
     benchWoba: 0.295, // 不振ベンチの発動水準（観測ベース混合評価＋レンジ項がこれ未満・S5較正）
@@ -1522,6 +1525,8 @@ const TUNING_DEFAULT = {
     maxConsecDays: 2, // 2連投まで（3連投禁止）
     prevDayPitchLimit: 21, // 前日この球数以上→当日不可 ※S5較正（SV/HLD/登板数の負荷分散）
     starterRestDays: 5, // 先発は中5日以上
+    // R3 代替先発: 故障でローテが枯れた日に立てるブルペン投手の必要休養日数（連投明けを避ける）。
+    spotStarterRestDays: 2,
   },
 
   // 観測成績ベース起用（S3 usage.mjs）。三層構造: 真値は直接見ない（観測statline＋スカウトノイズ）。
@@ -1927,7 +1932,7 @@ const TUNING_DEFAULT = {
     // 野手の power/ev への追加加点（R2較正）: 年齢構造の導入で一軍の平均年齢が 23.9→27.9歳へ上がり、
     //   power/ev は decline が最も速い軸（1.55/年）なのでリーグ長打力だけが構造的に不足する
     //   （SLG/OPS/HR王 が同時に帯を割る）。長打だけを戻すノブ（contact 系には効かせない）。
-    powerLift: 1.7,
+    powerLift: 1.97,
   },
 
   aging: {
@@ -2025,14 +2030,26 @@ const TUNING_DEFAULT = {
     pitcher: 0.030, // 投手の上乗せ（肩肘の消耗）
     veloRef: 148, // 球速がこの値を超える投手ほど投球負荷が高い
     veloPerKmh: 0.004, // veloRef 超過 1km/h ごとのハザード加算
-    catcher: 0.050, // 捕手の上乗せ（膝腰・ファウルチップ＝壊れる）
+    // ★R3: 捕手の割増を撤廃（0.050→0）。「捕手は壊れる」は定量データに支持されない:
+    //   捕手の負傷率 2.75/1000 Athlete-Exposure は他ポジションより **低い**（Guy 2015・MLB 2001-10・
+    //   PubMed 26320222）。Carr 2022 でも捕手は負傷burdenが最低(11.0%)。ただし膝・頭頸部の負傷は
+    //   重症化しやすい → **頻度でなく重症度で差をつける**（下の majorCatcher）。
+    catcher: 0.0,
     recurMinor: 0.020, // 軽症の故障歴1件ごとの再発リスク加算
     recurMajor: 0.050, // 重症の故障歴1件ごとの再発リスク加算（最大リスク）
     pitcherMajorLegacy: 0.050, // 投手が過去に大怪我＝以後の恒常的な将来リスク（非対称）
     cap: 0.55, // ハザードの上限
-    majorGivenInjury: 0.22, // 故障したうち重症になる基本割合
-    majorHistBonus: 0.10, // 故障歴があると重症化しやすい
+    // ★R3 重症率の再較正: 現実は「シーズン絶望級＝全故障の 8-11%」（Esquivel 2019・MLB HITS
+    //   n=51,548・確度高）。旧値 0.22 は過大だった。
+    majorGivenInjury: 0.07, // 故障したうち重症になる基本割合
+    majorHistBonus: 0.05, // 故障歴があると重症化しやすい
     majorPitcherLegacy: 0.15, // 投手が過去に大怪我していると更に重症化しやすい
+    // ★R3: 投手・捕手は「頻度」でなく「重症度」で差がつく（＝離脱が長い）。
+    //   投手の故障部位は肩64日/肘59日、野手は肉離れ40日/その他30-35日（データスタジアム 2017）。
+    //   man-days lost 比は投手:野手 ≈ 1.3-1.8:1 だが、**件数比は 1.0-1.3:1** に過ぎない
+    //   （NPB実測 2023 1.10:1 / 2024 1.18:1）。捕手も膝・頭頸部は重い。
+    majorPitcher: 0.06, // 投手は重症化しやすい（肩肘）
+    majorCatcher: 0.05, // 捕手は頻度は低いが重症化しやすい（膝・頭頸部）
     minorGamesLo: 12, // 軽症の離脱試合数（下限）
     minorGamesHi: 45,
     majorGamesLo: 60, // 重症の離脱試合数（下限）
@@ -2040,6 +2057,27 @@ const TUNING_DEFAULT = {
     aftMinor: 1.5, // 軽症の後遺（身体系レーティングの一時減）
     aftMajor: 4.0, // 重症の後遺
     aftVeloMajor: 2.5, // 投手の重症時の球速低下(km/h)
+
+    // ★R3: 試合中の故障発生（sim/injury.mjs の exposureProb / sim/game.mjs が消費）。
+    //   旧実装は「オフに1選手1回ロール→翌年の開幕IL」で、シーズン中に誰も壊れなかった
+    //   （＝1年目は故障者ゼロ／一軍二軍の入替が NPB の 1/5 しか湧かない主因）。
+    //   ここでは「打席で身体を使った選手」の露出イベントごとに引く。個体差（年齢/球速/捕手/
+    //   故障歴）は上の injuryHazard をそのまま倍率として使う（ハザードの形は1箇所に集約）。
+    inSeason: {
+      enabled: true,
+      refHazard: 0.06, // 倍率の正規化基準（injuryHazard/refHazard=1 の選手が下の base 確率）
+      // 露出ごとの確率（realism-refs の NPB_INJURY に対して calibrate/realism で較正した値）。
+      //   現実の「試合中の負傷の契機」はほぼ均等（投球23%/打撃24%/守備23%/走塁22%・Esquivel 2019）。
+      //   走塁は打者の露出(perPA)に含める。投手の perBF は登板日以外のブルペン/投げ込みの消耗も
+      //   代理しており（現実の故障の37%は試合外・うち29.8%が throwing）、投球回数に比例させる。
+      perPA: 0.00080, // 打者: 1打席（スイング・全力疾走）
+      perBF: 0.00075, // 投手: 対戦打者1人（肩肘の消耗）※球速・故障歴で倍率が乗る
+      perFieldPlay: 0.00100, // 野手: 自分が処理した打球1つ（守備機会）
+      perCatcherPA: 0.00004, // 捕手: 守備側1打席（ファウルチップ/ブロッキング。頻度は割増しない＝上記）
+      // 離脱の単位換算: gamesLost（試合数）→ 日程の day 数。日程には全休日があるので day > game。
+      //   シーズン開始時に schedule から実測して上書きされる（この値はフォールバック）。
+      daysPerGame: 1.2,
+    },
   },
 
   // ==========================================================================
@@ -5038,6 +5076,31 @@ function chooseDefensiveSub(ctx, cfg) {
   return { pos: worstPos, pid: best };
 }
 
+/**
+ * 負傷退場の代替を選ぶ（R3・§S2-3と同輪）。壊れた選手のポジションを継げるベンチ最良。
+ *   守備位置 → その位置の守備評価（pregame.def）が最良 ／ DH → 打撃評価が最良。
+ * ベンチが枯れていれば null（＝痛みを押して出場継続。翌日以降に抹消される）。
+ * 決定論: 乱数不使用・bench 配列順で安定（同値は先着）。
+ */
+function chooseInjuryReplacement(side, pos, cfg) {
+  if (!side.bench.length) return null;
+  const evalOf = (pid) => {
+    const pg = side.pregame.get(pid);
+    if (!pg) return -Infinity;
+    return pos === 'DH' ? pg.hit : pg.def[pos] ?? -Infinity;
+  };
+  let best = null;
+  let bestV = -Infinity;
+  for (const pid of side.bench) {
+    const v = evalOf(pid);
+    if (v > bestV) {
+      bestV = v;
+      best = pid;
+    }
+  }
+  return best;
+}
+
 // --- 継投v2（§S2-7） ---------------------------------------------------------
 
 /** 先発の球数上限（スタミナ×監督quickHook。高quickHookほど早く代える） */
@@ -5214,6 +5277,102 @@ function accumulateBatted(bat, pit, bb, r, pullSign, cfg) {
 }
 
 
+// ===== src/sim/injury.mjs =====
+// ============================================================================
+// 故障ハザード（§10.5）— シム層（試合中の発生）とゲーム層（オフの後遺処理）の共有定義
+//
+// ★R3 再設計（2026-07-13・ユーザー指示「シーズン中、何なら試合中の故障は実装してください」）:
+//   旧実装は「オフシーズンに“その年に故障したか”を1選手1回の確率で決め、**翌年の開幕IL**として
+//   持ち込む」という簡略化だった（src/game/injury.mjs）。そのため
+//     ・1年目は故障者が皆無（プレイヤーが最初に遊ぶ年に誰も壊れない）
+//     ・2年目以降も「開幕時点で既に離脱している」選手しか存在せず、**シーズン中に壊れない**
+//     ・結果、一軍/二軍の入替が NPB の 1/5（実測 9.8件/球団年 ⇔ NPB 実入替 50-70回）に留まり、
+//       一軍出場の異なり選手も 35.8人（NPB 61人）しか出なかった
+//   → 故障は「試合中の露出イベント（打席・投球・守備機会）ごとのハザード」として発生させる。
+//     壊れた選手はその場で退き（投手は即降板・野手はベンチと交代）、以後の試合を離脱する。
+//     離脱者は roster_moves の IL補充（既存機能）で二軍から補充される＝入替が自然に湧く。
+//
+// 設計原則:
+//   - 予測でなくハザード（§10.5）: 誰が壊れるかは確率事象。合わせるのは集団の分布（§1）。
+//   - 決定論: 乱数は試合の階層シード rng のみ（Date.now/Math.random 禁止）。
+//   - **真値はシーズン中に動かさない**（鉄則7の実装上の含意・C2a テストの不変量）:
+//     試合中に決まるのは「離脱の事実（severity/gamesLost）」だけ。後遺（能力減）と故障歴の
+//     積み上げは**オフシーズンに当季の故障ログを消費して**適用する（game/injury.mjs）。
+//   - 三層構造: ハザードは真値（年齢・球速・故障歴）で決まる（＝身体の事実であって観測ではない）。
+// ============================================================================
+
+
+/**
+ * 1選手の「1シーズンあたり」故障ハザード（0..cap）。年齢・守備位置・投球負荷・故障歴（再発）で上下。
+ * 故障歴が増える／重症化するほど再発リスクが上がる（§10.5「最大リスク・再発」）。
+ * R3ではこの値を **露出イベント1回あたりの確率へ正規化する係数** としても使う（exposureProb）。
+ * @returns {number} このシーズンに故障する確率のスケール（refHazard=平均的選手の基準値）
+ */
+function injuryHazard(p, cfg) {
+  const inj = cfg.tuning.injury;
+  const t = p.trueAbility;
+  const hist = t.career.injuryHistory ?? [];
+  let h = inj.base;
+  h += Math.max(0, p.age - inj.ageRamp) * inj.agePerYear;
+  if (p.role === 'pitcher') {
+    h += inj.pitcher;
+    h += Math.max(0, t.pitching.velocityKmh - inj.veloRef) * inj.veloPerKmh; // 球速＝投球負荷の代理
+  }
+  if (p.primaryPos === 'C') h += inj.catcher; // R3: 割増は0（捕手の負傷"頻度"は他ポジより低い・Guy 2015）
+  // 故障歴（再発・最大リスク）: 件数×重症度で将来リスクが上がる。
+  let priorMajor = false;
+  for (const e of hist) {
+    h += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
+    if (e.severity === 'major') priorMajor = true;
+  }
+  // 投手の大怪我経験は以後の恒常的な将来リスク（非対称・§10.5）。
+  if (p.role === 'pitcher' && priorMajor) h += inj.pitcherMajorLegacy;
+  return clamp(h, 0, inj.cap);
+}
+
+/**
+ * 露出イベント1回あたりの故障確率（R3）。
+ *   kind: 'perPA'（打者の1打席＝スイング・走塁） / 'perBF'（投手の対戦打者1人＝肩肘の消耗）
+ *       / 'perFieldPlay'（野手が処理した打球1つ） / 'perCatcherPA'（捕手の守備1打席＝ファウルチップ/ブロッキング）
+ * 個体差は injuryHazard を refHazard で割った倍率で入れる（＝ハザードの形を1箇所に集約する）。
+ * これにより「高球速ほど壊れる」「加齢で壊れる」「再発する」が試合中の発生にもそのまま効く。
+ *
+ * 【契機の配分について】現実の"試合中"の負傷は 投球23%/打撃24%/守備23%/走塁22% とほぼ均等
+ * （Esquivel 2019）。本モデルは走塁を perPA に含め、さらに **投手の perBF に「試合外の投げ込み
+ * （現実の故障の37%が試合外・うち29.8%が throwing）」を吸収させている**（＝投球回数に比例する
+ * 消耗の代理）。そのため契機の内訳は投球側に寄るが、**観測される投手:野手の件数比 1.0-1.3:1
+ * （NPB実測）に一致する**ことを較正の対象とする（realism-check Part F）。
+ */
+function exposureProb(p, kind, cfg) {
+  const IS = cfg.tuning.injury.inSeason;
+  const base = IS[kind] ?? 0;
+  if (!base) return 0;
+  return base * (injuryHazard(p, cfg) / IS.refHazard);
+}
+
+/**
+ * 故障の重さと離脱試合数を引く（故障が起きたと決まった後に呼ぶ）。
+ * 故障歴があると重症化しやすく、投手の大怪我経験は更に重くなりやすい（再発の悪循環・§10.5）。
+ * @returns {{severity:'minor'|'major', gamesLost:number}}
+ */
+function rollInjurySeverity(p, cfg, prng) {
+  const inj = cfg.tuning.injury;
+  const hist = p.trueAbility.career.injuryHistory ?? [];
+  const priorMajor = hist.some((e) => e.severity === 'major');
+  let majorP = inj.majorGivenInjury;
+  if (hist.length) majorP += inj.majorHistBonus;
+  // R3: 投手・捕手は「頻度」でなく「重症度」で差がつく（肩肘/膝・頭頸部は離脱が長い）。
+  if (p.role === 'pitcher') majorP += inj.majorPitcher ?? 0;
+  if (p.primaryPos === 'C') majorP += inj.majorCatcher ?? 0;
+  if (p.role === 'pitcher' && priorMajor) majorP += inj.majorPitcherLegacy;
+  const major = prng.chance(clamp(majorP, 0, 0.95));
+  const gamesLost = major
+    ? inj.majorGamesLo + prng.int(inj.majorGamesHi - inj.majorGamesLo + 1)
+    : inj.minorGamesLo + prng.int(inj.minorGamesHi - inj.minorGamesLo + 1);
+  return { severity: major ? 'major' : 'minor', gamesLost };
+}
+
+
 // ===== src/sim/game.mjs =====
 // ============================================================================
 // 試合状態機械（1-4c/e → フェーズA S2 でベンチ・采配・投手打席を導入）
@@ -5226,6 +5385,7 @@ function accumulateBatted(bat, pit, bb, r, pullSign, cfg) {
 // フェーズCで人間の采配に差し替えるフック＝判断関数の入替だけで済む構造）。
 // 個人R(得点者)は保留、チーム得点(RS/RA)と投手失点のみ計上（§18・自己レビューF6）。
 // ============================================================================
+
 
 
 
@@ -5711,6 +5871,11 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
   const onEvent = opts.onEvent ?? null;
   home.onEvent = onEvent;
   away.onEvent = onEvent;
+  // 故障シンク（R3）: 試合中に発生した離脱を season 層へ渡す（usage.injuredUntil を立て、
+  //   二軍から補充する＝roster_moves の IL補充が自然に動き出す）。乱数は消費しない。
+  const onInjury = opts.onInjury ?? null;
+  home.onInjury = onInjury;
+  away.onInjury = onInjury;
   if (onEvent) {
     onEvent({
       type: 'start',
@@ -5827,6 +5992,7 @@ function initSide(init, cfg) {
     bullpen,
     roles, // ブルペン役割 closer/setup8/setup7/middle/long（継投v2）
     pendingPitcher: false, // 投手への代打→次の守備から新投手（§S2-2）
+    injuryPending: new Set(), // R3: 負傷したが塁上に居るため退場を次のハーフへ持ち越す打者
     pregame: buildPregameEval(d.byId, cfg), // 監督の当日メモ（編成時評価。以降trueAbilityは見ない）
     // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
     cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1, wpa: 0 },
@@ -5846,6 +6012,9 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
   // 守備側の投手整備: 投手への代打の後始末→回頭の役割ベース継投（§S2-2/§S2-7）
   halfStartPitching(fielding, batting.score, inning, statFor, cfg);
   // 守備固め（§S2-3: 8回以降・リード1-3・当日メモで優位時のみ）
+  // 負傷退場の持ち越し（R3）: 塁上に居たため退けなかった選手をここで交代させる（両軍）。
+  flushInjuryExits(fielding, inning, cfg);
+  flushInjuryExits(batting, inning, cfg);
   maybeDefensiveSub(fielding, batting.score, inning, cfg);
 
   const bases = [null, null, null];
@@ -6253,6 +6422,14 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       });
     }
 
+    // 故障（R3・§10.5）: 打席で身体を使った選手（打者/投手/打球を処理した野手/捕手）に露出ハザード。
+    //   壊れたら即退場（投手=降板・野手=ベンチと交代。塁上の走者は次のハーフへ持ち越し）。
+    rollInGameInjuries(batting, fielding, {
+      cfg, rng, statFor, inning, bases, outs,
+      batterId,
+      fielderPos: hitFielderPos,
+    });
+
     // 代走（§S2-3）: PA解決後、塁上の鈍足走者をベンチ最速と交代
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
@@ -6499,6 +6676,92 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
   bStat.batting.b1++;
   pStat.pitching.h++;
   return { outs, dab: 1, dh: 1, d1: 1 };
+}
+
+// --- 故障（R3・§10.5「試合中に壊れる」） -------------------------------------
+//
+// 打席が終わるたびに「その打席で身体を使った選手」へ露出ハザードを引く（sim/injury.mjs）:
+//   打者=スイング・全力疾走 ／ 投手=1人と対戦した肩肘の消耗 ／ 打球を処理した野手=守備機会
+//   ／ 捕手=ファウルチップ・ブロッキング（守備側の全打席が露出）。
+// 壊れたら **その場で試合から退く**（投手は即降板・野手はベンチと交代）。塁上の走者だけは
+// 走塁を終えるまで退場を持ち越す（次のハーフ開始時に交代＝ flushInjuryExits）。
+// 真値（能力）はここでは動かさない。離脱の事実だけを onInjury で外へ出し、後遺と故障歴の
+// 積み上げはオフシーズンが当季ログを消費して行う（game/injury.mjs・鉄則7の不変量を保つ）。
+
+/** 1人ぶんの露出ハザードを引き、故障したら退場処理まで行う。 */
+function tryInjure(side, pid, kind, ctx) {
+  if (pid == null) return;
+  const p = side.byId.get(pid);
+  if (!p || side.retired.has(pid) || side.injuryPending.has(pid)) return;
+  const { cfg, rng } = ctx;
+  if (!rng.chance(exposureProb(p, kind, cfg))) return;
+  const { severity, gamesLost } = rollInjurySeverity(p, cfg, rng);
+  // 離脱の事実を外へ（season 層が usage.injuredUntil を立て、二軍から補充する）
+  if (side.onInjury) {
+    side.onInjury({ playerId: pid, teamId: side.teamId, severity, gamesLost, inning: ctx.inning, cause: kind });
+  }
+  if (side.onEvent) {
+    side.onEvent({ type: 'injury', team: side.teamId, inning: ctx.inning, playerId: pid, severity, gamesLost, cause: kind });
+  }
+  if (pid === side.curPid) {
+    injuryExitPitcher(side, pid, ctx);
+    return;
+  }
+  // 塁上の走者は走塁を終えてから退く（次のハーフ開始時に交代）
+  if (ctx.bases && ctx.bases.some((b) => b === pid)) {
+    side.injuryPending.add(pid);
+    return;
+  }
+  injuryExitPosition(side, pid, ctx.inning, cfg);
+}
+
+/** 負傷した投手を即降板させる（救援が枯れていれば痛みを押して続投＝翌日以降に抹消）。 */
+function injuryExitPitcher(side, pid, ctx) {
+  const lead = side.score - ctx.oppScore;
+  const next = chooseReliever(side, ctx.statFor, ctx.inning, lead, ctx.cfg, {
+    baseBits: baseBits(ctx.bases ?? [null, null, null]),
+    outs: ctx.outs ?? 0,
+  });
+  if (!next || next === pid) return;
+  flushPitcher(side, ctx.oppScore);
+  installPitcher(side, next, ctx.inning, lead);
+}
+
+/** 負傷した野手/DHをベンチと交代させる（ベンチが枯れていれば出場継続＝翌日以降に抹消）。 */
+function injuryExitPosition(side, pid, inning, cfg) {
+  const slot = side.slots.find((s) => s.playerId === pid);
+  if (!slot) return; // 既に退場済み（代打等）
+  const pos = slot.pos;
+  const pick = chooseInjuryReplacement(side, pos, cfg);
+  if (!pick) return; // ベンチ枯れ: 痛みを押して出続ける（離脱は翌日以降）
+  side.retired.add(pid);
+  slot.playerId = pick;
+  if (pos !== 'DH' && pos !== 'P') side.defense[pos] = pick;
+  removeFromBench(side, pick);
+  side.subs.push({ type: 'INJ', inning, outPid: pid, inPid: pick });
+  if (side.onEvent) {
+    side.onEvent({ type: 'sub', kind: 'INJ', team: side.teamId, inning, inPid: pick, outPid: pid, pos });
+  }
+}
+
+/** 持ち越された負傷退場（塁上に居た走者）をハーフ開始時に片付ける。 */
+function flushInjuryExits(side, inning, cfg) {
+  if (!side.injuryPending.size) return;
+  for (const pid of [...side.injuryPending]) {
+    side.injuryPending.delete(pid);
+    injuryExitPosition(side, pid, inning, cfg);
+  }
+}
+
+/** 打席終了時の故障判定（打者・投手・打球を処理した野手・捕手）。 */
+function rollInGameInjuries(batting, fielding, ctx) {
+  if (!ctx.cfg.tuning.injury.inSeason.enabled) return;
+  tryInjure(batting, ctx.batterId, 'perPA', { ...ctx, oppScore: fielding.score });
+  tryInjure(fielding, fielding.curPid, 'perBF', { ...ctx, oppScore: batting.score });
+  if (ctx.fielderPos) {
+    tryInjure(fielding, fielding.defense[ctx.fielderPos], 'perFieldPlay', { ...ctx, bases: null, oppScore: batting.score });
+  }
+  tryInjure(fielding, fielding.defense.C, 'perCatcherPA', { ...ctx, bases: null, oppScore: batting.score });
 }
 
 // --- 継投v2（§S2-7。選択は manager.chooseReliever） ---------------------------
@@ -6884,7 +7147,7 @@ function diffBatCounts(cur, snap) {
 /** 当日の先発投手（中 starterRestDays 日以上のローテ投手をローテ順に）。§S3-2投手可用性 */
 function selectStarter(state, day, cfg) {
   const rot = state.charts.dh.rotation;
-  const need = cfg.tuning.fatigue.starterRestDays;
+  const needRest = cfg.tuning.fatigue.starterRestDays;
   let fallback = rot[state.rotIdx % rot.length];
   let fallbackRest = -1;
   for (let k = 0; k < rot.length; k++) {
@@ -6892,13 +7155,63 @@ function selectStarter(state, day, cfg) {
     if (isInjured(state, pid, day)) continue; // 離脱中の先発は飛ばす（次のローテ投手が繰り上がる）
     const last = state.lastStartDay.get(pid);
     const rest = last == null ? Infinity : day - last - 1;
-    if (rest >= need) return pid;
+    if (rest >= needRest) return pid;
     if (rest > fallbackRest) {
       fallbackRest = rest;
       fallback = pid;
     }
   }
-  return fallback; // 1日1試合×ローテ6なら理論上ここへは来ない（安全弁: 最も休めた投手）
+  // ★R3 代替先発: 故障でローテが枯れると、健康な先発が全員「中6日未満」になる
+  //   （ローテ6人から1人抜ければ5人で回さざるを得ない＝構造的に中5日になる）。
+  //   旧実装はここで短い中5日の先発を強行していた（登板間隔の不変量を破っていた）。
+  //   現実の球団は二軍から先発を上げるか、**ブルペンの長いイニング要員に代役先発させる**。
+  //   ゲーム層では IL補充（roster_moves）が二軍から昇格させるが、それが効くまでの隙間と、
+  //   farm を持たない sim 層（＝較正の土台）では、ここでブルペンから代役を立てる。
+  if (fallbackRest < needRest) {
+    const spot = pickSpotStarter(state, day, cfg);
+    if (spot) return spot;
+  }
+  return fallback; // 全員が枯れている（安全弁: 最も休めた投手）
+}
+
+/**
+ * 代替先発（R3）: 十分に休養したブルペン投手を1人選ぶ（long＝敗戦処理/ロングリリーフを優先）。
+ * 連投・前日の球数・離脱を避ける（bullpenAvailable と同じ疲労の物差し）。
+ * 決定論: 乱数不使用・bullpen の配列順で安定。
+ */
+function pickSpotStarter(state, day, cfg) {
+  const f = cfg.tuning.fatigue;
+  const pen = state.charts.dh.bullpen;
+  const roles = state.charts.dh.bullpenRoles ?? {};
+  /** restDays 日以内に投げておらず、直近の先発から中6日空いていて、離脱していない投手か。 */
+  const rested = (pid, restDays) => {
+    if (isInjured(state, pid, day)) return false;
+    const last = state.lastStartDay.get(pid);
+    if (last != null && day - last - 1 < need(cfg)) return false; // 代役先発の連投も禁止
+    const m = state.pitchedByDay.get(pid);
+    if (!m) return true;
+    for (let d = 1; d <= restDays; d++) if ((m.get(day - d) ?? 0) > 0) return false;
+    return true;
+  };
+  // 1st: long（ロングリリーフ）→ middle（非役割）。勝ちパターン（closer/setup）は崩さない。
+  const skip = new Set([roles.closer, roles.setup8, roles.setup7].filter(Boolean));
+  const order = [roles.long, ...(roles.middle ?? []), ...pen].filter(Boolean);
+  for (const pid of order) {
+    if (skip.has(pid)) continue;
+    if (rested(pid, f.spotStarterRestDays)) return pid;
+  }
+  // 2nd: それでも見つからない（故障＋連投でブルペンまで枯れた）＝勝ちパターンも含め、
+  //   前日に投げていない健康な投手なら誰でも立てる。ここまでやって初めて「中6日を割る先発」より
+  //   代役先発を優先する（登板間隔の不変量を守るのが目的）。
+  for (const pid of order) {
+    if (rested(pid, 1)) return pid;
+  }
+  return null;
+}
+
+/** 先発の必要休養日数（中6日＝日差6以上なら rest>=starterRestDays）。 */
+function need(cfg) {
+  return cfg.tuning.fatigue.starterRestDays;
 }
 
 /**
@@ -7781,6 +8094,18 @@ function serializeDays(flat, teams, maxConsec) {
  * @returns {{leagueDh:Map, teamById:Map, chartsByTeam:Map, depthByTeam:Map, registeredByTeam:Map}}
  *   registeredByTeam: teamId → Set(登録選手id)（二軍ロスターの補集合判定に使う）
  */
+/**
+ * 離脱の単位換算（R3）: gamesLost（試合数）→ 日程の day 数。日程には全休日があるので day > game。
+ * 実際の日程から実測する（cfg のフォールバック値には依存しない）。
+ * @returns {number} 1試合あたりの day 数（例: 143試合が 170日なら 1.19）
+ */
+function dayScaleOf(schedule, cfg) {
+  const games = cfg.league.gamesPerSeason ?? 143;
+  if (!schedule.length || !games) return cfg.tuning.injury?.inSeason?.daysPerGame ?? 1;
+  const lastDay = schedule[schedule.length - 1].day;
+  return (lastDay + 1) / games;
+}
+
 function buildTeamCharts(league, cfg) {
   const leagueDh = new Map((cfg.league.leagues ?? []).map((l) => [l.id, l.dh]));
   const teamById = new Map(league.teams.map((t) => [t.id, t]));
@@ -7890,9 +8215,22 @@ function playScheduledGame(ctx, g, gi) {
   const hInit = mkInit(g.home, gameDh ? hC.dh : hC.noDh, hU, hSp, aC.dh.byId.get(aSp), 0);
   const aInit = mkInit(g.away, gameDh ? aC.dh : aC.noDh, aU, aSp, hC.dh.byId.get(hSp), 1);
 
+  // 故障（R3・§10.5）: 試合中に発生した離脱を usage.injuredUntil へ立てる（以後の日程で
+  //   スタメン/ローテ/救援可用から自動的に外れる）。ゲーム層ではさらに ctx.onInjury が
+  //   ログへ積み、二軍からのIL補充（roster_moves）が動く。
+  //   gamesLost(試合数) → day 数の換算は ctx.dayScale（日程には全休日があるので day > game）。
+  const onInjury = (ev) => {
+    const u = usageByTeam.get(ev.teamId);
+    const days = Math.max(1, Math.round(ev.gamesLost * (ctx.dayScale ?? cfg.tuning.injury.inSeason.daysPerGame)));
+    const until = g.day + days;
+    if (u && (u.injuredUntil.get(ev.playerId) ?? 0) < until) u.injuredUntil.set(ev.playerId, until);
+    if (ctx.onInjury) ctx.onInjury({ ...ev, day: g.day, until });
+  };
+
   const res = simulateGame(hInit, aInit, cfg, rng, pass.statFor, gamePark, pass.onBattedBall, {
     gameContext: pass.gameContext,
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
+    onInjury,
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
@@ -8033,7 +8371,7 @@ function simulateSeason(league, cfg, opts = {}) {
    */
   const runPass = (pass) => {
     const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), cfg)]));
-    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass };
+    const ctx = { seed, park, parkByTeam, cfg, leagueDh, teamById, chartsByTeam, usageByTeam, pass, dayScale: dayScaleOf(schedule, cfg) };
     schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
     return usageByTeam;
   };
@@ -9936,6 +10274,7 @@ function processIlReturns(rt, teamId, day, out) {
     if (!p || p.teamId !== teamId) continue; // 安全弁（シーズン中の移籍は無い）
     const reg = rt.registeredByTeam.get(teamId);
     if (reg.has(pid)) continue; // 既に登録済み（想定外の安全弁）
+    if (p.rosterStatus === 'minor') continue; // 育成契約の選手は出場登録できない（支配下70枠の管理・安全弁）
     // 復帰と入替で抹消する相手: 原則は補充選手。成績入替で既に降格済みなら同型の観測最下位。
     let down = rt.moves.byId.get(swap.subId);
     if (!down || !reg.has(swap.subId)) {
@@ -10074,7 +10413,12 @@ function processFarmPromotions(rt, teamId, day, out) {
   const reg = rt.registeredByTeam.get(teamId);
   const sameType = rt.league.players.filter(
     (p) => p.teamId === teamId && !reg.has(p.id) && p.role === best.role &&
-      (best.role === 'pitcher' || p.primaryPos === best.primaryPos) && !inCooldown(rt, p.id, day),
+      (best.role === 'pitcher' || p.primaryPos === best.primaryPos) && !inCooldown(rt, p.id, day) &&
+      // ★R3: 故障でIL入替中の選手を育成落ちさせない。旧実装は「登録外＋当季観測が不振」だけで選ぶため、
+      //   **故障で登録を外れた選手が（出場が少ないので観測が不振に見え）育成契約へ落とされ**、
+      //   IL明けの再登録（processIlReturns）で **育成選手が一軍登録に混ざる** 不変量違反を起こした。
+      //   現実にも「故障者を育成契約に落として即再登録」は起こらない（療養は支配下のまま）。
+      !rt.moves.ilSwaps.has(p.id),
   );
   if (!sameType.length) return; // 交換相手が居ない（枠を崩せない・稀）
   const obsMap = { get: (pid) => ({ batting: rt.stats.getBat(pid), pitching: rt.stats.getPitch(pid) }) };
@@ -10181,6 +10525,28 @@ function createMovesState(league, { enableMoves, masterSeed, season, farm }) {
 
 
 /**
+ * シーズン終了時点でまだ癒えていない故障を、翌シーズンの開幕IL（pendingInjuries）へ持ち越す（R3）。
+ * 「9月に全治半年の大怪我 → 翌年の開幕も出られない」を表現する。
+ * @returns {Array<{id:string, daysLost:number}>} 翌季開幕時点の残り離脱 day 数
+ */
+function carryOverInjuries(rt) {
+  const out = [];
+  const push = (usageByTeam) => {
+    for (const u of usageByTeam.values()) {
+      for (const [pid, until] of u.injuredUntil) {
+        const remain = until - rt.finalDay;
+        if (remain > 0) out.push({ id: pid, daysLost: remain });
+      }
+    }
+  };
+  push(rt.usageByTeam);
+  if (rt.farm) push(rt.farm.usageByTeam);
+  // 決定論・順序非依存（Map の走査順に依らない）
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return out;
+}
+
+/**
  * 二軍リーグのランタイムを組む（F2-2・phaseF_spec F2-2）。
  * 同じ12球団のファームを cfg.league.farm.leagues の2リーグ（完全架空名・一軍と同分割）で
  * ~110試合。**一軍と同じ playScheduledGame**・別の集計器(farmStats)・独立の階層シード
@@ -10233,8 +10599,9 @@ function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injurie
     for (const [tid, r] of rosterByTeam) for (const p of r) teamOf.set(p.id, tid);
     for (const ev of injuries) {
       const tid = teamOf.get(ev.id);
-      if (tid == null || !ev.gamesLost) continue;
-      usageByTeam.get(tid)?.injuredUntil.set(ev.id, ev.gamesLost);
+      const days = ev.daysLost ?? ev.gamesLost; // R3: 開幕IL＝前季の故障の「残り離脱 day 数」
+      if (tid == null || !days) continue;
+      usageByTeam.get(tid)?.injuredUntil.set(ev.id, days);
     }
   }
   // 日程: buildSchedule を farm 用の試合数ノブで再利用（リーグ内22×5相手=110試合・交流戦なし）。
@@ -10255,6 +10622,7 @@ function buildFarmRuntime(league, cfg, { season, seed, registeredByTeam, injurie
   }
   return {
     seed: farmSeed,
+    dayScale: dayScaleOf(schedule, cfg), // R3: gamesLost→day 換算（二軍日程は~110試合）
     teams,
     teamById,
     leagueDh,
@@ -10298,6 +10666,9 @@ function advanceFarmThrough(rt, throughDay) {
     chartsByTeam: f.chartsByTeam,
     usageByTeam: f.usageByTeam,
     pass,
+    dayScale: f.dayScale,
+    // 二軍戦の故障も当季ログへ積む（R3）: 二軍で壊れた選手はそのまま昇格候補から外れる。
+    onInjury: (ev) => rt.injuryLog.push({ ...ev, farm: true }),
   };
   const games = [];
   while (f.cursor < f.schedule.length && f.schedule[f.cursor].day <= throughDay) {
@@ -10345,10 +10716,11 @@ function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, pl
   const seasonInjuries = [];
   for (const ev of injuries) {
     const p = byId.get(ev.id);
-    if (!p || !ev.gamesLost) continue; // 引退で消えた選手（pid不在）は無視
+    const days = ev.daysLost ?? ev.gamesLost; // R3: 前季の故障の「残り離脱 day 数」
+    if (!p || !days) continue; // 引退で消えた選手（pid不在）は無視
     const u = usageByTeam.get(p.teamId);
-    if (u) u.injuredUntil.set(ev.id, ev.gamesLost);
-    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, gamesLost: ev.gamesLost });
+    if (u) u.injuredUntil.set(ev.id, days);
+    seasonInjuries.push({ id: ev.id, name: p.name, teamId: p.teamId, role: p.role, primaryPos: p.primaryPos, severity: ev.severity, daysLost: days });
   }
   const runSplit = { dh: { games: 0, runs: 0 }, noDh: { games: 0, runs: 0 } };
   const finalDay = schedule.length ? schedule[schedule.length - 1].day : -1;
@@ -10378,6 +10750,10 @@ function startSeasonRuntime(league, cfg, { season, seed, park = NEUTRAL_PARK, pl
     // offseasonTransitionのみのreplay近道が効かない。年末にGameState.farmPromotionLogへ畳み込んで
     // 永続化し、load時は「その年の分」をこのログからreplay適用する（day単位の再シムは不要）。
     farmPromotionLog: [],
+    // 故障（R3）: gamesLost→day 換算と、当季に試合中発生した故障のログ（一軍＋二軍）。
+    //   §17: 当該シーズンのみ（save には GameState 側で年ごとに畳み込んで永続）。
+    dayScale: dayScaleOf(schedule, cfg),
+    injuryLog: [],
     schedule,
     standings,
     stats,
@@ -10447,6 +10823,10 @@ function advanceRuntimeDay(rt, opts = {}) {
     chartsByTeam: rt.chartsByTeam,
     usageByTeam: rt.usageByTeam,
     pass,
+    dayScale: rt.dayScale,
+    // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
+    //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
+    onInjury: (ev) => rt.injuryLog.push(ev),
   };
   const games = [];
   const playerGames = [];
@@ -10523,93 +10903,52 @@ function finalizeRuntime(rt) {
 
 // ===== src/game/injury.mjs =====
 // ============================================================================
-// フェーズC2b: 故障ハザード（§10.5）
+// 故障の「オフシーズン処理」（§10.5）— 当季に**試合中に発生した**故障の結果を真値へ落とす
 //
-//   applyInjuries(players, cfg, { seed, year })
-//     … オフシーズン遷移で全選手に「その年に故障したか」を確率事象として判定する純関数。
-//        故障したら career.injuryHistory に1件積み、後遺（復帰後の一時的能力減）を真値へ適用する。
-//   injuryHazard(player, cfg) … 1選手の故障確率（テスト/UIから再発リスクの可視化に使える）。
+// ★R3（2026-07-13）: 故障の発生自体は src/sim/injury.mjs ＋ sim/game.mjs へ移した
+//   （試合中の露出イベントごとのハザード）。旧 applyInjuries（オフに1選手1回ロールして
+//   翌年の開幕ILにする簡略化）は撤去。ここに残るのは「当季の故障ログを消費して
+//   故障歴を積み・後遺（能力減）を真値へ適用する」オフシーズンの後処理のみ。
 //
-// 設計原則（phaseC_spec・厳守）:
-//   - 予測でなくハザード（§10.5）: 誰が壊れるかは確率事象。合わせるのは集団の分布（§1）。
-//   - 決定論・順序非依存: 各選手の乱数は makeRng(hashSeed(seed,'injury',id)) で id 基準に派生。
-//     Date.now/Math.random 非使用。配列順・呼び出し順に依らず bit 一致（aging.mjs と同型）。
-//   - エンジンを壊さない: 故障判定は2年目以降のオフシーズンにのみ呼ばれる。1年目レギュラー
-//     シーズン（＝既存50較正）には一切効かない（trueAbility を動かすのはオフのみ）。
-//   - 非対称性（§10.5）: 打者は大怪我から戻れるが、投手の一度の大怪我は将来の故障と能力低下
-//     （球速）の始まり。再発（最大リスク）・後遺を持たせる。
+// なぜ分けるか:
+//   - **真値はシーズン中に動かさない**（C2a の不変量「1年目シーズン中に真値/年齢は動かない」）。
+//     試合中に確定するのは「離脱の事実（severity/gamesLost）」だけで、能力への影響はオフに入る。
+//   - **load の replay 可能性**: 過去年のオフは season を再シムせずに再走する（index.mjs load）。
+//     故障が試合由来になったので、当季の故障ログを save に永続し（state.injuryLog）、
+//     replay ではそのログを渡して同一の後遺・故障歴を再構築する（farmPromotionLog と同じ方式）。
 // ============================================================================
 
 
-
 /**
- * 全選手にオフシーズンの故障判定を適用する（in-place・決定論・順序非依存）。
- * @param {Array} players league.players
- * @param {Object} cfg createConfig()（cfg.tuning.injury を参照）
- * @param {{seed:number, year:number}} o seed=故障用階層シード / year=当該シーズンの年（履歴に記録）
- * @returns {Array<{id,year,severity,gamesLost}>} 発生した故障イベント（当該オフ）
+ * 当季に発生した故障イベントを消費し、故障歴の積み上げと後遺（真値の一時減）を適用する。
+ * オフシーズン遷移から呼ばれる純関数（in-place・乱数非使用＝決定論・順序非依存）。
+ *
+ * @param {Array} players league.players（引退で消えた選手は events 側で無視される）
+ * @param {Array<{id:string, severity:string, gamesLost:number}>} events 当季の故障ログ
+ * @param {Object} cfg createConfig()
+ * @param {number} year 当該シーズンの年（履歴に記録）
+ * @returns {Array} 適用した故障イベント（サマリ表示用。players に居ない id は落とす）
  */
-function applyInjuries(players, cfg, { seed, year }) {
-  const events = [];
-  for (const p of players) {
-    const prng = makeRng(hashSeed(seed, 'injury', p.id));
-    const ev = rollInjury(p, cfg, prng, year);
-    if (ev) events.push(ev);
+function applySeasonInjuries(players, events, cfg, year) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const applied = [];
+  // 決定論・順序非依存: id 昇順→同一選手内は day 昇順で適用する（ログの並びに依存しない）。
+  const sorted = events
+    .slice()
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : (a.day ?? 0) - (b.day ?? 0)));
+  for (const ev of sorted) {
+    const p = byId.get(ev.id);
+    if (!p) continue; // 引退/移籍で league.players に居ない（＝安全弁）
+    const hist = p.trueAbility.career.injuryHistory ?? (p.trueAbility.career.injuryHistory = []);
+    hist.push({ year, severity: ev.severity, gamesLost: ev.gamesLost });
+    applyAftereffect(p, ev.severity, cfg.tuning.injury);
+    applied.push({ id: p.id, year, severity: ev.severity, gamesLost: ev.gamesLost });
   }
-  return events;
+  return applied;
 }
 
 /**
- * 1選手の故障ハザード（0..cap）。年齢・ポジション・投手投球負荷・故障歴（再発）で上下する。
- * 故障歴が増える／重症化するほど再発リスクが上がる（§10.5「最大リスク・再発」）。
- * @returns {number} このオフに故障する確率
- */
-function injuryHazard(p, cfg) {
-  const inj = cfg.tuning.injury;
-  const t = p.trueAbility;
-  const hist = t.career.injuryHistory ?? [];
-  let h = inj.base;
-  h += Math.max(0, p.age - inj.ageRamp) * inj.agePerYear;
-  if (p.role === 'pitcher') {
-    h += inj.pitcher;
-    h += Math.max(0, t.pitching.velocityKmh - inj.veloRef) * inj.veloPerKmh; // 球速＝投球負荷の代理
-  }
-  if (p.primaryPos === 'C') h += inj.catcher; // 捕手は壊れる
-  // 故障歴（再発・最大リスク）: 件数×重症度で将来リスクが上がる。
-  let priorMajor = false;
-  for (const e of hist) {
-    h += e.severity === 'major' ? inj.recurMajor : inj.recurMinor;
-    if (e.severity === 'major') priorMajor = true;
-  }
-  // 投手の大怪我経験は以後の恒常的な将来リスク（非対称・§10.5）。
-  if (p.role === 'pitcher' && priorMajor) h += inj.pitcherMajorLegacy;
-  return clamp(h, 0, inj.cap);
-}
-
-/** 1選手の故障判定。故障したら履歴に積み後遺を適用して event を返す（非故障は null）。 */
-function rollInjury(p, cfg, prng, year) {
-  const inj = cfg.tuning.injury;
-  if (!prng.chance(injuryHazard(p, cfg))) return null;
-  const t = p.trueAbility;
-  const hist = t.career.injuryHistory ?? (t.career.injuryHistory = []);
-  const priorMajor = hist.some((e) => e.severity === 'major');
-  // 故障歴があると重症化しやすく、投手の大怪我経験は更に重くなりやすい（再発の悪循環）。
-  let majorP = inj.majorGivenInjury;
-  if (hist.length) majorP += inj.majorHistBonus;
-  if (p.role === 'pitcher' && priorMajor) majorP += inj.majorPitcherLegacy;
-  const major = prng.chance(clamp(majorP, 0, 0.95));
-  const severity = major ? 'major' : 'minor';
-  const gamesLost = major
-    ? inj.majorGamesLo + prng.int(inj.majorGamesHi - inj.majorGamesLo + 1)
-    : inj.minorGamesLo + prng.int(inj.minorGamesHi - inj.minorGamesLo + 1);
-  const ev = { id: p.id, year, severity, gamesLost };
-  hist.push({ year, severity, gamesLost });
-  applyAftereffect(p, severity, inj);
-  return ev;
-}
-
-/**
- * 後遺（§10.5）: 復帰後の一時的な能力減を真値へ即時反映する。身体系（走力・初動・パワー）を
+ * 後遺（§10.5）: 復帰後の一時的な能力減を真値へ反映する。身体系（走力・初動・パワー）を
  * 中心に落とし、技巧系は残す（＝技巧派の生存に効く）。投手の重症は球速低下の始まり（非対称）。
  * ここで落ちた分は以後の加齢カーブ（成長ドリフト）で部分的に回復しうる（点でなく幅で・§10.3）。
  */
@@ -11655,8 +11994,10 @@ function offseasonSeed(masterSeed, yearIndex) {
  * @param {Array} marketInterventions プレイヤーの市場操作ログ（FA入札/トレード起案・当年ぶんを適用）
  * @returns {Object} オフシーズン要約（injuries/breakouts/retirees/rookies/promotions/draftLog/fa/trades/pickups/contracts）
  */
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [] }) {
-  const injuries = applyInjuries(league.players, cfg, { seed: hashSeed(masterSeed, 'injury', yearIndex), year });
+function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
+  // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
+  //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
+  const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
 
@@ -11787,7 +12128,12 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
-    pendingInjuries: [], // 直前オフで確定した故障（新シーズン開幕ILの素・save非対象＝replayで再構築）
+    // R3: 前季の故障の「開幕時点の残り離脱 day 数」（開幕ILの素）。故障が試合由来になったため
+    //   replay では再導出できない（season を再シムしない）→ save に永続する。
+    pendingInjuries: [],
+    // R3: 完了年ぶんの故障ログ（試合中に発生した離脱）。オフの後遺/故障歴の適用に使う。
+    //   §17: 集計値のみ（生の打球ログは持たない）。load はこれを replay に渡して真値を再構築する。
+    injuryLog: [],
     // 育成→支配下の季節中昇格ログ（§req_20260708・完了年ぶんのみ蓄積。save/replayで再現。
     // 当年ぶんは state.rt.farmPromotionLog にあり、advanceYear で年ごとに畳み込む）。
     farmPromotionLog: [],
@@ -11968,6 +12314,13 @@ function advanceYear(state) {
   // §req_20260708: 完了年ぶんの育成→支配下季節中昇格ログを永続配列へ畳み込む（load時はこのログから
   // replay適用し、league.players/farmを動かす day 単位の再シムを不要にする＝index.mjs load() 参照）。
   for (const m of state.rt.farmPromotionLog) state.farmPromotionLog.push({ year: state.yearIndex, ...m });
+  // R3: 当季に試合中発生した故障を永続ログへ畳み込む（オフの後遺/故障歴の素・load の replay 入力）。
+  const seasonInjuries = state.rt.injuryLog.map((e) => ({
+    id: e.playerId, teamId: e.teamId, severity: e.severity, gamesLost: e.gamesLost, day: e.day, farm: !!e.farm,
+  }));
+  for (const e of seasonInjuries) state.injuryLog.push({ year: state.yearIndex, ...e });
+  // 癒えないままシーズンが終わった故障 → 翌季の開幕IL（「9月の大怪我で開幕に間に合わない」）
+  const carried = carryOverInjuries(state.rt);
   const off = offseasonTransition(state.league, state.cfg, {
     masterSeed: state.masterSeed,
     yearIndex: state.yearIndex,
@@ -11976,6 +12329,7 @@ function advanceYear(state) {
     careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
     careerFarmStats: state.careerFarmStats, // 当年の二軍 statline（F2-3: 育成昇格の実成績判定）
     marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
+    seasonInjuries, // R3: 当季の故障ログ（後遺・故障歴をここで真値へ落とす）
   });
   // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
   off.awards = computeSeasonAwards({
@@ -11988,7 +12342,7 @@ function advanceYear(state) {
   });
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ（replayでも同順に再構築される）
-  state.pendingInjuries = off.injuries; // このオフの故障→翌シーズン開幕の離脱(IL)へ持ち込む（C2.4）
+  state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
   state.yearIndex += 1;
   state.year += 1;
   startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
@@ -12060,6 +12414,10 @@ function save(state) {
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
     farmPromotionLog: state.farmPromotionLog, // 育成→支配下季節中昇格ログ（完了年ぶん・§req_20260708）
+    // R3: 故障が試合由来になったため、過去年のオフ replay（season を再シムしない）はログが無いと
+    //   同一の真値（後遺・故障歴）を再構築できない。開幕IL(pendingInjuries) も同様に永続する。
+    injuryLog: state.injuryLog,
+    pendingInjuries: state.pendingInjuries,
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -12113,7 +12471,8 @@ function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
-    pendingInjuries: [], // 直前オフの故障（replay の最終オフから再構築＝当年開幕ILの素）
+    injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
+    pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
     rt: null,
   };
   // 過去年（0..yearIndex-1）のオフシーズン遷移（故障/ブレイク/加齢/引退/新人補充）を決定論 replay で
@@ -12138,13 +12497,16 @@ function load(blob, options = {}) {
       careerStats: state.careerStats,
       careerFarmStats: state.careerFarmStats, // 育成昇格の二軍実成績（F2-3・blob 復元済み＝live と同一）
       marketInterventions: state.marketInterventions,
+      // R3: その年に試合中発生した故障（永続ログ）。live の advanceYear と同一入力＝同一の
+      //   後遺/故障歴を再構築する（season を再シムせずに真値を復元できる唯一の経路）。
+      seasonInjuries: state.injuryLog.filter((e) => e.year === y),
     });
     state.retiredPlayers.push(...off.retirees);
     lastOff = off;
   }
-  // 保存時点シーズン（yearIndex）の開幕ILは「直前オフ（yearIndex-1）」の故障で決まる。
-  // 上記 replay の最終反復がまさにそれ＝live の advanceYear と同一 off から再構築（決定論）。
-  state.pendingInjuries = lastOff ? lastOff.injuries : [];
+  // R3: 当年の開幕IL（pendingInjuries）は blob から復元済み（試合由来の故障は replay で再導出
+  //   できないため save に含める）。lastOff は retirees の再構築にのみ使う。
+  void lastOff;
   captureBaseManager(state); // replay で team.manager が書き換わる前に素の監督を控える
   startYear(state); // seasonSeed は yearIndex 依存 → 保存時と同一シードで開幕
   const ss = data.seasonState;
@@ -13894,6 +14256,14 @@ function watchReconstruct(w, u) {
       const inn = e.inning != null ? e.inning : v.inning;
       const hf = e.half || v.half;
       v.lines.push({ kind: 'steal', cls: e.success ? 'ev-run' : 'ev-err', parts: [`[${inn}回${watchHalfJP(hf)}] `, u.playerLink(e.runnerId), e.success ? ': 盗塁成功！（二塁へ）' : ': 盗塁失敗（盗塁死）'] });
+    } else if (e.type === 'injury') {
+      // R3: 故障の発生（§10.5）。退場の有無に関わらず「離脱」の事実を実況に出す。
+      const sev = e.severity === 'major' ? '重傷' : '負傷';
+      v.lines.push({
+        kind: 'injury',
+        cls: 'ev-err',
+        parts: [`　[${tname(e.team)}] `, u.playerLink(e.playerId), `: ${sev}（全治 約${e.gamesLost}試合）`],
+      });
     } else if (e.type === 'sub') {
       const side = sideOf(e.team);
       const lu = v.lineups[side];
@@ -13912,6 +14282,9 @@ function watchReconstruct(w, u) {
         else if (e.kind === 'PR') {
           if (e.basesPids) v.basesPids = e.basesPids.slice();
           v.lines.push({ kind: 'sub', cls: 'ev-sub', parts: [`　[${tname(e.team)}] 代走 `, u.playerLink(e.inPid), `（← ${u.pname(e.outPid)}）`] });
+        } else if (e.kind === 'INJ') {
+          // R3: 負傷退場（試合中の故障）。ベンチから同ポジションの最良が入る。
+          v.lines.push({ kind: 'sub', cls: 'ev-err', parts: [`　[${tname(e.team)}] `, u.playerLink(e.outPid), ` 負傷退場 → `, u.playerLink(e.inPid), `（${u.posJP(e.pos || '')}）`] });
         } else v.lines.push({ kind: 'sub', cls: 'ev-sub', parts: [`　[${tname(e.team)}] 守備固め `, u.playerLink(e.inPid), `（${u.posJP(e.pos || '')}・← ${u.pname(e.outPid)}）`] });
       }
     } else if (e.type === 'end') {

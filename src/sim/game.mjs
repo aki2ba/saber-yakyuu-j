@@ -28,9 +28,11 @@ import {
   choosePinchHitter,
   choosePinchRunner,
   chooseDefensiveSub,
+  chooseInjuryReplacement,
   chooseReliever,
   starterPitchLimit,
 } from './manager.mjs';
+import { exposureProb, rollInjurySeverity } from './injury.mjs';
 
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
 // ARM（外野送球）対象ポジションは fieldingGeometry の IS_OUTFIELD を使う（単一の真実）
@@ -507,6 +509,11 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   const onEvent = opts.onEvent ?? null;
   home.onEvent = onEvent;
   away.onEvent = onEvent;
+  // 故障シンク（R3）: 試合中に発生した離脱を season 層へ渡す（usage.injuredUntil を立て、
+  //   二軍から補充する＝roster_moves の IL補充が自然に動き出す）。乱数は消費しない。
+  const onInjury = opts.onInjury ?? null;
+  home.onInjury = onInjury;
+  away.onInjury = onInjury;
   if (onEvent) {
     onEvent({
       type: 'start',
@@ -623,6 +630,7 @@ function initSide(init, cfg) {
     bullpen,
     roles, // ブルペン役割 closer/setup8/setup7/middle/long（継投v2）
     pendingPitcher: false, // 投手への代打→次の守備から新投手（§S2-2）
+    injuryPending: new Set(), // R3: 負傷したが塁上に居るため退場を次のハーフへ持ち越す打者
     pregame: buildPregameEval(d.byId, cfg), // 監督の当日メモ（編成時評価。以降trueAbilityは見ない）
     // enterDiff/enterInning: 登板時の投手側リード差と回（ホールド/BS判定・監査B3）
     cur: { pid: starterId, outs: 0, pitches: 0, runs: 0, er: 0, bf: 0, enterDiff: 0, enterInning: 1, wpa: 0 },
@@ -642,6 +650,9 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
   // 守備側の投手整備: 投手への代打の後始末→回頭の役割ベース継投（§S2-2/§S2-7）
   halfStartPitching(fielding, batting.score, inning, statFor, cfg);
   // 守備固め（§S2-3: 8回以降・リード1-3・当日メモで優位時のみ）
+  // 負傷退場の持ち越し（R3）: 塁上に居たため退けなかった選手をここで交代させる（両軍）。
+  flushInjuryExits(fielding, inning, cfg);
+  flushInjuryExits(batting, inning, cfg);
   maybeDefensiveSub(fielding, batting.score, inning, cfg);
 
   const bases = [null, null, null];
@@ -1049,6 +1060,14 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
       });
     }
 
+    // 故障（R3・§10.5）: 打席で身体を使った選手（打者/投手/打球を処理した野手/捕手）に露出ハザード。
+    //   壊れたら即退場（投手=降板・野手=ベンチと交代。塁上の走者は次のハーフへ持ち越し）。
+    rollInGameInjuries(batting, fielding, {
+      cfg, rng, statFor, inning, bases, outs,
+      batterId,
+      fielderPos: hitFielderPos,
+    });
+
     // 代走（§S2-3）: PA解決後、塁上の鈍足走者をベンチ最速と交代
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
@@ -1295,6 +1314,92 @@ function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, 
   bStat.batting.b1++;
   pStat.pitching.h++;
   return { outs, dab: 1, dh: 1, d1: 1 };
+}
+
+// --- 故障（R3・§10.5「試合中に壊れる」） -------------------------------------
+//
+// 打席が終わるたびに「その打席で身体を使った選手」へ露出ハザードを引く（sim/injury.mjs）:
+//   打者=スイング・全力疾走 ／ 投手=1人と対戦した肩肘の消耗 ／ 打球を処理した野手=守備機会
+//   ／ 捕手=ファウルチップ・ブロッキング（守備側の全打席が露出）。
+// 壊れたら **その場で試合から退く**（投手は即降板・野手はベンチと交代）。塁上の走者だけは
+// 走塁を終えるまで退場を持ち越す（次のハーフ開始時に交代＝ flushInjuryExits）。
+// 真値（能力）はここでは動かさない。離脱の事実だけを onInjury で外へ出し、後遺と故障歴の
+// 積み上げはオフシーズンが当季ログを消費して行う（game/injury.mjs・鉄則7の不変量を保つ）。
+
+/** 1人ぶんの露出ハザードを引き、故障したら退場処理まで行う。 */
+function tryInjure(side, pid, kind, ctx) {
+  if (pid == null) return;
+  const p = side.byId.get(pid);
+  if (!p || side.retired.has(pid) || side.injuryPending.has(pid)) return;
+  const { cfg, rng } = ctx;
+  if (!rng.chance(exposureProb(p, kind, cfg))) return;
+  const { severity, gamesLost } = rollInjurySeverity(p, cfg, rng);
+  // 離脱の事実を外へ（season 層が usage.injuredUntil を立て、二軍から補充する）
+  if (side.onInjury) {
+    side.onInjury({ playerId: pid, teamId: side.teamId, severity, gamesLost, inning: ctx.inning, cause: kind });
+  }
+  if (side.onEvent) {
+    side.onEvent({ type: 'injury', team: side.teamId, inning: ctx.inning, playerId: pid, severity, gamesLost, cause: kind });
+  }
+  if (pid === side.curPid) {
+    injuryExitPitcher(side, pid, ctx);
+    return;
+  }
+  // 塁上の走者は走塁を終えてから退く（次のハーフ開始時に交代）
+  if (ctx.bases && ctx.bases.some((b) => b === pid)) {
+    side.injuryPending.add(pid);
+    return;
+  }
+  injuryExitPosition(side, pid, ctx.inning, cfg);
+}
+
+/** 負傷した投手を即降板させる（救援が枯れていれば痛みを押して続投＝翌日以降に抹消）。 */
+function injuryExitPitcher(side, pid, ctx) {
+  const lead = side.score - ctx.oppScore;
+  const next = chooseReliever(side, ctx.statFor, ctx.inning, lead, ctx.cfg, {
+    baseBits: baseBits(ctx.bases ?? [null, null, null]),
+    outs: ctx.outs ?? 0,
+  });
+  if (!next || next === pid) return;
+  flushPitcher(side, ctx.oppScore);
+  installPitcher(side, next, ctx.inning, lead);
+}
+
+/** 負傷した野手/DHをベンチと交代させる（ベンチが枯れていれば出場継続＝翌日以降に抹消）。 */
+function injuryExitPosition(side, pid, inning, cfg) {
+  const slot = side.slots.find((s) => s.playerId === pid);
+  if (!slot) return; // 既に退場済み（代打等）
+  const pos = slot.pos;
+  const pick = chooseInjuryReplacement(side, pos, cfg);
+  if (!pick) return; // ベンチ枯れ: 痛みを押して出続ける（離脱は翌日以降）
+  side.retired.add(pid);
+  slot.playerId = pick;
+  if (pos !== 'DH' && pos !== 'P') side.defense[pos] = pick;
+  removeFromBench(side, pick);
+  side.subs.push({ type: 'INJ', inning, outPid: pid, inPid: pick });
+  if (side.onEvent) {
+    side.onEvent({ type: 'sub', kind: 'INJ', team: side.teamId, inning, inPid: pick, outPid: pid, pos });
+  }
+}
+
+/** 持ち越された負傷退場（塁上に居た走者）をハーフ開始時に片付ける。 */
+function flushInjuryExits(side, inning, cfg) {
+  if (!side.injuryPending.size) return;
+  for (const pid of [...side.injuryPending]) {
+    side.injuryPending.delete(pid);
+    injuryExitPosition(side, pid, inning, cfg);
+  }
+}
+
+/** 打席終了時の故障判定（打者・投手・打球を処理した野手・捕手）。 */
+function rollInGameInjuries(batting, fielding, ctx) {
+  if (!ctx.cfg.tuning.injury.inSeason.enabled) return;
+  tryInjure(batting, ctx.batterId, 'perPA', { ...ctx, oppScore: fielding.score });
+  tryInjure(fielding, fielding.curPid, 'perBF', { ...ctx, oppScore: batting.score });
+  if (ctx.fielderPos) {
+    tryInjure(fielding, fielding.defense[ctx.fielderPos], 'perFieldPlay', { ...ctx, bases: null, oppScore: batting.score });
+  }
+  tryInjure(fielding, fielding.defense.C, 'perCatcherPA', { ...ctx, bases: null, oppScore: batting.score });
 }
 
 // --- 継投v2（§S2-7。選択は manager.chooseReliever） ---------------------------

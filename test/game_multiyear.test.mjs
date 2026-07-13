@@ -120,16 +120,37 @@ test('多年運用: 決定論 — 同一 masterSeed の運用は各年リーグ�
   }
 });
 
-test('多年運用: 1年目（yearIndex0）は不変 — single simulateSeason と一致（加齢の混入なし）', () => {
+test('多年運用: 1年目は加齢が混入しない（鉄則7: 真値も年齢もシーズン中は動かない）', () => {
+  // R2 で1年目も出場登録入替（F2-3）を作動させるようにしたため、ゲーム層1年目は
+  // simulateSeason（sim層・farm 無し＝入替できない）と bit 同一ではなくなった。
+  // 鉄則7 の主旨は「多年要素（加齢・時代トレンド）を1年目に混ぜない」ことなので、
+  // それを **直接** 検証する（較正53指標は simulateSeason で測るため元から非干渉）。
   const cfg = createConfig();
   const SEED = 424242;
-  const league = generateLeague(SEED, cfg);
-  const bulk = simulateSeason(league, cfg, { season: cfg.game.firstSeason, seed: SEED });
-  const bulkSum = leagueSummary(bulk, cfg.league.numTeams);
-  const y0 = runYears(SEED, 1)[0];
-  assert.equal(y0.batting.slg, bulkSum.batting.slg, '1年目 SLG が一括シムと一致');
-  assert.equal(y0.pitching.era, bulkSum.pitching.era, '1年目 ERA が一括シムと一致');
-  assert.equal(y0.batting.hr, bulkSum.batting.hr, '1年目 総HR が一括シムと一致');
+  const st = newGame(SEED, 'T1', { cfg });
+  const before = new Map(st.league.players.map((p) => [p.id, { age: p.age, eye: p.trueAbility.batting.eye, ctl: p.trueAbility.pitching.control }]));
+  advanceTo(st, 'seasonEnd');
+  for (const p of st.league.players) {
+    const b = before.get(p.id);
+    if (!b) continue; // 育成→支配下の季節中昇格（§req_20260708）で新たに支配下入りした選手＝加齢とは無関係
+    assert.equal(p.age, b.age, `${p.id}: 1年目シーズン中に age は動かない`);
+    assert.equal(p.trueAbility.batting.eye, b.eye, `${p.id}: 1年目シーズン中に真値(eye)は動かない`);
+    assert.equal(p.trueAbility.pitching.control, b.ctl, `${p.id}: 1年目シーズン中に真値(control)は動かない`);
+  }
+});
+
+test('R2: 1年目から一軍/二軍の入替が作動する（故障者が居座らない・二軍好調者が上がる）', () => {
+  const cfg = createConfig();
+  const st = newGame(20260713, 'T1', { cfg });
+  const steps = advanceTo(st, 'seasonEnd');
+  const moves = steps.flatMap((s) => s.rosterMoves ?? []);
+  assert.ok(moves.length > 0, '1年目にも登録入替が起きる（旧実装は yearIndex>0 に限定され0件だった）');
+  const types = new Set(moves.map((m) => m.type));
+  assert.ok(types.has('ilReplace') || types.has('perfSwap'), `IL補充か成績入替が発生する（実際: ${[...types].join(',')}）`);
+  // 1:1 入替なので登録人数は常に恒常
+  for (const t of st.league.teams) {
+    assert.equal(st.rt.registeredByTeam.get(t.id).size, cfg.league.rosterActive, `${t.id}: 登録人数が恒常`);
+  }
 });
 
 // ============================================================================
@@ -220,28 +241,28 @@ test('Bug2 破綻救援ガード: 決定論 — 同一 masterSeed の運用は�
   }
 });
 
-test('Bug2 破綻救援ガード: 1年目不変 — year0 の救援登板/SV/HLD 王が single simulateSeason と byte 一致', () => {
+test('Bug2 破綻救援ガード: 1年目不作動 — 前年観測(priorPitch)が存在せずガードの入力が無い', () => {
   const cfg = createConfig();
   const SEED = 424242;
-  // ガードは前歴（前年観測）が必須＝year0 は priorPitch 空で一切作動しない。1年目の救援起用分布が
-  //   一括シムと byte 一致することを直接検証（登板数王/SV王/HLD王＝較正の該当指標の素）。
-  const league = generateLeague(SEED, cfg);
-  const bulk = simulateSeason(league, cfg, { season: cfg.game.firstSeason, seed: SEED });
-  const leadOf = (playerSeasons) => {
-    let app = 0, sv = 0, hld = 0;
-    for (const s of playerSeasons) {
-      const p = s.pitching;
-      if (!p || p.gs !== 0 || p.g === 0) continue;
-      app = Math.max(app, p.g); sv = Math.max(sv, p.sv); hld = Math.max(hld, p.hld);
-    }
-    return { app, sv, hld };
-  };
-  const bulkLead = leadOf(bulk.playerSeasons);
-  const st = newGame(SEED, league.teams[0].id, { cfg });
+  // ガードは前歴（前年観測）が必須。旧テストは「1年目 = simulateSeason と byte 一致」で間接検証して
+  //   いたが、R2 で1年目も登録入替を作動させたため byte 一致は成立しなくなった（入替は sim層に無い）。
+  //   ガード不作動という **主旨そのもの** を直接検証する形に変える。
+  const st = newGame(SEED, 'T1', { cfg });
+  for (const t of st.league.teams) {
+    const u = st.rt.usageByTeam.get(t.id);
+    assert.ok(!u.priorPitch || u.priorPitch.size === 0, `${t.id}: 1年目は前年観測が空＝ガードの入力が無い`);
+  }
+  // 1年目の救援起用が健全な帯に収まる（ガードが誤作動して起用が歪んでいないことの確認）
   advanceTo(st, 'seasonEnd');
   const y0 = st.careerStats.filter((s) => s.season === cfg.game.firstSeason);
-  const gameLead = leadOf(y0);
-  assert.equal(gameLead.app, bulkLead.app, '1年目 救援登板数王 が一括シムと一致（ガード不作動）');
-  assert.equal(gameLead.sv, bulkLead.sv, '1年目 SV王 が一括シムと一致');
-  assert.equal(gameLead.hld, bulkLead.hld, '1年目 HLD王 が一括シムと一致');
+  let appMax = 0;
+  let svMax = 0;
+  for (const s of y0) {
+    const p = s.pitching;
+    if (!p || p.gs !== 0 || p.g === 0) continue;
+    appMax = Math.max(appMax, p.g);
+    svMax = Math.max(svMax, p.sv);
+  }
+  assert.ok(appMax >= 45 && appMax <= 80, `1年目 救援登板数王 ${appMax} が NPB 圏内`);
+  assert.ok(svMax >= 25 && svMax <= 55, `1年目 SV王 ${svMax} が NPB 圏内`);
 });

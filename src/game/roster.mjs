@@ -77,7 +77,11 @@ function decideRetire(p, cfg, prng) {
   const age = p.age;
   if (age < rt.minAge) return false;
   if (age >= rt.hardAge) return true;
-  const ability = overallAbility(p); // ~20-80（弱い＝出場機会減の代理）
+  // R2: 球団が見るのは「現在能力＋伸びしろ」。maturity 導入で若手の現在能力は構造的に低いため、
+  //   peakAge までの残り年数ぶんの成長見込みを加算してから引退圧を測る（これが無いと将来のエースを
+  //   「能力40の使えない選手」と見て切ってしまう）。伸びしろが尽きた中堅以降は素の能力で評価される。
+  const growthCredit = Math.max(0, (p.trueAbility.career.peakAge ?? 27) - age) * (rt.youthCreditPerYear ?? 0);
+  const ability = overallAbility(p) + growthCredit; // ~20-80（弱い＝出場機会減の代理）
   let pr =
     rt.base +
     Math.max(0, age - rt.rampAge) * rt.agePerYear +

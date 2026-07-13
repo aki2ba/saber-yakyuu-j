@@ -13,7 +13,9 @@
 //   4) 不変量: 多年運用でも支配下70人/球団・リーグ総人口840が保存され、登録は常に29人。
 //   5) 決定論: 同一シードの再実行で rosterMoves が完全一致。途中セーブ→ロードの replay も
 //      同一の入替を再構築し、続行結果が無セーブ通しと一致する。
-//   6) 1年目シム不変（鉄則7）: 1年目は入替が一切発生しない（rt.moves=null）。
+//   6) R2: 1年目から出場登録入替が作動する（旧仕様は yearIndex>=1 のみ enableMoves を立てて
+//      いたため rt.moves=null で1年目は入替が皆無だったが、これだとプレイヤーが最初に遊ぶ
+//      1年目だけ故障者が一軍登録に居座り続ける破綻があった＝ユーザー報告で反転）。
 // ============================================================================
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,6 +34,8 @@ const cfg = createConfig();
 const ST = newGame(SEED, 'T1', { cfg });
 advanceTo(ST, 'seasonEnd');
 const MOVES_Y1 = ST.rt.rosterMoves.slice();
+// R2検証用: 1年目終了時点の登録人数（1:1入替なら恒常のはず）を後で使うため、ここで確定させておく。
+const REG_SIZE_Y1 = new Map(ST.league.teams.map((t) => [t.id, ST.rt.registeredByTeam.get(t.id).size]));
 const OFF1 = advanceYear(ST);
 advanceTo(ST, 'seasonEnd');
 const MOVES_Y2 = ST.rt.rosterMoves.slice();
@@ -47,8 +51,25 @@ const PROMO2_AFTER = new Map(
 );
 advanceTo(ST, 'seasonEnd');
 
-test('F2-3: 1年目は入替が一切発生しない（鉄則7: simulateSeasonとbit同一を維持）', () => {
-  assert.equal(MOVES_Y1.length, 0, '1年目 rosterMoves は空');
+test('F2-3: 1年目から入替が作動する（R2: 故障者の一軍居座り防止・二軍好調者の昇格）', () => {
+  // 旧テストは「1年目は rosterMoves が空」であることを鉄則7の証拠として要求していたが、これは
+  // 意図的に反転させた仕様（R2）。旧実装のままだと、プレイヤーが最初に遊ぶ1年目だけ故障者が
+  // 一軍登録に居座り続け、二軍で好成績を残しても誰も昇格してこないという破綻があった
+  // （ユーザー報告「一軍や二軍の入れ替えが正常じゃない」）。鉄則7の主旨は「多年要素（加齢/
+  // 時代トレンド）を1年目に混ぜない」ことであり、登録入替はシーズン中の運用であって多年要素
+  // ではない（era.test.mjs / game_c1a.test.mjs / game_c2a.test.mjs で別途直接検証済み）。
+  // 本テストは「1年目からも入替が正しく機能する」ことを直接検証する。
+  assert.ok(MOVES_Y1.length > 0, '1年目にも登録入替が発生する（旧実装は0件固定だった）');
+  const types = new Set(MOVES_Y1.map((m) => m.type));
+  assert.ok(
+    types.has('ilReplace') || types.has('perfSwap') || types.has('farmPromote'),
+    `1年目にIL補充/成績入替/育成昇格のいずれかが発生する（実際: ${[...types].join(',')}）`,
+  );
+  // 入替は常に同型1:1（swapRegistration/applyFarmPromotionSwap とも1減1増）なので、
+  // 1年目を通じて登録人数（29人/球団）は恒常のはず。
+  for (const t of ST.league.teams) {
+    assert.equal(REG_SIZE_Y1.get(t.id), cfg.league.rosterActive, `${t.id}: 1年目終了時点でも登録29人（1:1入替で恒常）`);
+  }
 });
 
 test('F2-3: IL補充 — 開幕ILの登録者が二軍の同型と入替され一軍editが成立、復帰日に再入替', () => {

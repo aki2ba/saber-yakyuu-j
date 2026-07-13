@@ -2,13 +2,11 @@
 // フェーズC1a: ヘッドレス・ゲームループAPI（src/game/）の単体テスト。
 //   - new→advance→save→load→advance が「無セーブ通し」と完全一致（決定論・replay復元）
 //   - seasonEnd まで進めて順位表＋ポストシーズンが出る
-//   - ゲームランナーの1年目レギュラーシーズンが simulateSeason（一括）と bit 同一（回帰）
+//   - ゲームランナーの1年目シーズン中は加齢・時代トレンドが混入しない（鉄則7の直接検証）
 // ============================================================================
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
-import { generateLeague } from '../src/generate.mjs';
-import { simulateSeason } from '../src/sim/season.mjs';
 import { newGame, advanceDay, advanceTo, save, load } from '../src/game/index.mjs';
 
 const cfg = createConfig();
@@ -104,17 +102,32 @@ test('C1a: seasonEnd まで進めると順位表＋ポストシーズン（優�
   assert.ok(st.careerStats.length > 0, 'careerStats に選手集計が積まれる');
 });
 
-test('C1a: 回帰 — ゲームランナー1年目レギュラーが simulateSeason（一括）と bit 同一', () => {
-  const league = generateLeague(SEED, cfg);
-  const bulk = simulateSeason(league, cfg, { season: cfg.game.firstSeason, seed: SEED });
+test('C1a: 回帰 — ゲームランナー1年目シーズン中は加齢・時代トレンドが混入しない（鉄則7の直接検証）', () => {
+  // 旧テストは「ゲーム年0 == simulateSeason 直呼び（bit同一）」で鉄則7（多年要素を1年目に
+  // 混ぜない）を間接検証していたが、R2（src/game/index.mjs の startYear: 1年目からも出場登録
+  // 入替=F2-3 を作動させる）により、farm（二軍）を持たない simulateSeason とはもはや bit 一致
+  // しない（意図的な仕様変更・バグではない。旧実装は最初に遊ぶ1年目だけ故障者が一軍登録に
+  // 居座り続ける破綻があった＝ユーザー報告）。鉄則7の主旨を直接検証する：1年目シーズン中は
+  // 選手の年齢・真値が一切動かない（test/game_multiyear.test.mjs の同種テストと同じ方式）。
   const st = newGame(SEED, 'T1', { cfg });
+  const before = new Map(
+    st.league.players.map((p) => [p.id, {
+      age: p.age,
+      eye: p.trueAbility.batting.eye,
+      velo: p.trueAbility.pitching.velocityKmh,
+    }]),
+  );
   advanceTo(st, 'seasonEnd');
-  // 順位（順序込み）が一致
-  assert.equal(standingsSig(st.rt.table), standingsSig(bulk.standings), '順位表が一括APIと一致');
-  // 全選手集計が一致
-  assert.equal(statsSig(st.rt.stats.stats.values()), statsSig(bulk.playerSeasons), '選手集計が一括APIと一致');
-  // ポストシーズン優勝が一致
-  assert.equal(st.rt.postseason.champion, bulk.postseason.champion, '日本一が一括APIと一致');
+  for (const p of st.league.players) {
+    const b = before.get(p.id);
+    if (!b) continue; // 育成→支配下の季節中昇格（R2）で新たに支配下入りした選手＝加齢とは無関係
+    assert.equal(p.age, b.age, `${p.id}: 1年目シーズン中に age は動かない`);
+    assert.equal(p.trueAbility.batting.eye, b.eye, `${p.id}: 1年目シーズン中に真値(eye)は動かない`);
+    assert.equal(p.trueAbility.pitching.velocityKmh, b.velo, `${p.id}: 1年目シーズン中に真値(velocityKmh)は動かない`);
+  }
+  // 順位表・ポストシーズンは正常に完結する（構造的な健全性は維持）
+  assert.equal(st.rt.table.length, cfg.league.numTeams, '全球団の順位行が出る');
+  assert.ok(st.rt.postseason && st.rt.postseason.champion, '1年目の日本一が決まる');
 });
 
 test('C1a: new→advance→save→load→advance が「無セーブ通し」と完全一致（決定論）', () => {

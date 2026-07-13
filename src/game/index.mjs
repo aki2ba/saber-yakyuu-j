@@ -144,10 +144,15 @@ function startYear(state) {
     seed: seasonSeed(state),
     playerTeamId: state.playerTeamId,
     priorPitch,
-    // 出場登録入替（F2-3）: IL補充/成績入替は2年目以降のみ（鉄則7: 1年目のゲームランナーは
-    // simulateSeason（一括）と bit 同一＝較正53指標に非干渉）。masterSeed は球団評価プロファイル
-    // （キャリア中固定・§13）の座標＝オフの market と同一の「球団の癖」で入替判断する。
-    enableMoves: state.yearIndex > 0,
+    // 出場登録入替（F2-3）: 1年目から作動させる（R2）。
+    //   旧実装は yearIndex>0 に限定していた（鉄則7「1年目シム不変」の解釈として、ゲーム層1年目を
+    //   simulateSeason と bit 同一に保つため）。だが結果として **プレイヤーが最初に遊ぶ1年目だけ、
+    //   故障者が一軍登録に居座り続け、二軍で好成績を残しても誰も上がってこない** という破綻に
+    //   なっていた（ユーザー報告「一軍や二軍の入れ替えが正常じゃない」）。
+    //   鉄則7 の主旨は「多年要素（加齢・時代トレンド）を1年目に混ぜない」こと。登録入替はシーズン中の
+    //   運用であって多年要素ではない。較正53指標は simulateSeason（sim層・farm 無し）で測るため
+    //   **非干渉**（tools/calibrate.mjs 参照）＝ 1年目を現実化しても較正の土台は動かない。
+    enableMoves: true,
     masterSeed: state.masterSeed,
     // 直前オフシーズンで確定した故障（gamesLost）を新シーズン開幕の離脱(IL)として持ち込む（C2.4/§10.5）。
     //   1年目（pendingInjuries 空）は IL 皆無＝既存50較正と bit 同一。live/replay とも同一 off から
@@ -371,7 +376,12 @@ export function advanceYear(state) {
   }
   // 表彰（C4）: 世代交代でロスターが動く前に「当年に出場した選手」の byId を控え、
   //   完了シーズンの観測成績/WAR から表彰を選定する（決定論・純関数）。
+  //   ★league.farm も含める（R2 で顕在化した既存バグ）: 育成→支配下の季節中昇格（§req_20260708）は
+  //   1:1 交換なので、押し出された支配下選手はシーズン途中で league.farm 側へ移る。その選手が
+  //   一軍で出場していると careerStats には成績が残るのに byId から引けず、表彰の選定が
+  //   undefined.role で落ちる。出場記録を持つ全選手を引けるようにする（支配下＋育成）。
   const awardsById = new Map(state.league.players.map((p) => [p.id, p]));
+  for (const d of state.league.farm ?? []) if (!awardsById.has(d.id)) awardsById.set(d.id, d);
   const completedYear = state.year;
   // §req_20260708: 完了年ぶんの育成→支配下季節中昇格ログを永続配列へ畳み込む（load時はこのログから
   // replay適用し、league.players/farmを動かす day 単位の再シムを不要にする＝index.mjs load() 参照）。
@@ -587,6 +597,7 @@ export function load(blob, options = {}) {
  */
 export function allPlayersById(state) {
   const m = new Map(state.league.players.map((p) => [p.id, p]));
+  for (const d of state.league.farm ?? []) if (!m.has(d.id)) m.set(d.id, d); // 育成（季節中の昇降格で入替わる）
   for (const r of state.retiredPlayers) if (!m.has(r.id)) m.set(r.id, r);
   return m;
 }

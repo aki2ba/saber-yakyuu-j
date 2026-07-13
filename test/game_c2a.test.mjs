@@ -5,14 +5,13 @@
 //   - 球速は加齢で減（§10.1）／低declineRate投手ほど球速を保つ（§10.2「技巧派だけ長生き」）
 //   - 晩成/鉄人が"稀に"出る（§12.4・生存バイアスで鉄人が自動レア化・§10.6）
 //   - 決定論（順序非依存・同一シードで bit 一致）
-//   - エンジン不変: 加齢は 2年目以降のみ。1年目レギュラーは simulateSeason と bit 同一。
+//   - エンジン不変: 加齢は 2年目以降のみ。1年目シーズン中は真値/年齢が動かない。
 //   - advanceYear（オフシーズン遷移）と多年セーブ/ロードの決定論。
 // ============================================================================
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
 import { generateLeague } from '../src/generate.mjs';
-import { simulateSeason } from '../src/sim/season.mjs';
 import { createPlayer, createTrueAbility } from '../src/model/player.mjs';
 import { hashSeed } from '../src/rng.mjs';
 import { applyAging } from '../src/game/aging.mjs';
@@ -130,6 +129,9 @@ test('C2a: advanceYear は継続選手を age++ し真値を動かす（世代�
   const nBefore = st1.league.players.length;
   const agesBefore = new Map(st1.league.players.map((p) => [p.id, p.age]));
   const eyeBefore = new Map(st1.league.players.map((p) => [p.id, p.trueAbility.batting.eye]));
+  // 育成（league.farm）は支配下と別枠だが、オフに C3a で支配下へ昇格しうる。昇格者は「新人」ではない
+  // ので、下の新人年齢帯チェックの対象から外す（R2 で育成の年齢帯を実測値 18-29 に広げたため顕在化）。
+  const farmBefore = new Set((st1.league.farm ?? []).map((d) => d.id));
   advanceTo(st1, 'seasonEnd');
   advanceYear(st1);
   assert.equal(st1.yearIndex, 1);
@@ -142,8 +144,9 @@ test('C2a: advanceYear は継続選手を age++ し真値を動かす（世代�
       assert.equal(p.age, agesBefore.get(p.id) + 1, '継続選手は age++');
       if (p.trueAbility.batting.eye !== eyeBefore.get(p.id)) changed++;
       survived++;
-    } else {
+    } else if (!farmBefore.has(p.id)) {
       // C3a: 補充はドラフト（世代生成）に置換。新人年齢は高卒18/大卒22/社会人25相当の混合分布。
+      //   （育成からの支配下昇格は「新人」ではないので farmBefore で除外済み）
       const co = cfg.tuning.market.cohort;
       assert.ok(p.age >= co.hsAge && p.age <= co.corpAge, '新人は世代帯（18〜25）の若手');
     }
@@ -164,14 +167,25 @@ test('C2a: advanceYear は継続選手を age++ し真値を動かす（世代�
   assert.throws(() => advanceYear(st3), /シーズン未終了/);
 });
 
-test('C2a: エンジン不変 — 1年目レギュラーは simulateSeason と bit 同一（加齢は2年目以降）', () => {
-  const league = generateLeague(SEED, cfg);
-  const bulk = simulateSeason(league, cfg, { season: cfg.game.firstSeason, seed: SEED });
+test('C2a: エンジン不変 — 1年目シーズン中は加齢が混入しない（加齢は2年目以降のみ）', () => {
+  // 旧テストは「1年目順位表が simulateSeason 一括と bit 同一」で"加齢が1年目に混入しない"こと
+  // を間接検証していたが、R2（src/game/index.mjs の startYear: 1年目からも出場登録入替=F2-3
+  // を作動させる）により、farm（二軍）を持たない simulateSeason とはもはや bit 一致しない
+  // （意図的な仕様変更・バグではない）。本来の主旨（加齢は2年目以降のみ）を、本ファイル冒頭の
+  // 「advanceYear は継続選手を age++ し真値を動かす」テストと同じ方式で直接検証する：
+  // シーズン前後で年齢・真値（選球眼/球速）が一切変化しないことを見る。
   const st = newGame(SEED, 'T1', { cfg });
+  const agesBefore = new Map(st.league.players.map((p) => [p.id, p.age]));
+  const eyeBefore = new Map(st.league.players.map((p) => [p.id, p.trueAbility.batting.eye]));
+  const veloBefore = new Map(st.league.players.map((p) => [p.id, p.trueAbility.pitching.velocityKmh]));
   advanceTo(st, 'seasonEnd');
-  const sig = (table) => table.map((r) => `${r.teamId}:${r.w}-${r.l}-${r.t}/${r.rs}-${r.ra}`).join('|');
-  assert.equal(sig(st.rt.table), sig(bulk.standings), '1年目順位が一括APIと一致（加齢の混入なし）');
-  assert.equal(st.rt.postseason.champion, bulk.postseason.champion, '1年目の日本一が一致');
+  for (const p of st.league.players) {
+    if (!agesBefore.has(p.id)) continue; // 育成→支配下の季節中昇格（R2）で新規参入＝加齢とは無関係
+    assert.equal(p.age, agesBefore.get(p.id), `${p.id}: 1年目シーズン中に age は動かない（加齢は2年目以降）`);
+    assert.equal(p.trueAbility.batting.eye, eyeBefore.get(p.id), `${p.id}: 1年目シーズン中に真値(eye)は動かない`);
+    assert.equal(p.trueAbility.pitching.velocityKmh, veloBefore.get(p.id), `${p.id}: 1年目シーズン中に真値(velocityKmh)は動かない`);
+  }
+  assert.ok(st.rt.postseason && st.rt.postseason.champion, '1年目の日本一が決まる');
 });
 
 test('C2a: 多年セーブ/ロードの決定論（advanceYear を跨いで一致）', () => {

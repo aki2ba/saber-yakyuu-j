@@ -292,7 +292,7 @@ export function applyEraToRookie(p, era = null, boost = 0) {
  *   era=時代トレンド成分（D3・§11.3）。指定時は生成後に球速の経年上昇/世代の波を反映（乱数非消費）。
  * @returns {Object} Player（teamId は呼び出し側で設定）
  */
-export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear, era = null }) {
+export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear, era = null, cfg = null }) {
   const rng = makeRng(hashSeed(seed, id));
   const p = role === 'pitcher' ? generatePitcher(rng, id) : generateFielder(rng, id, primaryPos);
   // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
@@ -302,7 +302,15 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
   p.birthSeason = debutYear != null ? debutYear - p.age : null;
   p.primaryPos = role === 'pitcher' ? 'P' : primaryPos;
   // 時代トレンド（D3）: 世代の波・球速の経年上昇を反映（王朝均衡の team boost は draft 割当後に別途）。
+  // R2: era は「素質の波」なのでポテンシャルに効かせる＝ applyMaturity の **前** に適用する。
   if (era) applyEraToRookie(p, era, 0);
+  // R2: 年齢確定後にポテンシャル→現在能力。これで高卒新人(18)は一軍平均を大きく下回り、
+  //   数年かけて育つ（旧実装は新人がいきなりリーグ平均能力を持っていた＝「初期値ができすぎ」）。
+  //   rookiePotentialLift（負値）は「ドラフトはプールの上澄みを選ぶ」ぶんの相殺（§下記）:
+  //   球団は surplus 付きプールから自評価の最良を指名するため、指名された新人のポテンシャルは
+  //   プール平均より高く出る。これを補正しないと毎年リーグへ「平均より強い個体」が注入され続け、
+  //   多年で能力が単調インフレする（実測: 15年で一軍EV +1.5pt → SLG +0.03）。
+  if (cfg) applyMaturity(p, cfg, cfg.tuning.market.rookiePotentialLift ?? 0);
   return p;
 }
 
@@ -332,17 +340,107 @@ const DEPTH_FIELDER_PLAN = [
 const EXTRA_FIELDER_POS = ['C', '2B', 'RF']; // 野手35-37人目の追加ポジション（投手数の球団差ぶん）
 
 /**
- * 若手厚めの年齢を1つ引く（F2-1）: min + floor((max-min+1)·u^skew)。skew>1 で若年側へ歪む。
- * 下位支配下（コア超過分）と育成選手の年齢帯に使う（18-24中心＝成長曲線途中の若手）。
+ * 重み付き年齢分布から年齢を1つ引く（R2・realism_r2_age_roster_spec §2-C）。
+ * weights は {age: 相対重み}。決定論: 整数キーは昇順に走査される（JSのプロパティ順序仕様）。
  */
-function drawYoungAge(rng, min, max, skew) {
-  return min + Math.floor((max - min + 1) * Math.pow(rng.next(), skew));
+function drawAgeWeighted(rng, weights) {
+  const ages = Object.keys(weights);
+  let total = 0;
+  for (const a of ages) total += weights[a];
+  let u = rng.next() * total;
+  for (const a of ages) {
+    u -= weights[a];
+    if (u <= 0) return Number(a);
+  }
+  return Number(ages[ages.length - 1]);
+}
+
+// ============================================================================
+// R2 成熟度カーブ（realism_r2_age_roster_spec §2-A,B,D / §10.1）
+//
+// generatePitcher/generateFielder が引くのは **ポテンシャル（成長終端＝peak時の能力）** であり、
+// 現在の能力ではない。applyMaturity が age まで aging と同一のカーブを適用して現在能力にする。
+//   現在能力 = ポテンシャル + baseLift + survivorBonus(age) + maturityDelta(能力, age)
+// これで「生成された28歳」と「18歳から育った28歳」が同分布になる（生成と加齢の内部整合）。
+//
+// 旧実装は age を能力と独立に引いていたため、18歳の平均能力＝30歳の平均能力（相関 r=0.012）で、
+// 一軍登録の38%・規定到達者の36%が20歳以下という破綻を生んでいた（ユーザー報告「初期値ができすぎ」）。
+// ============================================================================
+
+/**
+ * 1能力軸ぶんの成熟度デルタ（ポテンシャルからの差）。aging.curveDelta の逆積分＝同一カーブ。
+ *   未成熟: 成長終端(growEnd)までの残り年数ぶん grow を引く（＝まだ伸びていない）
+ *   衰え:   衰え開始(onset)から age までの decline を年ごとに積む（declineAccel の加速も同式で）
+ * 成長係数 gm は生成時には未知なので 1（平均的な成長を辿った個体）と仮定する。
+ */
+function maturityDelta(prof, age, peak, dr, aging) {
+  let d = 0;
+  const growEnd = peak + prof.peakShift;
+  if (age < growEnd) d -= prof.grow * (growEnd - age);
+  const onset = peak + prof.declineOffset;
+  for (let a = onset; a <= age - 1; a++) d -= prof.decline * dr * (1 + aging.declineAccel * (a - onset));
+  return d;
+}
+
+/**
+ * 生成された「ポテンシャル」を age 時点の「現在能力」へ変換する（in-place・乱数非消費・決定論）。
+ * age を確定させた **後** に呼ぶこと（generateRookie は age を上書きするため順序が重要）。
+ *
+ * survivorBonus: 34歳で支配下に残っているのは「ポテンシャルが高かった個体」だけ（弱い個体は
+ *   淘汰済み・§10.6 生存バイアス）。1年目リーグにその結果を織り込む。これが無いとベテランが
+ *   「衰えただけの弱い選手」ばかりになり全員二軍に沈む（別の非現実）。
+ * baseLift: 年齢構造の導入でロスターの平均能力が下がるぶんを戻す中心化（★較正の主ノブ）。
+ *
+ * 動かす能力の集合は aging.agePlayer と完全に同一（対称性＝生成と加齢が同じ関数であることの担保）。
+ */
+export function applyMaturity(p, cfg, extraLift = 0) {
+  const aging = cfg.tuning.aging;
+  const M = cfg.tuning.maturity;
+  const t = p.trueAbility;
+  const age = p.age;
+  const peak = t.career.peakAge;
+  const dr = t.career.declineRate;
+  const lift = M.baseLift + extraLift + Math.max(0, age - M.survivorFromAge) * M.survivorSlope;
+  const profOf = (k) => aging.profiles[k] ?? aging.profiles.default;
+  const put = (obj, key, profKey, extra = 0) => {
+    obj[key] = clampRating(obj[key] + lift + extra + maturityDelta(profOf(profKey), age, peak, dr, aging));
+  };
+  // 長打だけの追加加点（R2較正・野手のみ）: power/ev は decline が最速の軸なので、一軍の高齢化で
+  //   リーグ長打力だけが構造的に不足する。投手打撃には効かせない（セパ得点差の帯を動かさない）。
+  const pw = p.role === 'fielder' ? M.powerLift : 0;
+
+  for (const k of ['speed', 'arm', 'hands', 'reaction', 'power']) put(t.common, k, k, k === 'power' ? pw : 0);
+  for (const k of ['ev', 'la', 'pull', 'contact', 'eye', 'vsFastball', 'vsBreaking']) put(t.batting, k, k, k === 'ev' ? pw : 0);
+
+  // 投手（球速は km/h 実数＝別スケール。lift は veloPerRating で換算して写す）
+  const pi = t.pitching;
+  const v = aging.velo;
+  pi.velocityKmh = clamp(
+    pi.velocityKmh + lift * M.veloPerRating + maturityDelta(v, age, peak, dr, aging),
+    v.min,
+    v.max,
+  );
+  for (const k of ['control', 'stamina', 'gbRate', 'hold']) put(pi, k, k);
+  for (const pitch of pi.pitches) {
+    for (const k of ['current', 'whiff', 'hrSuppress', 'contactQuality']) put(pitch, k, 'pitchStuff');
+  }
+
+  // 守備・走塁
+  put(t.fielding, 'positioningIQ', 'positioningIQ');
+  put(t.fielding, 'framing', 'framing');
+  if (t.fielding.blocking != null) put(t.fielding, 'blocking', 'blocking');
+  for (const pos of Object.keys(t.fielding.positionProf)) put(t.fielding.positionProf, pos, 'positionProf');
+  put(t.baserunning, 'steal', 'steal');
+  put(t.baserunning, 'baserunIQ', 'baserunIQ');
+
+  return p;
 }
 
 /**
  * 1チームの支配下ロスターを生成（F2-1: 70人＝投手33-36＋野手34-37）。
  * 投手数は rng で球団ごとに散らし、残りを野手に充てる（合計は cfg.tuning.roster.controlledPerTeam で恒常）。
- * コア（従来33人相当）は年齢一様帯 18-37、コア超過の下位支配下は若手厚め（youngAge* ノブ）。
+ * 年齢は R2 の重み付き分布（roster.ageWeights・NPB実態の山型）から引き、確定後に applyMaturity で
+ * 「ポテンシャル → その年齢での現在能力」へ変換する（＝若手は未成熟・ベテランは衰え＋生存バイアス）。
  */
 export function generateTeam(rng, teamId, cfg) {
   const R = cfg.tuning.roster;
@@ -355,14 +453,13 @@ export function generateTeam(rng, teamId, cfg) {
   const roster = [];
   for (let i = 0; i < nPitchers; i++) {
     const p = generatePitcher(rng, `${teamId}P${i + 1}`);
-    // 下位支配下投手（コア13人超過分）は若手を厚く＝二軍は「成長曲線途中の若手」の置き場になる
-    if (i >= R.corePitchers) p.age = drawYoungAge(rng, R.youngAgeMin, R.youngAgeMax, R.youngAgeSkew);
-    roster.push(p);
+    p.age = drawAgeWeighted(rng, R.ageWeights);
+    roster.push(applyMaturity(p, cfg));
   }
   for (let i = 0; i < nFielders; i++) {
     const p = generateFielder(rng, `${teamId}F${i + 1}`, plan[i]);
-    if (i >= R.coreFielders) p.age = drawYoungAge(rng, R.youngAgeMin, R.youngAgeMax, R.youngAgeSkew);
-    roster.push(p);
+    p.age = drawAgeWeighted(rng, R.ageWeights);
+    roster.push(applyMaturity(p, cfg));
   }
   return roster;
 }
@@ -391,10 +488,10 @@ export function generateFarmPlayers(rng, teamId, count, cfg) {
     const p = isPitcher
       ? generatePitcher(rng, id)
       : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
-    p.age = drawYoungAge(rng, R.devAgeMin, R.devAgeMax, R.devAgeSkew);
+    p.age = drawAgeWeighted(rng, R.devAgeWeights); // 育成は支配下より若い（R2）
     p.rosterStatus = 'minor';
     p.teamId = teamId;
-    list.push(p);
+    list.push(applyMaturity(p, cfg)); // 年齢確定後にポテンシャル→現在能力（＝育成は未成熟な若手）
   }
   return list;
 }

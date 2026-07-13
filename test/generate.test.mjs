@@ -6,8 +6,30 @@ import { validatePlayer } from '../src/model/player.mjs';
 import { makeRng } from '../src/rng.mjs';
 import { createConfig } from '../src/config.mjs';
 import { FIELD_POSITIONS } from '../src/model/positions.mjs';
+import { applyAging } from '../src/game/aging.mjs';
+import { clamp } from '../src/model/util.mjs';
 
 const cfg = createConfig();
+
+/** 総合力の粗い代理（~20-80）。roster.mjs の引退判定と同じ物差し（R2 の年齢構造テスト用）。 */
+function overallAbility(p) {
+  const t = p.trueAbility;
+  if (p.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    const pitches = t.pitching.pitches;
+    let stuff = 50;
+    if (pitches.length) {
+      let s = 0;
+      for (const pi of pitches) s += (pi.current + pi.whiff) / 2;
+      stuff = s / pitches.length;
+    }
+    return (veloR + t.pitching.control + t.pitching.stamina + stuff) / 4;
+  }
+  const b = t.batting;
+  let bestProf = 20;
+  for (const k of Object.keys(t.fielding.positionProf)) bestProf = Math.max(bestProf, t.fielding.positionProf[k]);
+  return (b.ev + b.contact + b.la + b.eye + t.common.speed + t.fielding.positioningIQ + bestProf) / 7;
+}
 
 test('generateLeague は決定論的（同一masterSeedで同一リーグ）', () => {
   const a = generateLeague(2026, cfg);
@@ -95,23 +117,71 @@ test('育成選手 10-40人/球団・全員minor・球団の育成方針で人�
   assert.ok(farmOf(sorted[0].id) <= farmOf(sorted[sorted.length - 1].id), 'devFocus 最小球団 ≤ 最大球団の育成人数');
 });
 
-test('育成・下位支配下は若手が厚い（18-24中心・F2-1）', () => {
+test('育成は支配下より若く、年齢帯（devAgeWeights）に収まる（F2-1 / R2）', () => {
   const lg = generateLeague(7, cfg);
-  const R = cfg.tuning.roster;
+  const ages = Object.keys(cfg.tuning.roster.devAgeWeights).map(Number);
+  const lo = Math.min(...ages);
+  const hi = Math.max(...ages);
   const avg = (arr) => arr.reduce((a, p) => a + p.age, 0) / arr.length;
-  // 育成は年齢帯 18-24 に収まり、平均は支配下より若い
-  assert.ok(lg.farm.every((d) => d.age >= R.devAgeMin && d.age <= R.devAgeMax), '育成は 18-24');
-  assert.ok(avg(lg.farm) < avg(lg.players), '育成の平均年齢 < 支配下');
-  // 下位支配下（コア超過分）も若手帯: チームの野手 F21以降 / 投手 P14以降 は youngAgeMax 以下
-  for (const t of lg.teams.slice(0, 3)) {
-    const roster = lg.players.filter((p) => p.teamId === t.id);
-    for (const p of roster) {
-      const m = p.id.match(/^T\d+([PF])(\d+)$/);
-      const idx = Number(m[2]);
-      const isDepth = (m[1] === 'P' && idx > R.corePitchers) || (m[1] === 'F' && idx > R.coreFielders);
-      if (isDepth) assert.ok(p.age >= R.youngAgeMin && p.age <= R.youngAgeMax, `${p.id} age=${p.age} は若手帯`);
-    }
+  assert.ok(lg.farm.every((d) => d.age >= lo && d.age <= hi), `育成は ${lo}-${hi}`);
+  assert.ok(avg(lg.farm) + 2 < avg(lg.players), '育成の平均年齢は支配下より2歳以上若い');
+});
+
+// --- R2: 年齢構造（realism_r2_age_roster_spec）。旧実装は年齢と能力が無相関（r=0.012）で、
+//     18歳がリーグ2位・一軍登録の38%が20歳以下という破綻を生んでいた（「初期値ができすぎ」）。
+test('R2: 支配下の年齢分布が NPB 実態の山型（18歳が極端に膨らまない）', () => {
+  const lg = generateLeague(11, cfg);
+  const perTeam = (age) => lg.players.filter((p) => p.age === age).length / lg.teams.length;
+  assert.ok(perTeam(18) < 5, `18歳は球団あたり5人未満（実測 ${perTeam(18).toFixed(1)}人。旧実装は13.6人）`);
+  const mid = lg.players.filter((p) => p.age >= 22 && p.age <= 29).length / lg.players.length;
+  assert.ok(mid > 0.4, `22-29歳が支配下の40%超（実測 ${(mid * 100).toFixed(0)}%）＝分布の山が中央にある`);
+});
+
+test('R2: 年齢と能力に正の相関がある（無相関＝生成バグの直接検出）', () => {
+  const lg = generateLeague(11, cfg);
+  const xs = lg.players.map((p) => p.age);
+  const ys = lg.players.map((p) => overallAbility(p));
+  const mx = xs.reduce((a, v) => a + v, 0) / xs.length;
+  const my = ys.reduce((a, v) => a + v, 0) / ys.length;
+  let sxy = 0;
+  let sxx = 0;
+  let syy = 0;
+  for (let i = 0; i < xs.length; i++) {
+    sxy += (xs[i] - mx) * (ys[i] - my);
+    sxx += (xs[i] - mx) ** 2;
+    syy += (ys[i] - my) ** 2;
   }
+  const r = sxy / Math.sqrt(sxx * syy);
+  assert.ok(r > 0.25, `年齢×能力の相関 r=${r.toFixed(3)} > 0.25（旧実装 0.012＝完全無相関）`);
+});
+
+test('R2: 高卒新人(18-19)は一軍平均を大きく下回る（即戦力レギュラーにならない）', () => {
+  const lg = generateLeague(11, cfg);
+  const mean = (arr) => arr.reduce((a, p) => a + overallAbility(p), 0) / arr.length;
+  const rookies = lg.players.filter((p) => p.age <= 19);
+  const prime = lg.players.filter((p) => p.age >= 26 && p.age <= 30);
+  assert.ok(rookies.length > 0 && prime.length > 0);
+  assert.ok(
+    mean(prime) - mean(rookies) > 5,
+    `26-30歳(${mean(prime).toFixed(1)}) が 18-19歳(${mean(rookies).toFixed(1)}) を 5pt 超上回る（旧実装は同値）`,
+  );
+});
+
+test('R2: 生成と加齢が同一カーブ — 18歳を9年加齢させると27歳の生成分布へ収束する', () => {
+  const lg = generateLeague(5, cfg);
+  const mean = (arr) => arr.reduce((a, p) => a + overallAbility(p), 0) / arr.length;
+  const young = lg.players.filter((p) => p.age === 18).map((p) => JSON.parse(JSON.stringify(p)));
+  const before = mean(young);
+  for (let y = 0; y < 9; y++) applyAging(young, cfg, { seed: 777 + y });
+  const after = mean(young);
+  // ③やきゅつく的な楽しさ: 若手が実際に育つ（旧実装は9年で +1.8pt しか伸びなかった）
+  assert.ok(after - before > 6, `18→27歳で ${(after - before).toFixed(1)}pt 成長（旧実装 +1.8pt）`);
+  // 内部整合: 育った27歳が「生成された27歳」と同水準（±4pt。個体差/成長分散gmの揺れを許容）
+  const born27 = mean(lg.players.filter((p) => p.age === 27));
+  assert.ok(
+    Math.abs(after - born27) < 4,
+    `育った27歳(${after.toFixed(1)}) ≒ 生成された27歳(${born27.toFixed(1)})＝生成と加齢が同一カーブ`,
+  );
 });
 
 test('育成選手も validatePlayer を通過し三層の器を持つ（F2-1）', () => {

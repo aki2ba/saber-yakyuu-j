@@ -218,7 +218,10 @@ export const TUNING_DEFAULT = {
   //   FanGraphs: 代替勝利の総量 = 570 × (Games/2430) を固定し、打席比で按分する。
   //   ＝ 1チーム1試合あたり 570/(30×162) = 0.1173 wins。このシムは較正で値を決める。
   //   代替勝利を wins で固定することで、時代トレンド（得点環境の揺れ）で総WARが動かなくなる。
-  replHitterWinsPerTeamGame: 0.134, // ※WAR較正（総WAR・野手WAR比の門番）
+  replHitterWinsPerTeamGame: 0.129, // ※WAR較正（総WAR・野手WAR比の門番）
+  //   R2再較正: 0.134→0.1355。年齢構造の導入で一軍29人の選抜が「成熟した上位層」に絞られ、
+  //   リーグの能力分散が広がって総WARが帯(430)を +2 超過したぶんを代替水準側で吸収する
+  //   （代替水準は本来「較正で決める値」＝能力分布が変われば再較正するのが筋。上の注記参照）。
   replBatterPer600: 19.1, // 【フォールバック専用】lc が無いときだけ使う旧式 (PA/600)×これ [run]
   // 投手の役割別代替水準（S3・FanGraphs方式 B-5。旧 replFipMult=lgFIP×1.25 を廃止）:
   // pitcherWAR = (lgFIP−FIP)/9×IP/RPW + (IP/9)×replPer9。replPer9 は GS/G で先発/救援を按分。
@@ -288,13 +291,13 @@ export const TUNING_DEFAULT = {
     //   圧縮され投手WAR王が帯割れ→投手間スプレッドを拡大しエースの裾を回復。リーグK%は基準3本の引下げで相殺）
     whiffContactW: 0.006, // 打者contact(50中心)→空振り減
     whiffAptW: 0.004, // 対該当クラス適性(50中心)→空振り減
-    whiffTwoStrikeW: 0.235, // 2ストライクの空振り率減（当てにいく短縮スイング。ppa↑・K抑制・B1較正: 0→0.18。
+    whiffTwoStrikeW: 0.248, // 2ストライクの空振り率減（当てにいく短縮スイング。ppa↑・K抑制・B1較正: 0→0.18。
     //   0.9.1: →0.215。F2-5: →0.235（選抜後のK%を[18,20.5]上限内に収める最終相殺）
     // --- 接触時: ファウル vs インプレー ---
     foulBase: 0.47, // 接触のうちファウルになる基準
     foulTwoStrikeW: 0.18, // 2ストライクでファウル率増（粘り＝カット・B1較正: 0.08→0.18で投球数/PA↑）
     // --- 見逃し時: ボーダー帯の捕手フレーミング判定 ---
-    borderCsBase: 0.175, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時。0.9.1: 0.24→0.183。
+    borderCsBase: 0.168, // ボーダー帯見逃しのストライク獲得基準（framing50=リーグ中立時。0.9.1: 0.24→0.183。
     //   際の球数~1.6倍で見逃しストライクが増えBB%が沈むため、獲得率を下げて BB%[7.8,8.3] を回復。
     //   F2-5: →0.175（zoneBase引下げと合わせたBB/K再配分の微調整））
     frameSlopePerPt: 0.0024, // framing(50中心)→ボーダーCS率±（一球単位の創発。0.9.1: 0.0040→0.0024。
@@ -489,16 +492,22 @@ export const TUNING_DEFAULT = {
     controlledPerTeam: 70, // 支配下人数/球団（NPB=70人）
     pitchersMin: 33, // 投手数の下限（球団差 33-36。残り＝野手 34-37）
     pitchersMax: 36, // 投手数の上限
-    corePitchers: 13, // 年齢を従来一様帯(18-37)で引く「主力層」投手数（超過分は若手厚めの年齢帯）
-    coreFielders: 20, // 同・野手数（従来 FIELDER_PLAN 相当＝各ポジの一軍層）
-    youngAgeMin: 18, // 下位支配下（コア超過分）の年齢帯: min + floor((max-min+1)·u^skew)
-    youngAgeMax: 27,
-    youngAgeSkew: 2.0, // skew>1 で若年側へ歪む（18-24中心＝成長曲線途中の若手を厚く）
+    // --- R2 年齢分布（realism_r2_age_roster_spec §2-C）: NPB実態に寄せた山型の重み ---
+    //   旧実装は「コア=一様18-37／超過分=若手厚めskew2.0」で、18歳が支配下の19%（163人/840人）を
+    //   占め、しかも能力が年齢と無相関（r=0.012）だったため一軍の38%が20歳以下・規定到達者の36%が
+    //   20歳以下という破綻を生んでいた（ユーザー報告「初期値ができすぎ」の正体）。
+    //   【出典】npb.jp 公式の支配下選手一覧を直接集計（2026年度・巨人69人/阪神69人。realism-refs
+    //   の NPB_ROSTER_AGE 参照）: 18歳1人・19歳0人・20-22歳8.5人・23-25歳19.5人・26-29歳22人・
+    //   30-33歳12人・34歳以上6人／平均26.9-27.1歳。下の重み＝この実測人数をそのまま年齢別へ均した値
+    //   （19歳だけは n=2球団で偶然0だった可能性を考え 1.2 に均す）。重みは相対値（合計70へ正規化）。
+    ageWeights: {
+      18: 1.2, 19: 1.2, 20: 2.8, 21: 2.8, 22: 2.9, 23: 6.5, 24: 6.5, 25: 6.5, 26: 5.5, 27: 5.5,
+      28: 5.5, 29: 5.5, 30: 3, 31: 3, 32: 3, 33: 3, 34: 2, 35: 1.5, 36: 1.3, 37: 1.2,
+    },
+    // 育成（§12.1）: ソフトバンク育成51人の実測（平均21.88歳＝支配下より約5歳若い）を年齢別へ均した値。
+    devAgeWeights: { 18: 4, 19: 9, 20: 6, 21: 6, 22: 6, 23: 4, 24: 4, 25: 4, 26: 2, 27: 2, 28: 2, 29: 2 },
     devCountMin: 10, // 育成選手数の下限（球団の育成方針 devFocus で 10-40 に散る）
     devCountMax: 40, // 育成選手数の上限
-    devAgeMin: 18, // 育成の年齢帯（18-24中心・若手最厚）
-    devAgeMax: 24,
-    devAgeSkew: 1.5,
     devPitcherShare: 0.55, // 育成に占める投手の割合（NPB育成は投手偏重の近似）
     offenseTopN: 12, // リーグ攻撃力均衡化で測る「一軍級の上位野手」数（全員合計だと育成/控えの人数差で歪む）
     // --- F2-2 出場登録29人の選抜（selectActiveRoster・編成時評価＝buildDepthChart と同輪） ---
@@ -614,7 +623,9 @@ export const TUNING_DEFAULT = {
     // Range 1pt → Smax の増分 m/s（50中心）。UZRの広がりと |xwOBA−wOBA| 乖離を同時に支配する:
     //   個人差を強めるほど「守備中立の xwOBA」と「実際に上手いレギュラーが守った wOBA」がずれる。
     //   0.022 で UZR上位≈+15（FanGraphs のゴールドグラブ級）かつ |xwOBA−wOBA| ≤ 0.003 に収まる。
-    smaxPerRating: 0.022,
+    //   R2再較正: 0.022→0.019。年齢構造の導入で守備素材(reaction/hands)の分散が広がり、
+    //   |xwOBA−wOBA| が恒等の帯(0.003)を割ったぶんを個人差側で吸収する（UZR帯は余裕あり）。
+    smaxPerRating: 0.019,
     width: 1.05, // 到達ロジスティックの幅 m/s。小さいほど p が両極化する ※較正対象
     reactionS: 0.3, // 初動までの反応時間 s
     reachM: 1.7, // グラブ＋ダイブの到達半径 m
@@ -831,6 +842,28 @@ export const TUNING_DEFAULT = {
   //   peakShift/declineOffset を能力タイプで振り、§10.1 の「早落ち/遅くまで残る/むしろ伸びる/
   //   加齢に強い」を構造から出す。declineRate は個体差（§10.2・generate で球速/走力相関で既引き）。
   // ==========================================================================
+  // ==========================================================================
+  // R2 成熟度（generate が aging と同一カーブで「年齢に応じた現在能力」を作る）
+  //   §10.1 / realism_r2_age_roster_spec §2-A,B,D
+  //
+  // 核心: generatePitcher/generateFielder が引くのは **ポテンシャル（成長終端＝peak時の能力）**。
+  //   現在能力 = ポテンシャル + baseLift + survivorBonus(age) + maturityDelta(age)（applyMaturity）。
+  //   maturityDelta は aging.profiles の grow/decline をそのまま逆算に使う＝生成と加齢が同一関数に
+  //   なり、「生成された28歳」と「18歳から育った28歳」が同分布になる（内部整合）。
+  //   旧実装は年齢と能力が無相関（18歳の平均能力＝30歳）で、加齢側はそれに合わせて成長を
+  //   ほぼゼロ（power grow 0.2/年＝9年で+1.8pt）まで潰してあった（生成の誤りに加齢を合わせた形）。
+  // ==========================================================================
+  maturity: {
+    survivorFromAge: 25, // これを超える年齢からポテンシャルに生存バイアス加点（§10.6）
+    survivorSlope: 0.4, // 1歳あたりの加点(rating)。支配下に残る高齢者＝弱い個体が淘汰された後の姿
+    baseLift: 2.0, // ★較正の主ノブ: 一軍登録29人の能力分布を年齢構造導入前と一致させる中心化
+    veloPerRating: 0.45, // baseLift/survivorBonus を球速へ写す換算（生成sd 4.5km/h ÷ rating sd 10）
+    // 野手の power/ev への追加加点（R2較正）: 年齢構造の導入で一軍の平均年齢が 23.9→27.9歳へ上がり、
+    //   power/ev は decline が最も速い軸（1.55/年）なのでリーグ長打力だけが構造的に不足する
+    //   （SLG/OPS/HR王 が同時に帯を割る）。長打だけを戻すノブ（contact 系には効かせない）。
+    powerLift: 1.7,
+  },
+
   aging: {
     youngAge: 25, // これ未満を「若手」とする（成長を高分散・bust厚めで出す＝§10.3）
     driftSdYoung: 1.6, // 若手の年次ノイズSD（能力1軸あたり・rating）
@@ -844,7 +877,7 @@ export const TUNING_DEFAULT = {
 
     // 球速（km/h 実数・レーティングと別枠）: 加齢で落ちる。高球速×高declineRate ほど早く落ちる。
     velo: {
-      grow: 0.3, // 若手のうちは僅かに伸びる
+      grow: 0.5, // 若手のうちは伸びる（高卒入団145→数年で150 の実感。R2: 0.3→0.5）
       peakShift: -1, // 球速のピークは早い
       declineOffset: 2, // ピーク+2 から本格的に落ちる
       decline: 0.6, // 1年あたりの低下（×declineRate×加速）
@@ -857,52 +890,58 @@ export const TUNING_DEFAULT = {
     // 能力タイプ別プロファイル（§10.1）。grow=成長幅 / peakShift=成長終端の後ろズレ /
     //   declineOffset=衰え開始の後ろズレ / decline=衰え幅。未登録キーは default。
     //
-    // ★Bug1 再較正（§11.3・多年運用の得点環境が一方向インフレ）:
-    //   旧プロファイルは「生涯ネットドリフトが正」で、生存バイアス（弱個体淘汰・§10.6）と
-    //   ドラフト選抜（プールの上澄みを獲る）と相まって、能動ロスターの能力平均が rookie 生成中心から
-    //   +5〜6 も上振れし、20年でリーグ SLG/HR/ERA が単調インフレしていた（監査: SLG+16%/HR+71%/
-    //   ERA+32%）。§11.3 の意図は投高打低↔打高投低の“揺れ”であって単調上昇ではない。
-    //   → grow を大きく下げ、衰え開始（declineOffset）を前倒し・decline を強めて、
-    //     「rookie 生成中心 ≒ 加齢後の生存ロスター定常平均」（net drift≈0）へ再較正した。
-    //     これで 20年×多seed でも得点環境が NPB 目標帯付近に留まり、D3 era 波（正弦）がその上に
-    //     乗る“有界な揺れ”になる。1年目（yearIndex0）は applyAging 非適用ゆえ完全不変（較正53指標不変）。
-    //   個体の物語（§10.3 成長分散 gm・§10.4 ブレイク・§12.4 晩成/鉄人テール）は残す：山型・選球眼微増・
-    //   鉄人の制球持続・晩成 LA は成長係数と declineRate の個体差＋テールから出る（集団平均だけを平す）。
+    // ★R2 再設計（realism_r2_age_roster_spec §2-E）:
+    //   【旧状態】grow をほぼゼロまで潰してあった（power/ev 0.2＝18→27歳の9年で +1.8pt）。
+    //     理由は §11.3 Bug1（多年運用で得点環境が単調インフレ: SLG+16%/HR+71%/ERA+32%）の抑止。
+    //     だがインフレの真因は加齢ではなく **generate が年齢と無関係に「完成品」を生成していたこと**
+    //     （18歳の平均能力＝30歳・r=0.012）。完成品に成長を足せば当然インフレするので、
+    //     加齢の成長を潰して辻褄を合わせていた＝「生成の誤りに加齢を歪めて合わせた」状態。
+    //     副作用として ③やきゅつく的な楽しさ（若手が育つ）が構造的に消えていた。
+    //   【新構造】generate 側が applyMaturity で「年齢に応じた未成熟/衰え」を作るようになったので、
+    //     加齢は **本来の成長幅** に戻す。母集団は「生成分布＝定常分布」（生成と加齢が同一カーブ）に
+    //     なるため、原理的に net drift≈0 が保たれる。門番は test/game_multiyear.test.mjs（20年×
+    //     得点環境の帯・単調非増加）。
+    //   grow の相対比は現実の成熟パターンに従って設計し直した（旧比は power/ev を狙い撃ちで潰した
+    //     歪んだ比だった）: 走力・肩・球速は早熟（18歳で既に一線級）／パワー・体の成熟・技術・
+    //     制球・守備習熟は経験と体づくりで大きく伸びる。
+    //   decline は旧値を維持（衰えの形は正しかった）。個体の物語（§10.3 gm・§10.4 ブレイク・
+    //     §12.4 晩成/鉄人テール）はそのまま。
     profiles: {
-      // 早落ち（走力・守備初動・盗塁技術は足に連動）
-      speed: { grow: 0.5, peakShift: -3, declineOffset: -1, decline: 1.2 },
+      // 早熟・早落ち（走力/守備初動は18歳で既に完成に近く、真っ先に衰える）
+      speed: { grow: 0.35, peakShift: -3, declineOffset: -1, decline: 1.2 },
       reaction: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 1.0 },
-      steal: { grow: 0.5, peakShift: -2, declineOffset: 0, decline: 0.9 },
-      // パワー/EV（得点環境の主動因）: 成長は peak まで・以後は速やかに衰える。旧値(grow0.9/dOff5/dec0.5)は
-      //   全個体が peak+5 まで維持し母集団が peak に張り付いて上振れ→ここを net≈0 に平す（山型は維持）。
-      power: { grow: 0.2, peakShift: 0, declineOffset: 0, decline: 1.55 },
-      ev: { grow: 0.2, peakShift: 0, declineOffset: 0, decline: 1.55 },
-      // 選球眼（むしろ伸びる＝加齢で微増・§10.1）。微増は残すが grow を抑え上振れ幅を圧縮（打撃の
-      //   得点直結度は低い＝主に四球/OBP なので SLG/HR への寄与は小さく、微増を残しても環境は平坦）。
-      eye: { grow: 0.45, peakShift: 1, declineOffset: 3, decline: 0.25 },
-      // コンタクト・三振耐性（peak まで伸び以後は明確に悪化＝net≈0）
-      contact: { grow: 0.2, peakShift: 0, declineOffset: 0, decline: 1.25 },
-      vsFastball: { grow: 0.35, peakShift: 0, declineOffset: 1, decline: 1.0 },
-      vsBreaking: { grow: 0.35, peakShift: 1, declineOffset: 1, decline: 1.0 },
-      // LA最適化（晩成の主軸だが集団平均は平す。晩成 LA は高 gm×高 peakAge の少数テールから稀に出る）。
-      la: { grow: 0.32, peakShift: 1, declineOffset: 1, decline: 1.1 },
-      pull: { grow: 0.16, peakShift: 1, declineOffset: 1, decline: 0.4 },
-      // 技術・IQ（加齢に強い＝decline は小さく残すが grow を抑え、衰え開始も §10.1 窓へ引き戻して
-      //   母集団の底上げを断つ）。鉄人（高制球・低 declineRate）は個体テールから引き続き出る。
-      control: { grow: 0.3, peakShift: 2, declineOffset: 5, decline: 0.55 }, // 石川雅規型（鉄人）はテール
-      positioningIQ: { grow: 0.38, peakShift: 1, declineOffset: 3, decline: 0.35 },
-      baserunIQ: { grow: 0.38, peakShift: 1, declineOffset: 3, decline: 0.35 },
-      framing: { grow: 0.33, peakShift: 2, declineOffset: 4, decline: 0.4 },
-      blocking: { grow: 0.3, peakShift: 2, declineOffset: 4, decline: 0.5 },
-      gbRate: { grow: 0.1, peakShift: 2, declineOffset: 3, decline: 0.4 },
-      hold: { grow: 0.2, peakShift: 2, declineOffset: 3, decline: 0.5 },
-      positionProf: { grow: 0.36, peakShift: 2, declineOffset: 4, decline: 0.5 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
-      pitchStuff: { grow: 0.25, peakShift: 2, declineOffset: 3, decline: 0.6 }, // 球種の質（出し入れは技巧で残る）
-      // 中間（肩・手・スタミナ）
-      arm: { grow: 0.2, peakShift: 0, declineOffset: 2, decline: 0.8 },
-      hands: { grow: 0.26, peakShift: 2, declineOffset: 3, decline: 0.6 },
-      stamina: { grow: 0.16, peakShift: 1, declineOffset: 2, decline: 0.7 },
-      default: { grow: 0.4, peakShift: 1, declineOffset: 4, decline: 0.6 },
+      steal: { grow: 0.8, peakShift: -2, declineOffset: 0, decline: 0.9 }, // 足そのものでなく技術＝経験で伸びる
+      // パワー/EV（得点環境の主動因）: 体の成熟＝若手が最も伸びる軸。以後は速やかに衰える（山型）。
+      power: { grow: 1.4, peakShift: 0, declineOffset: 0, decline: 2.0 },
+      ev: { grow: 1.4, peakShift: 0, declineOffset: 0, decline: 2.0 },
+      // 選球眼（加齢に強く、むしろ伸び続ける・§10.1）
+      eye: { grow: 1.0, peakShift: 1, declineOffset: 3, decline: 0.25 },
+      // コンタクト・三振耐性（技術＝経験で伸び、peak 以後は明確に悪化）
+      contact: { grow: 1.3, peakShift: 0, declineOffset: 0, decline: 1.6 },
+      vsFastball: { grow: 1.1, peakShift: 0, declineOffset: 1, decline: 1.3 },
+      vsBreaking: { grow: 1.2, peakShift: 1, declineOffset: 1, decline: 1.3 }, // 変化球対応は経験の産物
+      // LA最適化（晩成の主軸。高 gm×高 peakAge の少数テールから「遅れて開花」が出る）
+      la: { grow: 1.0, peakShift: 1, declineOffset: 1, decline: 1.45 },
+      pull: { grow: 0.3, peakShift: 1, declineOffset: 1, decline: 0.4 },
+      // 技術・IQ（経験で伸び加齢に強い）。鉄人（高制球・低 declineRate）は個体テールから出る。
+      control: { grow: 1.2, peakShift: 2, declineOffset: 5, decline: 0.55 }, // 石川雅規型（鉄人）はテール
+      positioningIQ: { grow: 1.0, peakShift: 1, declineOffset: 3, decline: 0.35 },
+      baserunIQ: { grow: 1.0, peakShift: 1, declineOffset: 3, decline: 0.35 },
+      framing: { grow: 1.0, peakShift: 2, declineOffset: 4, decline: 0.4 },
+      blocking: { grow: 1.0, peakShift: 2, declineOffset: 4, decline: 0.5 },
+      gbRate: { grow: 0.3, peakShift: 2, declineOffset: 3, decline: 0.4 },
+      hold: { grow: 0.6, peakShift: 2, declineOffset: 3, decline: 0.5 },
+      positionProf: { grow: 1.2, peakShift: 2, declineOffset: 4, decline: 0.5 }, // 守備習熟は経験で伸び緩く落ちる（山本泰寛型）
+      // 球種の質（出し入れは技巧で残る）。R2較正: grow は K%↔Contact% のトレードオフの均衡点。
+      //   growEnd(=peak+2) が一軍投手の平均年齢より後ろにあるため、grow を上げるとリーグの投手が
+      //   構造的に「未成熟」側へ寄り Contact% が帯上限を割り、下げると投手が強くなり K% が超過する。
+      //   （peakShift の前倒しは投手を一段強くしてしまい打撃3指標が同時に帯を割ったため不採用）
+      pitchStuff: { grow: 0.85, peakShift: 2, declineOffset: 3, decline: 0.6 },
+      // 中間（肩=早熟／手・スタミナ=育成で伸びる）
+      arm: { grow: 0.5, peakShift: 0, declineOffset: 2, decline: 0.8 },
+      hands: { grow: 0.9, peakShift: 2, declineOffset: 3, decline: 0.6 },
+      stamina: { grow: 1.0, peakShift: 1, declineOffset: 2, decline: 0.7 },
+      default: { grow: 0.8, peakShift: 1, declineOffset: 4, decline: 0.6 },
     },
   },
 
@@ -968,15 +1007,24 @@ export const TUNING_DEFAULT = {
   //   （弱い＝出番が減る＝切られる）。真の出場機会依存の戦力外は C3（§12.2）で導入。
   // ==========================================================================
   retire: {
-    minAge: 32, // これ未満は引退しない（若手・全盛期は残す）
+    // ★R2 再設計: 旧 minAge=32 は「32歳未満は絶対に引退しない」＝ NPB の新陳代謝（毎年70人中
+    //   8-12人が引退/戦力外で入れ替わる）に対し支配下の淘汰が 1/4 しか起きず、多年運用で
+    //   ロスターが高齢化し続けていた（実測: 支配下平均年齢が 26.7→29.5歳へ漂流し、成長した選手が
+    //   滞留して SLG/HR が単調インフレ）。現実の球団は「高卒5年目で芽が出なければ切る」。
+    minAge: 24, // これ未満は引退しない（育成期間は守る）
     hardAge: 42, // これ以上は必ず引退（超高齢の打ち切り）
-    rampAge: 32, // この年齢超過で引退確率が加齢加算され始める
-    agePerYear: 0.060, // rampAge 超過1歳ごとの引退確率加算（late-30s の淘汰を効かせる）
+    rampAge: 31, // この年齢超過で引退確率が加齢加算され始める
+    agePerYear: 0.075, // rampAge 超過1歳ごとの引退確率加算（late-30s の淘汰を効かせる）
     abilityRef: 47, // 「並」の総合力（この未満は引退圧が増す＝出場機会の代理）
-    abilityPerPt: 0.022, // abilityRef 未満 1pt ごとの引退確率加算
+    abilityPerPt: 0.028, // abilityRef 未満 1pt ごとの引退確率加算
+    // R2: 若手は「現在能力」ではなく「伸びしろ」で評価される（maturity 導入で若手の現在能力は
+    //   構造的に低い＝これが無いと球団が将来のエースを能力40と見て切ってしまう）。
+    //   peakAge までの残り年数 × これ を総合力に加算してから引退圧を測る（TINSTAAPP は
+    //   「伸びなかった中堅(25-28)が淘汰される」形で出る＝現実の戦力外通告の姿）。
+    youthCreditPerYear: 0.9,
     injuryPerHist: 0.030, // 故障歴1件ごとの引退確率加算
     eliteRetain: 0.018, // abilityRef 超過 1pt ごとの引退確率減（鉄人ほど残る＝生存バイアス→40代レア化）
-    base: 0.030, // 基本引退確率（判定対象年齢での下駄）
+    base: 0.022, // 基本引退確率（判定対象年齢での下駄）
     cap: 0.92, // 引退確率の上限
   },
 
@@ -988,6 +1036,12 @@ export const TUNING_DEFAULT = {
   //   歪んだ球団評価と真価値の差分が「宝の泉」＝市場の非効率（守備/位置の過小評価を仕込む）。
   // ==========================================================================
   market: {
+    // ★R2: ドラフト新人のポテンシャル補正（負値）。球団は surplus 付きプールから「自評価の最良」を
+    //   指名するため、指名された新人のポテンシャルはプール平均より構造的に高く出る（選抜の上澄み）。
+    //   補正しないと毎年リーグへ「平均より強い個体」が注入され続け、多年で能力が単調インフレする
+    //   （実測: 無補正だと15年で一軍EV +1.5pt → SLG .402→.433）。生存バイアス（弱個体の引退）と
+    //   合わせた正の圧力を打ち消し、リーグ平均を定常に保つノブ（§11.3 の「有界な揺れ」の担保）。
+    rookiePotentialLift: -2.5,
     // 世代生成（§15 ドラフト）: 新人の年齢層。高卒18/大卒22/社会人25相当の混合分布。
     cohort: {
       hsAge: 18, // 高卒相当

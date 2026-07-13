@@ -47,20 +47,35 @@ function run20(seed, teamId = 'T1') {
 const RUN = run20(SEED);
 
 // ---------------------------------------------------------------------------
-test('D3: 1年目（yearIndex=0）は完全に不変 — ゲーム年0 == simulateSeason 直呼び（byte一致）', () => {
+test('D3: 1年目（yearIndex=0）は完全に不変 — era成分ゼロ＋シーズン中は真値/年齢が動かない', () => {
+  // 旧テストは「ゲーム年0 == simulateSeason 直呼び（byte一致）」で D3 の主旨（1年目に多年要素を
+  // 混ぜない）を間接検証していたが、R2（src/game/index.mjs の startYear: 1年目からも出場登録
+  // 入替=F2-3 を作動させる）により、farm（二軍）を持たない simulateSeason とはもはや bit 一致
+  // しない（意図的な仕様変更・バグではない）。D3 の主旨は「era（時代トレンド）が1年目に効かない」
+  // ことなので、それを直接検証する：(1) 1年目の era 成分が全てゼロ、(2) 1年目シーズン中は
+  // 選手の真値・年齢が一切動かない（test/game_multiyear.test.mjs の同種テストと同じ方式）。
   const st = newGame(SEED, 'T1', { cfg: createConfig() });
+  const e0 = st.era;
+  assert.equal(e0.evBaseDelta, 0, '1年目は得点環境の揺れがゼロ');
+  assert.equal(e0.veloBump, 0, '1年目は球速上昇ボーナスがゼロ');
+  assert.equal(e0.cohortQuality, 0, '1年目は世代品質補正がゼロ');
+  assert.equal(e0.isGolden, false, '1年目は黄金世代フラグが立たない');
+  const before = new Map(
+    st.league.players.map((p) => [p.id, {
+      age: p.age,
+      eye: p.trueAbility.batting.eye,
+      velo: p.trueAbility.pitching.velocityKmh,
+    }]),
+  );
   advanceTo(st, 'seasonEnd');
-  const gRows = st.rt.table
-    .map((r) => `${r.teamId}:${r.w}-${r.l}-${r.t}:${r.rs}:${r.ra}`)
-    .sort()
-    .join('|');
-  const lg = generateLeague(SEED, createConfig());
-  const res = simulateSeason(lg, createConfig(), { season: 2026, seed: SEED, postseason: false });
-  const sRows = [...res.standings.values()]
-    .map((r) => `${r.teamId}:${r.w}-${r.l}-${r.t}:${r.rs}:${r.ra}`)
-    .sort()
-    .join('|');
-  assert.equal(gRows, sRows, 'ゲーム年0の順位表がエンジン直呼びと完全一致（D3ドリフトは年0に効かない）');
+  for (const p of st.league.players) {
+    const b = before.get(p.id);
+    if (!b) continue; // 育成→支配下の季節中昇格（R2）で新たに支配下入りした選手＝加齢/era とは無関係
+    assert.equal(p.age, b.age, `${p.id}: 1年目シーズン中に age は動かない`);
+    assert.equal(p.trueAbility.batting.eye, b.eye, `${p.id}: 1年目シーズン中に真値(eye)は動かない`);
+    assert.equal(p.trueAbility.pitching.velocityKmh, b.velo, `${p.id}: 1年目シーズン中に真値(velocityKmh)は動かない`);
+  }
+  assert.ok(st.rt.postseason && st.rt.postseason.champion, '1年目シーズンは正常に完結する');
 });
 
 test('D3: computeEra(yearIndex=0) は identity（全成分ゼロ）／eraSeasonConfig は同一参照', () => {

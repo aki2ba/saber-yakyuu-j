@@ -58,12 +58,20 @@ test('F2-2: 出場登録29人（投手14/野手15）＝一軍デプスチャー�
   }
 });
 
-test('F2-2: 二軍ロスター＝登録外の支配下＋育成（人数整合・各ポジ残置）', () => {
+test('F2-2: 二軍ロスター＝登録外の支配下＋育成（人数整合・各ポジ残置・シーズン終了後も不変）', () => {
+  // 旧テストは開幕直後に固定した FARM_ROSTERS（season-start snapshot）を、シーズン終了後の
+  // registeredByTeam と突き合わせていたため、R2（1年目からのF2-3出場登録入替）でシーズン中に
+  // 選手が昇格/降格すると必然的に食い違っていた（検証方法の誤りであり、バグではない）。
+  // roster_moves.mjs の swapRegistration を読むと、rt.registeredByTeam と rt.farm.rosterByTeam は
+  // 常に1:1で同期して書き換えられる（昇格1名を registeredByTeam に足すたび、降格1名を
+  // farm.rosterByTeam に足す）。つまり「"現在の"二軍ロスターと"現在の"登録が互いに素」という
+  // 不変条件は、開幕直後だけでなくシーズンを通じて（入替が起きた後も）常に成立する。
+  // これをシーズン終了時点の"現在の"状態同士で直接検証する（比較時点を揃えることが本質）。
   for (const t of ST.league.teams) {
     const reg = ST.rt.registeredByTeam.get(t.id);
     const controlled = ST.league.players.filter((p) => p.teamId === t.id);
     const dev = ST.league.farm.filter((p) => p.teamId === t.id);
-    const farmRoster = FARM_ROSTERS.get(t.id);
+    const farmRoster = ST.rt.farm.rosterByTeam.get(t.id); // シーズン終了時点の"現在の"二軍ロスター
     assert.equal(farmRoster.length, controlled.length - reg.size + dev.length, `${t.id}: 人数整合`);
     for (const p of farmRoster) assert.ok(!reg.has(p.id), `${t.id}: 二軍に登録者が混ざらない`);
     // 選抜が各主ポジションに野手を残す（farmKeepPerPos）＝二軍のデプスチャート成立
@@ -104,11 +112,39 @@ test('F2-2: 二軍平均年齢 < 一軍平均年齢（若手＋一軍に及ば�
   assert.ok(avg(farm) < avg(majors), `二軍${avg(farm).toFixed(2)} < 一軍${avg(majors).toFixed(2)}`);
 });
 
-test('F2-2: farmStats と一軍 stats が完全分離（同一選手の二重出場なし・両方に実データ）', () => {
+test('F2-2: 集計器の分離 — rt.stats と rt.farm.stats は別オブジェクトで記録が混線しない', () => {
+  // 旧テストは「同一選手が一軍/二軍の両方に出場記録を持たない」ことを不変条件としていたが、
+  // これ自体が非現実的だった。現実のNPBでも、シーズン中に昇格/降格した選手（R2のF2-3入替や
+  // 育成→支配下の季節中昇格）は一軍・二軍の双方に成績を持つのが正常な帰結である。
+  // 本来の主旨は「集計器（一軍 rt.stats と二軍 rt.farm.stats）が混線していない」ことなので、
+  // それを直接検証する：(1) 別オブジェクトであること、(2) 昇降格選手の一軍/二軍ラインが
+  // 別インスタンスであること（参照共有なら混線しうる）、(3) 一軍専従選手の二軍ラインは
+  // 空（pa=0/outs=0）＝一軍の記録が二軍側へ漏れていないこと。
   const majPids = new Set(ST.rt.stats.stats.keys());
   const farmPids = new Set(ST.rt.farm.stats.stats.keys());
   assert.ok(majPids.size > 0 && farmPids.size > 0);
-  for (const pid of farmPids) assert.ok(!majPids.has(pid), `${pid} が一軍と二軍の両方に出場していない`);
+
+  // 集計器そのものが別オブジェクト（将来のリファクタで誤って同一Mapを共有しないことの門番）
+  assert.notStrictEqual(ST.rt.stats.stats, ST.rt.farm.stats.stats, '一軍/二軍の集計器(Map)は別オブジェクト');
+  assert.notStrictEqual(ST.rt.stats, ST.rt.farm.stats, '一軍/二軍の集計器インスタンスは別物');
+
+  // 昇降格で両方に出場記録を持つ選手が実際に存在する（正常な帰結として許容・強制はしない）
+  const dualPids = [...majPids].filter((pid) => farmPids.has(pid));
+  assert.ok(dualPids.length > 0, '昇降格した選手は一軍・二軍の両方に出場記録を持つ（正常）');
+  for (const pid of dualPids) {
+    // 混線していれば同一オブジェクト参照や値の伝播が起きうる。別ラインオブジェクトであることを確認する。
+    assert.notStrictEqual(ST.rt.stats.getBat(pid), ST.rt.farm.stats.getBat(pid), `${pid}: 一軍/二軍の打撃ラインが別オブジェクト`);
+    assert.notStrictEqual(ST.rt.stats.getPitch(pid), ST.rt.farm.stats.getPitch(pid), `${pid}: 一軍/二軍の投球ラインが別オブジェクト`);
+  }
+
+  // 一軍にしか出場記録の無い選手は、二軍側では「空ライン」のまま（混線していれば非ゼロになるはず）
+  const majOnly = [...majPids].filter((pid) => !farmPids.has(pid));
+  assert.ok(majOnly.length > 0);
+  for (const pid of majOnly) {
+    assert.equal(ST.rt.farm.stats.getBat(pid).pa, 0, `${pid}: 一軍専従選手は二軍打席が0（混線なし）`);
+    assert.equal(ST.rt.farm.stats.getPitch(pid).outs, 0, `${pid}: 一軍専従選手は二軍投球アウトが0（混線なし）`);
+  }
+
   // 育成選手（league.farm）にも二軍出場記録が付く
   const devWithStats = ST.league.farm.filter((p) => farmPids.has(p.id));
   assert.ok(devWithStats.length > 0, '育成選手が二軍戦に出場する');

@@ -29,7 +29,12 @@ function realSeason(seed = SEED, teamId = 'T1') {
   const year = st.year;
   const playerSeasons = st.careerStats.filter((s) => s.season === year);
   const standings = st.teamHistory.find((h) => h.year === year).standings;
-  const byId = new Map(st.league.players.map((p) => [p.id, p]));
+  // 出場記録を持つ全選手を引けるようにする（allPlayersById = 支配下＋育成＋引退）。
+  //   R2 で1年目から入替が作動するようになり、育成→支配下の季節中昇格（§req_20260708）の1:1交換で
+  //   押し出された選手がシーズン途中に league.farm 側へ移る。league.players だけの byId では、
+  //   一軍で出場したのに引けない選手が生まれ、表彰の選定が undefined.role で落ちる（本番側の
+  //   advanceYear は既に farm を含めて byId を作っている）。
+  const byId = allPlayersById(st);
   return { st, year, playerSeasons, standings, byId };
 }
 const R = realSeason();
@@ -274,7 +279,12 @@ test('C4: 引退選手が通算記録・受賞履歴から脱落しない（allP
   const recActive = leagueRecords({ careerStats: st.careerStats, playersById: activeById, cfg });
   const recAll = leagueRecords({ careerStats: st.careerStats, playersById: allById, cfg });
   const idsIn = (rec) => new Set(Object.values(rec).flat().map((r) => r.playerId ?? r.id).filter(Boolean));
-  assert.ok(idsIn(recAll).size >= idsIn(recActive).size, '全時代byIdの記録は現役のみより脱落が少ない');
+  // 「ID数の大小」では検証しない（上位Nランキングなので、顔ぶれが入れ替わると同一選手が複数記録を
+  //  占めて集合サイズが前後しうる＝不変量として脆い）。守りたいのは **引退者が落ちないこと** そのもの。
+  const retiredInAll = [...idsIn(recAll)].filter((id) => !activeById.has(id));
+  const retiredInActive = [...idsIn(recActive)].filter((id) => !activeById.has(id));
+  assert.ok(retiredInAll.length > 0, '全時代byIdのリーグ記録には引退選手が残る');
+  assert.equal(retiredInActive.length, 0, '現役のみbyIdでは引退選手が記録から脱落する（＝allPlayersByIdが必要な理由）');
 
   // 受賞履歴: 引退選手のIDでも過去年の受賞が全時代byIdなら再計算で拾える（純関数・例外なし）
   const hist = playerAwardHistory(retiredIdInStats, {

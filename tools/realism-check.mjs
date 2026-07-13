@@ -20,6 +20,8 @@ import { generateLeague } from '../src/generate.mjs';
 import { simulateSeason } from '../src/sim/season.mjs';
 import { simulateGame } from '../src/sim/game.mjs';
 import { buildDepthChart } from '../src/sim/team.mjs';
+import { buildTeamCharts } from '../src/sim/season.mjs';
+import { applyAging } from '../src/game/aging.mjs';
 import { leagueSummary } from '../src/sim/leagueStats.mjs';
 import { generateBattedBall } from '../src/sim/battedBall.mjs';
 import { resolveBattedBall, battedType, outfieldGeometry } from '../src/sim/battedBallResult.mjs';
@@ -28,7 +30,7 @@ import { isBarrel } from '../src/sim/battedBallStats.mjs';
 import { makeRng, hashSeed } from '../src/rng.mjs';
 import { NEUTRAL_PARK } from '../src/model/battedball.mjs';
 import { createPlayerSeason } from '../src/model/statline.mjs';
-import { MLB_PHYSICS, NPB_SEASON } from './realism-refs.mjs';
+import { MLB_PHYSICS, NPB_SEASON, NPB_ROSTER_AGE } from './realism-refs.mjs';
 
 const cfg = createConfig();
 let gatePass = 0;
@@ -49,6 +51,22 @@ function info(text) {
   console.log(`      ${text}`);
 }
 
+/** 総合力の粗い代理（~20-80）。roster.mjs の引退判定と同じ物差し（R2 年齢構造ゲート用）。 */
+function overallOf(p) {
+  const t = p.trueAbility;
+  if (p.role === 'pitcher') {
+    const veloR = Math.max(20, Math.min(80, 50 + (t.pitching.velocityKmh - 145) * 2));
+    let s = 0;
+    for (const pi of t.pitching.pitches) s += (pi.current + pi.whiff) / 2;
+    const stuff = t.pitching.pitches.length ? s / t.pitching.pitches.length : 50;
+    return (veloR + t.pitching.control + t.pitching.stamina + stuff) / 4;
+  }
+  const b = t.batting;
+  let bp = 20;
+  for (const k of Object.keys(t.fielding.positionProf)) bp = Math.max(bp, t.fielding.positionProf[k]);
+  return (b.ev + b.contact + b.la + b.eye + t.common.speed + t.fielding.positioningIQ + bp) / 7;
+}
+
 console.log('=== リアリズム恒常ゲート（打球イベント×現実整合・realism_gap_audit.md 連動） ===\n');
 
 // ============================================================================
@@ -59,8 +77,12 @@ console.log('--- A. 打球ミクロ（合成20万球・打球情報と結果の�
 {
   const lg = generateLeague(20260701, cfg);
   const rng = makeRng(424242);
-  const batter = lg.players.find((p) => p.role === 'fielder');
-  const pitcher = lg.players.find((p) => p.role === 'pitcher');
+  // ★リーグ平均マッチアップ（R2修正）: 旧実装は `find()` でリーグ最初の1人（T1F1/T1P1）だけを
+  //   使っており、「リーグ平均」と称しながら実際は特定個体の能力に依存していた（年齢構造の導入で
+  //   その1人が別能力の選手に変わった途端 2B/H が 0.288 へ飛び、ゲートが誤検知した）。
+  //   全打者×全投手を巡回サンプリングしてリーグ平均のマッチアップにする（決定論・順序固定）。
+  const batters = lg.players.filter((p) => p.role === 'fielder');
+  const pitchers = lg.players.filter((p) => p.role === 'pitcher');
 
   let hits = 0, h2 = 0, h3 = 0;
   let frontCutHits = 0, frontCutXbh = 0; // 前落ち遮断圏（ロール線の真上）に落ちた安打
@@ -68,6 +90,8 @@ console.log('--- A. 打球ミクロ（合成20万球・打球情報と結果の�
   let puBalls = 0, puHits = 0; // ポップ（LA>50）
   let gbBalls = 0, gbHits = 0, gbXbh = 0;
   for (let i = 0; i < 200000; i++) {
+    const batter = batters[i % batters.length];
+    const pitcher = pitchers[(i * 7) % pitchers.length]; // 7=互いに素な歩幅＝全組合せを均等に巡回
     const bb = generateBattedBall(batter, pitcher, cfg, rng);
     const r = resolveBattedBall(bb, cfg, rng, NEUTRAL_PARK);
     const type = battedType(bb.laDeg);
@@ -353,9 +377,82 @@ console.log('\n--- D. MLB Statcast 物理プロキシ比較（30万球・条件�
 }
 
 // ============================================================================
+// Part E: 年齢構造（R2・realism_r2_age_roster_spec / NPB_ROSTER_AGE）
+//   「18歳がリーグ2位」「規定到達者の36%が20歳以下」という破綻の再発を防ぐ恒常ゲート。
+//   旧実装は年齢と能力が完全無相関（r=0.012）だった＝生成の構造バグの直接検出になる。
+// ============================================================================
+console.log('\n--- E. 年齢構造（R2: 生成の年齢×能力・一軍の年齢・若手の成長） ---');
+{
+  const A = NPB_ROSTER_AGE;
+  const ages = [];
+  const ovs = [];
+  const regAges = [];
+  const farmAges = [];
+  const devAges = [];
+  const qualAges = [];
+  let age18 = 0;
+  for (const seed of [31, 32, 33]) {
+    const lg = generateLeague(seed, cfg);
+    const { registeredByTeam } = buildTeamCharts(lg, cfg);
+    const reg = new Set();
+    for (const s of registeredByTeam.values()) for (const pid of s) reg.add(pid);
+    for (const p of lg.players) {
+      ages.push(p.age);
+      ovs.push(overallOf(p));
+      if (p.age === 18) age18++;
+      (reg.has(p.id) ? regAges : farmAges).push(p.age);
+    }
+    for (const d of lg.farm) { farmAges.push(d.age); devAges.push(d.age); }
+    const res = simulateSeason(lg, cfg, { season: 2026, seed, postseason: false });
+    const byId = new Map(lg.players.map((p) => [p.id, p]));
+    const qPA = Math.round(cfg.league.gamesPerSeason * 3.1);
+    const qOuts = cfg.league.gamesPerSeason * 3;
+    for (const s of res.playerSeasons) {
+      const p = byId.get(s.playerId ?? s.id);
+      if (!p) continue;
+      if (p.role === 'fielder' && s.batting.pa >= qPA) qualAges.push(p.age);
+      if (p.role === 'pitcher' && s.pitching.outs >= qOuts) qualAges.push(p.age);
+    }
+  }
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  // 年齢×能力の相関（無相関=生成バグの直接検出）
+  const mx = mean(ages);
+  const my = mean(ovs);
+  let sxy = 0;
+  let sxx = 0;
+  let syy = 0;
+  for (let i = 0; i < ages.length; i++) {
+    sxy += (ages[i] - mx) * (ovs[i] - my);
+    sxx += (ages[i] - mx) ** 2;
+    syy += (ovs[i] - my) ** 2;
+  }
+  gate('年齢×能力の相関 r（旧実装 0.012＝無相関）', sxy / Math.sqrt(sxx * syy), 0.25, 0.75);
+  gate('支配下の平均年齢（NPB実測 26.9-27.1）', mx, A.meanAgeControlled.band[0], A.meanAgeControlled.band[1], 1);
+  gate('18歳/球団（NPB実測 1人。旧実装 13.6人）', age18 / 3 / cfg.league.numTeams, A.perTeam.age18.band[0], A.perTeam.age18.band[1], 1);
+  gate('一軍登録29人の平均年齢（NPB ~28）', mean(regAges), A.meanAgeActive.band[0], A.meanAgeActive.band[1], 1);
+  // 育成選手のみを NPB 実測(21.88)と比較する。シムの「二軍」= 登録外の支配下＋育成 であり、
+  //   前者はベテランの控えを含むぶん年齢が高い（NPB側にこの粒度の公表集計が無いので帯を作れない）。
+  gate('育成選手の平均年齢（NPB実測 21.9）', mean(devAges), A.meanAgeFarm.band[0], A.meanAgeFarm.band[1], 1);
+  gate('一軍−二軍(登録外+育成)の年齢差', mean(regAges) - mean(farmAges), 2.5, 7.5, 1);
+  // ★本丸: 規定到達者に占める20歳以下（旧実装 36.1%／NPB は過去20年で確実な例なし＝実質0%）
+  const u20 = qualAges.filter((a) => a <= 20).length / qualAges.length;
+  gate('規定到達者の20歳以下比率（旧 0.361）', u20, A.rookieQualifiedShare.band[0], A.rookieQualifiedShare.band[1], 3);
+  info(`規定到達者の平均年齢 ${mean(qualAges).toFixed(1)}歳（旧実装 24.0歳・NPB は20代後半〜30代前半）`);
+
+  // ③やきゅつく的な楽しさ: 高卒新人が数年で育つ（旧実装は9年で +1.8pt しか伸びなかった）
+  const lg = generateLeague(41, cfg);
+  const rookies = lg.players.filter((p) => p.age === 18).map((p) => JSON.parse(JSON.stringify(p)));
+  const before = mean(rookies.map(overallOf));
+  for (let y = 0; y < 9; y++) applyAging(rookies, cfg, { seed: hashSeed(41, 'grow', y) });
+  gate('高卒新人の9年間の成長pt（旧実装 +1.8）', mean(rookies.map(overallOf)) - before, 6, 16, 1);
+}
+
+// ============================================================================
 // 既知の未修正穴（realism_gap_audit.md より・修正したらGATEをここに追加して見張ること）
 // ============================================================================
 console.log('\n--- 既知の未修正穴（audit連動・修正時にGATE昇格すべき項目の覚え書き） ---');
+info('・シーズン中の登録入替が ~12件/球団年（NPB実測: 実入替 50-70回・一軍出場の異なり選手 61人/球団）'
+  + ' → reviewInterval/入替マージンの再較正後: registrationMoves の帯でGATE化');
 info('・二塁打/球団が~260とNPB実測(170-230)超過（本ハーネス初回実行で検出）→ 2B/1Bミックス再較正後: [150,240]でGATE化');
 info('・フェンス越え落下でもHRにならない帯（hrScaleの掛け方＋LA<15°のHR判定除外）→ 修正後: 「柵越え落下の非HR率=0」をGATE化');
 info('・捕手/投手が守備網に不在（本塁至近ポップが落ちる）→ 修正後: PU被安打率[0, 0.05]をGATE化');

@@ -175,7 +175,9 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = n
       const id = `D${yearIndex}n${gi++}`;
       const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
       // era（時代トレンド・D3）: 世代の波・球速の経年上昇を新人生成時に反映（王朝均衡 boost は draft 後）。
-      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era });
+      // R2: cfg を渡して applyMaturity を効かせる（新人＝年齢に応じた未成熟。旧実装は新人が
+      //   いきなりリーグ平均能力を持ち、高卒18歳が即戦力レギュラーになっていた）。
+      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era, cfg });
       arr.push(p);
     }
     pool.set(tk, arr);

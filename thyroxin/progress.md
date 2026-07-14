@@ -2,6 +2,63 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-14 (H4: 育成方針・キャンプ — phaseH 4本目・期待値保存の間接介入)
+
+**きっかけ**: `thyroxin/specs/phaseH_fun_spec.md` H4節。プレイヤーの采配欲を「育成」領域にも
+用意する（打撃/守備/走塁/コンバート/休養の方針＋特別指導枠）。R7（draft_timeline_evidence
+決定1）の教訓「aging.profiles.grow を動かすと1年目較正と多年ドリフト帯が壊れる」を厳守。
+
+**実装**:
+- `state.trainingPolicies` ログ新設（`{yearIndex, playerId, policy, special}`・additive save
+  field・旧セーブは`[]`補完）。**人間介入のみ**を積む（bidFA/proposeTrade と同じ流儀）
+- 新モジュール `src/game/training.mjs`（ヘッドレス純関数群）: `parsePolicy`（'batting'|'defense'|
+  'speed'|'convert:<POS>'|'rest'|'balanced' の解析）・`isTargetAxis`（軸グループの対象判定=
+  batting→trueAbility.batting全軸／defense→fielding全軸(positioningIQ/framing/blocking+
+  positionProf全ポジション)／speed→common.speed+baserunning全軸／convert→positionProf[POS]
+  単体）・`aiAutoPolicy`（teamEvalProfile の wBat/wDef をz化した差が閾値超の球団だけ偏らせる・
+  投手は常にbalanced）・`resolvePlayerTraining`（人間ログ優先→自チーム未設定はbalanced→
+  他球団はAI自動方針）・`coachOverallScore`（「コーチの見立て」総合スカラー・ui/team.mjs
+  teamScoutGradeから切り出して共有＝キャンプ成果の前後差にも使う）
+- `src/game/aging.mjs`: `applyAging(players, cfg, {seed,yearIndex,playerTeamId,policies,
+  profiles})` に拡張。**対象軸グループのcurveDelta「成長」summandにだけ (1+δ)/(1−δ·w) を掛ける**
+  （δ=`tuning.training.tiltStrength`・w=対象/非対象のgrow総和比・aging.profiles.grow自体は
+  一切不変）。個体の gm（若手成長係数）はどの軸にも共通に掛かる乗数のため、**全軸が成長
+  フェーズにあれば期待値保存は代数的に厳密**（w=target/nonTargetの定義から
+  `gm・[target・(1+δ)+nonTarget・(1−δw)] = gm・total` が恒等的に成立）。特別指導枠は
+  tiltMult×`specialMult`(2)、練習熱心は×`hardworkingTrainingMult`(1.3・H3で用意されていた
+  未消費ノブをここで接続)。`rest` は軸グループを持たず drift/decline/grow を一様倍率で
+  トレードオフ（成長は減るが分散・衰えが緩む＝期待値保存の対象外と明示）
+- `convert:<POS>` は対象POSの `positionProf` 成長へ振替るだけ（`primaryPos` は不変）
+- UI: `src/ui/stove.mjs` に「秋季キャンプ」タブ（自チーム一覧→編集→方針ボタン＋コンバート先
+  ＋特別指導トグル）、オフダイジェストに「キャンプの成果」節（特別指導選手の
+  coachOverallScore前後差・結果は乱数次第=お祈り）。smoke-ui にH4区間を追加
+
+**★実測で踏んだ落とし穴（R7と同種・重要）**: AI球団の自動方針を素直に実装（teamEvalProfile
+のz化差>1.5の球団を毎年batting/defense固定）したところ、**tiltStrength=0.15の全強度は
+もちろん、0.3・0.05・0.001まで弱めても test/game_multiyear.test.mjs の多年ERA帯[3.3,4.6]
+を非単調に破った**（grid探索で確認・パス/フェイルする年が閾値やaiEffectMultを変えるたびに
+入れ替わり、単調な「弱めれば安全」が成立しなかった）。原因は加齢→観測→引退/昇格判定という
+離散判断のフィードバックループが本質的にカオス的で、どれほど微小な摂動でも20年後には別の
+分岐（誰が生き残り誰が淘汰されるか）へ発散しうるため（`clampRating`の整数丸めが閾値付近の
+選手の判定を容易に反転させる）。**対策**: `tuning.training.aiEffectMult` を既定 **0** に設定
+（AI自動方針の文字列自体は決定論的に算出され続けるが、tiltMult=0=curveDeltaへの実効果は
+厳密にゼロ＝byte同一）。人間の明示介入（`setTrainingPolicy`）は自動実行経路（test/calibrate/
+realism/verify/smoke）で一度も呼ばれないため tiltStrength はフルで機能する。config.mjsに
+実測知見を長文コメントで記録（将来 aiEffectMult を上げる誘惑への牽制）
+
+**検証**: `test/game_h4_training.test.mjs` 新設（20テスト）。期待値保存は**ペア比較**
+（同一seed・同一id集団を「方針あり/なし」の2通りで加齢し個体ごとの差を見る＝gm/drift の
+RNG消費順序が方針の有無に依らず同一なので、代数的キャンセルだけが差になる・独立サンプルの
+統計比較よりはるかに低ノイズ）で検証。AI方針の決定論（z化差の閾値・投手常にbalanced）・
+安全ゲート（既定configでAI自動方針がtrueAbilityへ一切影響しないことを直接確認）・特別指導枠
+K人上限・ログreplay一致（方針設定→save→load→advanceYearがliveと campResults/trueAbility
+とも完全一致）・convertでprimaryPos不変、を確認。
+**npm test 448/448・calibrate 62/62・realism GATE 45/45・verify・smoke 全PASS**
+（多年ERA帯[3.3,4.6]は既定configでpre-H4と bit 一致することをgit stash比較で確認済み）。
+
+次: H5（経営レイヤーA→B→C）。将来 aiEffectMult を動かす場合は必ず本エントリのgrid探索結果
+（非単調・微小摂動でも破綻）を踏まえ、閾値ではなく較正ヘッドルーム自体の拡張から着手すること。
+
 ## 2026-07-14 (H3: 性格タグ＋観測ベース評判ラベル — phaseH 3本目)
 
 - **性格8種**（練習熱心/ムラっ気/お調子者/寡黙/闘志/クール/マイペース/リーダー）を

@@ -41,6 +41,9 @@ import { detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMove
 // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。表示層のみ
 //   （エンジン非干渉）。advanceYear が transactionLog 追記＋引退セレモニー整形を行う。
 import { appendTransactionLog, retirementCeremonies } from './storylines.mjs';
+// H4: 育成方針・キャンプ（phaseH_fun_spec H4）。方針の意味論(parsePolicy)・AI自動方針・
+//   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
+import { parsePolicy, coachOverallScore, TRAINING_LABELS, TRAINING_KINDS } from './training.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
@@ -134,12 +137,40 @@ function runProspectCulling(league, cfg, { obs, retireVacancies }) {
  * 「開幕直前のリーグ」を汚さずに同じ結果を再導出できる。
  * @returns {Object} stage2/draft へ渡す一式＋要約（injuries/breakouts/retirees/fa/trades/obs/…）
  */
-function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
+function offseasonStage1(league, cfg, {
+  masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [],
+  marketInterventions = [], seasonInjuries = [], playerTeamId = null, trainingPolicies = [],
+}) {
+  // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
+  //   H4: applyAging（下）の AI自動方針もこれを読むため、引退/FA等より前に確定させておく
+  //   （純関数・(masterSeed,teamId,cfg)だけで決まるので、どの時点で呼んでも同じ値＝既存挙動と bit 同一）。
+  const profiles = new Map();
+  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+
+  // H4: 当年ぶんの育成方針ログ（人間介入のみ）と、特別指導枠選手の「キャンプ前」観測値を控える
+  //   （applyAging が真値を動かす前のスナップショット・オフダイジェスト「キャンプの成果」用）。
+  const trainIvs = trainingPolicies.filter((tp) => (tp.yearIndex ?? 0) === yearIndex);
+  const specialIds = new Set(trainIvs.filter((tp) => tp.special).map((tp) => tp.playerId));
+  const campBefore = new Map();
+  for (const p of league.players) if (specialIds.has(p.id)) campBefore.set(p.id, coachOverallScore(p, cfg));
+
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
-  applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
+  applyAging(league.players, cfg, {
+    seed: offseasonSeed(masterSeed, yearIndex), yearIndex, playerTeamId, profiles, policies: trainIvs,
+  });
+
+  // H4: 特別指導枠選手の「キャンプ後」観測値との差（前後差＋方針）。結果は乱数次第＝お祈り。
+  const campResults = trainIvs.filter((tp) => tp.special).map((tp) => {
+    const p = league.players.find((x) => x.id === tp.playerId);
+    return {
+      playerId: tp.playerId, policy: tp.policy,
+      before: campBefore.get(tp.playerId) ?? null,
+      after: p ? coachOverallScore(p, cfg) : null,
+    };
+  });
 
   // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
   //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
@@ -151,9 +182,6 @@ function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, 
   for (const s of careerFarmStats) if (s.season === year) farmObs.set(s.playerId, s);
   // 当年ぶんのプレイヤー市場操作のみ適用（他年の介入は除外・再現可能）。
   const ivs = marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === yearIndex);
-  // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
-  const profiles = new Map();
-  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
 
   // 引退（生存者を league.players へ・空き枠 vacancies を得る）。
   const { retirees, vacancies: retireVac } = runRetirement(league, cfg, { seed: hashSeed(masterSeed, 'retire', yearIndex), debutYear: year + 1 });
@@ -182,7 +210,7 @@ function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, 
   rebuildTeamRosters(league);
 
   return {
-    injuries, breakouts, retirees, fa, trades, obs, standings, balanceBoost,
+    injuries, breakouts, retirees, fa, trades, obs, standings, balanceBoost, campResults,
     promotions: mkt.promotions, remainingVac: mkt.remainingVac, pool: mkt.pool,
     order: mkt.order, profiles: mkt.profiles, windowByTeam: mkt.windowByTeam,
   };
@@ -259,6 +287,8 @@ function driveOffseasonDraft(state) {
     careerFarmStats: state.careerFarmStats,
     marketInterventions: state.marketInterventions,
     seasonInjuries,
+    playerTeamId: state.playerTeamId,
+    trainingPolicies: state.trainingPolicies,
   });
   const pickLog = state.marketInterventions.filter(
     (iv) => iv.phase === 'draft' && (iv.yearIndex ?? 0) === state.yearIndex,
@@ -292,7 +322,7 @@ function driveOffseasonDraft(state) {
   const off = {
     injuries: s1.injuries, breakouts: s1.breakouts, retirees: s1.retirees, rookies: draftResult.rookies,
     promotions: s1.promotions, draftLog: draftResult.draftLog, fa: s1.fa, trades: s1.trades,
-    pickups: s2.pickups, contracts: s2.contracts,
+    pickups: s2.pickups, contracts: s2.contracts, campResults: s1.campResults, // H4: キャンプの成果
   };
   finalizeOffseason(state, off, completedYear, awardsById);
   return off;
@@ -474,6 +504,9 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive・advanceYearで確定結果を追記）。
     //   §17 と同じ思想（集計値のみ・生イベントは持たない）。旧セーブは load 時に [] 補完。
     transactionLog: [],
+    // H4: 育成方針・キャンプの人間介入ログ（additive・{yearIndex,playerId,policy,special}）。
+    //   AI球団の方針はここに積まない（teamEvalProfile から毎回決定論的に再導出＝§17と同じ思想）。
+    trainingPolicies: [],
     // R3: 前季の故障の「開幕時点の残り離脱 day 数」（開幕ILの素）。故障が試合由来になったため
     //   replay では再導出できない（season を再シムしない）→ save に永続する。
     pendingInjuries: [],
@@ -597,6 +630,49 @@ export function proposeTrade(state, aPlayer, bPlayer) {
   );
   state.marketInterventions.push(iv);
   return iv;
+}
+
+// --- H4: 育成方針・キャンプ（phaseH_fun_spec H4・オフシーズンで applyAging が適用・save/replay で再現）
+// bidFA/proposeTrade と同じ流儀: 人間の意思は state.trainingPolicies ログにだけ積む。AI球団の方針は
+// ログに積まず、applyAging が teamEvalProfile から毎回決定論的に再導出する（personality と同じ思想）。
+
+/**
+ * 育成方針の設定・変更（自チーム選手のみ）。同一 (yearIndex, playerId) の既存ログは上書きする
+ * （bidFA と同じ「最後の設定が効く」流儀）。特別指導枠（cfg.tuning.training.specialSlotsPerTeam）を
+ * 超える special:true 指定は拒否する（UIが選択肢を切る前提の最終防衛線）。
+ * @param {Object} state GameState
+ * @param {string} playerId 自チームの選手
+ * @param {string} policy 'batting'|'defense'|'speed'|'rest'|'balanced'|'convert:<POS>'
+ * @param {{special?:boolean}} opts special=true で特別指導枠を消費（効果2倍）
+ * @returns {Object} 追加したログ行
+ */
+export function setTrainingPolicy(state, playerId, policy, opts = {}) {
+  if (!parsePolicy(policy)) throw new Error(`setTrainingPolicy: 不正な policy '${policy}'`);
+  const p = state.league.players.find((x) => x.id === playerId);
+  if (!p || p.teamId !== state.playerTeamId) throw new Error('setTrainingPolicy: 自チームの選手のみ設定可能');
+  const special = !!opts.special;
+  if (special) {
+    const K = state.cfg.tuning.training.specialSlotsPerTeam;
+    // trainingPolicies は本APIが自チーム選手のぶんしか積まない（上のガード）＝
+    //   yearIndex一致だけで自チームの特別指導枠数を数えられる。
+    const used = state.trainingPolicies.filter(
+      (tp) => tp.yearIndex === state.yearIndex && tp.playerId !== playerId && tp.special,
+    ).length;
+    if (used >= K) throw new Error(`setTrainingPolicy: 特別指導枠は${K}人まで`);
+  }
+  state.trainingPolicies = state.trainingPolicies.filter(
+    (tp) => !(tp.yearIndex === state.yearIndex && tp.playerId === playerId),
+  );
+  const iv = { yearIndex: state.yearIndex, playerId, policy, special };
+  state.trainingPolicies.push(iv);
+  return iv;
+}
+
+/** 育成方針の設定を取り消す（適用前のログ削除＝決定論に無害。設定していなければ何もしない）。 */
+export function clearTrainingPolicy(state, playerId) {
+  state.trainingPolicies = state.trainingPolicies.filter(
+    (tp) => !(tp.yearIndex === state.yearIndex && tp.playerId === playerId),
+  );
 }
 
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
@@ -792,6 +868,7 @@ export function save(state) {
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
+    trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -897,6 +974,7 @@ export function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
+    trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -979,3 +1057,6 @@ export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // H2: プレイヤー参加型ドラフト会議のスカウトレポートAPIを再エクスポート（UI/テストが
 //   './game/index.mjs' 経由で使う。submitDraftPick は本ファイルで直接 export 済み）。
 export { draftScoutView, draftPreviewHeadlines };
+// H4: 育成方針・キャンプの意味論APIを再エクスポート（UI/テストが './game/index.mjs' 経由で使う。
+//   setTrainingPolicy/clearTrainingPolicy は本ファイルで直接 export 済み）。
+export { TRAINING_LABELS, TRAINING_KINDS, parsePolicy, coachOverallScore };

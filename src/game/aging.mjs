@@ -20,33 +20,125 @@
 //     加齢に強い（制球/技巧/ポジIQ/走塁IQ）を「専用ロジックほぼ無し」で構造から出す。
 //   declineRate は個体差（§10.2・generate で球速/走力と相関して既に引かれている）＝
 //     速球派だけ早く落ち、技巧派・晩成が"稀に"残る（生存バイアスで鉄人が自動レア化・§10.6）。
+//
+// H4（phaseH_fun_spec・育成方針・キャンプ）: applyAging に { policies, profiles, playerTeamId }
+//   を追加で渡すと、方針が付いた選手だけ curveDelta の「成長」summand に軸グループ単位の
+//   (1±δ) を掛ける（aging.profiles.grow 自体は一切書き換えない＝恒久シフト禁止・R7の教訓）。
+//   引数省略時は完全に無効（既存呼び出し元・テストは byte 同一の挙動を保つ）。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp, clampRating } from '../model/util.mjs';
+import { isTargetAxis, parsePolicy, resolvePlayerTraining } from './training.mjs';
+
+// H4: 軸グループの列挙とその grow 総和(w)計算を agePlayer の実呼び出し順と一致させるための
+//   単一の key 配列（ここを変えたら agePlayer 側のループも必ず同じ配列を参照する＝二重管理禁止）。
+const COMMON_KEYS = ['speed', 'arm', 'hands', 'reaction', 'power'];
+const BATTING_KEYS = ['ev', 'la', 'pull', 'contact', 'eye', 'vsFastball', 'vsBreaking'];
+const PITCH_RATING_KEYS = ['control', 'stamina', 'gbRate', 'hold'];
+const FIELDING_KEYS = ['positioningIQ', 'framing', 'blocking'];
+const BASERUN_KEYS = ['steal', 'baserunIQ'];
 
 /**
  * 全選手にオフシーズンの加齢を適用する（in-place・決定論・順序非依存）。
  * @param {Array} players generateLeague().players（trueAbility/age を持つ選手配列）
  * @param {Object} cfg createConfig()（cfg.tuning.aging を参照）
- * @param {{seed:number, yearIndex:number}} o seed=オフシーズン用階層シード / yearIndex=遷移元の年
+ * @param {{seed:number, yearIndex:number, playerTeamId?:string, policies?:Array, profiles?:Map}} o
+ *   seed=オフシーズン用階層シード / yearIndex=遷移元の年。
+ *   H4: policies=当年ぶんに絞り込み済みの人間介入ログ（{playerId,policy,special}[]）、
+ *       profiles=teamId→teamEvalProfile()（省略時はAI自動方針を出さない＝無効化）。
  * @returns {Array} players（同一参照。呼び出し側の league.players を直接更新する）
  */
-export function applyAging(players, cfg, { seed }) {
+export function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, profiles } = {}) {
   const aging = cfg.tuning.aging;
   const veloPerRating = cfg.tuning.maturity.veloPerRating;
   // H3-1（ムラっ気）: drift SD 倍率。personality が無い（旧経路・テスト直呼び）選手は 1（無効果）。
   const streakyMult = cfg.tuning.personality?.streakyDriftMult ?? 1;
+  // H4: 当年ぶんの人間介入ログを playerId→entry の Map へ（policies/profiles どちらも無ければ
+  //   trainingCtx=null＝既存呼び出し元と完全に同じ経路を通る＝byte 同一）。
+  const policyMap = new Map((policies ?? []).map((e) => [e.playerId, e]));
+  const trainingCtx = profiles || policyMap.size ? { policyMap, profiles, playerTeamId, cfg } : null;
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
     const driftMult = p.personality === 'streaky' ? streakyMult : 1;
-    agePlayer(p, prng, aging, veloPerRating, driftMult);
+    agePlayer(p, prng, aging, veloPerRating, driftMult, trainingCtx);
   }
   return players;
 }
 
+/**
+ * H4: 選手1人の育成方針を「軸グループ tilt」の実行パラメータへ解決する。
+ * 対象グループの grow 総和(target)と全軸の grow 総和(total)から、非対象への相殺係数
+ * w=target/(total-target) を出す（対象+δ・非対象-δ·w＝個体レベルで期待成長量の総和を保存）。
+ * 'rest' は軸グループを持たず、drift/decline/growの一様な倍率だけを返す。
+ * 'balanced'・方針無し・不正な policy 文字列は null（tilt 無効）。
+ */
+function resolveTrainingForPlayer(p, t, aging, trainingCtx) {
+  const { policy, special, source } = resolvePlayerTraining(p, trainingCtx, trainingCtx.cfg);
+  if (!policy || policy === 'balanced') return null;
+  const parsed = parsePolicy(policy);
+  if (!parsed) return null; // 防御的（不正文字列はUI/APIで弾いているはずだが無効化して安全側へ）
+  const tc = trainingCtx.cfg.tuning.training;
+  if (parsed.kind === 'rest') {
+    return {
+      parsed, tiltMult: 0, w: 0,
+      driftMult: tc.restDriftMult, declineMult: tc.restDeclineMult, growMult: tc.restGrowMult,
+    };
+  }
+  const personalityMult = p.personality === 'hardworking' ? trainingCtx.cfg.tuning.personality.hardworkingTrainingMult : 1;
+  const specialMult = special ? tc.specialMult : 1;
+  // H4: AI球団の自動方針は人間の明示介入より控えめに効かせる（aiEffectMult）。AI方針は
+  //   同一チームの全対象選手へ何年も持続的に乗り続けるため、人間の散発的な指定より
+  //   多年運用での累積影響が大きくなりやすい（較正ヘッドルームが薄いことへの安全側の配慮）。
+  const aiMult = source === 'ai' ? tc.aiEffectMult : 1;
+  const tiltMult = tc.tiltStrength * personalityMult * specialMult * aiMult;
+  const { total, target } = trainingGrowSums(t, aging, parsed);
+  const nonTarget = total - target;
+  const w = nonTarget > 0 ? target / nonTarget : 0;
+  return { parsed, tiltMult, w, driftMult: 1, declineMult: 1, growMult: 1 };
+}
+
+/** profKey の grow（未登録キーは default）。ageRating の prof 解決と同じフォールバック。 */
+function growOf(aging, key) {
+  return (aging.profiles[key] ?? aging.profiles.default).grow;
+}
+
+/**
+ * この選手が持つ「全軸」の grow 総和(total)と、方針の対象グループぶんの grow 総和(target)。
+ * agePlayer が実際に age させる軸（COMMON_KEYS/BATTING_KEYS/.../positionProf全ポジション/
+ * pitches×4サブ軸）と完全に同じ集合を列挙する（w の正規化がここでズレると期待値保存が崩れる）。
+ */
+function trainingGrowSums(t, aging, parsed) {
+  let total = 0;
+  let target = 0;
+  const add = (section, key, grow, pos = null) => {
+    total += grow;
+    if (isTargetAxis(parsed, section, key, pos)) target += grow;
+  };
+  for (const k of COMMON_KEYS) add('common', k, growOf(aging, k));
+  for (const k of BATTING_KEYS) add('batting', k, growOf(aging, k));
+  add('pitching', 'velocity', aging.velo.grow);
+  for (const k of PITCH_RATING_KEYS) add('pitching', k, growOf(aging, k));
+  const pitchGrow = growOf(aging, 'pitchStuff');
+  for (let i = 0; i < t.pitching.pitches.length; i++) {
+    for (let j = 0; j < 4; j++) add('pitching', 'pitchStuff', pitchGrow);
+  }
+  for (const k of FIELDING_KEYS) add('fielding', k, growOf(aging, k));
+  const posGrow = growOf(aging, 'positionProf');
+  for (const pos of Object.keys(t.fielding.positionProf)) add('fielding', 'positionProf', posGrow, pos);
+  for (const k of BASERUN_KEYS) add('baserunning', k, growOf(aging, k));
+  return { total, target };
+}
+
+/** 軸(section,key[,pos])の「成長」summandに掛ける倍率（対象グループ+δ／非対象-δ·w、restは一様growMult）。 */
+function trainingGrowMult(training, section, key, pos) {
+  const inGroup = isTargetAxis(training.parsed, section, key, pos);
+  const base = inGroup ? 1 + training.tiltMult : 1 - training.tiltMult * training.w;
+  return Math.max(0, base) * training.growMult;
+}
+
 /** 1選手を1年ぶん加齢させる（trueAbility を動かし age++）。 */
-function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
+function agePlayer(p, prng, aging, veloPerRating, driftMult = 1, trainingCtx = null) {
   const t = p.trueAbility;
   const peak = t.career.peakAge;
   const dr = t.career.declineRate;
@@ -74,43 +166,31 @@ function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
     t.career.youthDebt = debt + repay;
   }
 
-  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating, driftMult };
+  // H4（育成方針・キャンプ）: 方針が無ければ training=null＝下の curveDelta は従来と byte 同一。
+  const training = trainingCtx ? resolveTrainingForPlayer(p, t, aging, trainingCtx) : null;
+  const finalDriftMult = driftMult * (training?.driftMult ?? 1);
+
+  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating, driftMult: finalDriftMult, training };
 
   // 共通素材（§2.2）
-  ageRating(t.common, 'speed', 'speed', ctx);
-  ageRating(t.common, 'arm', 'arm', ctx);
-  ageRating(t.common, 'hands', 'hands', ctx);
-  ageRating(t.common, 'reaction', 'reaction', ctx);
-  ageRating(t.common, 'power', 'power', ctx);
+  for (const k of COMMON_KEYS) ageRating(t.common, k, k, ctx, { section: 'common', key: k, pos: null });
 
   // 打撃（§2.3）
-  ageRating(t.batting, 'ev', 'ev', ctx);
-  ageRating(t.batting, 'la', 'la', ctx);
-  ageRating(t.batting, 'pull', 'pull', ctx);
-  ageRating(t.batting, 'contact', 'contact', ctx);
-  ageRating(t.batting, 'eye', 'eye', ctx);
-  ageRating(t.batting, 'vsFastball', 'vsFastball', ctx);
-  ageRating(t.batting, 'vsBreaking', 'vsBreaking', ctx);
+  for (const k of BATTING_KEYS) ageRating(t.batting, k, k, ctx, { section: 'batting', key: k, pos: null });
 
   // 投手（§2.4）: 球速は別枠モデル、それ以外はレーティング機構、球種は技巧扱い。
   ageVelocity(t.pitching, ctx);
-  ageRating(t.pitching, 'control', 'control', ctx);
-  ageRating(t.pitching, 'stamina', 'stamina', ctx);
-  ageRating(t.pitching, 'gbRate', 'gbRate', ctx);
-  ageRating(t.pitching, 'hold', 'hold', ctx);
+  for (const k of PITCH_RATING_KEYS) ageRating(t.pitching, k, k, ctx, { section: 'pitching', key: k, pos: null });
   for (const pitch of t.pitching.pitches) agePitch(pitch, ctx);
 
   // 野手守備（§2.5）: ポジション習熟は経験で伸び緩やかに落ちる（山本泰寛型）。
-  ageRating(t.fielding, 'positioningIQ', 'positioningIQ', ctx);
-  ageRating(t.fielding, 'framing', 'framing', ctx);
-  ageRating(t.fielding, 'blocking', 'blocking', ctx);
+  for (const k of FIELDING_KEYS) ageRating(t.fielding, k, k, ctx, { section: 'fielding', key: k, pos: null });
   for (const pos of Object.keys(t.fielding.positionProf)) {
-    ageRating(t.fielding.positionProf, pos, 'positionProf', ctx);
+    ageRating(t.fielding.positionProf, pos, 'positionProf', ctx, { section: 'fielding', key: 'positionProf', pos });
   }
 
   // 走塁（§2.6）
-  ageRating(t.baserunning, 'steal', 'steal', ctx);
-  ageRating(t.baserunning, 'baserunIQ', 'baserunIQ', ctx);
+  for (const k of BASERUN_KEYS) ageRating(t.baserunning, k, k, ctx, { section: 'baserunning', key: k, pos: null });
 
   p.age = age + 1;
 }
@@ -118,15 +198,23 @@ function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
 /**
  * 「成長→維持→衰え」の年次期待デルタ（能力プロファイル × 個体 peakAge/declineRate）。
  * 若手の成長は成長係数 gm で幅を持たせる（§10.3）。
+ * H4: axisTag が指す軸が方針の対象グループかどうかで「成長」summand にだけ (1±δ) を掛ける
+ *  （衰えsummandは rest の declineMult 以外は不変＝「方針は成長の配分を傾けるだけ」）。
  */
-function curveDelta(prof, ctx) {
+function curveDelta(prof, ctx, axisTag) {
   let d = 0;
   const growEnd = ctx.peak + prof.peakShift;
   const onset = ctx.peak + prof.declineOffset;
-  if (ctx.age < growEnd) d += prof.grow * (ctx.young ? ctx.gm : 1);
+  if (ctx.age < growEnd) {
+    let g = prof.grow * (ctx.young ? ctx.gm : 1);
+    if (ctx.training) g *= trainingGrowMult(ctx.training, axisTag.section, axisTag.key, axisTag.pos);
+    d += g;
+  }
   if (ctx.age >= onset) {
     const past = ctx.age - onset; // 経過年（大きいほど急落＝§10.1「1オフで急落もありうる」）
-    d -= prof.decline * ctx.dr * (1 + ctx.aging.declineAccel * past);
+    let dec = prof.decline * ctx.dr * (1 + ctx.aging.declineAccel * past);
+    if (ctx.training?.declineMult != null) dec *= ctx.training.declineMult;
+    d -= dec;
   }
   return d;
 }
@@ -138,10 +226,10 @@ function drift(ctx) {
 }
 
 /** 1レーティング(20-80)を加齢で更新（in-place）。profKey 未登録なら default プロファイル。 */
-function ageRating(obj, key, profKey, ctx) {
+function ageRating(obj, key, profKey, ctx, axisTag) {
   const prof = ctx.aging.profiles[profKey] ?? ctx.aging.profiles.default;
   // R7（決定1）: flatBonus=高卒未成熟負債の当年ぶん返済額（負債が無い選手は0＝既存挙動と bit 同一）。
-  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx) + drift(ctx) + ctx.flatBonus);
+  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx, axisTag) + drift(ctx) + ctx.flatBonus);
 }
 
 /** 球速（km/h 実数）を加齢で更新（in-place）。高球速×高declineRate ほど早く落ちる（§10.2）。 */
@@ -150,8 +238,16 @@ function ageVelocity(pitching, ctx) {
   let d = 0;
   const growEnd = ctx.peak + v.peakShift;
   const onset = ctx.peak + v.declineOffset;
-  if (ctx.age < growEnd) d += v.grow * (ctx.young ? ctx.gm : 1);
-  if (ctx.age >= onset) d -= v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
+  if (ctx.age < growEnd) {
+    let g = v.grow * (ctx.young ? ctx.gm : 1);
+    if (ctx.training) g *= trainingGrowMult(ctx.training, 'pitching', 'velocity', null);
+    d += g;
+  }
+  if (ctx.age >= onset) {
+    let dec = v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
+    if (ctx.training?.declineMult != null) dec *= ctx.training.declineMult;
+    d -= dec;
+  }
   d += ctx.prng.normal(0, (ctx.young ? v.driftSdYoung : v.driftSdOld) * (ctx.driftMult ?? 1));
   d += ctx.flatBonus * ctx.veloPerRating; // R7: rating単位の返済額を球速換算
   pitching.velocityKmh = clamp(pitching.velocityKmh + d, v.min, v.max);
@@ -160,7 +256,8 @@ function ageVelocity(pitching, ctx) {
 /** 1球種の質（球速でなく技巧側＝出し入れ）を加齢で更新（in-place・pitchStuff プロファイル）。 */
 function agePitch(pitch, ctx) {
   const prof = ctx.aging.profiles.pitchStuff;
+  const axisTag = { section: 'pitching', key: 'pitchStuff', pos: null };
   for (const k of ['current', 'whiff', 'hrSuppress', 'contactQuality']) {
-    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx) + drift(ctx) + ctx.flatBonus);
+    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx, axisTag) + drift(ctx) + ctx.flatBonus);
   }
 }

@@ -18,15 +18,19 @@
 //   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同一<script>へ前置 concat（deps 流儀は
 //     team.mjs / watch.mjs と同じ。ui.mjs のヘルパーは u=stoveDeps() 経由で受け取る）。
 // ============================================================================
-import { makeRng, hashSeed, playerBatting, playerPitching } from '../engine.mjs';
+import { makeRng, hashSeed, playerBatting, playerPitching, FIELD_POSITIONS } from '../engine.mjs';
 import { teamEvalProfile, evaluateProspect } from '../game/market.mjs';
-import { bidFA, proposeTrade, retirementCeremonyText, ownTeamRetirementHeadlines } from '../game/index.mjs';
+import {
+  bidFA, proposeTrade, retirementCeremonyText, ownTeamRetirementHeadlines,
+  setTrainingPolicy, clearTrainingPolicy, TRAINING_LABELS, // H4: 育成方針・キャンプ
+} from '../game/index.mjs';
 import { teamScoutGrade } from './team.mjs';
 
 // 画面内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const stoveView = {
-  tab: 'fa', // 'fa' | 'trade' | 'farm'
+  tab: 'fa', // 'fa' | 'trade' | 'farm' | 'camp'
   pick: null, // トレード起案: 放出する自チーム選手の playerId
+  campPick: null, // H4: 秋季キャンプで方針編集中の自チーム選手の playerId
 };
 
 // --- 純関数ヘルパー（介入ログ以外に何も書かない） ------------------------------
@@ -190,13 +194,14 @@ export function renderStoveScreen(u) {
       el('button', { class: 'link', onclick: () => u.renderSeasonResult() }, 'リザルトへ戻る'),
     ]),
   ]));
-  const TABS = [['fa', 'FA市場'], ['trade', 'トレード'], ['farm', '育成・支配下']];
+  const TABS = [['fa', 'FA市場'], ['trade', 'トレード'], ['farm', '育成・支配下'], ['camp', '秋季キャンプ']];
   root.append(el('div', { class: 'tabs' }, TABS.map(([k, label]) =>
     el('button', { class: 'tab' + (stoveView.tab === k ? ' active' : ''), onclick: () => { stoveView.tab = k; renderStoveScreen(u); } }, label))));
   const c = el('div', { id: 'content' });
   root.append(c);
   if (stoveView.tab === 'fa') stoveFaTab(c, u);
   else if (stoveView.tab === 'trade') stoveTradeTab(c, u);
+  else if (stoveView.tab === 'camp') stoveCampTab(c, u);
   else stoveFarmTab(c, u);
 }
 
@@ -356,6 +361,88 @@ function stoveFarmTab(c, u) {
   ]))));
 }
 
+/** H4: policy文字列の表示ラベル（convert:<POS> は posJP を組み合わせる）。 */
+function campPolicyLabel(policy, u) {
+  if (!policy) return TRAINING_LABELS.balanced;
+  if (policy.startsWith('convert:')) return `${TRAINING_LABELS.convert}（${u.posJP(policy.slice('convert:'.length))}）`;
+  return TRAINING_LABELS[policy] ?? policy;
+}
+
+/** 当年（現 yearIndex）の自チーム育成方針ログ（playerId → entry）。 */
+function stoveTrainingMap(gs) {
+  return new Map(
+    gs.trainingPolicies
+      .filter((tp) => (tp.yearIndex ?? 0) === gs.yearIndex)
+      .map((tp) => [tp.playerId, tp]),
+  );
+}
+
+/**
+ * 秋季キャンプタブ（H4・phaseH_fun_spec H4）: 自チーム選手に育成方針を設定する。
+ * 一覧→編集の2段（トレードタブの「自分から起案する」と同じ流儀）: 選手を選ぶと、
+ * その選手の方針ボタン（打撃/守備/走塁/休養/バランス・野手はコンバート先ポジションも）と
+ * 特別指導トグル（cfg.tuning.training.specialSlotsPerTeam 人まで・効果2倍）を表示する。
+ * 実際の適用（軸グループ間の成長再配分）はオフシーズン処理（applyAging）が行う。
+ */
+function stoveCampTab(c, u) {
+  const { el, game, state } = u;
+  const gs = game.gs;
+  const tc = gs.cfg.tuning.training;
+  const byId = stoveTrainingMap(gs);
+  const specialUsed = [...byId.values()].filter((tp) => tp.special).length;
+  c.append(el('div', { class: 'muted', style: 'margin:6px 0' },
+    '秋季キャンプ: 自チーム選手に育成方針を設定できます。方針は「成長の配分を軸グループ間で傾けるだけ」'
+    + `（選手個人の期待成長量の総和は変わりません）。特別指導枠は${specialUsed}/${tc.specialSlotsPerTeam}人（効果2倍・「★」表示）。`
+    + '結果はオフシーズン処理後のダイジェスト「キャンプの成果」で確認できます。'));
+
+  const myPlayers = gs.league.players
+    .filter((p) => p.teamId === gs.playerTeamId)
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const rows = myPlayers.map((p) => {
+    const tp = byId.get(p.id);
+    const label = campPolicyLabel(tp?.policy, u) + (tp?.special ? '★' : '');
+    return el('tr', {}, [
+      el('td', { class: 'left' }, [u.playerLink(p.id)]),
+      el('td', { class: 'left' }, stovePosLabel(p, u)),
+      el('td', {}, String(p.age)),
+      el('td', { class: 'left' }, label),
+      el('td', { class: 'left' }, [el('button', {
+        class: 'subtab stovepick' + (stoveView.campPick === p.id ? ' active' : ''),
+        onclick: () => { stoveView.campPick = p.id; renderStoveScreen(u); },
+      }, '編集')]),
+    ]);
+  });
+  c.append(stoveTable(u, ['選手', '位置', '年齢', '方針', ''], rows));
+
+  const mine = state.byId.get(stoveView.campPick);
+  if (!mine || mine.teamId !== gs.playerTeamId) return;
+  const cur = byId.get(mine.id) ?? { policy: 'balanced', special: false };
+  c.append(el('h3', { class: 'leaguename' }, `${mine.name}（${stovePosLabel(mine, u)}）の方針を設定`));
+  const apply = (policy, special) => { setTrainingPolicy(gs, mine.id, policy, { special }); u.autoSave(); renderStoveScreen(u); };
+  const kindBtn = (kind) => el('button', {
+    class: cur.policy === kind ? 'primary' : '',
+    onclick: () => apply(kind, cur.special),
+  }, TRAINING_LABELS[kind]);
+  c.append(el('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px' }, [
+    kindBtn('batting'), kindBtn('defense'), kindBtn('speed'), kindBtn('rest'), kindBtn('balanced'),
+  ]));
+  if (mine.role === 'fielder') {
+    c.append(el('div', { class: 'muted', style: 'margin-top:8px' }, 'コンバート先（守備位置。実出場は既存の起用AIが自然に追随します）:'));
+    c.append(el('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px' }, FIELD_POSITIONS.map((pos) => el('button', {
+      class: cur.policy === `convert:${pos}` ? 'primary' : '',
+      onclick: () => apply(`convert:${pos}`, cur.special),
+    }, u.posJP(pos)))));
+  }
+  const specialFull = specialUsed >= tc.specialSlotsPerTeam && !cur.special;
+  c.append(el('div', { class: 'row', style: 'margin-top:8px' }, [
+    el('button', {
+      class: cur.special ? 'primary' : '',
+      onclick: () => { if (!specialFull) apply(cur.policy, !cur.special); },
+    }, cur.special ? '特別指導：ON（効果2倍）' : specialFull ? '特別指導枠は満枠' : `特別指導にする（残り${tc.specialSlotsPerTeam - specialUsed}枠）`),
+    el('button', { class: 'link', onclick: () => { clearTrainingPolicy(gs, mine.id); u.autoSave(); renderStoveScreen(u); } }, '設定を解除（バランスへ）'),
+  ]));
+}
+
 // --- オフシーズン・ダイジェスト（E3: 引退/ドラフト/FA/トレード/拾い上げ/表彰の1画面） -------
 
 /** FA入札が結果に現れなかった理由の言語化（宣言くじの再導出＝決定論・純関数）。 */
@@ -485,6 +572,22 @@ export function renderOffseasonDigestScreen(off, u) {
   const myFarm = (gs.league.farm ?? []).filter((p) => p.teamId === my);
   if (myFarm.length) {
     root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ホームの「チーム」タブ→二軍で確認できます。`));
+  }
+
+  // H4: キャンプの成果（特別指導枠の選手だけ・見立ての前後差＝結果は乱数次第のお祈り）。
+  const campResults = off.campResults ?? [];
+  if (campResults.length) {
+    root.append(el('h3', { class: 'leaguename' }, `🏋️ 秋季キャンプの成果（特別指導・${campResults.length}人）`));
+    root.append(el('div', { class: 'awardlist' }, campResults.map((cr) => {
+      const gB = cr.before != null ? u.scoutGrade(cr.before) : '-';
+      const gA = cr.after != null ? u.scoutGrade(cr.after) : '-';
+      const delta = cr.before != null && cr.after != null ? cr.after - cr.before : null;
+      const arrow = delta == null ? '' : delta > 0.5 ? '大きく上向いた ↑' : delta < -0.5 ? '伸び悩んだ ↓' : '横ばい →';
+      return el('div', { class: 'awardrow' }, [
+        link(cr.playerId),
+        el('span', { class: 'muted' }, `　${campPolicyLabel(cr.policy, u)}　コーチの見立て ${gB}→${gA}（${arrow}）`),
+      ]);
+    })));
   }
 
   // --- リーグ全体 ------------------------------------------------------------

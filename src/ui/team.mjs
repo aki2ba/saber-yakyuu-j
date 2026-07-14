@@ -14,7 +14,10 @@
 //     ui.mjs のヘルパー（el/td/openModal/state/game 等）は名前衝突とNode循環importを避けるため
 //     引数 u（deps オブジェクト・ui.mjs の teamTabDeps()）で受け取る。
 // ============================================================================
-import { playerBatting, playerPitching, hitterWAR, pitcherWAR, makeRng, hashSeed, deriveLeagueConstants, uzrRuns, totalFieldInnings, playerBaserunning } from '../engine.mjs';
+import { playerBatting, playerPitching, hitterWAR, pitcherWAR, deriveLeagueConstants, uzrRuns, totalFieldInnings, playerBaserunning } from '../engine.mjs';
+// H4: 「コーチの見立て」総合スカラーはヘッドレス層（game/training.mjs）が持つ（真値+スカウトノイズの
+//   観測式・キャンプ成果の前後差にも使う共通式）。ここでは等級化(scoutGrade)だけを担う。
+import { coachOverallScore } from '../game/training.mjs';
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -243,27 +246,7 @@ function buildFarmRosterRows(players, u) {
  * E3: ストーブリーグ画面（stove.mjs）も同じ見立てを使うため export する。
  */
 export function teamScoutGrade(p, cfg, u) {
-  const t = p.trueAbility;
-  const cl20 = (x) => Math.max(20, Math.min(80, x));
-  const sd = (cfg?.tuning?.mgr?.scoutSd ?? 5) * 1.4;
-  const seed = p.scoutSeed ?? hashSeed(p.id, 'scout');
-  const obs = (key, v) => cl20(v + makeRng(hashSeed(seed, 'coachView', key)).normal(0, sd));
-  let axes;
-  if (p.role === 'pitcher') {
-    const pi = t.pitching;
-    const veloR = cl20(50 + (pi.velocityKmh - 146) * 2);
-    axes = [obs('velo', veloR), obs('control', pi.control), obs('stamina', pi.stamina)];
-    if (pi.pitches.length) {
-      let sum = 0;
-      pi.pitches.forEach((x, i) => { sum += obs('pitch' + i, x.current); });
-      axes.push(sum / pi.pitches.length);
-    }
-  } else {
-    const b = t.batting;
-    axes = [obs('ev', b.ev), obs('la', b.la), obs('contact', b.contact), obs('eye', b.eye), obs('speed', t.common.speed)];
-  }
-  const v = axes.reduce((a, x) => a + x, 0) / axes.length;
-  return u.scoutGrade(v);
+  return u.scoutGrade(coachOverallScore(p, cfg));
 }
 
 /**

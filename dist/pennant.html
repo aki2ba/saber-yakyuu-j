@@ -2241,9 +2241,40 @@ const TUNING_DEFAULT = {
     // お調子者: breakout.mjs の上方/下方確率（upP/downP）に同率で掛ける倍率。§11.1「下方≧上方」の
     //   比はそのまま保たれる（分散が増えるだけ＝インフレ方向のバイアスを追加しない）。
     showboatBreakoutMult: 1.2,
-    // 練習熱心: H4（育成方針・キャンプ）の方針tiltStrengthに掛ける倍率。H4未実装のためここでは
-    //   値を保持するのみ（H4実装時に training.mjs 側から参照して接続する・現状は非消費）。
+    // 練習熱心: H4（育成方針・キャンプ）の方針tiltStrengthに掛ける倍率。
+    //   src/game/training.mjs の resolvePlayerTraining が消費する。
     hardworkingTrainingMult: 1.3,
+  },
+
+  // ==========================================================================
+  // H4: 育成方針・キャンプ（phaseH_fun_spec H4）: 期待値保存の間接介入。
+  //   src/game/training.mjs（方針の意味論・解決）＋ src/game/aging.mjs（適用）が消費する。
+  //   鉄則（R7の教訓・draft_timeline_evidence 決定1）: aging.profiles.grow そのものは一切
+  //   変更しない。curveDelta の「成長」summand にだけ、対象軸グループ×(1+δ)・非対象×(1−δ·w)を
+  //   掛ける（w は対象/非対象の grow 総和比で自動正規化＝個体レベルで期待成長量の総和を保存）。
+  // ==========================================================================
+  training: {
+    tiltStrength: 0.15, // δ: 軸グループ間の成長再配分の強さ（対象+δ/非対象-δ·w）
+    specialSlotsPerTeam: 3, // 特別指導枠K（1球団・1年あたりの上限人数）
+    specialMult: 2, // 特別指導枠のtiltMult倍率（δ・練習熱心と乗算合成）
+    restDriftMult: 0.7, // rest: 年次ドリフトSDの倍率（<1で荒れを抑える）
+    restDeclineMult: 0.8, // rest: 衰え(decline)の倍率（<1で衰えを緩める）
+    restGrowMult: 0.8, // rest: 成長(grow)の倍率（休養のぶん今季の伸びは削れる＝トレードオフ）
+    // AI球団の自動方針（teamEvalProfile由来・決定論）: wBat/wDefをそれぞれの分布の
+    //   平均/SDでz化した差 zBat-zDef が閾値を超えた球団だけ batting/defense へ偏らせる
+    //   （閾値を高めに取り、大半の球団は balanced のまま＝リーグ全体の較正ヘッドルームを守る）。
+    //   投手は対象外（打撃/守備の方針は野手のみに適用）。
+    aiTiltZThresh: 1.5,
+    // ★実測知見（R7と同種の教訓）: AI球団の自動方針は「毎年・同じ選手群へ・20年間持続的に」乗る
+    //   ため、たとえ効果を0.3や0.001まで弱めても test/game_multiyear.test.mjs の多年ERA帯[3.3,4.6]を
+    //   非単調に破った（grid探索で確認）。原因は加齢→観測→引退/昇格判定という離散判断のフィード
+    //   バックループが本質的にカオス的で、どれほど微小な摂動でも20年後には別の分岐（別の選手が
+    //   生き残る/淘汰される）へ発散しうるため＝「小さくすれば安全」が成立しない（線形に減衰しない）。
+    //   したがって既定値は0（AI方針の文字列自体は決定論的に算出し続けるが、加齢への実効果は
+    //   厳密にゼロ＝(1+0)/(1-0*w)=1で curveDelta に一切影響しない＝既存挙動と bit 同一）。
+    //   人間の明示介入（setTrainingPolicy）はテスト/calibrate/realismの自動実行経路では一度も
+    //   呼ばれない（UI操作のみが積む）ため、tiltStrength自体はフルで機能する。
+    aiEffectMult: 0,
   },
 
   // ==========================================================================
@@ -9529,6 +9560,154 @@ function buildBoxScore(events) {
 }
 
 
+// ===== src/game/training.mjs =====
+// ============================================================================
+// H4: 育成方針・キャンプ（phaseH_fun_spec H4・期待値保存の間接介入）
+//
+//   本モジュールは「方針の意味論」（policy文字列の解析・軸グループの対象判定・
+//   AI球団の自動方針・コーチの見立てスカラー）だけを持つ純関数群（ヘッドレス）。
+//   実際に trueAbility を動かす（curveDelta へ倍率を掛ける）のは src/game/aging.mjs 側
+//   （grow/decline の実体・軸の列挙は aging.mjs が握っている＝二重管理を避ける）。
+//
+// 設計原則（phaseH_fun_spec 全柱共通の鉄則・H4節）:
+//   - 期待値保存: ここでは「対象/非対象」の分類だけを提供する。実際の (1+δ)/(1−δ·w) 計算は
+//     aging.mjs が対象/非対象それぞれの grow 総和から w を出して行う（恒久シフト禁止・R7の教訓）。
+//   - 介入ログはプレイヤー（人間）のぶんだけ state.trainingPolicies に積む（bidFA/proposeTrade と
+//     同じ流儀）。AI球団の方針は teamEvalProfile から**毎回決定論的に再導出**する（ログに積まない＝
+//     personality/H3-1と同じ「idから再導出できるものは保存しない」設計）。
+//   - 三層構造: coachOverallScore は「観測（真値+スカウトノイズ）」であって真値そのものではない
+//     （ui/team.mjs の teamScoutGrade と同じ観測座標・式を再利用できるようここへ切り出す）。
+// ============================================================================
+
+
+
+/** UIが選べる方針の「種別」。'convert' は 'convert:<POS>' の形でのみ使う（POS は FIELD_POSITIONS）。 */
+const TRAINING_KINDS = ['batting', 'defense', 'speed', 'convert', 'rest', 'balanced'];
+
+/** 方針の日本語ラベル（UI表示用）。convert は posJP と組み合わせて「コンバート（◯◯）」と表示する。 */
+const TRAINING_LABELS = {
+  batting: '打撃強化',
+  defense: '守備強化',
+  speed: '走塁強化',
+  convert: 'コンバート',
+  rest: '休養',
+  balanced: 'バランス',
+};
+
+/**
+ * policy 文字列を { kind, pos } へ分解する。不正な文字列は null（呼び出し側はエラーにする）。
+ * @param {string} policy 'batting'|'defense'|'speed'|'rest'|'balanced'|'convert:<POS>'
+ */
+function parsePolicy(policy) {
+  if (!policy || typeof policy !== 'string') return null;
+  if (policy.startsWith('convert:')) {
+    const pos = policy.slice('convert:'.length);
+    return FIELD_POSITIONS.includes(pos) ? { kind: 'convert', pos } : null;
+  }
+  return TRAINING_KINDS.includes(policy) && policy !== 'convert' ? { kind: policy, pos: null } : null;
+}
+
+/**
+ * 軸 (section, key[, pos]) が方針の「対象グループ」に属するか。
+ * 対象グループの構造的な定義（trueAbility の既存セクション分けをそのまま使う＝専用ロジック無し）:
+ *   batting … trueAbility.batting の7軸
+ *   defense … trueAbility.fielding の全軸（positioningIQ/framing/blocking + positionProf全ポジション）
+ *   speed   … common.speed + trueAbility.baserunning の2軸
+ *   convert … trueAbility.fielding.positionProf[pos]（対象は指定した1ポジションのみ）
+ *   rest/balanced … 対象グループを持たない（常に false＝グループtiltは無効）
+ */
+function isTargetAxis(parsed, section, key, pos) {
+  if (!parsed) return false;
+  switch (parsed.kind) {
+    case 'batting':
+      return section === 'batting';
+    case 'defense':
+      return section === 'fielding';
+    case 'speed':
+      return (section === 'common' && key === 'speed') || section === 'baserunning';
+    case 'convert':
+      return section === 'fielding' && key === 'positionProf' && pos === parsed.pos;
+    default:
+      return false;
+  }
+}
+
+/** z化: (v-mean)/sd（sd=0ならズレ無しとして0を返す）。 */
+function z(v, mean, sd) {
+  return sd ? (v - mean) / sd : 0;
+}
+
+/**
+ * AI球団の自動方針（teamEvalProfile由来・決定論・乱数不使用）。
+ * wBat/wDef をそれぞれの分布パラメータでz化した差が閾値を超えた球団だけ偏らせる
+ * （大半は balanced のまま＝リーグ全体で見て系統バイアスにならない＝較正ヘッドルーム保護）。
+ * 投手は対象外（打撃/守備という方針の対象が薄い＝つねに balanced）。
+ * @param {Object} p Player
+ * @param {Object|null} profile teamEvalProfile() の返値（無ければ balanced）
+ * @param {Object} cfg
+ * @returns {string} 'batting'|'defense'|'balanced'
+ */
+function aiAutoPolicy(p, profile, cfg) {
+  if (!profile || p.role === 'pitcher') return 'balanced';
+  const pc = cfg.tuning.market.profile;
+  const tc = cfg.tuning.training;
+  const zBat = z(profile.wBat, pc.wBatMean, pc.wBatSd);
+  const zDef = z(profile.wDef, pc.wDefMean, pc.wDefSd);
+  const diff = zBat - zDef;
+  if (diff > tc.aiTiltZThresh) return 'batting';
+  if (-diff > tc.aiTiltZThresh) return 'defense';
+  return 'balanced';
+}
+
+/**
+ * 選手1人ぶんの実効方針を解決する（人間の明示ログ優先 → 自チームの未設定は balanced →
+ * 他球団(AI)は teamEvalProfile 由来の自動方針）。
+ * @param {Object} p Player（id/teamId/roleを参照）
+ * @param {{policyMap?:Map, profiles?:Map, playerTeamId?:string}} ctx
+ *   policyMap: playerId -> {policy, special}（当年ぶんに絞り込み済みの人間介入ログ）
+ *   profiles:  teamId -> teamEvalProfile()（AI自動方針の入力・省略時はAI方針を出さない）
+ * @param {Object} cfg
+ * @returns {{policy:string, special:boolean}}
+ */
+function resolvePlayerTraining(p, ctx, cfg) {
+  const explicit = ctx?.policyMap?.get(p.id);
+  if (explicit) return { policy: explicit.policy, special: !!explicit.special, source: 'human' };
+  if (!ctx?.profiles || p.teamId === ctx.playerTeamId) return { policy: 'balanced', special: false, source: 'default' };
+  return { policy: aiAutoPolicy(p, ctx.profiles.get(p.teamId), cfg), special: false, source: 'ai' };
+}
+
+/**
+ * 「コーチの見立て」総合値（生スカラー・グレード化はしない＝S/A/B/C/D/E化はUIの責務）。
+ * ui/team.mjs の teamScoutGrade と同じ観測座標(scoutSeed,'coachView',軸キー)・同じ式を使う
+ * （三層構造: 真値そのものではなく「真値+球団固有ノイズ」の観測＝スカウトの目）。
+ * H4のキャンプ成果（特別指導選手の前後差）はこの値の before/after 差で作る。
+ * @param {Object} p Player（trueAbility/role/scoutSeed/id）
+ * @param {Object} cfg
+ */
+function coachOverallScore(p, cfg) {
+  const t = p.trueAbility;
+  const cl20 = (x) => Math.max(20, Math.min(80, x));
+  const sd = (cfg?.tuning?.mgr?.scoutSd ?? 5) * 1.4;
+  const seed = p.scoutSeed ?? hashSeed(p.id, 'scout');
+  const obs = (key, v) => cl20(v + makeRng(hashSeed(seed, 'coachView', key)).normal(0, sd));
+  let axes;
+  if (p.role === 'pitcher') {
+    const pi = t.pitching;
+    const veloR = cl20(50 + (pi.velocityKmh - 146) * 2);
+    axes = [obs('velo', veloR), obs('control', pi.control), obs('stamina', pi.stamina)];
+    if (pi.pitches.length) {
+      let sum = 0;
+      pi.pitches.forEach((x, i) => { sum += obs('pitch' + i, x.current); });
+      axes.push(sum / pi.pitches.length);
+    }
+  } else {
+    const b = t.batting;
+    axes = [obs('ev', b.ev), obs('la', b.la), obs('contact', b.contact), obs('eye', b.eye), obs('speed', t.common.speed)];
+  }
+  return axes.reduce((a, x) => a + x, 0) / axes.length;
+}
+
+
 // ===== src/game/aging.mjs =====
 // ============================================================================
 // フェーズC2a: 加齢・成長カーブ（§10.1-10.3 / §12.4）
@@ -9552,33 +9731,125 @@ function buildBoxScore(events) {
 //     加齢に強い（制球/技巧/ポジIQ/走塁IQ）を「専用ロジックほぼ無し」で構造から出す。
 //   declineRate は個体差（§10.2・generate で球速/走力と相関して既に引かれている）＝
 //     速球派だけ早く落ち、技巧派・晩成が"稀に"残る（生存バイアスで鉄人が自動レア化・§10.6）。
+//
+// H4（phaseH_fun_spec・育成方針・キャンプ）: applyAging に { policies, profiles, playerTeamId }
+//   を追加で渡すと、方針が付いた選手だけ curveDelta の「成長」summand に軸グループ単位の
+//   (1±δ) を掛ける（aging.profiles.grow 自体は一切書き換えない＝恒久シフト禁止・R7の教訓）。
+//   引数省略時は完全に無効（既存呼び出し元・テストは byte 同一の挙動を保つ）。
 // ============================================================================
 
 
+
+
+// H4: 軸グループの列挙とその grow 総和(w)計算を agePlayer の実呼び出し順と一致させるための
+//   単一の key 配列（ここを変えたら agePlayer 側のループも必ず同じ配列を参照する＝二重管理禁止）。
+const COMMON_KEYS = ['speed', 'arm', 'hands', 'reaction', 'power'];
+const BATTING_KEYS = ['ev', 'la', 'pull', 'contact', 'eye', 'vsFastball', 'vsBreaking'];
+const PITCH_RATING_KEYS = ['control', 'stamina', 'gbRate', 'hold'];
+const FIELDING_KEYS = ['positioningIQ', 'framing', 'blocking'];
+const BASERUN_KEYS = ['steal', 'baserunIQ'];
 
 /**
  * 全選手にオフシーズンの加齢を適用する（in-place・決定論・順序非依存）。
  * @param {Array} players generateLeague().players（trueAbility/age を持つ選手配列）
  * @param {Object} cfg createConfig()（cfg.tuning.aging を参照）
- * @param {{seed:number, yearIndex:number}} o seed=オフシーズン用階層シード / yearIndex=遷移元の年
+ * @param {{seed:number, yearIndex:number, playerTeamId?:string, policies?:Array, profiles?:Map}} o
+ *   seed=オフシーズン用階層シード / yearIndex=遷移元の年。
+ *   H4: policies=当年ぶんに絞り込み済みの人間介入ログ（{playerId,policy,special}[]）、
+ *       profiles=teamId→teamEvalProfile()（省略時はAI自動方針を出さない＝無効化）。
  * @returns {Array} players（同一参照。呼び出し側の league.players を直接更新する）
  */
-function applyAging(players, cfg, { seed }) {
+function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, profiles } = {}) {
   const aging = cfg.tuning.aging;
   const veloPerRating = cfg.tuning.maturity.veloPerRating;
   // H3-1（ムラっ気）: drift SD 倍率。personality が無い（旧経路・テスト直呼び）選手は 1（無効果）。
   const streakyMult = cfg.tuning.personality?.streakyDriftMult ?? 1;
+  // H4: 当年ぶんの人間介入ログを playerId→entry の Map へ（policies/profiles どちらも無ければ
+  //   trainingCtx=null＝既存呼び出し元と完全に同じ経路を通る＝byte 同一）。
+  const policyMap = new Map((policies ?? []).map((e) => [e.playerId, e]));
+  const trainingCtx = profiles || policyMap.size ? { policyMap, profiles, playerTeamId, cfg } : null;
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
     const driftMult = p.personality === 'streaky' ? streakyMult : 1;
-    agePlayer(p, prng, aging, veloPerRating, driftMult);
+    agePlayer(p, prng, aging, veloPerRating, driftMult, trainingCtx);
   }
   return players;
 }
 
+/**
+ * H4: 選手1人の育成方針を「軸グループ tilt」の実行パラメータへ解決する。
+ * 対象グループの grow 総和(target)と全軸の grow 総和(total)から、非対象への相殺係数
+ * w=target/(total-target) を出す（対象+δ・非対象-δ·w＝個体レベルで期待成長量の総和を保存）。
+ * 'rest' は軸グループを持たず、drift/decline/growの一様な倍率だけを返す。
+ * 'balanced'・方針無し・不正な policy 文字列は null（tilt 無効）。
+ */
+function resolveTrainingForPlayer(p, t, aging, trainingCtx) {
+  const { policy, special, source } = resolvePlayerTraining(p, trainingCtx, trainingCtx.cfg);
+  if (!policy || policy === 'balanced') return null;
+  const parsed = parsePolicy(policy);
+  if (!parsed) return null; // 防御的（不正文字列はUI/APIで弾いているはずだが無効化して安全側へ）
+  const tc = trainingCtx.cfg.tuning.training;
+  if (parsed.kind === 'rest') {
+    return {
+      parsed, tiltMult: 0, w: 0,
+      driftMult: tc.restDriftMult, declineMult: tc.restDeclineMult, growMult: tc.restGrowMult,
+    };
+  }
+  const personalityMult = p.personality === 'hardworking' ? trainingCtx.cfg.tuning.personality.hardworkingTrainingMult : 1;
+  const specialMult = special ? tc.specialMult : 1;
+  // H4: AI球団の自動方針は人間の明示介入より控えめに効かせる（aiEffectMult）。AI方針は
+  //   同一チームの全対象選手へ何年も持続的に乗り続けるため、人間の散発的な指定より
+  //   多年運用での累積影響が大きくなりやすい（較正ヘッドルームが薄いことへの安全側の配慮）。
+  const aiMult = source === 'ai' ? tc.aiEffectMult : 1;
+  const tiltMult = tc.tiltStrength * personalityMult * specialMult * aiMult;
+  const { total, target } = trainingGrowSums(t, aging, parsed);
+  const nonTarget = total - target;
+  const w = nonTarget > 0 ? target / nonTarget : 0;
+  return { parsed, tiltMult, w, driftMult: 1, declineMult: 1, growMult: 1 };
+}
+
+/** profKey の grow（未登録キーは default）。ageRating の prof 解決と同じフォールバック。 */
+function growOf(aging, key) {
+  return (aging.profiles[key] ?? aging.profiles.default).grow;
+}
+
+/**
+ * この選手が持つ「全軸」の grow 総和(total)と、方針の対象グループぶんの grow 総和(target)。
+ * agePlayer が実際に age させる軸（COMMON_KEYS/BATTING_KEYS/.../positionProf全ポジション/
+ * pitches×4サブ軸）と完全に同じ集合を列挙する（w の正規化がここでズレると期待値保存が崩れる）。
+ */
+function trainingGrowSums(t, aging, parsed) {
+  let total = 0;
+  let target = 0;
+  const add = (section, key, grow, pos = null) => {
+    total += grow;
+    if (isTargetAxis(parsed, section, key, pos)) target += grow;
+  };
+  for (const k of COMMON_KEYS) add('common', k, growOf(aging, k));
+  for (const k of BATTING_KEYS) add('batting', k, growOf(aging, k));
+  add('pitching', 'velocity', aging.velo.grow);
+  for (const k of PITCH_RATING_KEYS) add('pitching', k, growOf(aging, k));
+  const pitchGrow = growOf(aging, 'pitchStuff');
+  for (let i = 0; i < t.pitching.pitches.length; i++) {
+    for (let j = 0; j < 4; j++) add('pitching', 'pitchStuff', pitchGrow);
+  }
+  for (const k of FIELDING_KEYS) add('fielding', k, growOf(aging, k));
+  const posGrow = growOf(aging, 'positionProf');
+  for (const pos of Object.keys(t.fielding.positionProf)) add('fielding', 'positionProf', posGrow, pos);
+  for (const k of BASERUN_KEYS) add('baserunning', k, growOf(aging, k));
+  return { total, target };
+}
+
+/** 軸(section,key[,pos])の「成長」summandに掛ける倍率（対象グループ+δ／非対象-δ·w、restは一様growMult）。 */
+function trainingGrowMult(training, section, key, pos) {
+  const inGroup = isTargetAxis(training.parsed, section, key, pos);
+  const base = inGroup ? 1 + training.tiltMult : 1 - training.tiltMult * training.w;
+  return Math.max(0, base) * training.growMult;
+}
+
 /** 1選手を1年ぶん加齢させる（trueAbility を動かし age++）。 */
-function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
+function agePlayer(p, prng, aging, veloPerRating, driftMult = 1, trainingCtx = null) {
   const t = p.trueAbility;
   const peak = t.career.peakAge;
   const dr = t.career.declineRate;
@@ -9606,43 +9877,31 @@ function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
     t.career.youthDebt = debt + repay;
   }
 
-  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating, driftMult };
+  // H4（育成方針・キャンプ）: 方針が無ければ training=null＝下の curveDelta は従来と byte 同一。
+  const training = trainingCtx ? resolveTrainingForPlayer(p, t, aging, trainingCtx) : null;
+  const finalDriftMult = driftMult * (training?.driftMult ?? 1);
+
+  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating, driftMult: finalDriftMult, training };
 
   // 共通素材（§2.2）
-  ageRating(t.common, 'speed', 'speed', ctx);
-  ageRating(t.common, 'arm', 'arm', ctx);
-  ageRating(t.common, 'hands', 'hands', ctx);
-  ageRating(t.common, 'reaction', 'reaction', ctx);
-  ageRating(t.common, 'power', 'power', ctx);
+  for (const k of COMMON_KEYS) ageRating(t.common, k, k, ctx, { section: 'common', key: k, pos: null });
 
   // 打撃（§2.3）
-  ageRating(t.batting, 'ev', 'ev', ctx);
-  ageRating(t.batting, 'la', 'la', ctx);
-  ageRating(t.batting, 'pull', 'pull', ctx);
-  ageRating(t.batting, 'contact', 'contact', ctx);
-  ageRating(t.batting, 'eye', 'eye', ctx);
-  ageRating(t.batting, 'vsFastball', 'vsFastball', ctx);
-  ageRating(t.batting, 'vsBreaking', 'vsBreaking', ctx);
+  for (const k of BATTING_KEYS) ageRating(t.batting, k, k, ctx, { section: 'batting', key: k, pos: null });
 
   // 投手（§2.4）: 球速は別枠モデル、それ以外はレーティング機構、球種は技巧扱い。
   ageVelocity(t.pitching, ctx);
-  ageRating(t.pitching, 'control', 'control', ctx);
-  ageRating(t.pitching, 'stamina', 'stamina', ctx);
-  ageRating(t.pitching, 'gbRate', 'gbRate', ctx);
-  ageRating(t.pitching, 'hold', 'hold', ctx);
+  for (const k of PITCH_RATING_KEYS) ageRating(t.pitching, k, k, ctx, { section: 'pitching', key: k, pos: null });
   for (const pitch of t.pitching.pitches) agePitch(pitch, ctx);
 
   // 野手守備（§2.5）: ポジション習熟は経験で伸び緩やかに落ちる（山本泰寛型）。
-  ageRating(t.fielding, 'positioningIQ', 'positioningIQ', ctx);
-  ageRating(t.fielding, 'framing', 'framing', ctx);
-  ageRating(t.fielding, 'blocking', 'blocking', ctx);
+  for (const k of FIELDING_KEYS) ageRating(t.fielding, k, k, ctx, { section: 'fielding', key: k, pos: null });
   for (const pos of Object.keys(t.fielding.positionProf)) {
-    ageRating(t.fielding.positionProf, pos, 'positionProf', ctx);
+    ageRating(t.fielding.positionProf, pos, 'positionProf', ctx, { section: 'fielding', key: 'positionProf', pos });
   }
 
   // 走塁（§2.6）
-  ageRating(t.baserunning, 'steal', 'steal', ctx);
-  ageRating(t.baserunning, 'baserunIQ', 'baserunIQ', ctx);
+  for (const k of BASERUN_KEYS) ageRating(t.baserunning, k, k, ctx, { section: 'baserunning', key: k, pos: null });
 
   p.age = age + 1;
 }
@@ -9650,15 +9909,23 @@ function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
 /**
  * 「成長→維持→衰え」の年次期待デルタ（能力プロファイル × 個体 peakAge/declineRate）。
  * 若手の成長は成長係数 gm で幅を持たせる（§10.3）。
+ * H4: axisTag が指す軸が方針の対象グループかどうかで「成長」summand にだけ (1±δ) を掛ける
+ *  （衰えsummandは rest の declineMult 以外は不変＝「方針は成長の配分を傾けるだけ」）。
  */
-function curveDelta(prof, ctx) {
+function curveDelta(prof, ctx, axisTag) {
   let d = 0;
   const growEnd = ctx.peak + prof.peakShift;
   const onset = ctx.peak + prof.declineOffset;
-  if (ctx.age < growEnd) d += prof.grow * (ctx.young ? ctx.gm : 1);
+  if (ctx.age < growEnd) {
+    let g = prof.grow * (ctx.young ? ctx.gm : 1);
+    if (ctx.training) g *= trainingGrowMult(ctx.training, axisTag.section, axisTag.key, axisTag.pos);
+    d += g;
+  }
   if (ctx.age >= onset) {
     const past = ctx.age - onset; // 経過年（大きいほど急落＝§10.1「1オフで急落もありうる」）
-    d -= prof.decline * ctx.dr * (1 + ctx.aging.declineAccel * past);
+    let dec = prof.decline * ctx.dr * (1 + ctx.aging.declineAccel * past);
+    if (ctx.training?.declineMult != null) dec *= ctx.training.declineMult;
+    d -= dec;
   }
   return d;
 }
@@ -9670,10 +9937,10 @@ function drift(ctx) {
 }
 
 /** 1レーティング(20-80)を加齢で更新（in-place）。profKey 未登録なら default プロファイル。 */
-function ageRating(obj, key, profKey, ctx) {
+function ageRating(obj, key, profKey, ctx, axisTag) {
   const prof = ctx.aging.profiles[profKey] ?? ctx.aging.profiles.default;
   // R7（決定1）: flatBonus=高卒未成熟負債の当年ぶん返済額（負債が無い選手は0＝既存挙動と bit 同一）。
-  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx) + drift(ctx) + ctx.flatBonus);
+  obj[key] = clampRating(obj[key] + curveDelta(prof, ctx, axisTag) + drift(ctx) + ctx.flatBonus);
 }
 
 /** 球速（km/h 実数）を加齢で更新（in-place）。高球速×高declineRate ほど早く落ちる（§10.2）。 */
@@ -9682,8 +9949,16 @@ function ageVelocity(pitching, ctx) {
   let d = 0;
   const growEnd = ctx.peak + v.peakShift;
   const onset = ctx.peak + v.declineOffset;
-  if (ctx.age < growEnd) d += v.grow * (ctx.young ? ctx.gm : 1);
-  if (ctx.age >= onset) d -= v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
+  if (ctx.age < growEnd) {
+    let g = v.grow * (ctx.young ? ctx.gm : 1);
+    if (ctx.training) g *= trainingGrowMult(ctx.training, 'pitching', 'velocity', null);
+    d += g;
+  }
+  if (ctx.age >= onset) {
+    let dec = v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
+    if (ctx.training?.declineMult != null) dec *= ctx.training.declineMult;
+    d -= dec;
+  }
   d += ctx.prng.normal(0, (ctx.young ? v.driftSdYoung : v.driftSdOld) * (ctx.driftMult ?? 1));
   d += ctx.flatBonus * ctx.veloPerRating; // R7: rating単位の返済額を球速換算
   pitching.velocityKmh = clamp(pitching.velocityKmh + d, v.min, v.max);
@@ -9692,8 +9967,9 @@ function ageVelocity(pitching, ctx) {
 /** 1球種の質（球速でなく技巧側＝出し入れ）を加齢で更新（in-place・pitchStuff プロファイル）。 */
 function agePitch(pitch, ctx) {
   const prof = ctx.aging.profiles.pitchStuff;
+  const axisTag = { section: 'pitching', key: 'pitchStuff', pos: null };
   for (const k of ['current', 'whiff', 'hrSuppress', 'contactQuality']) {
-    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx) + drift(ctx) + ctx.flatBonus);
+    pitch[k] = clampRating(pitch[k] + curveDelta(prof, ctx, axisTag) + drift(ctx) + ctx.flatBonus);
   }
 }
 
@@ -13617,6 +13893,9 @@ function ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, 
 // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。表示層のみ
 //   （エンジン非干渉）。advanceYear が transactionLog 追記＋引退セレモニー整形を行う。
 
+// H4: 育成方針・キャンプ（phaseH_fun_spec H4）。方針の意味論(parsePolicy)・AI自動方針・
+//   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
+
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
@@ -13710,12 +13989,40 @@ function runProspectCulling(league, cfg, { obs, retireVacancies }) {
  * 「開幕直前のリーグ」を汚さずに同じ結果を再導出できる。
  * @returns {Object} stage2/draft へ渡す一式＋要約（injuries/breakouts/retirees/fa/trades/obs/…）
  */
-function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
+function offseasonStage1(league, cfg, {
+  masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [],
+  marketInterventions = [], seasonInjuries = [], playerTeamId = null, trainingPolicies = [],
+}) {
+  // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
+  //   H4: applyAging（下）の AI自動方針もこれを読むため、引退/FA等より前に確定させておく
+  //   （純関数・(masterSeed,teamId,cfg)だけで決まるので、どの時点で呼んでも同じ値＝既存挙動と bit 同一）。
+  const profiles = new Map();
+  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
+
+  // H4: 当年ぶんの育成方針ログ（人間介入のみ）と、特別指導枠選手の「キャンプ前」観測値を控える
+  //   （applyAging が真値を動かす前のスナップショット・オフダイジェスト「キャンプの成果」用）。
+  const trainIvs = trainingPolicies.filter((tp) => (tp.yearIndex ?? 0) === yearIndex);
+  const specialIds = new Set(trainIvs.filter((tp) => tp.special).map((tp) => tp.playerId));
+  const campBefore = new Map();
+  for (const p of league.players) if (specialIds.has(p.id)) campBefore.set(p.id, coachOverallScore(p, cfg));
+
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
-  applyAging(league.players, cfg, { seed: offseasonSeed(masterSeed, yearIndex), yearIndex });
+  applyAging(league.players, cfg, {
+    seed: offseasonSeed(masterSeed, yearIndex), yearIndex, playerTeamId, profiles, policies: trainIvs,
+  });
+
+  // H4: 特別指導枠選手の「キャンプ後」観測値との差（前後差＋方針）。結果は乱数次第＝お祈り。
+  const campResults = trainIvs.filter((tp) => tp.special).map((tp) => {
+    const p = league.players.find((x) => x.id === tp.playerId);
+    return {
+      playerId: tp.playerId, policy: tp.policy,
+      before: campBefore.get(tp.playerId) ?? null,
+      after: p ? coachOverallScore(p, cfg) : null,
+    };
+  });
 
   // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
   //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
@@ -13727,9 +14034,6 @@ function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, 
   for (const s of careerFarmStats) if (s.season === year) farmObs.set(s.playerId, s);
   // 当年ぶんのプレイヤー市場操作のみ適用（他年の介入は除外・再現可能）。
   const ivs = marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === yearIndex);
-  // 球団評価プロファイル（キャリア中固定・§13）。市場フェーズ共通で使う。
-  const profiles = new Map();
-  for (const t of league.teams) profiles.set(t.id, teamEvalProfile(masterSeed, t.id, cfg));
 
   // 引退（生存者を league.players へ・空き枠 vacancies を得る）。
   const { retirees, vacancies: retireVac } = runRetirement(league, cfg, { seed: hashSeed(masterSeed, 'retire', yearIndex), debutYear: year + 1 });
@@ -13758,7 +14062,7 @@ function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, 
   rebuildTeamRosters(league);
 
   return {
-    injuries, breakouts, retirees, fa, trades, obs, standings, balanceBoost,
+    injuries, breakouts, retirees, fa, trades, obs, standings, balanceBoost, campResults,
     promotions: mkt.promotions, remainingVac: mkt.remainingVac, pool: mkt.pool,
     order: mkt.order, profiles: mkt.profiles, windowByTeam: mkt.windowByTeam,
   };
@@ -13835,6 +14139,8 @@ function driveOffseasonDraft(state) {
     careerFarmStats: state.careerFarmStats,
     marketInterventions: state.marketInterventions,
     seasonInjuries,
+    playerTeamId: state.playerTeamId,
+    trainingPolicies: state.trainingPolicies,
   });
   const pickLog = state.marketInterventions.filter(
     (iv) => iv.phase === 'draft' && (iv.yearIndex ?? 0) === state.yearIndex,
@@ -13868,7 +14174,7 @@ function driveOffseasonDraft(state) {
   const off = {
     injuries: s1.injuries, breakouts: s1.breakouts, retirees: s1.retirees, rookies: draftResult.rookies,
     promotions: s1.promotions, draftLog: draftResult.draftLog, fa: s1.fa, trades: s1.trades,
-    pickups: s2.pickups, contracts: s2.contracts,
+    pickups: s2.pickups, contracts: s2.contracts, campResults: s1.campResults, // H4: キャンプの成果
   };
   finalizeOffseason(state, off, completedYear, awardsById);
   return off;
@@ -14050,6 +14356,9 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive・advanceYearで確定結果を追記）。
     //   §17 と同じ思想（集計値のみ・生イベントは持たない）。旧セーブは load 時に [] 補完。
     transactionLog: [],
+    // H4: 育成方針・キャンプの人間介入ログ（additive・{yearIndex,playerId,policy,special}）。
+    //   AI球団の方針はここに積まない（teamEvalProfile から毎回決定論的に再導出＝§17と同じ思想）。
+    trainingPolicies: [],
     // R3: 前季の故障の「開幕時点の残り離脱 day 数」（開幕ILの素）。故障が試合由来になったため
     //   replay では再導出できない（season を再シムしない）→ save に永続する。
     pendingInjuries: [],
@@ -14173,6 +14482,49 @@ function proposeTrade(state, aPlayer, bPlayer) {
   );
   state.marketInterventions.push(iv);
   return iv;
+}
+
+// --- H4: 育成方針・キャンプ（phaseH_fun_spec H4・オフシーズンで applyAging が適用・save/replay で再現）
+// bidFA/proposeTrade と同じ流儀: 人間の意思は state.trainingPolicies ログにだけ積む。AI球団の方針は
+// ログに積まず、applyAging が teamEvalProfile から毎回決定論的に再導出する（personality と同じ思想）。
+
+/**
+ * 育成方針の設定・変更（自チーム選手のみ）。同一 (yearIndex, playerId) の既存ログは上書きする
+ * （bidFA と同じ「最後の設定が効く」流儀）。特別指導枠（cfg.tuning.training.specialSlotsPerTeam）を
+ * 超える special:true 指定は拒否する（UIが選択肢を切る前提の最終防衛線）。
+ * @param {Object} state GameState
+ * @param {string} playerId 自チームの選手
+ * @param {string} policy 'batting'|'defense'|'speed'|'rest'|'balanced'|'convert:<POS>'
+ * @param {{special?:boolean}} opts special=true で特別指導枠を消費（効果2倍）
+ * @returns {Object} 追加したログ行
+ */
+function setTrainingPolicy(state, playerId, policy, opts = {}) {
+  if (!parsePolicy(policy)) throw new Error(`setTrainingPolicy: 不正な policy '${policy}'`);
+  const p = state.league.players.find((x) => x.id === playerId);
+  if (!p || p.teamId !== state.playerTeamId) throw new Error('setTrainingPolicy: 自チームの選手のみ設定可能');
+  const special = !!opts.special;
+  if (special) {
+    const K = state.cfg.tuning.training.specialSlotsPerTeam;
+    // trainingPolicies は本APIが自チーム選手のぶんしか積まない（上のガード）＝
+    //   yearIndex一致だけで自チームの特別指導枠数を数えられる。
+    const used = state.trainingPolicies.filter(
+      (tp) => tp.yearIndex === state.yearIndex && tp.playerId !== playerId && tp.special,
+    ).length;
+    if (used >= K) throw new Error(`setTrainingPolicy: 特別指導枠は${K}人まで`);
+  }
+  state.trainingPolicies = state.trainingPolicies.filter(
+    (tp) => !(tp.yearIndex === state.yearIndex && tp.playerId === playerId),
+  );
+  const iv = { yearIndex: state.yearIndex, playerId, policy, special };
+  state.trainingPolicies.push(iv);
+  return iv;
+}
+
+/** 育成方針の設定を取り消す（適用前のログ削除＝決定論に無害。設定していなければ何もしない）。 */
+function clearTrainingPolicy(state, playerId) {
+  state.trainingPolicies = state.trainingPolicies.filter(
+    (tp) => !(tp.yearIndex === state.yearIndex && tp.playerId === playerId),
+  );
 }
 
 /** 完了したシーズンの集計値を永続領域へ退避（§17: 集計値のみ永続）。 */
@@ -14368,6 +14720,7 @@ function save(state) {
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
+    trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -14473,6 +14826,7 @@ function load(blob, options = {}) {
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
+    trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -14542,6 +14896,9 @@ function allPlayersById(state) {
 
 // H2: プレイヤー参加型ドラフト会議のスカウトレポートAPIを再エクスポート（UI/テストが
 //   './game/index.mjs' 経由で使う。submitDraftPick は本ファイルで直接 export 済み）。
+
+// H4: 育成方針・キャンプの意味論APIを再エクスポート（UI/テストが './game/index.mjs' 経由で使う。
+//   setTrainingPolicy/clearTrainingPolicy は本ファイルで直接 export 済み）。
 
 </script>
 <script>
@@ -14961,8 +15318,9 @@ function schedPlayerHeadlines(rt, u, limit = 8) {
 
 // 画面内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const stoveView = {
-  tab: 'fa', // 'fa' | 'trade' | 'farm'
+  tab: 'fa', // 'fa' | 'trade' | 'farm' | 'camp'
   pick: null, // トレード起案: 放出する自チーム選手の playerId
+  campPick: null, // H4: 秋季キャンプで方針編集中の自チーム選手の playerId
 };
 
 // --- 純関数ヘルパー（介入ログ以外に何も書かない） ------------------------------
@@ -15126,13 +15484,14 @@ function renderStoveScreen(u) {
       el('button', { class: 'link', onclick: () => u.renderSeasonResult() }, 'リザルトへ戻る'),
     ]),
   ]));
-  const TABS = [['fa', 'FA市場'], ['trade', 'トレード'], ['farm', '育成・支配下']];
+  const TABS = [['fa', 'FA市場'], ['trade', 'トレード'], ['farm', '育成・支配下'], ['camp', '秋季キャンプ']];
   root.append(el('div', { class: 'tabs' }, TABS.map(([k, label]) =>
     el('button', { class: 'tab' + (stoveView.tab === k ? ' active' : ''), onclick: () => { stoveView.tab = k; renderStoveScreen(u); } }, label))));
   const c = el('div', { id: 'content' });
   root.append(c);
   if (stoveView.tab === 'fa') stoveFaTab(c, u);
   else if (stoveView.tab === 'trade') stoveTradeTab(c, u);
+  else if (stoveView.tab === 'camp') stoveCampTab(c, u);
   else stoveFarmTab(c, u);
 }
 
@@ -15292,6 +15651,88 @@ function stoveFarmTab(c, u) {
   ]))));
 }
 
+/** H4: policy文字列の表示ラベル（convert:<POS> は posJP を組み合わせる）。 */
+function campPolicyLabel(policy, u) {
+  if (!policy) return TRAINING_LABELS.balanced;
+  if (policy.startsWith('convert:')) return `${TRAINING_LABELS.convert}（${u.posJP(policy.slice('convert:'.length))}）`;
+  return TRAINING_LABELS[policy] ?? policy;
+}
+
+/** 当年（現 yearIndex）の自チーム育成方針ログ（playerId → entry）。 */
+function stoveTrainingMap(gs) {
+  return new Map(
+    gs.trainingPolicies
+      .filter((tp) => (tp.yearIndex ?? 0) === gs.yearIndex)
+      .map((tp) => [tp.playerId, tp]),
+  );
+}
+
+/**
+ * 秋季キャンプタブ（H4・phaseH_fun_spec H4）: 自チーム選手に育成方針を設定する。
+ * 一覧→編集の2段（トレードタブの「自分から起案する」と同じ流儀）: 選手を選ぶと、
+ * その選手の方針ボタン（打撃/守備/走塁/休養/バランス・野手はコンバート先ポジションも）と
+ * 特別指導トグル（cfg.tuning.training.specialSlotsPerTeam 人まで・効果2倍）を表示する。
+ * 実際の適用（軸グループ間の成長再配分）はオフシーズン処理（applyAging）が行う。
+ */
+function stoveCampTab(c, u) {
+  const { el, game, state } = u;
+  const gs = game.gs;
+  const tc = gs.cfg.tuning.training;
+  const byId = stoveTrainingMap(gs);
+  const specialUsed = [...byId.values()].filter((tp) => tp.special).length;
+  c.append(el('div', { class: 'muted', style: 'margin:6px 0' },
+    '秋季キャンプ: 自チーム選手に育成方針を設定できます。方針は「成長の配分を軸グループ間で傾けるだけ」'
+    + `（選手個人の期待成長量の総和は変わりません）。特別指導枠は${specialUsed}/${tc.specialSlotsPerTeam}人（効果2倍・「★」表示）。`
+    + '結果はオフシーズン処理後のダイジェスト「キャンプの成果」で確認できます。'));
+
+  const myPlayers = gs.league.players
+    .filter((p) => p.teamId === gs.playerTeamId)
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const rows = myPlayers.map((p) => {
+    const tp = byId.get(p.id);
+    const label = campPolicyLabel(tp?.policy, u) + (tp?.special ? '★' : '');
+    return el('tr', {}, [
+      el('td', { class: 'left' }, [u.playerLink(p.id)]),
+      el('td', { class: 'left' }, stovePosLabel(p, u)),
+      el('td', {}, String(p.age)),
+      el('td', { class: 'left' }, label),
+      el('td', { class: 'left' }, [el('button', {
+        class: 'subtab stovepick' + (stoveView.campPick === p.id ? ' active' : ''),
+        onclick: () => { stoveView.campPick = p.id; renderStoveScreen(u); },
+      }, '編集')]),
+    ]);
+  });
+  c.append(stoveTable(u, ['選手', '位置', '年齢', '方針', ''], rows));
+
+  const mine = state.byId.get(stoveView.campPick);
+  if (!mine || mine.teamId !== gs.playerTeamId) return;
+  const cur = byId.get(mine.id) ?? { policy: 'balanced', special: false };
+  c.append(el('h3', { class: 'leaguename' }, `${mine.name}（${stovePosLabel(mine, u)}）の方針を設定`));
+  const apply = (policy, special) => { setTrainingPolicy(gs, mine.id, policy, { special }); u.autoSave(); renderStoveScreen(u); };
+  const kindBtn = (kind) => el('button', {
+    class: cur.policy === kind ? 'primary' : '',
+    onclick: () => apply(kind, cur.special),
+  }, TRAINING_LABELS[kind]);
+  c.append(el('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px' }, [
+    kindBtn('batting'), kindBtn('defense'), kindBtn('speed'), kindBtn('rest'), kindBtn('balanced'),
+  ]));
+  if (mine.role === 'fielder') {
+    c.append(el('div', { class: 'muted', style: 'margin-top:8px' }, 'コンバート先（守備位置。実出場は既存の起用AIが自然に追随します）:'));
+    c.append(el('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px' }, FIELD_POSITIONS.map((pos) => el('button', {
+      class: cur.policy === `convert:${pos}` ? 'primary' : '',
+      onclick: () => apply(`convert:${pos}`, cur.special),
+    }, u.posJP(pos)))));
+  }
+  const specialFull = specialUsed >= tc.specialSlotsPerTeam && !cur.special;
+  c.append(el('div', { class: 'row', style: 'margin-top:8px' }, [
+    el('button', {
+      class: cur.special ? 'primary' : '',
+      onclick: () => { if (!specialFull) apply(cur.policy, !cur.special); },
+    }, cur.special ? '特別指導：ON（効果2倍）' : specialFull ? '特別指導枠は満枠' : `特別指導にする（残り${tc.specialSlotsPerTeam - specialUsed}枠）`),
+    el('button', { class: 'link', onclick: () => { clearTrainingPolicy(gs, mine.id); u.autoSave(); renderStoveScreen(u); } }, '設定を解除（バランスへ）'),
+  ]));
+}
+
 // --- オフシーズン・ダイジェスト（E3: 引退/ドラフト/FA/トレード/拾い上げ/表彰の1画面） -------
 
 /** FA入札が結果に現れなかった理由の言語化（宣言くじの再導出＝決定論・純関数）。 */
@@ -15423,6 +15864,22 @@ function renderOffseasonDigestScreen(off, u) {
     root.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `育成（二軍）在籍: ${myFarm.length}人 — ホームの「チーム」タブ→二軍で確認できます。`));
   }
 
+  // H4: キャンプの成果（特別指導枠の選手だけ・見立ての前後差＝結果は乱数次第のお祈り）。
+  const campResults = off.campResults ?? [];
+  if (campResults.length) {
+    root.append(el('h3', { class: 'leaguename' }, `🏋️ 秋季キャンプの成果（特別指導・${campResults.length}人）`));
+    root.append(el('div', { class: 'awardlist' }, campResults.map((cr) => {
+      const gB = cr.before != null ? u.scoutGrade(cr.before) : '-';
+      const gA = cr.after != null ? u.scoutGrade(cr.after) : '-';
+      const delta = cr.before != null && cr.after != null ? cr.after - cr.before : null;
+      const arrow = delta == null ? '' : delta > 0.5 ? '大きく上向いた ↑' : delta < -0.5 ? '伸び悩んだ ↓' : '横ばい →';
+      return el('div', { class: 'awardrow' }, [
+        link(cr.playerId),
+        el('span', { class: 'muted' }, `　${campPolicyLabel(cr.policy, u)}　コーチの見立て ${gB}→${gA}（${arrow}）`),
+      ]);
+    })));
+  }
+
   // --- リーグ全体 ------------------------------------------------------------
   root.append(el('div', { class: 'pspanel' }, [
     el('h3', { class: 'leaguename' }, 'ストーブリーグ要約（リーグ全体）'),
@@ -15495,6 +15952,9 @@ function renderOffseasonDigestScreen(off, u) {
 //   - 表示のみ: 本モジュールは gs/rt を読むだけで一切書かない（決定論に無関係）。
 //   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同じ<script>へ前置 concat する。
 //     
+// H4: 「コーチの見立て」総合スカラーはヘッドレス層（game/training.mjs）が持つ（真値+スカウトノイズの
+//   観測式・キャンプ成果の前後差にも使う共通式）。ここでは等級化(scoutGrade)だけを担う。
+
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -15723,27 +16183,7 @@ function buildFarmRosterRows(players, u) {
  * E3: ストーブリーグ画面（stove.mjs）も同じ見立てを使うため export する。
  */
 function teamScoutGrade(p, cfg, u) {
-  const t = p.trueAbility;
-  const cl20 = (x) => Math.max(20, Math.min(80, x));
-  const sd = (cfg?.tuning?.mgr?.scoutSd ?? 5) * 1.4;
-  const seed = p.scoutSeed ?? hashSeed(p.id, 'scout');
-  const obs = (key, v) => cl20(v + makeRng(hashSeed(seed, 'coachView', key)).normal(0, sd));
-  let axes;
-  if (p.role === 'pitcher') {
-    const pi = t.pitching;
-    const veloR = cl20(50 + (pi.velocityKmh - 146) * 2);
-    axes = [obs('velo', veloR), obs('control', pi.control), obs('stamina', pi.stamina)];
-    if (pi.pitches.length) {
-      let sum = 0;
-      pi.pitches.forEach((x, i) => { sum += obs('pitch' + i, x.current); });
-      axes.push(sum / pi.pitches.length);
-    }
-  } else {
-    const b = t.batting;
-    axes = [obs('ev', b.ev), obs('la', b.la), obs('contact', b.contact), obs('eye', b.eye), obs('speed', t.common.speed)];
-  }
-  const v = axes.reduce((a, x) => a + x, 0) / axes.length;
-  return u.scoutGrade(v);
+  return u.scoutGrade(coachOverallScore(p, cfg));
 }
 
 /**

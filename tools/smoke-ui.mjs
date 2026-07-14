@@ -850,6 +850,26 @@ assert.ok(textOf(hasClass('header')).includes('トレード起案1件'), 'ヘッ
 btnByText('育成・支配下')._onclick();
 assert.ok(walk(appDiv).some((n) => textOf(n).includes('昇格候補')), '育成タブに昇格候補セクション');
 
+// H4) 秋季キャンプタブ: 自チーム選手一覧→編集→方針ボタン（打撃/守備/走塁/休養/バランス/コンバート）
+//   →特別指導トグル（K枠上限）。setTrainingPolicy/clearTrainingPolicy が介入ログのみを積むこと
+//   （エンジン状態を直接書き換えないこと）をUI経由で確認する。
+btnByText('秋季キャンプ')._onclick();
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('特別指導枠')), '秋季キャンプタブに特別指導枠の案内');
+const campEditBtns = allClass('stovepick');
+assert.ok(campEditBtns.length >= 25, `秋季キャンプ: 自チーム選手ぶんの編集ボタンが並ぶ (got ${campEditBtns.length})`);
+campEditBtns[0]._onclick();
+const defenseBtn = btnByText('守備強化');
+assert.ok(defenseBtn, 'H4: 選手を選ぶと方針ボタン（打撃/守備/走塁/休養/バランス）が出る');
+defenseBtn._onclick();
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('守備強化')), 'H4: 方針を選ぶと一覧の表示ラベルが更新される');
+const convertBtn = btnByText('1B');
+if (convertBtn) { convertBtn._onclick(); assert.ok(walk(appDiv).some((n) => textOf(n).includes('コンバート')), 'H4: コンバート方針を選ぶとラベルにコンバートが出る'); }
+const specialBtn = btnByText('特別指導にする');
+assert.ok(specialBtn, 'H4: 特別指導トグルボタンがある（枠に余裕あり）');
+specialBtn._onclick();
+assert.ok(btnByText('特別指導：ON'), 'H4: 特別指導ONにするとボタン表示が切り替わる');
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('★')), 'H4: 特別指導した選手は一覧に★表示');
+
 // E3e) 年送り（オフシーズン処理）→ ダイジェストにFA入札/トレード起案の結果が反映
 // H2: 対話型ドラフト会議（既定・startNewGameがcfg.game.interactiveDraft:trueを付与）。
 //   自チームの指名番になっていればadvanceYearが中断し、ホーム/ダイジェストの代わりに
@@ -964,6 +984,7 @@ assert.ok(allClass('overlay').length >= 1, '記録タブのリンクから選手
 console.log('UI smoke OK (E1): チームタブ(一軍=出場登録29人/仕様列/ソート/等級)→行クリックでモーダル(所属/二つ名ヘッダ)→年送り(オフ要約)→2年目二軍名簿→育成選手モーダル→記録タブplayerLink、例外なし');
 console.log('UI smoke OK (F2-4二軍UI): チームタブ二軍(支配下残+育成/二軍成績列/育成バッジ)→順位タブ二軍リーグ順位折りたたみ(若草/暁12球団)→選手詳細(年度別の一軍/二軍行・所属=一軍登録/二軍/育成・今季二軍成績)→2年目昇降格ニュース(登録抹消/昇格+playerLink→モーダル)、例外なし');
 console.log('UI smoke OK (E3編成): リザルト→ストーブリーグ(FA市場宣言見込み→入札/取消・トレード放出選択→受諾/拒否見込み→打診・育成昇格候補)→オフ処理→ダイジェスト(FA/トレード結果反映・自チームの動き・表彰)、例外なし');
+console.log('UI smoke OK (H4秋季キャンプ): 秋季キャンプタブ(自チーム一覧→編集→方針ボタン/コンバート先/特別指導トグル)→方針変更でラベル即時反映→オフダイジェスト合流、例外なし');
 console.log('UI smoke OK (H2対話ドラフト): オフ処理→自チームの指名番でドラフト会議室に中断(スカウトレポート列一式=等級/ツール/伸びしろ/経歴/評判)→指名ボタンで解決(競合くじ敗退→再指名を含む)→全ラウンド完了でオフダイジェストへ合流、例外なし');
 
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');

@@ -24,6 +24,8 @@ import {
   bidFA, proposeTrade, retirementCeremonyText, ownTeamRetirementHeadlines,
   setTrainingPolicy, clearTrainingPolicy, TRAINING_LABELS, // H4: 育成方針・キャンプ
 } from '../game/index.mjs';
+import { observedValueOf } from '../game/transactions.mjs';
+import { salaryOf, salaryFromValue } from '../game/finance.mjs'; // H5-A: 年俸予算（実弾化）
 import { teamScoutGrade } from './team.mjs';
 
 // 画面内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
@@ -62,6 +64,42 @@ function stoveProfiles(gs) {
   return m;
 }
 
+// --- H5-A: 年俸予算（phaseH_fun_spec H5-A）。ストーブの payroll バー・費用表示に使う純関数群 ------
+
+/**
+ * 今季 statsById（u.state.res.statsById＝careerStatsと同じ生カウント形）から、
+ * runFA/runContractRenewal と同じ observedValueOf 入力形（playerId→{batting,pitching}）を作る。
+ * オフシーズン処理前の「見込み」表示専用（確定値は off.contracts/実際の salary と一致するとは限らない）。
+ */
+function stoveObsMap(u) {
+  const m = new Map();
+  const raw = u.state.res && u.state.res.statsById ? u.state.res.statsById : null;
+  if (raw) for (const [id, s] of raw) m.set(id, s);
+  return m;
+}
+
+/** FA見込みの「提示年俸」（runFAのaskSalaryと同じ式・見込みのため加齢前の当季観測を使う）。 */
+function stoveAskSalary(gs, obsMap, p) {
+  return salaryFromValue(observedValueOf(p, obsMap, gs.cfg), gs.cfg);
+}
+
+/** payroll バー（budget比の横棒＋数値）。over=予算超過（赤系）。 */
+function stovePayrollBar(u, teamId) {
+  const { el, game } = u;
+  const gs = game.gs;
+  const t = gs.league.teams.find((x) => x.id === teamId);
+  const fin = t?.finance;
+  if (!fin) return el('div', { class: 'muted' }, '');
+  const pct = fin.budget > 0 ? Math.min(1.4, fin.payroll / fin.budget) : 0;
+  const over = fin.payroll > fin.budget;
+  return el('div', { class: 'payrollbar', style: 'margin:4px 0' }, [
+    el('div', { class: 'muted' }, `年俸総額 ${fin.payroll.toLocaleString()} / 予算 ${fin.budget.toLocaleString()}（万円相当）${over ? '　※予算超過' : ''}`),
+    el('div', { style: 'height:8px;background:#0c3122;border:1px solid var(--line);border-radius:4px;overflow:hidden;max-width:320px' }, [
+      el('div', { style: `height:100%;width:${Math.round(Math.min(1, pct) * 100)}%;background:${over ? '#e0574a' : '#5fd694'}` }),
+    ]),
+  ]);
+}
+
 /**
  * FA宣言見込み（E3・runFA と同一ハッシュ座標 'fa-declare' の純関数）。
  * オフシーズン処理では「加齢後の年齢」で資格判定されるため age+1 で帯を判定する。
@@ -82,12 +120,17 @@ export function stoveFaForecast(gs) {
 /**
  * トレードの相手AI受諾見込み（runTrades のプレイヤー起案受諾と同じ式・現時点の値）。
  * mine=放出する自チーム選手 / theirs=獲得したい相手選手。gain=相手球団査定の（受け取る−手放す）。
+ * H5-A: 実弾化。評価差margin判定に加え、現行年俸差が market.trade.salaryDiffMax 以内でないと
+ * 成立しない（runTrades の salaryOk と同じ式）＝accept は両条件のANDで判定する。
  */
 export function stoveTradeVerdict(gs, profiles, mine, theirs) {
   const profile = profiles.get(theirs.teamId);
   const gain = stoveAssessBy(gs, profile, mine) - stoveAssessBy(gs, profile, theirs);
   const margin = gs.cfg.tuning.market.trade.margin;
-  return { gain, margin, accept: gain > margin };
+  const salaryDiffMax = gs.cfg.tuning.market.trade.salaryDiffMax;
+  const salaryDiff = Math.abs(salaryOf(mine, gs.cfg) - salaryOf(theirs, gs.cfg));
+  const salaryOk = salaryDiff <= salaryDiffMax;
+  return { gain, margin, salaryDiff, salaryDiffMax, salaryOk, accept: gain > margin && salaryOk };
 }
 
 /**
@@ -189,6 +232,7 @@ export function renderStoveScreen(u) {
   const nTr = ivs.filter((i) => i.phase === 'trade').length;
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, [`${gs.year}年 ストーブリーグ　`, el('span', { class: 'muted' }, `介入予定: FA入札${nFa}件・トレード起案${nTr}件`)]),
+    stovePayrollBar(u, gs.playerTeamId), // H5-A: 自チームの年俸予算バー
     el('div', { class: 'row' }, [
       el('button', { class: 'primary', onclick: () => u.advanceToNextYearUI() }, '▶ オフシーズン処理を実行（年送り）'),
       el('button', { class: 'link', onclick: () => u.renderSeasonResult() }, 'リザルトへ戻る'),
@@ -212,18 +256,30 @@ function stoveFaTab(c, u) {
   const fa = gs.cfg.tuning.market.fa;
   const cands = stoveFaForecast(gs);
   const bids = new Set(stoveIvs(gs).filter((i) => i.phase === 'fa').map((i) => i.playerId));
+  const obsMap = stoveObsMap(u); // H5-A: 想定年俸の算出用（今季観測・見込み）
+  const myTeam = gs.league.teams.find((t) => t.id === gs.playerTeamId);
+  const myPayroll = myTeam?.finance?.payroll ?? 0;
+  const myBudget = myTeam?.finance?.budget ?? Infinity;
   c.append(el('div', { class: 'muted', style: 'margin:6px 0' },
     `今オフにFA宣言が見込まれる選手（オフシーズン処理で確定・引退した場合は流れます。対象は加齢後${fa.minAge}〜${fa.maxAge}歳）。`
-    + '入札すると獲得できますが、人的補償として同型（同じ役割・守備位置）の非プロテクト選手1人が相手球団へ移ります。'));
+    + '入札すると獲得できますが、人的補償として同型（同じ役割・守備位置）の非プロテクト選手1人が相手球団へ移ります。'
+    + `（H5-A: 提示年俸が下限${fa.salaryFloor}万円を超え、かつ自球団の年俸予算内でないと成立しません。）`));
   const others = cands.filter((p) => p.teamId !== gs.playerTeamId);
   const mine = cands.filter((p) => p.teamId === gs.playerTeamId);
   const row = (p, own) => {
+    const askSalary = stoveAskSalary(gs, obsMap, p);
     let act;
     if (own) act = el('td', { class: 'left muted' }, '（自チーム・流出の恐れ）');
     else if (bids.has(p.id)) {
       act = el('td', { class: 'left' }, [el('button', { class: 'link', onclick: () => { stoveCancelFa(gs, p.id); u.autoSave(); renderStoveScreen(u); } }, '入札済み・取消')]);
     } else {
-      act = el('td', { class: 'left' }, [el('button', { onclick: () => { bidFA(gs, p.id); u.autoSave(); renderStoveScreen(u); } }, '入札する')]);
+      const overBudget = myPayroll + askSalary > myBudget;
+      // el() は null 子要素を弾かない（ブラウザの append(null) は "null" を描画してしまう）ため
+      // 条件付き子要素は '' で埋める。
+      act = el('td', { class: 'left' }, [
+        el('button', { onclick: () => { bidFA(gs, p.id); u.autoSave(); renderStoveScreen(u); } }, '入札する'),
+        overBudget ? el('span', { class: 'muted', style: 'margin-left:4px' }, '予算超過の恐れ') : '',
+      ]);
     }
     return el('tr', {}, [
       el('td', { class: 'left' }, [u.playerLink(p.id)]),
@@ -232,16 +288,17 @@ function stoveFaTab(c, u) {
       el('td', {}, String(p.age)),
       el('td', { class: 'left' }, stoveSeasonBrief(p, u)),
       el('td', {}, teamScoutGrade(p, state.cfg, u)),
+      el('td', {}, `${askSalary.toLocaleString()}万円`),
       act,
     ]);
   };
   c.append(el('h3', { class: 'leaguename' }, `FA宣言見込み・他球団（${others.length}人）`));
   if (!others.length) c.append(el('div', { class: 'muted' }, '今オフに宣言が見込まれる他球団の選手はいません。'));
-  else c.append(stoveTable(u, ['選手', '球団', '位置', '年齢', '今季成績', '等級', '入札'], others.map((p) => row(p, false))));
+  else c.append(stoveTable(u, ['選手', '球団', '位置', '年齢', '今季成績', '等級', '想定年俸', '入札'], others.map((p) => row(p, false))));
   if (mine.length) {
     c.append(el('h3', { class: 'leaguename' }, `FA宣言見込み・自チーム（${mine.length}人）`));
     c.append(el('div', { class: 'muted' }, '他球団の入札が自球団評価を上回ると移籍します（人的補償として同型1人が入ります）。'));
-    c.append(stoveTable(u, ['選手', '球団', '位置', '年齢', '今季成績', '等級', '入札'], mine.map((p) => row(p, true))));
+    c.append(stoveTable(u, ['選手', '球団', '位置', '年齢', '今季成績', '等級', '想定年俸', '入札'], mine.map((p) => row(p, true))));
   }
 }
 
@@ -268,7 +325,9 @@ function stoveTradeTab(c, u) {
         const v = stoveTradeVerdict(gs, profiles, a, b);
         vtxt = v.accept
           ? `受諾見込み（相手評価差 +${v.gain.toFixed(1)} > ${v.margin}）`
-          : `拒否見込み（相手評価差 ${v.gain >= 0 ? '+' : ''}${v.gain.toFixed(1)} ≦ ${v.margin}）`;
+          : v.gain > v.margin && !v.salaryOk
+            ? `拒否見込み（年俸差 ${v.salaryDiff.toLocaleString()}万円 > 許容${v.salaryDiffMax.toLocaleString()}万円）`
+            : `拒否見込み（相手評価差 ${v.gain >= 0 ? '+' : ''}${v.gain.toFixed(1)} ≦ ${v.margin}）`;
       }
       return el('div', { class: 'awardrow' }, [
         el('span', {}, ['放出 ', u.playerLink(iv.aPlayer), ' ⇔ 獲得 ', u.playerLink(iv.bPlayer), `（${u.tname(iv.bTeam)}）`]),
@@ -320,16 +379,23 @@ function stoveTradeTab(c, u) {
     .map((p) => ({ p, v: stoveTradeVerdict(gs, profiles, mine, p) }))
     .sort((a, b) => b.v.gain - a.v.gain || (a.p.id < b.p.id ? -1 : 1));
   c.append(el('div', { class: 'muted', style: 'margin-top:8px' },
-    `2) ${mine.name}（${stovePosLabel(mine, u)}）と交換する相手（同型のみ）を選んで打診:`));
-  c.append(stoveTable(u, ['選手', '球団', '年齢', '今季成績', '等級', '受諾見込み', '打診'], targets.map(({ p, v }) => {
+    `2) ${mine.name}（${stovePosLabel(mine, u)}・年俸${salaryOf(mine, gs.cfg).toLocaleString()}万円）と交換する相手（同型のみ）を選んで打診:`
+    + `（H5-A: 年俸差が許容${gs.cfg.tuning.market.trade.salaryDiffMax.toLocaleString()}万円を超えると成立しません。）`));
+  c.append(stoveTable(u, ['選手', '球団', '年齢', '今季成績', '等級', '年俸', '受諾見込み', '打診'], targets.map(({ p, v }) => {
     const done = proposedKey.has(`${mine.id}|${p.id}`);
+    const verdictTxt = v.accept
+      ? `受諾見込み +${v.gain.toFixed(1)}`
+      : v.gain > v.margin && !v.salaryOk
+        ? `拒否見込み（年俸差${v.salaryDiff.toLocaleString()}万円）`
+        : `拒否見込み ${v.gain >= 0 ? '+' : ''}${v.gain.toFixed(1)}`;
     return el('tr', {}, [
       el('td', { class: 'left' }, [u.playerLink(p.id)]),
       el('td', { class: 'left' }, u.tname(p.teamId)),
       el('td', {}, String(p.age)),
       el('td', { class: 'left' }, stoveSeasonBrief(p, u)),
       el('td', {}, teamScoutGrade(p, state.cfg, u)),
-      el('td', { class: 'left' }, v.accept ? `受諾見込み +${v.gain.toFixed(1)}` : `拒否見込み ${v.gain >= 0 ? '+' : ''}${v.gain.toFixed(1)}`),
+      el('td', {}, `${salaryOf(p, gs.cfg).toLocaleString()}万円`),
+      el('td', { class: 'left' }, verdictTxt),
       el('td', { class: 'left' }, done ? '起案済み' : [el('button', { onclick: () => { proposeTrade(gs, mine.id, p.id); u.autoSave(); renderStoveScreen(u); } }, '打診する')]),
     ]);
   })));
@@ -484,6 +550,7 @@ export function renderOffseasonDigestScreen(off, u) {
   root.innerHTML = '';
   root.append(el('div', { class: 'header' }, [
     el('h2', {}, `${prevYear}年 オフシーズン ダイジェスト`),
+    stovePayrollBar(u, my), // H5-A: 契約更改・市場移動を経た確定payroll
     el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => u.renderHub() }, `▶ ${gs.year}年シーズン開幕へ`)]),
   ]));
   const link = (id, name) => u.playerLink(id, name); // 引退者は byId 不在→素のテキスト（name必須）
@@ -532,10 +599,11 @@ export function renderOffseasonDigestScreen(off, u) {
     moves.push(el('div', { class: 'newsrow' }, [
       'トレード不成立: 放出 ', link(iv.aPlayer), ' ⇔ 獲得 ', link(iv.bPlayer), '（対象選手の移籍・引退により無効）']));
   }
-  // 戦力外/拾い上げ（自チーム関与）
+  // 戦力外/拾い上げ（自チーム関与）。H5-A: reason='budget' は予算超過による強制戦力外。
   for (const pu of off.pickups ?? []) {
-    if (pu.to === my) moves.push(el('div', { class: 'newsrow good' }, ['拾い上げ: ', link(pu.playerId), `（${u.tname(pu.from)}が戦力外）を獲得`]));
-    else if (pu.from === my) moves.push(el('div', { class: 'newsrow bad' }, ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる`]));
+    const why = pu.reason === 'budget' ? '（予算超過による戦力外）' : '（戦力外）';
+    if (pu.to === my) moves.push(el('div', { class: 'newsrow good' }, ['拾い上げ: ', link(pu.playerId), `（${u.tname(pu.from)}が${pu.reason === 'budget' ? '予算超過で放出' : '戦力外'}）を獲得`]));
+    else if (pu.from === my) moves.push(el('div', { class: 'newsrow bad' }, ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
   }
   // 自チームの引退（引退者に teamId は無い→完了年の careerStats から最終所属を引く）
   // H1-3: 功労者（通算PA/IP/受賞数が閾値超）は「引退セレモニー」の文面で個別ニュース化する。

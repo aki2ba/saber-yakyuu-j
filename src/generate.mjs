@@ -74,6 +74,20 @@ export function assignPersonality(id) {
   return PERSONALITIES[rng.int(PERSONALITIES.length)];
 }
 
+/**
+ * H5-A: 球団の財力プロファイル（年俸予算budget）を masterSeed×teamId の独立シードから
+ * 決定論的に引く（teamEvalProfile・§13と同じ「球団ごとに固定の癖」流儀・独立シード='finance'
+ * ＝支配下/育成/監督/球場の生成ストリームを一切乱さない）。budget は生成時に固定され、
+ * H5-Cでファン人気連動の年次見直しが入るまでキャリア中不変（phaseH_fun_spec H5-A）。
+ * 既存セーブの補完（game/index.mjs load()・src/game/finance.mjs refreshTeamFinance）も
+ * 本関数を呼ぶ＝新規生成と旧セーブ補完が同式で一致する（personality と同じ「後付け可能」構造）。
+ */
+export function teamFinanceProfile(masterSeed, teamId, cfg) {
+  const b = cfg.tuning.economy.budget;
+  const r = makeRng(hashSeed(masterSeed, 'finance', teamId));
+  return { budget: Math.round(clamp(r.normal(b.mean, b.sd), b.min, b.max)) };
+}
+
 /** 完全架空の姓名を合成 */
 export function generateName(rng) {
   return SURNAMES[rng.int(SURNAMES.length)] + '　' + GIVEN[rng.int(GIVEN.length)];
@@ -689,6 +703,9 @@ export function generateLeague(masterSeed, config) {
       // 本拠地球場（D2・§11.2）。ゼロサム中心化済み偏差から構築（完全架空名）。
       park: buildParkFromDeviations(t.parkCentered, parkNameFor(name), config),
       playerIds: t.roster.map((p) => p.id),
+      // H5-A（phaseH_fun_spec）: 年俸予算。budgetは決定論付与（財力差・§13と同じ独立シード流儀）。
+      //   payrollは契約更改前ゆえ0＝オフシーズン処理（refreshTeamFinance）が実額へ更新する。
+      finance: { budget: teamFinanceProfile(masterSeed, t.teamId, config).budget, payroll: 0 },
     });
     players.push(...t.roster);
     // 育成選手（F2-1）: league.players/team.playerIds と別枠の league.farm へ（既存 §12.1 farm 枠組み）。

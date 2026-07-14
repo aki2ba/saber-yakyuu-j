@@ -26,6 +26,8 @@ import { marketStage1, marketStage2, runDraft, teamEvalProfile, teamWindowState,
 import { applyFarmPromotionSwap } from './roster_moves.mjs';
 import { encodeSeasons, decodeSeasons } from './statcodec.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal, releaseScore } from './transactions.mjs';
+// H5-A: 経営レイヤー第1段階（年俸予算）。team.finance の再計算＋旧セーブ補完（phaseH_fun_spec H5-A）。
+import { refreshTeamFinance } from './finance.mjs';
 import { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
 //   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
@@ -194,7 +196,8 @@ function offseasonStage1(league, cfg, {
     ? new Map(league.teams.map((t) => [t.id, teamWindowState(t.id, teamHistory, cfg)]))
     : null;
   // FA → トレード（引退後の生存者を同型1:1スワップ・構成恒常・ドラフト枠に非干渉）。
-  const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs });
+  //   H5-A: obs を渡す（提示salary=当季観測貢献量→salaryFromValue の実弾化判定に使う）。
+  const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, obs });
   const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, windowByTeam });
   rebuildTeamRosters(league);
   // 時代トレンド（D3・§11.3）: 翌年（debut年）の世代の波・球速の経年上昇＝computeEra(yearIndex+1)。
@@ -217,20 +220,34 @@ function offseasonStage1(league, cfg, {
 }
 
 /**
- * ★H2: オフシーズン遷移の後半（stage2）。ドラフト確定後の「育成獲得→剪定→戦力外/拾い上げ
- * →契約更改」（phaseH_fun_spec H2 設計方針）。draftResult は runDraft の非中断な戻り値
- * （{rookies, undrafted, draftLog}）であること（呼び出し側が paused でないことを確認済み）。
+ * ★H2: オフシーズン遷移の後半（stage2）。ドラフト確定後の「育成獲得→剪定→契約更改→戦力外/拾い上げ」
+ * （phaseH_fun_spec H2 設計方針。★H5-A で契約更改と戦力外/拾い上げの順序を入れ替えた＝下記コメント）。
+ * draftResult は runDraft の非中断な戻り値（{rookies, undrafted, draftLog}）であること
+ * （呼び出し側が paused でないことを確認済み）。
+ *
+ * ★H5-A（phaseH_fun_spec）: 契約更改を戦力外/拾い上げより先に実行する（旧H2の順序を反転）。
+ *   今年の salary（実弾化＝salaryFromValue）を先に確定させないと「どの球団が予算超過か」が
+ *   判定できず、予算超過球団の高salary非プロテクト選手を戦力外候補ルート（runReleaseAndPickup の
+ *   forcedCuts）へ合流させられないため。runContractRenewal は obs（当季観測。今年の売買では
+ *   一切動かない）から salary を出すので、この入れ替えで契約更改自体の結果は変わらない
+ *   （score基準の戦力外候補も obs 由来で不変＝影響するのは budgetCuts が追加される点だけ）。
  * @returns {{pickups:Array, contracts:Array}}
  */
 function offseasonStage2(league, cfg, { s1, draftResult, masterSeed, yearIndex }) {
   league.players = league.players.concat(draftResult.rookies);
   rebuildTeamRosters(league);
   marketStage2(league, cfg, { undrafted: draftResult.undrafted, order: s1.order, balanceBoost: s1.balanceBoost, rookies: draftResult.rookies });
+  // 契約更改（H5-A: 実弾化。予算超過球団の budgetCuts を算出する）。
+  const contracts = runContractRenewal(league, cfg, { obs: s1.obs, profiles: s1.profiles, masterSeed, yearIndex });
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
-  const pickups = runReleaseAndPickup(league, cfg, { profiles: s1.profiles, masterSeed, yearIndex, standings: s1.standings, obs: s1.obs });
+  //   H5-A: 予算超過による強制戦力外（budgetCuts）を同じ再分配プールへ合流させる。
+  const pickups = runReleaseAndPickup(league, cfg, {
+    profiles: s1.profiles, masterSeed, yearIndex, standings: s1.standings, obs: s1.obs, forcedCuts: contracts.budgetCuts,
+  });
   rebuildTeamRosters(league);
-  // 契約更改（フレーバー・エンジン非干渉）。
-  const contracts = runContractRenewal(league, cfg, { obs: s1.obs });
+  // H5-A: release/pickupで個体が入れ替わった後の「最終」payrollを team.finance へ確定する
+  //   （stove UI の payroll バー・realism WATCH が読む値）。
+  refreshTeamFinance(league, cfg, masterSeed);
   return { pickups, contracts };
 }
 
@@ -955,6 +972,11 @@ export function load(blob, options = {}) {
   //   同じ式(assignPersonality)を旧セーブにも適用すれば同一の結果になる＝「後付けできる」。
   for (const p of league.players) if (p.personality == null) p.personality = assignPersonality(p.id);
   for (const p of league.farm) if (p.personality == null) p.personality = assignPersonality(p.id);
+  // H5-A: team.finance の後方互換補完（phaseH_fun_spec 全柱共通の鉄則6）。budget は masterSeed×teamId
+  //   の独立シードから決定論的に導出できる（personality と同じ「後付けできる」構造）ため、
+  //   新規生成(generate.mjs teamFinanceProfile)と同じ式で欠けているチームだけ埋める。payroll は
+  //   現在の支配下ロスターの現行年俸合計から再計算する（refreshTeamFinance が両方まとめて行う）。
+  refreshTeamFinance(league, cfg, data.masterSeed >>> 0);
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,

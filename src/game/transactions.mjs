@@ -22,6 +22,7 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { evaluateProspect, waiverOrder } from './market.mjs';
 import { observedWoba } from '../sim/manager.mjs';
+import { salaryOf, salaryFromValue, sumSalary } from './finance.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
 function byId(a, b) {
@@ -127,9 +128,18 @@ export function releaseScore(p, obs, cfg) {
  *
  * FA入札が "評価関数差で分かれる": 守備を重める球団は守備型FAに高く入札し、出塁重視の球団は
  * 選球眼型に高く入札する（evaluateProspect の球団の癖）。→ 宝を正しく評価する球団が競り勝つ。
+ *
+ * H5-A（phaseH_fun_spec）: 実弾化。winner が確定した後、以下の2条件を追加で満たさないと移籍しない
+ * （AI/プレイヤー対称・winner=AIでもプレイヤーでも同じ判定）:
+ *   1. 提示salary（当該FA選手の当季観測貢献量→salaryFromValue）が fa.salaryFloor 超
+ *      （下限未満＝本気の入札ではない・格安の一言二言で獲れる程度の選手には金を払わない）
+ *   2. winner の payroll（人的補償で出す comp の年俸を差し引き・p の年俸を足した後）が
+ *      team.finance.budget 以内（finance 未設定の呼び出し元＝旧テスト等は budget=Infinity で無効化）
+ * obs 省略時（旧呼び出し）は observedValueOf が null を返し salaryFromValue が salaryBase を返す
+ * ＝全FA選手が同一の salary になるだけで判定自体は従来どおり機能する。
  * @returns {Array} 成立した移籍の記録
  */
-export function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions }) {
+export function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions, obs = new Map() }) {
   const fa = cfg.tuning.market.fa;
   const order = teamIds(league);
   const rosters = activeByTeam(league);
@@ -137,6 +147,10 @@ export function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventi
   for (const tid of order) {
     protects.set(tid, protectSet(tid, rosters.get(tid), profiles, cfg, fa.protectCount, masterSeed, yearIndex));
   }
+  // H5-A: 球団の年俸予算（finance未設定＝旧テスト等は budget:Infinity で無効化）と、
+  //   このFAパス内での払い出し累積（複数FAが同一球団に連続で決まる場合の逐次判定）。
+  const financeByTeam = new Map(league.teams.map((t) => [t.id, t.finance]));
+  const payrollByTeam = new Map(order.map((tid) => [tid, sumSalary(rosters.get(tid), cfg)]));
   const signings = [];
 
   // 資格判定＋宣言（決定論・年齢帯＝年数条件の簡略代理）。
@@ -176,6 +190,10 @@ export function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventi
     }
     if (!winner) continue;
 
+    // H5-A: 提示salary（実弾化）が下限未満なら本気の入札ではない＝不成立。
+    const askSalary = salaryFromValue(observedValueOf(p, obs, cfg), cfg);
+    if (askSalary <= fa.salaryFloor) continue;
+
     // 人的補償: 移籍先 winner の "非プロテクト同型" から、流出元 home が自評価で最良の1人を獲る。
     //   winner は自評価で最も惜しくない同型（＝最低評価の非プロテクト）を差し出す。無ければ不成立
     //   （＝構成恒常のガード。同(role,primaryPos)1:1が保てない移籍はしない）。
@@ -188,15 +206,25 @@ export function runFA(league, cfg, { profiles, masterSeed, yearIndex, interventi
     pool.sort((a, b) => assess(profiles, winner, a, cfg, masterSeed, yearIndex) - assess(profiles, winner, b, cfg, masterSeed, yearIndex) || byId(a, b));
     const comp = pool[0];
 
+    // H5-A: winner の予算内チェック（compの年俸が抜け・pの提示salaryが入る）。超過なら不成立
+    //   （AI/プレイヤー対称＝winnerがプレイヤー球団でも同じ式で判定される）。
+    const compSalary = salaryOf(comp, cfg);
+    const winnerBudget = financeByTeam.get(winner)?.budget ?? Infinity;
+    const winnerPayrollAfter = payrollByTeam.get(winner) - compSalary + askSalary;
+    if (winnerPayrollAfter > winnerBudget) continue;
+
     // 契約年数（34歳以降の長期はリスク・§15）＝フレーバー記録。
     const years = Math.max(1, Math.min(fa.maxYears, p.age >= fa.longContractAge ? fa.maxYears - Math.floor((p.age - fa.longContractAge) / 2) : fa.maxYears - 1));
     // 移籍実行（同型1:1スワップ）。
+    const homeSalaryOfP = salaryOf(p, cfg); // home 側の払い出し解放額＝pの"現行"契約（askSalaryは市場相場・別概念）
     p.teamId = winner;
     comp.teamId = home;
     // ロスター束を更新（後続FA処理が最新の在籍で判断できるように）。
     rosters.set(winner, rosters.get(winner).filter((q) => q.id !== comp.id).concat(p).sort(byId));
     rosters.set(home, rosters.get(home).filter((q) => q.id !== p.id).concat(comp).sort(byId));
-    signings.push({ playerId: p.id, from: home, to: winner, comp: comp.id, via, years, age: p.age, role: p.role, primaryPos: p.primaryPos });
+    payrollByTeam.set(winner, winnerPayrollAfter);
+    payrollByTeam.set(home, payrollByTeam.get(home) - homeSalaryOfP + compSalary);
+    signings.push({ playerId: p.id, from: home, to: winner, comp: comp.id, via, years, age: p.age, role: p.role, primaryPos: p.primaryPos, salary: askSalary });
   }
   return signings;
 }
@@ -227,11 +255,17 @@ function windowPremium(teamId, incoming, windowByTeam, cfg) {
  *
  * 双方win の直観: A の余剰選手 Xa（A評価で最低）と B の余剰選手 Xb を、A が「Xb>Xa（A評価）」かつ
  * B が「Xa>Xb（B評価）」と見なせば、評価関数の違いから両者とも純利得＝成立。宝の再分配が起きる。
+ *
+ * H5-A（phaseH_fun_spec）: 実弾化。双方winの評価差margin判定に加え、|salaryOf(a)-salaryOf(b)| が
+ * tc.salaryDiffMax 以内でないと成立しない（AI/プレイヤー対称。高年俸選手を安い選手だけで釣る
+ * 一方的な財布勝負を防ぐ）。p.contract 未設定の選手は economy.defaultSalary が使われる＝
+ * 契約未更改の旧テスト/序盤は全員同額で判定が実質無効化（既存挙動に近い）。
  * @param {Map<string,string>|null} windowByTeam teamId→'contending'|'neutral'|'rebuilding'（決定3・§決定4で使用）
  * @returns {Array} 成立したトレードの記録
  */
 export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions, windowByTeam = null }) {
   const tc = cfg.tuning.market.trade;
+  const salaryOk = (a, b) => Math.abs(salaryOf(a, cfg) - salaryOf(b, cfg)) <= tc.salaryDiffMax;
   const order = teamIds(league);
   const rosters = activeByTeam(league);
   const protects = new Map();
@@ -266,7 +300,7 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
     const gain =
       assess(profiles, aiTeam, a, cfg, masterSeed, yearIndex) + windowPremium(aiTeam, a, windowByTeam, cfg) -
       assess(profiles, aiTeam, b, cfg, masterSeed, yearIndex);
-    if (gain > tc.margin) swap(a, b, 'player');
+    if (gain > tc.margin && salaryOk(a, b)) swap(a, b, 'player');
     else trades.push({ aPlayer: a.id, aTeam: iv.aTeam, bPlayer: b.id, bTeam: iv.bTeam, via: 'player', rejected: true });
   }
 
@@ -298,7 +332,7 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
         const bGain =
           assess(profiles, B, Xa, cfg, masterSeed, yearIndex) + windowPremium(B, Xa, windowByTeam, cfg) -
           assess(profiles, B, Xb, cfg, masterSeed, yearIndex);
-        if (aGain > tc.margin && bGain > tc.margin) {
+        if (aGain > tc.margin && bGain > tc.margin && salaryOk(Xa, Xb)) {
           swap(Xa, Xb, 'ai');
           if (trades.filter((t) => !t.rejected).length >= tc.maxPerYear) break outer;
           continue outer; // この型は1件成立で次の型へ（churn抑制）
@@ -320,10 +354,15 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
  *
  * 三層の要: 放出判定＝実観測（歪む）／拾い上げ査定＝evaluateProspect（スカウトが素材を見る）。
  * 全球団同目だと復活は起きない → 球団ごとに評価関数が違うからこそ宝がこぼれ、別球団で生き返る。
+ *
+ * H5-A（phaseH_fun_spec）: forcedCuts（予算超過球団が更改で出す高salary非プロテクト選手・
+ * transactions.mjs runContractRenewal の budgetCuts）を "同じ再分配プール" へ合流させる
+ * （戦力外候補ルート＝同型循環に乗せる＝構成恒常を保ったまま予算超過を解消する）。
  * @param {Map<string,Object>} obs playerId → 当該シーズンの観測 statline 行
+ * @param {Array<{teamId,player,cutVal}>} [forcedCuts] 予算超過による強制戦力外候補（H5-A）
  * @returns {Array} 拾い上げ（放出→別球団が獲得）の記録
  */
-export function runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearIndex, standings, obs }) {
+export function runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearIndex, standings, obs, forcedCuts = [] }) {
   const rel = cfg.tuning.market.release;
   const order = teamIds(league);
   const rosters = activeByTeam(league);
@@ -344,8 +383,16 @@ export function runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearInd
     for (const c of cands.slice(0, rel.maxCutsPerTeam)) {
       const tk = typeKey(c.player);
       if (!cutByType.has(tk)) cutByType.set(tk, []);
-      cutByType.get(tk).push({ teamId: tid, player: c.player, cutVal: c.obsVal });
+      cutByType.get(tk).push({ teamId: tid, player: c.player, cutVal: c.obsVal, reason: 'score' });
     }
+  }
+  // H5-A: 予算超過の強制戦力外を同じプールへ合流（スコア基準で既に候補の選手は二重計上しない）。
+  for (const fc of forcedCuts) {
+    const tk = typeKey(fc.player);
+    if (!cutByType.has(tk)) cutByType.set(tk, []);
+    const arr = cutByType.get(tk);
+    if (arr.some((e) => e.player.id === fc.player.id)) continue;
+    arr.push({ teamId: fc.teamId, player: fc.player, cutVal: fc.cutVal, reason: 'budget' });
   }
 
   const wOrder = waiverOrder(standings, league); // 弱い球団が先に拾える（ウェーバー順）
@@ -375,7 +422,7 @@ export function runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearInd
       if (claimed.teamId !== tid) {
         const meta = cutMeta.get(claimed.id);
         claimed.teamId = tid;
-        pickups.push({ playerId: claimed.id, from: meta.teamId, to: tid, cutVal: Math.round(meta.cutVal * 10) / 10, age: claimed.age, role: claimed.role, primaryPos: claimed.primaryPos });
+        pickups.push({ playerId: claimed.id, from: meta.teamId, to: tid, cutVal: Math.round(meta.cutVal * 10) / 10, age: claimed.age, role: claimed.role, primaryPos: claimed.primaryPos, reason: meta.reason ?? 'score' });
       }
     }
   }
@@ -387,21 +434,50 @@ export function runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearInd
 // ============================================================================
 /**
  * 契約更改。年俸を観測（当年 statline 貢献量、無ければ 0）に緩く連動させ、契約年数を年齢で決める
- * （34歳以降は長期＝リスク）。エンジンには一切効かない純フレーバー（記録/ニュース素材・C4用）。
- * @returns {{count:number, totalSalary:number}} 更改サマリ
+ * （34歳以降は長期＝リスク）。H5-A（phaseH_fun_spec）で実弾化: salary は
+ * finance.mjs salaryFromValue（旧・同一式を独立関数化しただけ＝分布は不変）。
+ *
+ * H5-A: profiles/masterSeed/yearIndex を渡すと、更改後の球団payrollが team.finance.budget を
+ * 超える球団について、非プロテクト選手のうち salary 上位から economy.maxBudgetCutsPerTeam 人までを
+ * 「戦力外候補ルート」へ合流させる budgetCuts を返す（呼び出し側が runReleaseAndPickup の
+ * forcedCuts へ渡し、同型循環の再分配に乗せる＝構成恒常を保ったまま予算超過を解消）。
+ * profiles 省略（旧テスト呼び出し）は budgetCuts=[]＝既存挙動と bit 同一。
+ * @returns {{count:number, totalSalary:number, budgetCuts:Array<{teamId,player,cutVal}>}}
  */
-export function runContractRenewal(league, cfg, { obs }) {
+export function runContractRenewal(league, cfg, { obs, profiles = null, masterSeed, yearIndex }) {
   const fa = cfg.tuning.market.fa;
+  const eco = cfg.tuning.economy;
   let total = 0;
   let count = 0;
+  const byTeam = new Map();
   for (const p of league.players) {
     if (p.rosterStatus !== 'active') continue;
     const v = observedValueOf(p, obs, cfg);
-    const salary = Math.max(50, Math.round((300 + 40 * (v ?? 0)) )); // 万円相当の粗い代理（下限50）
+    const salary = salaryFromValue(v, cfg);
     const years = p.age >= fa.longContractAge ? Math.max(1, fa.maxYears - 1) : Math.min(fa.maxYears, 2 + Math.floor(salary / 2000));
     p.contract = { salary, years };
     total += salary;
     count++;
+    if (!byTeam.has(p.teamId)) byTeam.set(p.teamId, []);
+    byTeam.get(p.teamId).push(p);
   }
-  return { count, totalSalary: total };
+
+  // H5-A: 予算超過球団 → 非プロテクトの高salary選手を戦力外候補ルートへ（呼び出し側が redistribute）。
+  const budgetCuts = [];
+  if (profiles) {
+    for (const t of league.teams) {
+      const roster = byTeam.get(t.id) ?? [];
+      const budget = t.finance?.budget ?? Infinity;
+      const payroll = roster.reduce((s, p) => s + p.contract.salary, 0);
+      if (payroll <= budget) continue;
+      const protect = protectSet(t.id, roster, profiles, cfg, eco.protectCount, masterSeed, yearIndex);
+      const nonProt = roster
+        .filter((p) => !protect.has(p.id))
+        .sort((a, b) => b.contract.salary - a.contract.salary || byId(a, b));
+      for (const p of nonProt.slice(0, eco.maxBudgetCutsPerTeam)) {
+        budgetCuts.push({ teamId: t.id, player: p, cutVal: p.contract.salary });
+      }
+    }
+  }
+  return { count, totalSalary: total, budgetCuts };
 }

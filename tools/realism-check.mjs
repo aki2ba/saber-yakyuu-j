@@ -561,6 +561,47 @@ console.log('\n--- G. R7: 高卒新人の1年目デビュー時間軸・ドラ�
 }
 
 // ============================================================================
+// Part H: H5-A（phaseH_fun_spec）— 年俸予算の実弾化が市場成立数を潰していないかのWATCH。
+//   FA入札/トレード/戦力外拾い上げに「提示salary下限＋予算内」「salary差許容」の制約を追加した
+//   （src/game/transactions.mjs runFA/runTrades・budgetCuts→runReleaseAndPickup）。市場は
+//   AI/プレイヤー対称の制約なので、bandを緩く取りすぎると制約が実質無効化し、締めすぎると
+//   H5-A前の市場成立数（実測: FA≈9.5件/年・トレード≈5.9件/年・拾い上げ≈15.3件/年＝
+//   5seed×8年平均・12球団）から激減する。WATCH（表示のみ・まだGATE化しない＝spec指定）:
+//   将来 budget/salaryDiffMax/salaryFloor を較正で追い込んだらGATEへ昇格させること。
+// ============================================================================
+console.log('\n--- H. H5-A: 年俸予算の実弾化 — 市場成立数（FA/トレード/拾い上げ）が激減していないか ---');
+{
+  const MKT_SEEDS = [11, 22, 33, 44, 55];
+  const MKT_YEARS = 8;
+  let faN = 0, trN = 0, puN = 0, budgetCutN = 0, years = 0;
+  let overBudgetTeamYears = 0, teamYears = 0;
+  for (const seed of MKT_SEEDS) {
+    const st = newGame(seed, 'T1', { cfg });
+    for (let y = 0; y < MKT_YEARS; y++) {
+      advanceTo(st, 'seasonEnd');
+      const off = advanceYear(st);
+      faN += (off.fa ?? []).length;
+      trN += (off.trades ?? []).filter((t) => !t.rejected).length;
+      puN += (off.pickups ?? []).length;
+      budgetCutN += (off.pickups ?? []).filter((p) => p.reason === 'budget').length;
+      years++;
+      for (const t of st.league.teams) {
+        teamYears++;
+        if (t.finance && t.finance.payroll > t.finance.budget) overBudgetTeamYears++;
+      }
+    }
+  }
+  const nT = cfg.league.numTeams;
+  // H5-A前の実測（5seed×8年・12球団）: FA≈9.5/年、トレード≈5.9/年、拾い上げ≈15.3/年。
+  //   激減の目安（半減未満）を割ったら要再較正（budget帯/salaryDiffMax/salaryFloorを緩める）。
+  watch('FA成立/年（H5-A前実測 約9.5）', years ? faN / years : 0, 'FA/トレード/拾い上げが激減していないかの観測（表示のみ）', 2);
+  watch('トレード成立/年（H5-A前実測 約5.9）', years ? trN / years : 0, '同上', 2);
+  watch('拾い上げ成立/年（H5-A前実測 約15.3）', years ? puN / years : 0, '同上', 2);
+  watch('拾い上げのうち予算超過起因/年', years ? budgetCutN / years : 0, '予算メカニクスが実際に発火しているか（0だと機能が死んでいる恐れ）', 2);
+  watch('予算超過の球団・年の割合', teamYears ? overBudgetTeamYears / teamYears : 0, `全${nT}球団×${years}年中`, 3);
+}
+
+// ============================================================================
 // 既知の未修正穴（realism_gap_audit.md より・修正したらGATEをここに追加して見張ること）
 // ============================================================================
 console.log('\n--- 既知の未修正穴（audit連動・修正時にGATE昇格すべき項目の覚え書き） ---');

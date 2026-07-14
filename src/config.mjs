@@ -1334,11 +1334,19 @@ export const TUNING_DEFAULT = {
       protectCount: 28, // 人的補償のプロテクト人数（非プロテクト＝残り5から補償を出す）
       longContractAge: 34, // これ以降の長期契約はリスク（契約年数フレーバー・§15）
       maxYears: 4, // 契約年数の上限（フレーバー表示用）
+      // H5-A（phaseH_fun_spec）: FA入札の実弾化。「提示salary」= finance.mjs salaryFromValue
+      //   （当該選手の当季観測貢献量から算出）が本閾値を超えないと"本気の入札"とみなさない
+      //   （下限未満＝格安の一言二言で片付く選手＝予算を割く価値なし）。
+      salaryFloor: 250,
     },
     trade: {
       margin: 6, // 双方winに必要な各球団の純利得の下駄（churn抑制）
       maxPerYear: 6, // AI-AI 成立トレードの年間上限
       protectCount: 28, // 放出プールのプロテクト（非プロテクト同型のみ交換可）
+      // H5-A: 同型1:1スワップに「年俸差」の許容上限を追加（実弾化）。双方winの評価差だけでなく
+      //   現行契約(salaryOf)の差もこの範囲内でないと成立しない＝高年俸選手を安い選手で釣る
+      //   一方的な財布勝負を防ぐ（AI/プレイヤー対称）。p75相当（実測: 中央値300・p75≈877）に設定。
+      salaryDiffMax: 1000,
       // R7（決定4）: 「今⇄将来」の意図的な非効率（Dayn Perry/Neil Painesの実証:
       //   デッドライン補強の実際の貢献は総VORPの2.2%・WS制覇との相関はほぼ無/マイナスなのに
       //   contending球団は上位プロスペクトを過大な代償で払う）。
@@ -1361,6 +1369,46 @@ export const TUNING_DEFAULT = {
       threshold: -3.0, // 戦力外スコアがこれ未満で戦力外候補
       minAge: 26, // これ未満は戦力外にしない（若手は観測が薄くても切らず育てる）
       maxCutsPerTeam: 2, // 各球団が毎オフ出す戦力外候補の上限（worst score から）
+    },
+  },
+
+  // ==========================================================================
+  // H5-A: 経営レイヤー第1段階「年俸予算」（phaseH_fun_spec H5・fun_design_evidence §4柱5）。
+  //   team.finance = {budget, payroll} を新設し、既存 transactions.mjs の salary（旧・純フレーバー）
+  //   を実弾化する: FA入札は「提示salaryが下限超かつ予算内」が成立条件に追加、トレードは
+  //   salary差が許容内（market.trade.salaryDiffMax）、契約更改で予算超過の非プロテクト高給選手は
+  //   戦力外候補ルートへ合流する。src/game/finance.mjs（salaryOf/salaryFromValue/budget生成）＋
+  //   src/generate.mjs teamFinanceProfile（budgetの決定論付与・§13 teamEvalProfile と同じ流儀）。
+  //   すべてオフシーズン限定（1年目レギュラーシーズンは非干渉）。AI/プレイヤー対称の制約
+  //   （どちらの入札/起案/更改にも同じ判定が掛かる）。
+  //
+  //   ★設計方針（実装時の判断メモ）: budget は「生成時に球団プロファイルから決定論付与」
+  //   （teamEvalProfile と同じ独立シード 'finance'）し、H5-Cでファン人気連動の年次見直しが入るまでは
+  //   固定帯（キャリア中不変）とする。旧セーブは finance フィールドが無い＝load時に同式で
+  //   決定論補完できる（personality/H3-1 と同じ「後付け可能」構造）。band は「実測: 財力差を無視した
+  //   場合の球団平均総年俸が約40000〜60000（万円相当・観測貢献量ベースのsalaryFromValue合計、
+  //   支配下70人）」という実測（H5-A実装時の3年3seedプローブ）を踏まえ、mean をその中心よりやや高めに
+  //   置いて「平均的には予算内、下位球団だけ本当に苦しい」形にした（financeが常時ボトルネックだと
+  //   FA/トレード成立数が激減し realism WATCH が壊れるため）。
+  // ==========================================================================
+  economy: {
+    defaultSalary: 300, // p.contract 未設定（更改未経験）時のフォールバック年俸＝salaryBase(v=0)と同値
+    salaryBase: 300, // 契約更改salaryの基準額（旧runContractRenewalの300を式として独立させたもの）
+    salaryPerValue: 40, // 観測貢献量(v) 1 あたりの年俸換算（旧runContractRenewalの40と同値＝実弾化で分布は変えない）
+    salaryFloor: 50, // 契約更改の最低年俸（旧runContractRenewalの50と同値）
+    protectCount: 28, // 予算超過球団の戦力外候補選定で使うプロテクト人数（market.fa/tradeと同枠）
+    maxBudgetCutsPerTeam: 2, // 予算超過球団が1オフに戦力外候補ルートへ送る上限人数
+    budget: {
+      // 財力差（球団プロファイル・§13と同じ発想）: masterSeed×teamIdの独立シードから決定論的に引く。
+      // ★H5-A実装時の実測較正: 当初 mean=50000（実測payroll平均40000-60000のやや上）で試したところ
+      //   球団・年の48.8%が予算超過＝FA成立数が9.5→5.7（-40%）へ落ち込んだ（5seed×8年プローブ）。
+      //   spec のゲート「市場成立数が激減しないこと」に抵触するため、平均payroll分布の実測上限
+      //   （約60000）を budget の中心に置き直し、予算超過が「一部の貧乏球団だけが時々踏む」
+      //   程度（球団・年の1-2割目安）になるよう再較正した。
+      mean: 68000, // 中心値（万円相当の総額）
+      sd: 17000, // 球団間の財力差の標準偏差
+      min: 36000, // 下限（貧乏球団でも市場から完全排除されない下支え）
+      max: 110000, // 上限（金満球団の頭打ち）
     },
   },
 

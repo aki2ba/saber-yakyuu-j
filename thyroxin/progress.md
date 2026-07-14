@@ -2,6 +2,28 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-14 (H5-C: ファン関心・収入の閉ループ — 経営レイヤー最終段。★phaseH 全柱完成)
+
+- `updateFanEconomy`（finance.mjs）: fanInterest(0-1) を毎オフ「勝率分位への回帰(0.25)＋
+  リーグ優勝ボーナス(+0.12)＋高年俸スター(3000万+)のFA流出ペナルティ(-0.06)」で更新
+  （OOTP実挙動パターン・全12球団対称・乱数非使用の純関数）
+- budget = 市場規模(teamFinanceProfile) × ファン係数(0.75+0.5×fanInterest) の年次見直し。
+  係数帯と budget 帯clampの二重で有界＝金満/貧乏の暴走を構造的に防止（budget比<4をテストで担保）
+- **budget連動は既定OFF**（floor=1.0/span=0＝静的）: ONにすると多年ERA帯が yi12=4.62 で超過
+  （H4のAI方針・R7と同じ「軌道の混沌増幅」を実測）。ui の uiConfig() が実プレイのみ 0.75/0.5 を
+  上書き（interactiveDraft/allowFiring と同じ「headless既定OFF・UIのみON」パターンで3例目＝
+  これはもうプロジェクトの標準手法）。fanInterest の追跡・表示は既定でも動く
+- UI: ストーブの payroll バーに「🔥ファン関心 N%（翌年予算に反映）」併記
+- 旧セーブ: fanInterest 欠落→init(0.5)補完（budget は市場規模と一致＝滑らかな後方互換）
+- 実装は親（Fable）直営（sonnet 即死継続のため）。テスト5本新設・H5-A テスト2本を
+  「budget=毎オフ再導出」の新仕様に更新
+- **npm test 463/463・calibrate 62/62・realism GATE 45/45・verify・smoke 11フロー 全PASS**
+
+**★phaseH（面白さ5本柱）完成**: H1 ストーリーライン → H2 参加型ドラフト → H3 性格・評判 →
+H4 育成方針 → H5-A/B/C 経営レイヤー。fun_design_evidence.md の設計提案がすべて実装に落ちた。
+残課題（次回以降）: 性格のニュース文体反映（H3任意分）・realism への fanInterest 分布 WATCH・
+H5-B「フロントからの手紙」のニュースフィード統合・柱6以降（引退セレモニーの演出強化・OB/コーチ接続）。
+
 ## 2026-07-14 (H5-B: オーナー目標・信任・解任 — 経営レイヤー第2段)
 
 - 新モジュール `src/game/owner.mjs`（純関数群）: 目標生成は開幕時に決定論

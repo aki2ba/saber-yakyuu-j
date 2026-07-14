@@ -16,9 +16,10 @@ import { salaryOf, sumSalary } from '../src/game/finance.mjs';
 const SEED = 20260714;
 const YEARS = 6;
 
-/** N年運用して市場イベントを集計する。mutate(state) で開始直後に介入できる（budget固定など）。 */
-function runYears(seed, years, mutate = null) {
+/** N年運用して市場イベントを集計する。cfgMut(cfg)/mutate(state) で介入できる。 */
+function runYears(seed, years, mutate = null, cfgMut = null) {
   const cfg = createConfig();
+  if (cfgMut) cfgMut(cfg);
   const st = newGame(seed, 'T1', { cfg });
   if (mutate) mutate(st);
   const agg = { fa: 0, trades: 0, pickups: 0 };
@@ -47,7 +48,6 @@ test('H5-A: budget は決定論・帯内・球団差がある（teamFinanceProfi
 
 test('H5-A: 旧セーブ補完 — finance を消した blob の load が同一 budget を決定論再導出', () => {
   const { st } = runYears(SEED, 1);
-  const liveBudgets = new Map(st.league.teams.map((t) => [t.id, t.finance.budget]));
   const blob = JSON.parse(JSON.stringify(save(st)));
   // blob 全体から finance キーを再帰的に削除（旧セーブ形式の再現）
   const strip = (o) => {
@@ -58,8 +58,13 @@ test('H5-A: 旧セーブ補完 — finance を消した blob の load が同一 
   };
   strip(blob);
   const restored = load(blob);
+  // H5-C以降 budget は「teamFinanceProfile の市場規模 × ファン係数」で毎オフ再導出される。
+  // finance を失った旧セーブは fanInterest=init(係数1.0) で補完されるため、budget は
+  // 市場規模そのもの（teamFinanceProfile）と一致するのが正しい期待値（決定論補完）。
+  const cfg2 = createConfig();
   for (const t of restored.league.teams) {
-    assert.equal(t.finance.budget, liveBudgets.get(t.id), `${t.id} の budget が live と一致（決定論補完）`);
+    assert.equal(t.finance.budget, teamFinanceProfile(restored.masterSeed, t.id, cfg2).budget, `${t.id} の budget が決定論再導出値と一致`);
+    assert.equal(t.finance.fanInterest, cfg2.tuning.economy.fan.init, `${t.id} の fanInterest は init 補完`);
   }
 });
 
@@ -67,9 +72,12 @@ test('H5-A: 予算制約が市場を実際に締める（budget=0 → FA成立�
   // 既定予算: FA が一定数成立する（前提の確認）
   const normal = runYears(SEED, YEARS);
   assert.ok(normal.agg.fa > 0, `既定予算では FA が成立する（${normal.agg.fa}件）`);
-  // 全球団 budget=0: 「payroll(補償差引後) ≤ budget」を必ず満たせない＝FA成立が消える
+  // 全球団 budget=0（config帯を0に潰す＝H5-C の毎オフ再導出でも恒常的に0）:
+  // 「payroll(補償差引後) ≤ budget」を必ず満たせない＝FA成立が消える
   const broke = runYears(SEED, YEARS, (st) => {
-    for (const t of st.league.teams) t.finance = { budget: 0, payroll: 0 };
+    for (const t of st.league.teams) t.finance = { budget: 0, payroll: 0, fanInterest: 0.5 };
+  }, (cfg) => {
+    cfg.tuning.economy.budget = { ...cfg.tuning.economy.budget, mean: 0, sd: 0, min: 0, max: 0 };
   });
   assert.equal(broke.agg.fa, 0, 'budget=0 では FA が1件も成立しない（予算制約の実効性）');
 });

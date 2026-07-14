@@ -2517,6 +2517,26 @@ const TUNING_DEFAULT = {
     salaryFloor: 50, // 契約更改の最低年俸（旧runContractRenewalの50と同値）
     protectCount: 28, // 予算超過球団の戦力外候補選定で使うプロテクト人数（market.fa/tradeと同枠）
     maxBudgetCutsPerTeam: 2, // 予算超過球団が1オフに戦力外候補ルートへ送る上限人数
+    // H5-C: ファン関心と収入の閉ループ（OOTP実挙動パターン・fun_design_evidence §1.3）。
+    //   fanInterest(0-1)は毎オフ「勝率分位への回帰＋イベント修正値」で更新され、budget を
+    //   市場規模×(floorMult+spanMult×fanInterest) で年次見直しする（=成績→ファン→予算の閉ループ。
+    //   係数帯 0.75-1.25 と budget帯clampの二重で有界＝金満/貧乏の暴走を構造的に防ぐ）。
+    fan: {
+      init: 0.5, // 初期値・旧セーブ補完値（係数1.0＝H5-A固定帯と同値）
+      regress: 0.25, // 勝率分位への年次回帰率（OOTPの「緩やかに成績を追随」）
+      championBonus: 0.12, // リーグ優勝（勝率1位）の一過性ブースト
+      starSalary: 3000, // これ以上の年俸の選手を「スター」とみなす（FA流出でファンが怒る閾値）
+      starLossHit: 0.06, // スター1人のFA流出あたりの fanInterest 低下
+      min: 0.05, // 下限（ファンがゼロにはならない）
+      max: 1,
+      // ★budget連動は既定OFF（floor=1.0/span=0＝budgetは市場規模のまま静的）。ONにすると市場の
+      //   結果が毎年組み変わり、多年ERA帯(test/game_multiyear)が軌道の混沌増幅で壊れる（H4のAI方針・
+      //   R7と同じ失敗様式を実測）。ui.mjs の uiConfig() が実プレイでのみ 0.75/0.5 を上書きする
+      //   （interactiveDraft/allowFiring と同じ「headless既定OFF・UIのみON」パターン）。
+      //   fanInterest の追跡・表示・オーナー目標への入力は既定でも生きている（表示は非干渉）。
+      budgetFloorMult: 1.0, // budget係数の下端（既定=静的。UIプレイでは0.75）
+      budgetSpanMult: 0, // budget係数の幅（既定=0。UIプレイでは0.5＝fanInterest=1で1.25倍）
+    },
     budget: {
       // 財力差（球団プロファイル・§13と同じ発想）: masterSeed×teamIdの独立シードから決定論的に引く。
       // ★H5-A実装時の実測較正: 当初 mean=50000（実測payroll平均40000-60000のやや上）で試したところ
@@ -10826,6 +10846,39 @@ function draftPreviewHeadlines(state) {
 //   ＝実装前後で契約更改の salary 分布は変わらない）。
 // ============================================================================
 
+/**
+ * H5-C: ファン関心の毎オフ更新（OOTP実挙動パターン: 勝率分位への緩やかな回帰＋イベント修正値。
+ * fun_design_evidence §1.3）。全12球団対称・決定論（乱数非使用＝standings/faMoves の純関数）。
+ *   - 回帰: fanInterest += regress × (勝率分位[0..1] − fanInterest)
+ *   - イベント: リーグ優勝（勝率1位）+championBonus ／ 高年俸スターのFA流出 −starLossHit
+ *     （どちらも一過性＝回帰が自然減衰させる。OOTPの「翌季に消える修正値」と同じ形）
+ * refreshTeamFinance より先に呼ぶこと（budget が fanInterest から再計算されるため）。
+ */
+function updateFanEconomy(league, cfg, { standings, faMoves = [] }) {
+  const eco = cfg.tuning.economy.fan;
+  if (!eco || !standings || !standings.length) return;
+  const wp = (s) => { const d = (s.w ?? 0) + (s.l ?? 0); return d ? s.w / d : 0.5; };
+  const rows = standings.slice().sort((a, b) => wp(a) - wp(b) || (a.teamId < b.teamId ? -1 : 1));
+  const pctl = new Map(rows.map((s, i) => [s.teamId, rows.length > 1 ? i / (rows.length - 1) : 0.5]));
+  const champs = new Set();
+  for (const lg of new Set(rows.map((s) => s.league))) {
+    const mine = rows.filter((s) => s.league === lg);
+    if (mine.length) champs.add(mine[mine.length - 1].teamId); // 昇順ソートの末尾＝リーグ勝率1位
+  }
+  const starLoss = new Map();
+  for (const m of faMoves) {
+    if ((m.salary ?? 0) >= eco.starSalary) starLoss.set(m.from, (starLoss.get(m.from) ?? 0) + eco.starLossHit);
+  }
+  for (const t of league.teams) {
+    if (!t.finance) continue; // 未初期化は refreshTeamFinance が後で補完（init から開始）
+    const fi = t.finance.fanInterest ?? eco.init;
+    let next = fi + eco.regress * ((pctl.get(t.id) ?? 0.5) - fi);
+    if (champs.has(t.id)) next += eco.championBonus;
+    next -= starLoss.get(t.id) ?? 0;
+    t.finance.fanInterest = clamp(next, eco.min, eco.max);
+  }
+}
+
 /** 選手1人の現行年俸（p.contract 未設定＝一度も更改されていない選手は config の既定額）。 */
 function salaryOf(p, cfg) {
   return p.contract?.salary ?? cfg.tuning.economy.defaultSalary;
@@ -10862,8 +10915,16 @@ function refreshTeamFinance(league, cfg, masterSeed) {
     if (!byTeam.has(p.teamId)) byTeam.set(p.teamId, []);
     byTeam.get(p.teamId).push(p);
   }
+  const eco = cfg.tuning.economy;
   for (const t of league.teams) {
-    if (!t.finance) t.finance = { budget: teamFinanceProfile(masterSeed, t.id, cfg).budget, payroll: 0 };
+    if (!t.finance) t.finance = { payroll: 0 };
+    if (t.finance.fanInterest == null) t.finance.fanInterest = eco.fan.init; // H5-C: 旧セーブ補完
+    // H5-C: budget = 市場規模（teamFinanceProfile の決定論値）× ファン係数（0.75〜1.25）。
+    //   fanInterest=init(0.5) で係数1.0＝H5-A（固定帯）と同値の滑らかな拡張。帯clampで有界＝
+    //   優勝/最下位の budget 比は構造的に (max×1.25)/(min×0.75) 以下に抑えられる（暴走防止ゲート）。
+    const base = teamFinanceProfile(masterSeed, t.id, cfg).budget;
+    const factor = eco.fan.budgetFloorMult + eco.fan.budgetSpanMult * t.finance.fanInterest;
+    t.finance.budget = Math.round(clamp(base * factor, eco.budget.min, eco.budget.max));
     t.finance.payroll = sumSalary(byTeam.get(t.id) ?? [], cfg);
   }
 }
@@ -14458,6 +14519,9 @@ function offseasonStage2(league, cfg, { s1, draftResult, masterSeed, yearIndex }
     profiles: s1.profiles, masterSeed, yearIndex, standings: s1.standings, obs: s1.obs, forcedCuts: contracts.budgetCuts,
   });
   rebuildTeamRosters(league);
+  // H5-C: ファン関心の更新（完了年の成績分位への回帰＋優勝/スター流出イベント）。
+  //   refreshTeamFinance が fanInterest から翌年 budget を再計算するため必ずこの順で呼ぶ。
+  updateFanEconomy(league, cfg, { standings: s1.standings, faMoves: s1.fa });
   // H5-A: release/pickupで個体が入れ替わった後の「最終」payrollを team.finance へ確定する
   //   （stove UI の payroll バー・realism WATCH が読む値）。
   refreshTeamFinance(league, cfg, masterSeed);
@@ -15880,7 +15944,8 @@ function stovePayrollBar(u, teamId) {
   const pct = fin.budget > 0 ? Math.min(1.4, fin.payroll / fin.budget) : 0;
   const over = fin.payroll > fin.budget;
   return el('div', { class: 'payrollbar', style: 'margin:4px 0' }, [
-    el('div', { class: 'muted' }, `年俸総額 ${fin.payroll.toLocaleString()} / 予算 ${fin.budget.toLocaleString()}（万円相当）${over ? '　※予算超過' : ''}`),
+    el('div', { class: 'muted' }, `年俸総額 ${fin.payroll.toLocaleString()} / 予算 ${fin.budget.toLocaleString()}（万円相当）${over ? '　※予算超過' : ''}` +
+      (fin.fanInterest != null ? `　🔥ファン関心 ${Math.round(fin.fanInterest * 100)}%（翌年予算に反映）` : '')), // H5-C
     el('div', { style: 'height:8px;background:#0c3122;border:1px solid var(--line);border-radius:4px;overflow:hidden;max-width:320px' }, [
       el('div', { style: `height:100%;width:${Math.round(Math.min(1, pct) * 100)}%;background:${over ? '#e0574a' : '#5fd694'}` }),
     ]),
@@ -19184,7 +19249,12 @@ function leagueNameOf(cfg, lid) {
  */
 function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
-  return createConfig({ ...ov, game: { interactiveDraft: true, allowFiring: true, ...(ov.game ?? {}) } });
+  return createConfig({
+    ...ov,
+    game: { interactiveDraft: true, allowFiring: true, ...(ov.game ?? {}) },
+    // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
+    tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
+  });
 }
 
 function startNewGame(seed, teamId) {

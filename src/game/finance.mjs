@@ -12,8 +12,42 @@
 //   ＝実装前後で契約更改の salary 分布は変わらない）。
 // ============================================================================
 import { teamFinanceProfile } from '../generate.mjs';
+import { clamp } from '../model/util.mjs';
 
 export { teamFinanceProfile };
+
+/**
+ * H5-C: ファン関心の毎オフ更新（OOTP実挙動パターン: 勝率分位への緩やかな回帰＋イベント修正値。
+ * fun_design_evidence §1.3）。全12球団対称・決定論（乱数非使用＝standings/faMoves の純関数）。
+ *   - 回帰: fanInterest += regress × (勝率分位[0..1] − fanInterest)
+ *   - イベント: リーグ優勝（勝率1位）+championBonus ／ 高年俸スターのFA流出 −starLossHit
+ *     （どちらも一過性＝回帰が自然減衰させる。OOTPの「翌季に消える修正値」と同じ形）
+ * refreshTeamFinance より先に呼ぶこと（budget が fanInterest から再計算されるため）。
+ */
+export function updateFanEconomy(league, cfg, { standings, faMoves = [] }) {
+  const eco = cfg.tuning.economy.fan;
+  if (!eco || !standings || !standings.length) return;
+  const wp = (s) => { const d = (s.w ?? 0) + (s.l ?? 0); return d ? s.w / d : 0.5; };
+  const rows = standings.slice().sort((a, b) => wp(a) - wp(b) || (a.teamId < b.teamId ? -1 : 1));
+  const pctl = new Map(rows.map((s, i) => [s.teamId, rows.length > 1 ? i / (rows.length - 1) : 0.5]));
+  const champs = new Set();
+  for (const lg of new Set(rows.map((s) => s.league))) {
+    const mine = rows.filter((s) => s.league === lg);
+    if (mine.length) champs.add(mine[mine.length - 1].teamId); // 昇順ソートの末尾＝リーグ勝率1位
+  }
+  const starLoss = new Map();
+  for (const m of faMoves) {
+    if ((m.salary ?? 0) >= eco.starSalary) starLoss.set(m.from, (starLoss.get(m.from) ?? 0) + eco.starLossHit);
+  }
+  for (const t of league.teams) {
+    if (!t.finance) continue; // 未初期化は refreshTeamFinance が後で補完（init から開始）
+    const fi = t.finance.fanInterest ?? eco.init;
+    let next = fi + eco.regress * ((pctl.get(t.id) ?? 0.5) - fi);
+    if (champs.has(t.id)) next += eco.championBonus;
+    next -= starLoss.get(t.id) ?? 0;
+    t.finance.fanInterest = clamp(next, eco.min, eco.max);
+  }
+}
 
 /** 選手1人の現行年俸（p.contract 未設定＝一度も更改されていない選手は config の既定額）。 */
 export function salaryOf(p, cfg) {
@@ -51,8 +85,16 @@ export function refreshTeamFinance(league, cfg, masterSeed) {
     if (!byTeam.has(p.teamId)) byTeam.set(p.teamId, []);
     byTeam.get(p.teamId).push(p);
   }
+  const eco = cfg.tuning.economy;
   for (const t of league.teams) {
-    if (!t.finance) t.finance = { budget: teamFinanceProfile(masterSeed, t.id, cfg).budget, payroll: 0 };
+    if (!t.finance) t.finance = { payroll: 0 };
+    if (t.finance.fanInterest == null) t.finance.fanInterest = eco.fan.init; // H5-C: 旧セーブ補完
+    // H5-C: budget = 市場規模（teamFinanceProfile の決定論値）× ファン係数（0.75〜1.25）。
+    //   fanInterest=init(0.5) で係数1.0＝H5-A（固定帯）と同値の滑らかな拡張。帯clampで有界＝
+    //   優勝/最下位の budget 比は構造的に (max×1.25)/(min×0.75) 以下に抑えられる（暴走防止ゲート）。
+    const base = teamFinanceProfile(masterSeed, t.id, cfg).budget;
+    const factor = eco.fan.budgetFloorMult + eco.fan.budgetSpanMult * t.finance.fanInterest;
+    t.finance.budget = Math.round(clamp(base * factor, eco.budget.min, eco.budget.max));
     t.finance.payroll = sumSalary(byTeam.get(t.id) ?? [], cfg);
   }
 }

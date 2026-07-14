@@ -27,7 +27,7 @@ import { applyFarmPromotionSwap } from './roster_moves.mjs';
 import { encodeSeasons, decodeSeasons } from './statcodec.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal, releaseScore } from './transactions.mjs';
 // H5-A: 経営レイヤー第1段階（年俸予算）。team.finance の再計算＋旧セーブ補完（phaseH_fun_spec H5-A）。
-import { refreshTeamFinance } from './finance.mjs';
+import { refreshTeamFinance, updateFanEconomy } from './finance.mjs';
 import { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
 // C4 演出: 表彰/記録/二つ名（awards.mjs）・ニュース/珍記録検出（news.mjs）。
 //   advanceYear で完了シーズンの表彰を計算し off.awards として返す（ニュース素材）。
@@ -247,6 +247,9 @@ function offseasonStage2(league, cfg, { s1, draftResult, masterSeed, yearIndex }
     profiles: s1.profiles, masterSeed, yearIndex, standings: s1.standings, obs: s1.obs, forcedCuts: contracts.budgetCuts,
   });
   rebuildTeamRosters(league);
+  // H5-C: ファン関心の更新（完了年の成績分位への回帰＋優勝/スター流出イベント）。
+  //   refreshTeamFinance が fanInterest から翌年 budget を再計算するため必ずこの順で呼ぶ。
+  updateFanEconomy(league, cfg, { standings: s1.standings, faMoves: s1.fa });
   // H5-A: release/pickupで個体が入れ替わった後の「最終」payrollを team.finance へ確定する
   //   （stove UI の payroll バー・realism WATCH が読む値）。
   refreshTeamFinance(league, cfg, masterSeed);

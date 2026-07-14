@@ -1398,6 +1398,26 @@ export const TUNING_DEFAULT = {
     salaryFloor: 50, // 契約更改の最低年俸（旧runContractRenewalの50と同値）
     protectCount: 28, // 予算超過球団の戦力外候補選定で使うプロテクト人数（market.fa/tradeと同枠）
     maxBudgetCutsPerTeam: 2, // 予算超過球団が1オフに戦力外候補ルートへ送る上限人数
+    // H5-C: ファン関心と収入の閉ループ（OOTP実挙動パターン・fun_design_evidence §1.3）。
+    //   fanInterest(0-1)は毎オフ「勝率分位への回帰＋イベント修正値」で更新され、budget を
+    //   市場規模×(floorMult+spanMult×fanInterest) で年次見直しする（=成績→ファン→予算の閉ループ。
+    //   係数帯 0.75-1.25 と budget帯clampの二重で有界＝金満/貧乏の暴走を構造的に防ぐ）。
+    fan: {
+      init: 0.5, // 初期値・旧セーブ補完値（係数1.0＝H5-A固定帯と同値）
+      regress: 0.25, // 勝率分位への年次回帰率（OOTPの「緩やかに成績を追随」）
+      championBonus: 0.12, // リーグ優勝（勝率1位）の一過性ブースト
+      starSalary: 3000, // これ以上の年俸の選手を「スター」とみなす（FA流出でファンが怒る閾値）
+      starLossHit: 0.06, // スター1人のFA流出あたりの fanInterest 低下
+      min: 0.05, // 下限（ファンがゼロにはならない）
+      max: 1,
+      // ★budget連動は既定OFF（floor=1.0/span=0＝budgetは市場規模のまま静的）。ONにすると市場の
+      //   結果が毎年組み変わり、多年ERA帯(test/game_multiyear)が軌道の混沌増幅で壊れる（H4のAI方針・
+      //   R7と同じ失敗様式を実測）。ui.mjs の uiConfig() が実プレイでのみ 0.75/0.5 を上書きする
+      //   （interactiveDraft/allowFiring と同じ「headless既定OFF・UIのみON」パターン）。
+      //   fanInterest の追跡・表示・オーナー目標への入力は既定でも生きている（表示は非干渉）。
+      budgetFloorMult: 1.0, // budget係数の下端（既定=静的。UIプレイでは0.75）
+      budgetSpanMult: 0, // budget係数の幅（既定=0。UIプレイでは0.5＝fanInterest=1で1.25倍）
+    },
     budget: {
       // 財力差（球団プロファイル・§13と同じ発想）: masterSeed×teamIdの独立シードから決定論的に引く。
       // ★H5-A実装時の実測較正: 当初 mean=50000（実測payroll平均40000-60000のやや上）で試したところ

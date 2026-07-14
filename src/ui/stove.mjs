@@ -93,7 +93,8 @@ function stovePayrollBar(u, teamId) {
   const pct = fin.budget > 0 ? Math.min(1.4, fin.payroll / fin.budget) : 0;
   const over = fin.payroll > fin.budget;
   return el('div', { class: 'payrollbar', style: 'margin:4px 0' }, [
-    el('div', { class: 'muted' }, `年俸総額 ${fin.payroll.toLocaleString()} / 予算 ${fin.budget.toLocaleString()}（万円相当）${over ? '　※予算超過' : ''}`),
+    el('div', { class: 'muted' }, `年俸総額 ${fin.payroll.toLocaleString()} / 予算 ${fin.budget.toLocaleString()}（万円相当）${over ? '　※予算超過' : ''}` +
+      (fin.fanInterest != null ? `　🔥ファン関心 ${Math.round(fin.fanInterest * 100)}%（翌年予算に反映）` : '')), // H5-C
     el('div', { style: 'height:8px;background:#0c3122;border:1px solid var(--line);border-radius:4px;overflow:hidden;max-width:320px' }, [
       el('div', { style: `height:100%;width:${Math.round(Math.min(1, pct) * 100)}%;background:${over ? '#e0574a' : '#5fd694'}` }),
     ]),

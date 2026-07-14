@@ -846,7 +846,25 @@ btnByText('育成・支配下')._onclick();
 assert.ok(walk(appDiv).some((n) => textOf(n).includes('昇格候補')), '育成タブに昇格候補セクション');
 
 // E3e) 年送り（オフシーズン処理）→ ダイジェストにFA入札/トレード起案の結果が反映
+// H2: 対話型ドラフト会議（既定・startNewGameがcfg.game.interactiveDraft:trueを付与）。
+//   自チームの指名番になっていればadvanceYearが中断し、ホーム/ダイジェストの代わりに
+//   ドラフト会議室（src/ui/draft.mjs）が描画される。全ラウンド解決するまで先頭候補を
+//   指名し続ける（競合くじ敗退→再指名の状態遷移も同じループで自然にカバーする）。
 btnByText('オフシーズン処理を実行')._onclick();
+if (textOf(hasClass('header')).includes('ドラフト会議')) {
+  let rounds = 0;
+  while (textOf(hasClass('header')).includes('ドラフト会議')) {
+    assert.ok(rounds++ < 50, 'H2: ドラフト会議が50回以内に解決する（無限ループ検出）');
+    // スカウトレポート（draftScoutView・真値非露出）の列一式が候補テーブルに揃っていること。
+    const ths = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+    assert.ok(['等級', '選手', '位置', '年齢', '経歴', 'ツール', '伸びしろ', '評判', '指名'].every((h) => ths.includes(h)),
+      `H2: ドラフト会議室に候補テーブルの列（等級/ツール/伸びしろ/経歴/評判等）が揃う (${ths.join('/')})`);
+    const pickBtn = btnByText('指名する');
+    assert.ok(pickBtn, 'H2: ドラフト会議室に指名候補の指名ボタンがある');
+    pickBtn._onclick();
+  }
+  assert.ok(rounds >= 1, 'H2: 1年目オフに自チームの指名番が最低1回は発生する（seed固定で空き枠あり）');
+}
 assert.ok(textOf(hasClass('header')).includes('オフシーズン'), 'オフシーズンダイジェストが出る');
 assert.ok(walk(appDiv).some((n) => textOf(n).includes('引退')), 'ダイジェストに引退等の件数');
 const digestAll = textOf(appDiv);
@@ -940,6 +958,7 @@ assert.ok(allClass('overlay').length >= 1, '記録タブのリンクから選手
 console.log('UI smoke OK (E1): チームタブ(一軍=出場登録29人/仕様列/ソート/等級)→行クリックでモーダル(所属/二つ名ヘッダ)→年送り(オフ要約)→2年目二軍名簿→育成選手モーダル→記録タブplayerLink、例外なし');
 console.log('UI smoke OK (F2-4二軍UI): チームタブ二軍(支配下残+育成/二軍成績列/育成バッジ)→順位タブ二軍リーグ順位折りたたみ(若草/暁12球団)→選手詳細(年度別の一軍/二軍行・所属=一軍登録/二軍/育成・今季二軍成績)→2年目昇降格ニュース(登録抹消/昇格+playerLink→モーダル)、例外なし');
 console.log('UI smoke OK (E3編成): リザルト→ストーブリーグ(FA市場宣言見込み→入札/取消・トレード放出選択→受諾/拒否見込み→打診・育成昇格候補)→オフ処理→ダイジェスト(FA/トレード結果反映・自チームの動き・表彰)、例外なし');
+console.log('UI smoke OK (H2対話ドラフト): オフ処理→自チームの指名番でドラフト会議室に中断(スカウトレポート列一式=等級/ツール/伸びしろ/経歴/評判)→指名ボタンで解決(競合くじ敗退→再指名を含む)→全ラウンド完了でオフダイジェストへ合流、例外なし');
 
 console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 

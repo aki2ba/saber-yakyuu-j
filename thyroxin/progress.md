@@ -2,6 +2,52 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-14 (H2: プレイヤー参加型ドラフト会議 — 中断/再開・スカウトレポート・会議室UI)
+
+**きっかけ**: `thyroxin/specs/phaseH_fun_spec.md` H2節。「ドラフト指名が最大の心理的ペイオフ」
+（fun_design_evidence.md）なのに完全AI自動で丸ごと欠落していた穴を埋める。先行エージェントの
+未コミット差分（オフ処理stage分割・runDraft介入対応・configノブ・+509行）を引き継いで完遂。
+
+**構造（引き継ぎ差分＝妥当と評価してそのまま採用）**:
+- `advanceYear` のオフ処理を `offseasonStage1`（故障後遺→ブレイク→加齢→引退→淘汰→FA→トレード
+  →窓→pool生成）/ `offseasonStage2`（育成獲得→拾い上げ→契約更改）に分割。非対話時は
+  `runMarket` = stage1+runDraft(全自動)+stage2 の合成で分割前と byte 同一
+- `driveOffseasonDraft`（advanceYear/submitDraftPick/load 共通の駆動関数）: state.league は
+  **毎回クローンの上で stage1 を再導出**し、全ラウンド解決まで一切コミットしない（純関数的・
+  中断中に何度呼んでも汚れない）。自チーム指名番で pickLog が尽きたら `state.awaitingDraft` を
+  立てて null を返す → UI → `submitDraftPick(state, prospectId)` が marketInterventions に
+  `{phase:'draft', yearIndex, round, prospectId}` を積んで再駆動（bidFA と同型の介入ログ流儀）
+- `runDraft(…, {playerTeamId, pickLog})`: 自チームの指名だけログから消費し、尽きた時点で
+  `{paused, awaitingDraft}` を返す。**再開＝プールをシード再生成して蓄積ログで最初から再実行**
+  ＝poolの保存不要・load-replayは非対話で同一結果（設計方針4）。競合くじ敗退は同round内の
+  再中断（`contested:true`）として自然に表現される。AI 11球団のロジックは不変
+- `draftScoutView`（真値非参照の門番付き）: プール内分位のS-D等級／obsToolのツール別5段階／
+  config固定 referencePeakAge−年齢＋ノイズの伸びしろ3段階（個体の真のpeakAge不参照）／
+  高卒大卒社会人タグ／全球団平均評価分位の「目玉」・自球団分位との乖離の「隠し玉」（市場の
+  非効率がそのままUIに発現）。`draftPreviewHeadlines`＝ドラフト前ニュース「今年の目玉」
+- `cfg.game.interactiveDraft` 既定 **false**（headless/既存テスト/burn-inは全自動のまま挙動
+  不変）。ui.mjs の uiConfig() だけが true を注入。burn-in 中は一時的に false へ落とす
+
+**引き継ぎ差分に居たバグ（2代目エージェントの指摘を検証→本物と確認→修正）**:
+- `driveOffseasonDraft` が対話継続の判定に `state.cfg.game.interactiveDraft` **だけ**を見ていた:
+  ドラフト中断中のセーブを interactiveDraft:false の cfg で load すると（旧 loadFromBlob は
+  素の `createConfig()` を渡していた＝実際に踏む導線）、playerTeamId=null で runDraft が走り
+  **プレイヤーが積んだ指名ログを握りつぶして全球団AI自動で完了**、中断状態が silently 消えた。
+  → ①`state.offseasonStage === 'awaitingDraft'`（load復元値）でも対話継続とする防御を
+  driveOffseasonDraft に追加（offseasonStage は対話時にしか立たないため誤対話化はない）
+  ②ui.mjs に `uiConfig()` を新設し startNewGame / loadFromBlob の両方が interactiveDraft:true
+  を注入（将来年度のドラフトも対話継続）。**修正前にテストが赤・修正後に緑を確認済み**（回帰）
+
+**検証**: `test/game_h2_draft.test.mjs` 新設（5テスト: 非対話後方互換＝中断ゼロ／runDraft単体で
+くじ敗退→contested再指名→解決の状態遷移を固定シードで厳密検証／中断中save→**誤cfgでload**→
+再開の結果がフル対話と完全一致（上記バグの回帰）／対話5年で70人枠・投手33-36恒常／
+draftScoutViewの真値非参照=peakAge無反応・球団間で評価が割れる・戻り値にtrueAbility不含）。
+smoke に対話ドラフト1周（会議室の列一式→指名連打→くじ敗退再指名→ダイジェスト合流）を追加。
+npm test（409/409）・calibrate（62/62）・realism（GATE 45/45）・verify・smoke 全PASS。
+
+**次にやること**: H3（性格タグ＋観測ベース評判ラベル）。draftScoutView への性格表示接続は
+H3側で行う（H2のスカウトレポートに personality 欄を足すだけ・構造は今回で完成）。
+
 ## 2026-07-14 (H1: ストーリーライン — 連続ニュース・ライバル・引退ロード実装)
 
 **きっかけ**: `thyroxin/specs/phaseH_fun_spec.md` H1節（正典: `fun_design_evidence.md` §4柱5）。

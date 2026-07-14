@@ -22,7 +22,7 @@ import { applyAging } from './aging.mjs';
 import { applySeasonInjuries } from './injury.mjs';
 import { applyBreakouts } from './breakout.mjs';
 import { runRetirement, rebuildTeamRosters } from './roster.mjs';
-import { runMarket, teamEvalProfile, teamWindowState } from './market.mjs';
+import { marketStage1, marketStage2, runDraft, teamEvalProfile, teamWindowState, draftScoutView, draftPreviewHeadlines } from './market.mjs';
 import { applyFarmPromotionSwap } from './roster_moves.mjs';
 import { encodeSeasons, decodeSeasons } from './statcodec.mjs';
 import { runFA, runTrades, runReleaseAndPickup, runContractRenewal, releaseScore } from './transactions.mjs';
@@ -121,7 +121,19 @@ function runProspectCulling(league, cfg, { obs, retireVacancies }) {
     .map((p) => ({ teamId: p.teamId, role: p.role, primaryPos: p.primaryPos }));
 }
 
-function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
+/**
+ * ★H2: オフシーズン遷移の前半（stage1）。「故障後遺→ブレイク→加齢→引退→淘汰→FA→トレード→窓
+ * →プール生成」まで（phaseH_fun_spec H2 設計方針）。ドラフト本体（runDraft）は呼ばない＝
+ * プレイヤー参加型ドラフトが指名の合間に中断できるよう、ここで止めて draft に要る一式
+ * （remainingVac/pool/order/profiles/windowByTeam）を返す。
+ *
+ * 純関数性（H2「stage1が（リーグ状態・シード・ログ）の純関数であることを崩さない」）: league は
+ * 呼び出し側が渡した参照を直接 in-place 変更する（この関数自体は league の複製をしない）。
+ * driveOffseasonDraft（下記）は毎回クローンした league を渡すことで、中断中に何度呼んでも
+ * 「開幕直前のリーグ」を汚さずに同じ結果を再導出できる。
+ * @returns {Object} stage2/draft へ渡す一式＋要約（injuries/breakouts/retirees/fa/trades/obs/…）
+ */
+function offseasonStage1(league, cfg, { masterSeed, yearIndex, year, standings, teamHistory = null, careerStats = [], careerFarmStats = [], marketInterventions = [], seasonInjuries = [] }) {
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
@@ -162,17 +174,166 @@ function offseasonTransition(league, cfg, { masterSeed, yearIndex, year, standin
   //   1年目レギュラーシーズン自体は startYear 側の era=identity で完全不変）。
   const rookieEra = computeEra(masterSeed, yearIndex + 1, cfg);
   const balanceBoost = teamBalanceBoost(standings, cfg);
-  // 補充: 育成昇格→ドラフト（ウェーバー逆順×くじ）→育成獲得（§13/§15/§12.1）。
-  const { promoted, rookies, promotions, draftLog } = runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, balanceBoost, farmObs, teamHistory });
-  league.players = league.players.concat(promoted, rookies);
+  // 補充・前半: 育成昇格→プール生成まで（§13/§15/§12.1）。ドラフト本体（runDraft）は
+  //   driveOffseasonDraft が別途呼ぶ（H2・プレイヤー参加型ドラフトの中断点）。
+  const mkt = marketStage1(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear: year + 1, era: rookieEra, farmObs, teamHistory });
+  league.players = league.players.concat(mkt.promoted);
   rebuildTeamRosters(league);
+
+  return {
+    injuries, breakouts, retirees, fa, trades, obs, standings, balanceBoost,
+    promotions: mkt.promotions, remainingVac: mkt.remainingVac, pool: mkt.pool,
+    order: mkt.order, profiles: mkt.profiles, windowByTeam: mkt.windowByTeam,
+  };
+}
+
+/**
+ * ★H2: オフシーズン遷移の後半（stage2）。ドラフト確定後の「育成獲得→剪定→戦力外/拾い上げ
+ * →契約更改」（phaseH_fun_spec H2 設計方針）。draftResult は runDraft の非中断な戻り値
+ * （{rookies, undrafted, draftLog}）であること（呼び出し側が paused でないことを確認済み）。
+ * @returns {{pickups:Array, contracts:Array}}
+ */
+function offseasonStage2(league, cfg, { s1, draftResult, masterSeed, yearIndex }) {
+  league.players = league.players.concat(draftResult.rookies);
+  rebuildTeamRosters(league);
+  marketStage2(league, cfg, { undrafted: draftResult.undrafted, order: s1.order, balanceBoost: s1.balanceBoost, rookies: draftResult.rookies });
   // 戦力外→拾い上げ（ドラフト後の全支配下から同型循環・§12.2）。新人は観測が無く対象外＝除外される。
-  const pickups = runReleaseAndPickup(league, cfg, { profiles, masterSeed, yearIndex, standings, obs });
+  const pickups = runReleaseAndPickup(league, cfg, { profiles: s1.profiles, masterSeed, yearIndex, standings: s1.standings, obs: s1.obs });
   rebuildTeamRosters(league);
   // 契約更改（フレーバー・エンジン非干渉）。
-  const contracts = runContractRenewal(league, cfg, { obs });
+  const contracts = runContractRenewal(league, cfg, { obs: s1.obs });
+  return { pickups, contracts };
+}
 
-  return { injuries, breakouts, retirees, rookies, promotions, draftLog, fa, trades, pickups, contracts };
+/** league（teams/players/farm）の独立クローン（H2: driveOffseasonDraft が state.league を直接
+ *  汚さず何度でも stage1 を再導出できるようにする。プレーンデータのみ＝JSON複製で安全）。 */
+function cloneLeague(league) {
+  return JSON.parse(JSON.stringify({ masterSeed: league.masterSeed, teams: league.teams, players: league.players, farm: league.farm ?? [] }));
+}
+
+/** 当季に試合中発生した故障をオフ入力の形へ整形する（R3・純粋な読み取り。state.rt.injuryLog は不変）。 */
+function deriveSeasonInjuries(rt) {
+  return rt.injuryLog.map((e) => ({
+    id: e.playerId, teamId: e.teamId, site: e.site, siteName: e.siteName,
+    severity: e.severity, gamesLost: e.gamesLost, day: e.day, farm: !!e.farm,
+  }));
+}
+
+/**
+ * ★H2: オフシーズン遷移の駆動関数。advanceYear（初回）と submitDraftPick（再開）の両方から
+ * 呼ばれる共通の入り口。state.league は **ドラフトが完全に解決するまで一切書き換えない**
+ * （stage1 は毎回 state.league のクローン上で再実行＝state.league・masterSeed・yearIndex・
+ * careerStats・marketInterventions だけに依存する純関数として振る舞う）。
+ *
+ * 自チームの指名番で pickLog（marketInterventions の phase:'draft' エントリ）が尽きていれば
+ * runDraft が中断を返す → state.awaitingDraft/state.offseasonStage を立てて null を返す
+ * （呼び出し側はこれで「まだ終わっていない」と判定する）。全ラウンド解決したら stage2 を実行し、
+ * state.league を新ロスターへ確定（コミット）してから年送りの残り（表彰/ニュース/yearIndex++等）を行う。
+ * @returns {Object|null} 完了時はオフシーズン要約（advanceYear の戻り値と同型）。中断中は null。
+ */
+function driveOffseasonDraft(state) {
+  const completedYear = state.year;
+  // ★H2バグ修正: state.offseasonStage は「この呼び出しに入る前から既に中断中だったか」を表す
+  //   （load() が data.offseasonStage から復元した直後 or submitDraftPick からの再開）。
+  //   これが 'awaitingDraft' なら、たとえ今回渡された state.cfg.game.interactiveDraft が false
+  //   （例: UI の loadFromBlob が `createConfig()` を素で呼び、interactiveDraft:true の
+  //   オーバーライドを付け忘れた場合）であっても、必ず対話継続として扱う。
+  //   でなければ playerTeamId が null になり、①蓄積済みの pickLog（プレイヤーが既に指名した分）が
+  //   一切消費されずに握りつぶされ、②全球団ぶん bestFor(AI自動)で即完了してしまい、
+  //   中断状態が silently 失われる（load-replay が非対話で「ログから同一結果を再構築」する
+  //   という設計方針4に違反する）。offseasonStage は playerTeamId が非null のときにしか
+  //   'awaitingDraft' にならない（下の paused 分岐参照）ので、この判定は安全（誤って
+  //   非対話ゲームを対話化することはない）。
+  const wasAwaitingDraft = state.offseasonStage === 'awaitingDraft';
+  const league = cloneLeague(state.league); // state.league は最終コミットまで不変
+  const standings = standingsForYear(state, completedYear);
+  const seasonInjuries = deriveSeasonInjuries(state.rt);
+  const s1 = offseasonStage1(league, state.cfg, {
+    masterSeed: state.masterSeed,
+    yearIndex: state.yearIndex,
+    year: completedYear,
+    standings,
+    teamHistory: state.teamHistory,
+    careerStats: state.careerStats,
+    careerFarmStats: state.careerFarmStats,
+    marketInterventions: state.marketInterventions,
+    seasonInjuries,
+  });
+  const pickLog = state.marketInterventions.filter(
+    (iv) => iv.phase === 'draft' && (iv.yearIndex ?? 0) === state.yearIndex,
+  );
+  const interactive = state.cfg.game.interactiveDraft || wasAwaitingDraft;
+  const draftResult = runDraft(s1.remainingVac, s1.pool, s1.profiles, s1.order, state.cfg, {
+    masterSeed: state.masterSeed,
+    yearIndex: state.yearIndex,
+    windowByTeam: s1.windowByTeam,
+    playerTeamId: interactive ? state.playerTeamId : null,
+    pickLog,
+  });
+  if (draftResult.paused) {
+    state.awaitingDraft = draftResult.awaitingDraft;
+    state.offseasonStage = 'awaitingDraft';
+    return null;
+  }
+  state.awaitingDraft = null;
+  state.offseasonStage = null;
+  // 表彰（C4）: 世代交代でロスターが動く前に「当年に出場した選手」の byId を控える（決定論・純関数）。
+  //   ★league.farm も含める（R2 で顕在化した既存バグ）: 育成→支配下の季節中昇格（§req_20260708）は
+  //   1:1 交換なので、押し出された支配下選手はシーズン途中で league.farm 側へ移る。その選手が
+  //   一軍で出場していると careerStats には成績が残るのに byId から引けず、表彰の選定が
+  //   undefined.role で落ちる。出場記録を持つ全選手を引けるようにする（支配下＋育成）。
+  //   ★ここで state.league（=まだ当季終了時点のロスター）から組む＝下の commit で書き換わる前
+  //   （従来の advanceYear が offseasonTransition 呼び出し前に組んでいたのと同じ対象集合）。
+  const awardsById = new Map(state.league.players.map((p) => [p.id, p]));
+  for (const d of state.league.farm ?? []) if (!awardsById.has(d.id)) awardsById.set(d.id, d);
+  const s2 = offseasonStage2(league, state.cfg, { s1, draftResult, masterSeed: state.masterSeed, yearIndex: state.yearIndex });
+  state.league = league; // ★最終コミット（ここまで state.league は不変）
+  const off = {
+    injuries: s1.injuries, breakouts: s1.breakouts, retirees: s1.retirees, rookies: draftResult.rookies,
+    promotions: s1.promotions, draftLog: draftResult.draftLog, fa: s1.fa, trades: s1.trades,
+    pickups: s2.pickups, contracts: s2.contracts,
+  };
+  finalizeOffseason(state, off, completedYear, awardsById);
+  return off;
+}
+
+/**
+ * ★H2: driveOffseasonDraft がドラフトを完全に解決した後の締め（従来の advanceYear 末尾を抽出）。
+ * 表彰/マイルストーン/因縁ログ/引退セレモニー/永続ログの畳み込み/年送りを行う（一度だけ呼ばれる）。
+ * @param {Map} awardsById 当季終了時点のロスター（driveOffseasonDraft が commit 直前に控えた もの）
+ */
+function finalizeOffseason(state, off, completedYear, awardsById) {
+  // §req_20260708: 完了年ぶんの育成→支配下季節中昇格ログを永続配列へ畳み込む（load時はこのログから
+  // replay適用し、league.players/farmを動かす day 単位の再シムを不要にする＝index.mjs load() 参照）。
+  for (const m of state.rt.farmPromotionLog) state.farmPromotionLog.push({ year: state.yearIndex, ...m });
+  // R3: 当季に試合中発生した故障を永続ログへ畳み込む（オフの後遺/故障歴の素・load の replay 入力）。
+  const seasonInjuries = deriveSeasonInjuries(state.rt);
+  for (const e of seasonInjuries) state.injuryLog.push({ year: state.yearIndex, ...e });
+  // 癒えないままシーズンが終わった故障 → 翌季の開幕IL（「9月の大怪我で開幕に間に合わない」）
+  const carried = carryOverInjuries(state.rt);
+  // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
+  off.awards = computeSeasonAwards({
+    playerSeasons: state.careerStats.filter((s) => s.season === completedYear),
+    standings: standingsForYear(state, completedYear),
+    playersById: awardsById,
+    cfg: state.cfg,
+    allCareerStats: state.careerStats,
+    year: completedYear,
+  });
+  off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
+  // H1-2: 確定した取引（FA/トレード/拾い上げ/ドラフト）をコンパクト行として永続ログへ追記
+  //   （因縁ライバル追跡の素材・additive save field）。yearIndex はまだ完了年のもの（未インクリメント）。
+  appendTransactionLog(state, off, completedYear, state.yearIndex);
+  // H1-3: 確定した引退者のうち功労者を「引退セレモニー」カード用データへ整形（オフダイジェスト素材）。
+  off.retirementCeremonies = retirementCeremonies(state, off, completedYear);
+  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ
+  // R5: 確定した受賞をそのまま永続する（前史で成績を刈っても過去の受賞者が変わらないように）
+  state.awardsHistory.push({ year: completedYear, awards: off.awards });
+  state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
+  compactCareerStats(state); // R4: 古いシーズンの表示専用内訳を落とす（save 肥大の防止・下記）
+  state.yearIndex += 1;
+  state.year += 1;
+  startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
 }
 
 /**
@@ -324,6 +485,12 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     // 育成→支配下の季節中昇格ログ（§req_20260708・完了年ぶんのみ蓄積。save/replayで再現。
     // 当年ぶんは state.rt.farmPromotionLog にあり、advanceYear で年ごとに畳み込む）。
     farmPromotionLog: [],
+    // H2: オフシーズン中断状態（additive・既定 null）。'awaitingDraft' はプレイヤー参加型ドラフトの
+    //   自チーム指名番で中断中を表す（driveOffseasonDraft/submitDraftPick が管理）。
+    offseasonStage: null,
+    // H2: 中断中のドラフト会議の現在状態（残りプール等・live限定＝save には含めない。load は
+    //   offseasonStage から driveOffseasonDraft を再駆動して再構築する）。
+    awaitingDraft: null,
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -331,11 +498,18 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
   // ★R4 前史（burn-in）: プレイヤーに渡す前に N 年ぶんを自動消化する。決定論（同一 masterSeed なら
   //   同一の前史）。消化後の state は「20年ぶんの通算記録・引退者・故障歴・ドラフト履歴を持つ、
   //   firstSeason 開幕直前のリーグ」になる（yearIndex=burnIn / year=cfg.game.firstSeason）。
-  for (let y = 0; y < burnIn; y++) {
-    while (!state.rt.finished) advanceDay(state);
-    advanceYear(state);
+  //   H2: 前史には人間が居ない＝cfg.game.interactiveDraft の値によらず常に全自動で回す
+  //   （一時的に false へ落として実行し、burn-in 終了後に元へ戻す＝以後のプレイは指定どおり対話的）。
+  if (burnIn > 0) {
+    const savedInteractive = cfg.game.interactiveDraft;
+    cfg.game.interactiveDraft = false;
+    for (let y = 0; y < burnIn; y++) {
+      while (!state.rt.finished) advanceDay(state);
+      advanceYear(state);
+    }
+    cfg.game.interactiveDraft = savedInteractive;
+    pruneBurnInHistory(state);
   }
-  if (burnIn > 0) pruneBurnInHistory(state);
   return state;
 }
 
@@ -509,68 +683,46 @@ export function advanceTo(state, until, opts = {}) {
  *   bit 一致する（引退で消えた選手・補充新人まで完全再現）。
  * エンジン不変: 本関数は 1年目終了後に初めて呼ばれる。1年目レギュラーシーズン（既存50較正）は
  *   完全に不変（故障/ブレイク/加齢/引退は 2年目以降の真値・ロスターにのみ効く）。
+ *
+ * ★H2（プレイヤー参加型ドラフト）: cfg.game.interactiveDraft が true かつ自チームの指名番になると
+ *   **中断リターン**する（driveOffseasonDraft が state.awaitingDraft/offseasonStage を立てて null を
+ *   返す）。呼び出し側は戻り値が null なら「まだ終わっていない」と判定し、submitDraftPick で指名を
+ *   送って解決を続ける。interactiveDraft=false（既定）なら常に完了して off 要約を返す＝既存呼び出し
+ *   元は挙動不変（byte 同一）。
  * @param {Object} state GameState（シーズンが finished であること）
- * @returns {{injuries:Array, breakouts:Array, retirees:Array, rookies:Array}} オフシーズン要約
+ * @returns {Object|null} オフシーズン要約（injuries/breakouts/retirees/rookies/…）。中断中は null
  */
 export function advanceYear(state) {
   if (!state.rt || !state.rt.finished) {
     throw new Error('advanceYear: シーズン未終了（seasonEnd まで進めてから呼ぶこと）');
   }
-  // 表彰（C4）: 世代交代でロスターが動く前に「当年に出場した選手」の byId を控え、
-  //   完了シーズンの観測成績/WAR から表彰を選定する（決定論・純関数）。
-  //   ★league.farm も含める（R2 で顕在化した既存バグ）: 育成→支配下の季節中昇格（§req_20260708）は
-  //   1:1 交換なので、押し出された支配下選手はシーズン途中で league.farm 側へ移る。その選手が
-  //   一軍で出場していると careerStats には成績が残るのに byId から引けず、表彰の選定が
-  //   undefined.role で落ちる。出場記録を持つ全選手を引けるようにする（支配下＋育成）。
-  const awardsById = new Map(state.league.players.map((p) => [p.id, p]));
-  for (const d of state.league.farm ?? []) if (!awardsById.has(d.id)) awardsById.set(d.id, d);
-  const completedYear = state.year;
-  // §req_20260708: 完了年ぶんの育成→支配下季節中昇格ログを永続配列へ畳み込む（load時はこのログから
-  // replay適用し、league.players/farmを動かす day 単位の再シムを不要にする＝index.mjs load() 参照）。
-  for (const m of state.rt.farmPromotionLog) state.farmPromotionLog.push({ year: state.yearIndex, ...m });
-  // R3: 当季に試合中発生した故障を永続ログへ畳み込む（オフの後遺/故障歴の素・load の replay 入力）。
-  const seasonInjuries = state.rt.injuryLog.map((e) => ({
-    id: e.playerId, teamId: e.teamId, site: e.site, siteName: e.siteName,
-    severity: e.severity, gamesLost: e.gamesLost, day: e.day, farm: !!e.farm,
-  }));
-  for (const e of seasonInjuries) state.injuryLog.push({ year: state.yearIndex, ...e });
-  // 癒えないままシーズンが終わった故障 → 翌季の開幕IL（「9月の大怪我で開幕に間に合わない」）
-  const carried = carryOverInjuries(state.rt);
-  const off = offseasonTransition(state.league, state.cfg, {
-    masterSeed: state.masterSeed,
-    yearIndex: state.yearIndex,
-    year: state.year,
-    standings: standingsForYear(state, state.year), // 完了年の最終順位＝ドラフトのウェーバー順
-    teamHistory: state.teamHistory, // R7（決定3）: 優勝の窓の判定に使う（teamHistoryは既に完了年を含む）
-    careerStats: state.careerStats, // 当年 statline を放出/契約更改の "実観測" に使う（season==year で絞る）
-    careerFarmStats: state.careerFarmStats, // 当年の二軍 statline（F2-3: 育成昇格の実成績判定）
-    marketInterventions: state.marketInterventions, // 当年ぶんのFA入札/トレード起案を適用
-    seasonInjuries, // R3: 当季の故障ログ（後遺・故障歴をここで真値へ落とす）
-  });
-  // 完了シーズンの表彰（C4・§55）。当年 statline を careerStats から絞り、順位表は teamHistory 由来。
-  off.awards = computeSeasonAwards({
-    playerSeasons: state.careerStats.filter((s) => s.season === completedYear),
-    standings: standingsForYear(state, completedYear),
-    playersById: awardsById,
-    cfg: state.cfg,
-    allCareerStats: state.careerStats,
-    year: completedYear,
-  });
-  off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
-  // H1-2: 確定した取引（FA/トレード/拾い上げ/ドラフト）をコンパクト行として永続ログへ追記
-  //   （因縁ライバル追跡の素材・additive save field）。yearIndex はまだ完了年のもの（未インクリメント）。
-  appendTransactionLog(state, off, completedYear, state.yearIndex);
-  // H1-3: 確定した引退者のうち功労者を「引退セレモニー」カード用データへ整形（オフダイジェスト素材）。
-  off.retirementCeremonies = retirementCeremonies(state, off, completedYear);
-  state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ
-  // R5: 確定した受賞をそのまま永続する（前史で成績を刈っても過去の受賞者が変わらないように）
-  state.awardsHistory.push({ year: completedYear, awards: off.awards });
-  state.pendingInjuries = carried; // R3: 癒えていない故障の残り日数→翌シーズン開幕の離脱(IL)（C2.4）
-  compactCareerStats(state); // R4: 古いシーズンの表示専用内訳を落とす（save 肥大の防止・下記）
-  state.yearIndex += 1;
-  state.year += 1;
-  startYear(state); // 新シーズンを開幕状態でセット（世代交代後の真値/ロスター・yearIndex 依存シード）
-  return off;
+  if (state.awaitingDraft) {
+    throw new Error('advanceYear: ドラフト中断中（submitDraftPick で指名を解決してから呼ぶこと）');
+  }
+  return driveOffseasonDraft(state);
+}
+
+/**
+ * ★H2: プレイヤー参加型ドラフトの指名を送る。中断中（state.awaitingDraft）に、選べる候補
+ * （awaitingDraft.pool のうち、自チームの残り空き枠 vacTypes と同型）から1人を指名し、
+ * marketInterventions に {phase:'draft', yearIndex, round, prospectId} を積んで解決を続行する
+ * （bidFA/proposeTrade と同じ「介入ログを積む」流儀。runDraft がログを消費して同一結果を再構築＝
+ * live/save-load replay で bit 一致）。
+ * @param {Object} state GameState（state.awaitingDraft が立っていること）
+ * @param {string} prospectId 指名する選手（awaitingDraft.pool の id）
+ * @returns {Object|null} まだ指名が残っていれば null（次の中断へ）。全ラウンド完了なら off 要約。
+ */
+export function submitDraftPick(state, prospectId) {
+  const aw = state.awaitingDraft;
+  if (!aw) throw new Error('submitDraftPick: 中断中のドラフトが無い');
+  const prospect = aw.pool.find((p) => p.id === prospectId);
+  if (!prospect) throw new Error(`submitDraftPick: ${prospectId} は現在指名できない（プール外）`);
+  const tk = `${prospect.role}:${prospect.primaryPos}`;
+  if (!aw.vacTypes.some((v) => `${v.role}:${v.primaryPos}` === tk)) {
+    throw new Error(`submitDraftPick: ${prospectId}（${tk}）は自チームの空き枠と型が一致しない`);
+  }
+  state.marketInterventions.push({ yearIndex: state.yearIndex, phase: 'draft', round: aw.round, prospectId });
+  return driveOffseasonDraft(state);
 }
 
 // --- セーブ/ロード ----------------------------------------------------------
@@ -646,6 +798,10 @@ export function save(state) {
     awardsHistory: state.awardsHistory, // 確定した年度別受賞（再計算に頼らない）
     injuryLog: state.injuryLog, // 故障歴の記録（復元には不要だが表示/記録用に保持）
     pendingInjuries: state.pendingInjuries,
+    // H2: オフシーズン中断状態（additive）。'awaitingDraft' の中身（残りプール等）は保存しない
+    //   （シードから決定論再生成できる＝pool不要。marketInterventions の phase:'draft' ログだけで
+    //   load が driveOffseasonDraft を再駆動し、同じ中断点を再構築する）。
+    offseasonStage: state.offseasonStage ?? null,
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -738,6 +894,8 @@ export function load(blob, options = {}) {
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
+    offseasonStage: data.offseasonStage ?? null, // H2: 旧セーブは null 補完（additive save field）
+    awaitingDraft: null, // H2: 下で driveOffseasonDraft が再駆動して復元する（live限定・保存はしない）
     rt: null,
   };
   // ★R5: 過去年のオフシーズン再計算（replay）は撤去した。開幕時点のリーグを save から直接
@@ -762,6 +920,14 @@ export function load(blob, options = {}) {
       }
       verifyStandings(state.rt.farm, ss.farm.standings);
     }
+  }
+  // ★H2: ドラフト中断中のセーブから復元した場合、driveOffseasonDraft を1回再駆動して同じ中断点
+  //   （state.awaitingDraft）を再構築する。pool は保存していない＝marketInterventions の
+  //   phase:'draft' ログ（既に蓄積済み）を使って runDraft が最初から再生し、同じ pause に到達する
+  //   （決定論）。ログが既に全ラウンドぶん揃っていれば pause せずそのまま完了まで進む
+  //   （H2設計方針4「load-replay は非対話」＝蓄積済みログの再生であり新たな pause は生まない）。
+  if (state.offseasonStage === 'awaitingDraft') {
+    driveOffseasonDraft(state);
   }
   return state;
 }
@@ -803,3 +969,6 @@ export {
 } from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
+// H2: プレイヤー参加型ドラフト会議のスカウトレポートAPIを再エクスポート（UI/テストが
+//   './game/index.mjs' 経由で使う。submitDraftPick は本ファイルで直接 export 済み）。
+export { draftScoutView, draftPreviewHeadlines };

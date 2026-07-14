@@ -36,6 +36,8 @@ import { renderWatchScreen } from './ui/watch.mjs';
 import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
 import { renderScheduleTab, schedPlayerHeadlines } from './ui/schedule.mjs';
+// H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
+import { renderDraftRoomScreen } from './ui/draft.mjs';
 
 const state = {
   league: null,
@@ -1264,9 +1266,27 @@ function leagueNameOf(cfg, lid) {
   return l ? `${l.name}（DH${l.dh ? '有' : '無'}）` : lid || '';
 }
 
+/**
+ * H2: UIが作る/読み込む GameState は常に対話型ドラフト（config既定はfalse＝headless/既存テストは
+ *   全自動不変・phaseH_fun_spec H2「cfg.game.interactiveDraft…ui.mjs の startNewGame だけが
+ *   オーバーライドで true を渡す」）。startNewGame と loadFromBlob の両方がこれを使う
+ *   （loadFromBlob が素の createConfig() を使うと、ドラフト中断中のセーブを読み込んだ際に
+ *   interactiveDraft:false のまま driveOffseasonDraft が再駆動され、蓄積済みの指名ログが
+ *   握りつぶされて全球団AI自動で完了してしまう＝中断状態が silently 失われるバグになる。
+ *   src/game/index.mjs driveOffseasonDraft 側にも offseasonStage 起点の防御を入れてあるが、
+ *   将来年度のドラフトも対話継続させるにはロード時点の cfg 自体を対話化しておく必要がある）。
+ * SABER_CFG_OVERRIDES（smoke/デバッグ用の注入点。通常は空＝既定の config）の game.* が優先されるよう、
+ *   トップレベルはオーバーライドを丸ごと展開しつつ game だけ手動で深くマージする
+ *   （object spread は同名キーを丸ごと上書きするため、素朴な {...overrides} だと
+ *   overrides.game が interactiveDraft:true を消してしまう）。
+ */
+function uiConfig() {
+  const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
+  return createConfig({ ...ov, game: { interactiveDraft: true, ...(ov.game ?? {}) } });
+}
+
 function startNewGame(seed, teamId) {
-  // 設定オーバーライド（smoke/デバッグ用の注入点。通常は空＝既定の config）。
-  const cfg = createConfig(globalThis.SABER_CFG_OVERRIDES ?? {});
+  const cfg = uiConfig();
   const burnIn = cfg.game.burnInYears ?? 0;
   const root = typeof document !== 'undefined' ? document.getElementById('app') : null;
   // ローディング表示は実ブラウザでのみ（ヘッドレスの簡易DOMには replaceChildren が無い）。
@@ -1834,9 +1854,13 @@ function loadFromSlot(key) {
   if (rec) loadFromBlob(rec.blob);
 }
 function loadFromBlob(blob) {
-  game.gs = load(blob, { cfg: createConfig() });
+  game.gs = load(blob, { cfg: uiConfig() });
   bindGameContext(game.gs);
-  if (game.gs.rt.finished) renderSeasonResult();
+  // H2: ドラフト中断中のセーブは load() が driveOffseasonDraft を再駆動して同じ中断点
+  //   （state.awaitingDraft）を再構築済み。rt.finished も true のままだが、advanceYear は
+  //   awaitingDraft が立っている間は再度呼べない（throw）ため renderSeasonResult より先に判定する。
+  if (game.gs.awaitingDraft) renderDraftRoomScreen(draftDeps());
+  else if (game.gs.rt.finished) renderSeasonResult();
   else renderHub();
 }
 
@@ -2118,11 +2142,36 @@ function renderSeasonResult() {
 // marketInterventions へ積む。ここではエンジン既存の advanceYear（決定論・セーブは careerStats/
 // 介入ログから replay 再現）を実行し、オフシーズン要約ダイジェストを表示するのみ
 // ＝UI都合の新たな乱数消費・状態変更はない。
+// H2: cfg.game.interactiveDraft=true（既定・startNewGame参照）かつ自チームの指名番になると
+//   advanceYear は null を返して中断する（state.awaitingDraft が立つ）。その場合はドラフト会議室
+//   （src/ui/draft.mjs）へ遷移し、全ラウンド解決後に finishOffseasonUI へ合流する。
+//   interactiveDraft=false（旧セーブ/デバッグ）なら off は常に非nullで従来どおり即ダイジェストへ。
 function advanceToNextYearUI() {
   const off = advanceYear(game.gs);
+  if (off === null) {
+    renderDraftRoomScreen(draftDeps());
+    return;
+  }
+  finishOffseasonUI(off);
+}
+
+/** オフシーズン確定後の共通の締め（advanceToNextYearUI と draft.mjs の完了ハンドラで共有）。 */
+function finishOffseasonUI(off) {
   bindGameContext(game.gs); // 引退/新人/育成獲得で players/farm が変わる＝byId を張り直す
   autoSave();
   renderOffseasonDigestScreen(off, stoveDeps()); // E3: 1画面ダイジェスト（実装は src/ui/stove.mjs）
+}
+
+/**
+ * H2: src/ui/draft.mjs（ドラフト会議室）へ渡すUI共有ヘルパー束
+ * （teamTabDeps/watchDeps/stoveDeps と同じ流儀: 分割モジュールは deps 経由で ui.mjs を参照する）。
+ */
+function draftDeps() {
+  return {
+    el, game, tname, posJP, autoSave,
+    renderHub: () => renderHub(),
+    onDraftComplete: (off) => finishOffseasonUI(off),
+  };
 }
 
 /**

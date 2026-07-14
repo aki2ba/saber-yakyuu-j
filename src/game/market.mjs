@@ -82,8 +82,12 @@ export function teamEvalProfile(masterSeed, teamId, cfg) {
   };
 }
 
-/** 観測ツール = 真値 + 球団固有スカウトノイズ（ctx 無し or noiseSd=0 なら真値そのまま＝テスト用）。 */
-function obsTool(trueVal, profile, ctx, tool, pid) {
+/**
+ * 観測ツール = 真値 + 球団固有スカウトノイズ（ctx 無し or noiseSd=0 なら真値そのまま＝テスト用）。
+ * export: H2 draftScoutView が「トレード/評価と同じ観測座標」でスカウト表示用のツールも引くために使う
+ * （真値そのものは渡らない・呼び出し側は trueVal をここでしか使わない＝表示にも trueAbility を直接出さない）。
+ */
+export function obsTool(trueVal, profile, ctx, tool, pid) {
   if (!ctx || !profile.noiseSd) return trueVal;
   const r = makeRng(hashSeed(ctx.masterSeed, 'scout', ctx.yearIndex, ctx.teamId, pid, tool));
   return trueVal + r.normal(0, profile.noiseSd);
@@ -230,9 +234,18 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = n
  *   Round1: 各球団が自評価の最高 prospect を1位指名 → 競合はくじで解決（負けは再指名）。
  *   Round2+: ウェーバー順（弱い順）に残り枠を自評価の最高で1人ずつ埋める。
  * 各球団は自分の空き枠と同型(role:pos)の prospect しか獲れない（構成恒常）。
- * @returns {{rookies:Array, undrafted:Array, draftLog:Object}}
+ *
+ * H2（プレイヤー参加型ドラフト）: playerTeamId を渡すと、その球団の指名だけ bestFor（AI自動）を
+ * 使わず pickLog（marketInterventions の phase:'draft' エントリ・提出順）から消費する。
+ * pickLog が尽きた時点（＝プレイヤーがまだ選んでいない）で **即座に一時停止**し
+ * `{paused:true, awaitingDraft}` を返す（AI11球団のロジックは一切変えない）。
+ * 呼び出し側（src/game/index.mjs driveOffseasonDraft）は、プールを毎回シードから再生成し、
+ * ここまでに確定した pickLog を渡して本関数を最初から再実行することで「再開」する
+ * （決定論・pool の保存は不要。load-replay は蓄積済みログをそのまま渡すため一切 pause しない）。
+ * playerTeamId が null（既定）なら旧来どおり完全自動＝既存呼び出し元と byte 同一。
+ * @returns {{rookies:Array, undrafted:Array, draftLog:Object}|{paused:true, awaitingDraft:Object}}
  */
-function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex, windowByTeam = null }) {
+export function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex, windowByTeam = null, playerTeamId = null, pickLog = [] }) {
   const teamVac = new Map(); // teamId → [{role,primaryPos}]（残り空き枠のキュー）
   for (const t of order) teamVac.set(t, []);
   for (const v of vacancies) {
@@ -241,10 +254,15 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
   }
   const available = new Map(); // typeKey → prospect[]（獲得で減る）
   for (const [k, arr] of pool) available.set(k, arr.slice());
+  // 全プロスペクト（獲得済みも含む・id→prospect）。H2会議室の「指名済みボード」表示用
+  // （公開情報の名前/役割/守備位置/年齢のみを picksSoFar に付す＝trueAbility は含めない）。
+  const allProspects = new Map();
+  for (const arr of pool.values()) for (const pr of arr) allProspects.set(pr.id, pr);
   const rookies = [];
   const draftLog = { order: order.slice(), picks: [], lotteries: [] };
   const wc = cfg.tuning.market.window;
   const mk = cfg.tuning.market;
+  let pickIdx = 0; // pickLog の消費カーソル（自チームの番が来るたび1つずつ進む）
 
   // R7（決定3）: 窓状態に応じた指名の傾き（即戦力=大社 vs 素材=高卒）。三層構造は崩さない
   //   （trueAbility 非参照・年齢は公開情報）。窓を持たない旧テスト呼び出し（windowByTeam無し）は
@@ -257,7 +275,7 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
     return 0;
   };
 
-  // 球団の「残り空き枠の型のうち、自評価が最高の available prospect」を返す。
+  // 球団の「残り空き枠の型のうち、自評価が最高の available prospect」を返す（AI専用）。
   const bestFor = (teamId) => {
     const vac = teamVac.get(teamId);
     if (!vac || !vac.length) return null;
@@ -280,6 +298,49 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
     return best ? { prospect: best, typeKey: bestType } : null;
   };
 
+  /** teamId の残り空き枠のいずれかの型に available な prospect が1人でもいるか（AI/自チーム共通の存在確認）。 */
+  const hasCandidate = (teamId) => {
+    const vac = teamVac.get(teamId);
+    if (!vac || !vac.length) return false;
+    for (const v of vac) if ((available.get(`${v.role}:${v.primaryPos}`) || []).length) return true;
+    return false;
+  };
+
+  /** 自チームが指名する prospectId を、残り空き枠の型に限定して available から探す（H2・介入ログの解決）。 */
+  const resolvePick = (teamId, prospectId) => {
+    const vac = teamVac.get(teamId);
+    if (!vac) return null;
+    const types = new Set(vac.map((v) => `${v.role}:${v.primaryPos}`));
+    for (const tk of types) {
+      const arr = available.get(tk) || [];
+      const idx = arr.findIndex((p) => p.id === prospectId);
+      if (idx >= 0) return { prospect: arr[idx], typeKey: tk };
+    }
+    return null;
+  };
+
+  /** 中断ペイロード（H2・src/ui/draft.mjs の会議室画面が表示する現在の状態）。 */
+  const buildAwaitingDraft = (round, contested) => {
+    const vac = teamVac.get(playerTeamId) || [];
+    const poolNow = [];
+    for (const arr of available.values()) poolNow.push(...arr);
+    poolNow.sort(byId);
+    return {
+      round,
+      contested,
+      teamId: playerTeamId,
+      vacTypes: vac.map((v) => ({ role: v.role, primaryPos: v.primaryPos })),
+      order: order.slice(),
+      // 指名済みボード（公開情報のみ denormalize: 名前/役割/守備位置/年齢。trueAbility は含めない）。
+      picksSoFar: draftLog.picks.map((pk) => {
+        const pr = allProspects.get(pk.prospectId);
+        return { ...pk, name: pr?.name ?? null, role: pr?.role ?? null, primaryPos: pr?.primaryPos ?? null, age: pr?.age ?? null };
+      }),
+      lotteries: draftLog.lotteries.slice(),
+      pool: poolNow,
+    };
+  };
+
   const assign = (teamId, prospect, typeKey, meta) => {
     const vac = teamVac.get(teamId);
     const vi = vac.findIndex((v) => `${v.role}:${v.primaryPos}` === typeKey);
@@ -294,10 +355,24 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
 
   // --- Round1: 1位指名＋競合くじ ---
   const pendingR1 = new Set(order.filter((t) => (teamVac.get(t) || []).length));
+  let r1Renom = false; // 自チームが同ラウンド内で2回目以降の指名（＝前回くじ敗退）か
   while (pendingR1.size) {
+    if (playerTeamId && pendingR1.has(playerTeamId) && hasCandidate(playerTeamId) && !pickLog[pickIdx]) {
+      return { paused: true, awaitingDraft: buildAwaitingDraft(1, r1Renom) };
+    }
     const noms = new Map(); // prospectId → {prospect, byTeam:Map<teamId,typeKey>}
     for (const teamId of order) {
       if (!pendingR1.has(teamId)) continue;
+      if (teamId === playerTeamId) {
+        if (!hasCandidate(teamId)) { pendingR1.delete(teamId); continue; }
+        const entry = pickLog[pickIdx++];
+        if (!entry || entry.round !== 1) throw new Error(`runDraft: round1の介入ログが不正（${JSON.stringify(entry)}）`);
+        const picked = resolvePick(teamId, entry.prospectId);
+        if (!picked) throw new Error(`runDraft: 介入ログの指名 ${entry.prospectId} が無効（round1・入手不可/型不一致）`);
+        if (!noms.has(picked.prospect.id)) noms.set(picked.prospect.id, { prospect: picked.prospect, byTeam: new Map() });
+        noms.get(picked.prospect.id).byTeam.set(teamId, picked.typeKey);
+        continue;
+      }
       const b = bestFor(teamId);
       if (!b) { pendingR1.delete(teamId); continue; }
       if (!noms.has(b.prospect.id)) noms.set(b.prospect.id, { prospect: b.prospect, byTeam: new Map() });
@@ -319,6 +394,7 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
       assign(winner, nom.prospect, nom.byTeam.get(winner), { round: 1, via: contested ? 'lottery' : 'nominate', contested });
       pendingR1.delete(winner);
     }
+    r1Renom = playerTeamId ? pendingR1.has(playerTeamId) : false; // 敗退で残っていれば次回は再指名
   }
 
   // --- Round2+: ウェーバー順（弱い順）に残り枠を埋める ---
@@ -326,6 +402,18 @@ function runDraft(vacancies, pool, profiles, order, cfg, { masterSeed, yearIndex
     let progress = false;
     for (const teamId of order) {
       if (!(teamVac.get(teamId) || []).length) continue;
+      if (teamId === playerTeamId) {
+        if (!hasCandidate(teamId)) continue;
+        const entry = pickLog[pickIdx];
+        if (!entry) return { paused: true, awaitingDraft: buildAwaitingDraft(round, false) };
+        if (entry.round !== round) throw new Error(`runDraft: round${round}の介入ログが不正（${JSON.stringify(entry)}）`);
+        pickIdx++;
+        const picked = resolvePick(teamId, entry.prospectId);
+        if (!picked) throw new Error(`runDraft: 介入ログの指名 ${entry.prospectId} が無効（round${round}・入手不可/型不一致）`);
+        assign(teamId, picked.prospect, picked.typeKey, { round, via: 'waiver', contested: false });
+        progress = true;
+        continue;
+      }
       const b = bestFor(teamId);
       if (!b) continue;
       assign(teamId, b.prospect, b.typeKey, { round, via: 'waiver', contested: false });
@@ -416,16 +504,16 @@ function pruneFarm(league, cfg) {
 }
 
 /**
- * 編成市場の中核（C3a）。引退枠 vacancies を「育成昇格 → ドラフト → 育成獲得」で埋める。
+ * 編成市場の前半（H2・runMarket のステップ1-2＋ドラフト準備）: 「育成昇格 → プール生成」まで。
  *   1. 育成枠を加齢（発達）させる
  *   2. 昇格判定: 育成の観測成績が閾値超 かつ 自球団に同型の空き枠あり → 支配下登録（稀・§12.1）
- *   3. ドラフト: 残り空き枠をウェーバー逆順×くじで埋める（§15）
- *   4. 育成獲得: ドラフト漏れ（過小評価 surplus）を育成枠へ（安く獲れる箱・§12.1）
- *   5. 剪定: 育成枠を有限に保つ
- * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
- * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
+ * ドラフト本体（runDraft）は呼ばない＝プレイヤー参加型ドラフト（H2）が指名の合間に中断できるよう、
+ * ここで止めて {remainingVac, pool, order, profiles, windowByTeam} を呼び出し側へ渡す。
+ * league.players には promoted を足さない（呼び出し側が rookies と合わせて一括で足す＝既存 runMarket
+ * と同じタイミング）。league.farm は in-place 更新（stillFarm）。
+ * @returns {{promoted:Array, promotions:Array, remainingVac:Array, pool:Map, order:Array, profiles:Map, windowByTeam:?Map}}
  */
-export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null, farmObs = null, teamHistory = null }) {
+export function marketStage1(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, farmObs = null, teamHistory = null }) {
   const mk = cfg.tuning.market;
   if (!league.farm) league.farm = [];
   const profiles = new Map();
@@ -474,10 +562,18 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
   }
   league.farm = stillFarm;
 
-  // 3. ドラフト（残り枠）。era＝世代の波/球速上昇を pool 生成時に反映（D3・§11.3）。
+  // ドラフトプール生成（era＝世代の波/球速上昇を反映・D3・§11.3）。ドラフト本体は呼ばない。
   const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
   const order = waiverOrder(standings, league);
-  const { rookies, undrafted, draftLog } = runDraft(remainingVac, pool, profiles, order, cfg, { masterSeed, yearIndex, windowByTeam });
+  return { promoted, promotions, remainingVac, pool, order, profiles, windowByTeam };
+}
+
+/**
+ * 編成市場の後半（H2・runMarket のステップ4-5）: ドラフト確定後の「育成獲得 → 剪定」。
+ * 王朝均衡（balanceBoost）の適用もここで行う（draft 割当後＝team 確定後でないと適用できないため）。
+ * league を in-place 更新する。戻り値なし。
+ */
+export function marketStage2(league, cfg, { undrafted, order, balanceBoost = null, rookies }) {
   // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
   //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
   if (balanceBoost && balanceBoost.size) {
@@ -486,10 +582,158 @@ export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearI
       if (b) applyEraToRookie(p, null, b);
     }
   }
-
-  // 4. 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。5. 剪定。
+  // 育成獲得（ドラフト漏れ＝過小評価された surplus を安く箱へ）。剪定。
   signDevelopment(league, cfg, undrafted, order);
   pruneFarm(league, cfg);
+}
 
-  return { promoted, rookies, draftLog, promotions };
+/**
+ * 編成市場の中核（C3a）。引退枠 vacancies を「育成昇格 → ドラフト → 育成獲得」で埋める。
+ *   1. 育成枠を加齢（発達）させる
+ *   2. 昇格判定: 育成の観測成績が閾値超 かつ 自球団に同型の空き枠あり → 支配下登録（稀・§12.1）
+ *   3. ドラフト: 残り空き枠をウェーバー逆順×くじで埋める（§15）
+ *   4. 育成獲得: ドラフト漏れ（過小評価 surplus）を育成枠へ（安く獲れる箱・§12.1）
+ *   5. 剪定: 育成枠を有限に保つ
+ * 決定論・構成恒常（promoted+rookies == vacancies）。league.farm を in-place で更新する。
+ * H2: marketStage1 + runDraft（完全自動＝playerTeamId無し）+ marketStage2 の合成（byte 同一）。
+ * プレイヤー参加型ドラフト（中断/再開）が要る場合は marketStage1/runDraft/marketStage2 を
+ * 個別に呼ぶこと（src/game/index.mjs driveOffseasonDraft 参照）。
+ * @returns {{promoted:Array, rookies:Array, draftLog:Object, promotions:Array}}
+ */
+export function runMarket(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era = null, balanceBoost = null, farmObs = null, teamHistory = null }) {
+  const s1 = marketStage1(league, cfg, { vacancies, standings, masterSeed, yearIndex, debutYear, era, farmObs, teamHistory });
+  const { rookies, undrafted, draftLog } = runDraft(s1.remainingVac, s1.pool, s1.profiles, s1.order, cfg, { masterSeed, yearIndex, windowByTeam: s1.windowByTeam });
+  marketStage2(league, cfg, { undrafted, order: s1.order, balanceBoost, rookies });
+  return { promoted: s1.promoted, rookies, draftLog, promotions: s1.promotions };
+}
+
+// ============================================================================
+// H2: プレイヤー参加型ドラフト会議 — スカウトレポート（draftScoutView）
+//   真値(trueAbility)は絶対に参照しない。観測ツール(obsTool)・球団評価(evaluateProspect)・
+//   公開情報(age)だけから「等級／ツール別5段階／伸びしろ／経歴タグ／世代内評判」を作る（§13三層構造）。
+// ============================================================================
+
+/** 経歴タグ（高卒/大卒/社会人）: 世代生成の年齢（公開情報・cohort と同じ年齢）から判定。 */
+function cohortTag(age, cohort) {
+  if (age <= cohort.hsAge) return '高卒';
+  if (age <= cohort.colAge) return '大卒';
+  return '社会人';
+}
+
+/** 分位点(0-1・大きいほど上位)→S/A/B/C/D。 */
+function gradeFromPercentile(p, breaks) {
+  if (p >= breaks.S) return 'S';
+  if (p >= breaks.A) return 'A';
+  if (p >= breaks.B) return 'B';
+  if (p >= breaks.C) return 'C';
+  return 'D';
+}
+
+/** 観測値(20-80相当)→1-5段階（breaksは昇順の3境界＝4段階の境目で計5段階）。 */
+function toolLevel(v, breaks) {
+  let lvl = 1;
+  for (const b of breaks) if (v >= b) lvl++;
+  return lvl;
+}
+
+/** vals内での x の分位点（0-1・x以下の割合＝大きいほど上位）。vals空なら1（安全側=最上位扱いしない用途では呼ばない）。 */
+function percentileOf(x, vals) {
+  if (!vals.length) return 1;
+  let le = 0;
+  for (const v of vals) if (v <= x) le++;
+  return le / vals.length;
+}
+
+/** 全球団平均のプロスペクト評価（世代内評判の素・§13）。球団ごとの評価プロファイル＋観測ノイズ込み。 */
+function consensusEval(state, prospect) {
+  const cfg = state.cfg;
+  const ctx0 = { masterSeed: state.masterSeed, yearIndex: state.yearIndex };
+  let s = 0;
+  for (const t of state.league.teams) {
+    const prof = teamEvalProfile(state.masterSeed, t.id, cfg);
+    s += evaluateProspect(prof, prospect, cfg, { ...ctx0, teamId: t.id });
+  }
+  return s / state.league.teams.length;
+}
+
+/**
+ * H2: スカウトレポート。自球団 profile での evaluateProspect（ノイズ込み）をプールの分位点で
+ * 相対化し、真値非参照の等級・ツール別評価・伸びしろ・経歴タグ・世代内評判にまとめる。
+ * @param {Object} state GameState（cfg/masterSeed/yearIndex/playerTeamId/league.teams を使う）
+ * @param {Object} prospect スカウト対象（ドラフトプールの1人）
+ * @param {Array} [pool] 比較母集団（省略時は state.awaitingDraft.pool。それも無ければ prospect 単体）
+ * @returns {{grade:string, tools:Object, upside:string, cohort:string, hype:?string, myPercentile:number, consensusPercentile:number}}
+ */
+export function draftScoutView(state, prospect, pool = null) {
+  const cfg = state.cfg;
+  const sr = cfg.tuning.market.scoutReport;
+  const myProfile = teamEvalProfile(state.masterSeed, state.playerTeamId, cfg);
+  const ctx = { masterSeed: state.masterSeed, yearIndex: state.yearIndex, teamId: state.playerTeamId };
+  const comparisonPool = pool ?? (state.awaitingDraft && state.awaitingDraft.pool && state.awaitingDraft.pool.length ? state.awaitingDraft.pool : [prospect]);
+
+  const myVal = evaluateProspect(myProfile, prospect, cfg, ctx);
+  const poolVals = comparisonPool.map((p) => evaluateProspect(myProfile, p, cfg, ctx));
+  const myPct = percentileOf(myVal, poolVals);
+  const grade = gradeFromPercentile(myPct, sr.gradeBreaks);
+
+  // ツール別5段階（evaluateProspect と同じハッシュ座標 'velo'/'control'/... で obsTool を引く＝一貫性）。
+  const t = prospect.trueAbility;
+  const id = prospect.id;
+  let tools;
+  if (prospect.role === 'pitcher') {
+    const veloR = clamp(50 + (t.pitching.velocityKmh - 145) * 2, 20, 80);
+    tools = {
+      velo: toolLevel(obsTool(veloR, myProfile, ctx, 'velo', id), sr.toolBreaks),
+      control: toolLevel(obsTool(t.pitching.control, myProfile, ctx, 'control', id), sr.toolBreaks),
+      stamina: toolLevel(obsTool(t.pitching.stamina, myProfile, ctx, 'stamina', id), sr.toolBreaks),
+      stuff: toolLevel(obsTool(pitchStuff(t), myProfile, ctx, 'stuff', id), sr.toolBreaks),
+    };
+  } else {
+    tools = {
+      contact: toolLevel(obsTool(t.batting.contact, myProfile, ctx, 'contact', id), sr.toolBreaks),
+      power: toolLevel(obsTool(t.common.power, myProfile, ctx, 'power', id), sr.toolBreaks),
+      speed: toolLevel(obsTool(t.common.speed, myProfile, ctx, 'speed', id), sr.toolBreaks),
+      defense: toolLevel(obsTool(t.fielding.positionProf[prospect.primaryPos] ?? 20, myProfile, ctx, 'prof', id), sr.toolBreaks),
+      arm: toolLevel(obsTool(t.common.arm, myProfile, ctx, 'arm', id), sr.toolBreaks),
+    };
+  }
+
+  // 伸びしろ: 公開年齢と「典型的なピーク年齢」（config定数。個体の真の career.peakAge は不参照）の
+  //   差＋スカウトノイズで3段階（大器/並/完成品）。実在のスカウティングと同じ「若さ＝伸びしろ」の代理。
+  const gapRng = makeRng(hashSeed(state.masterSeed, 'scoutupside', state.yearIndex, state.playerTeamId, id));
+  const gap = (sr.referencePeakAge - prospect.age) + gapRng.normal(0, sr.upsideNoiseSd);
+  const upside = gap >= sr.upsideBigThreshold ? '大器' : gap <= sr.upsideDoneThreshold ? '完成品' : '並';
+
+  // 経歴タグ（公開の年齢のみから判定）。
+  const cohort = cohortTag(prospect.age, cfg.tuning.market.cohort);
+
+  // 世代内評判: 全球団平均評価（consensus）のプール内分位点。目玉＝consensus上位。
+  //   隠し玉＝自球団評価の分位がconsensus分位を大きく上回る（他球団が見落としている＝市場の非効率が発現）。
+  const consensusVals = comparisonPool.map((p) => consensusEval(state, p));
+  const myConsensusPct = percentileOf(consensusEval(state, prospect), consensusVals);
+  let hype = null;
+  if (myConsensusPct >= sr.hypeTopPct) hype = '目玉';
+  else if (myPct - myConsensusPct >= sr.hiddenGemGapPct) hype = '隠し玉';
+
+  return { grade, tools, upside, cohort, hype, myPercentile: myPct, consensusPercentile: myConsensusPct };
+}
+
+/**
+ * H2: ドラフト前ニュース「今年の目玉」（世代トップ数名を報道）。全球団平均評価(consensus)の
+ * 降順で上位 previewCount 人を返す（真値非参照＝draftScoutView と同じ evaluateProspect ベース）。
+ * state.awaitingDraft.pool が無ければ空配列（ドラフト会議室が開いていない）。
+ * @returns {Array<{prospectId, role, primaryPos, age, cohort}>}
+ */
+export function draftPreviewHeadlines(state) {
+  const aw = state.awaitingDraft;
+  if (!aw || !aw.pool || !aw.pool.length) return [];
+  const cfg = state.cfg;
+  const sr = cfg.tuning.market.scoutReport;
+  const ranked = aw.pool
+    .map((p) => ({ p, consensus: consensusEval(state, p) }))
+    .sort((a, b) => b.consensus - a.consensus || (a.p.id < b.p.id ? -1 : 1));
+  return ranked.slice(0, sr.previewCount).map(({ p }) => ({
+    prospectId: p.id, role: p.role, primaryPos: p.primaryPos, age: p.age,
+    cohort: cohortTag(p.age, cfg.tuning.market.cohort),
+  }));
 }

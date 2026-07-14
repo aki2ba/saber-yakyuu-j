@@ -1218,6 +1218,26 @@ export const TUNING_DEFAULT = {
       relieverOvervalueW: 0.5, // 救援シェイプ度 × (stuff/velo超過分) → 過大評価点への換算
     },
 
+    // H2（phaseH_fun_spec）: プレイヤー参加型ドラフトの「スカウトレポート」表示ノブ。
+    //   真値は絶対に見せない＝すべて obsTool（真値+球団固有ノイズ）／evaluateProspect（球団の
+    //   癖込みの評価）／公開情報（年齢）だけから作る（trueAbility を直接は参照しない）。
+    scoutReport: {
+      // 総合等級 S/A/B/C/D: 自球団評価(evaluateProspect)の、現在のプール内での分位点で相対化。
+      gradeBreaks: { S: 0.9, A: 0.7, B: 0.4, C: 0.15 }, // 分位点(0-1)がこれ以上でその等級（以下はD）
+      // ツール別5段階（1-5）: obsTool値（20-80相当）をこの境界で離散化。
+      toolBreaks: [35, 45, 55, 65],
+      // 伸びしろ見立て: 「典型的なピーク年齢」（config固定値・個体の真のpeakAgeは参照しない）と
+      //   公開情報の年齢との差＋スカウトノイズで3段階（大器/並/完成品）に分類する。
+      referencePeakAge: 27,
+      upsideNoiseSd: 1.5, // 年齢差に乗せるスカウト評価のブレ（年相当）
+      upsideBigThreshold: 5, // (referencePeakAge-age)+noise がこれ以上で「大器」
+      upsideDoneThreshold: 0, // これ以下で「完成品」（残りは「並」）
+      // 世代内評判: 全球団平均評価（evaluateProspect の12球団平均）のプール内分位点。
+      hypeTopPct: 0.85, // これ以上で「目玉」
+      hiddenGemGapPct: 0.3, // (自球団分位−全球団平均分位)がこれ以上（かつ目玉でない）で「隠し玉」
+      previewCount: 5, // ドラフト前ニュース「今年の目玉」で報道する人数
+    },
+
     // 育成/支配下 二層（§12.1）: 育成枠＝観測ノイズ大＆下振れで安く獲れる箱。
     //   昇格判定＝育成の観測成績が閾値超で支配下登録（＝這い上がり）。「稀に」起きるよう閾値を高く。
     farm: {
@@ -1380,6 +1400,10 @@ export const GAME_DEFAULT = {
   daysPerMonth: 26, // advanceTo('monthEnd') の月境界（143試合≈6か月）
   rookieAgeMin: 18, // 新人（ドラフト補充）の最小年齢（高卒相当）
   rookieAgeMax: 22, // 新人の最大年齢（大卒/社会人相当）
+  // H2（phaseH_fun_spec）: プレイヤー参加型ドラフト会議。既定は false（後方互換最優先＝
+  //   headless/既存テストは全自動のまま byte 不変。ui.mjs の startNewGame だけがオーバーライドで
+  //   true を渡す）。true でも自チームの指名番以外は従来と同じAI自動（AI11球団のロジック不変）。
+  interactiveDraft: false,
 };
 
 /**

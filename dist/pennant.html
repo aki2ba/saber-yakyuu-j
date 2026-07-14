@@ -2532,6 +2532,27 @@ const TUNING_DEFAULT = {
   },
 
   // ==========================================================================
+  // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。src/game/owner.mjs が消費。
+  //   プレイヤー球団のみ・yearIndex>=1 のみ（1年目非干渉）。効果は表示＋解任時の playerTeamId
+  //   切替だけ＝エンジン非干渉。目標は teamWindowState と整合（rebuilding に優勝を要求しない）。
+  // ==========================================================================
+  ownerGoals: {
+    maxGoals: 2, // 1年に提示される目標の最大数（先頭=high優先度・以降=low）
+    trustStart: 50, // 信任の初期値（0-100）
+    fireBelow: 20, // 信任がこれ未満でオフに解任イベント（cfg.game.allowFiring=true時のみ）
+    pleaBonus: 10, // 留任嘆願（キャリア1回限り）の信任回復量
+    transferResetTrust: 40, // 移籍受諾後の新球団での信任初期値
+    high: { success: 12, fail: -15 }, // high優先度目標の達成/失敗の信任増減
+    low: { success: 6, fail: -8 }, // low優先度
+    aClassDelta: 3, // リーグ3位以内の付帯加点
+    bClassDelta: -3, // Bクラスの付帯減点
+    winPctMin: 0.48, // 「勝率X以上」目標の閾値（contending/neutral）
+    rebuildWinPctMin: 0.4, // rebuilding期の控えめな勝率目標
+    youthAgeMax: 25, // 「若手」の定義（この年齢以下）
+    youthPAMin: 800, // 若手起用目標の必要合計打席
+  },
+
+  // ==========================================================================
   // 演出・記録（C4・§16/§17）: 表彰・ニュース・記録・二つ名の判定定数。
   //   src/game/awards.mjs / src/game/news.mjs が消費。すべて "観測成績/WAR" ベースで
   //   選定・命名する（trueAbility を直接見ない＝三層構造）。集計値のみを参照し、
@@ -2659,6 +2680,11 @@ const GAME_DEFAULT = {
   //   headless/既存テストは全自動のまま byte 不変。ui.mjs の startNewGame だけがオーバーライドで
   //   true を渡す）。true でも自チームの指名番以外は従来と同じAI自動（AI11球団のロジック不変）。
   interactiveDraft: false,
+  // H5-B（phaseH_fun_spec）: オーナー信任による解任。既定は false（H2 interactiveDraft と同じ
+  //   「後方互換最優先」パターン: headless=テスト/較正/realism/前史の advanceYear ループは絶対に
+  //   中断しない）。ui.mjs の uiConfig() だけがオーバーライドで true を渡す＝実プレイでのみ解任が
+  //   発生する。true でも解任は「移籍オファー受諾 or 留任嘆願(1回)」でハードゲームオーバーなし。
+  allowFiring: false,
 };
 
 /**
@@ -14055,6 +14081,140 @@ function ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, 
 }
 
 
+// ===== src/game/owner.mjs =====
+// ============================================================================
+// H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B / fun_design_evidence §4柱5）。
+//
+//   generateOwnerGoals(...)  … 開幕時にプレイヤー球団の目標1-2件を決定論生成（窓状態と整合）
+//   evaluateOwnerGoals(...)  … シーズン末に純関数で達成判定
+//   trustDelta(...)          … 判定→信任の加減（順位由来の小さな加減込み）
+//   pickTransferOffer(...)   … 解任時のオファー元（前年最低勝率の他球団）を決定論選定
+//
+// 設計原則:
+//   - エンジン非干渉: 効果は「表示＋playerTeamId切替（解任受諾時）」のみ。シム/成長/市場に触れない。
+//     プレイヤー球団のみが対象（AI球団に信任は不要＝リーグ対称性を崩さない）。1年目（yearIndex=0）は
+//     目標なし＝既存較正に非干渉。
+//   - 決定論: 目標生成は hashSeed(masterSeed,'ownergoal',yearIndex,teamId) の独立シード。
+//     判定は standings/careerStats/finance の純関数。解任時の選択は marketInterventions ログへ
+//     {phase:'ownerFire'} で記録（履歴・ニュース素材。save は状態を直接持つため replay 不要）。
+//   - OOTPの教訓（fun_design_evidence §1.3）: 目標は teamWindowState と整合させる
+//     （rebuilding 期に優勝を要求する「理不尽な目標」を構造的に出さない）。
+// ============================================================================
+
+
+
+
+/** 完了年 standings から自リーグ内順位(1起点)と勝率を返す。無ければ null。 */
+function ownerLeagueRankOf(standings, teamId) {
+  if (!standings) return null;
+  const me = standings.find((s) => s.teamId === teamId);
+  if (!me) return null;
+  const wp = (s) => { const d = (s.w ?? 0) + (s.l ?? 0); return d ? s.w / d : 0.5; };
+  const mine = standings.filter((s) => s.league === me.league);
+  const rank = 1 + mine.filter((s) => wp(s) > wp(me) || (wp(s) === wp(me) && s.teamId < me.teamId)).length;
+  return { rank, of: mine.length, winPct: wp(me) };
+}
+
+/**
+ * 開幕時の目標生成（プレイヤー球団のみ・決定論）。窓状態・予算状態と整合するテンプレ集合から
+ * 1〜maxGoals 件を独立シードで引く。優先度は先頭=high・以降=low。
+ * @param {{masterSeed:number, yearIndex:number, teamId:string, league:Object, teamHistory:Array, cfg:Object}} o
+ * @returns {Array<{type:string, label:string, priority:'high'|'low', param?:number}>}
+ */
+function generateOwnerGoals({ masterSeed, yearIndex, teamId, league, teamHistory, cfg }) {
+  const og = cfg.tuning.ownerGoals;
+  if (yearIndex < 1) return [];
+  const win = teamWindowState(teamId, teamHistory, cfg);
+  const team = league.teams.find((t) => t.id === teamId);
+  const overBudget = !!(team?.finance && team.finance.payroll > team.finance.budget);
+  const last = teamHistory.length ? teamHistory.reduce((a, b) => (b.year > a.year ? b : a)) : null;
+  const lastRank = last ? ownerLeagueRankOf(last.standings, teamId) : null;
+
+  // 窓状態と整合する候補プール（rebuilding に優勝/Aクラスを要求しない＝OOTPの失敗の回避）
+  const pool = [];
+  if (win === 'contending') {
+    if (lastRank && lastRank.rank <= 2) pool.push({ type: 'champion', label: 'リーグ優勝' });
+    pool.push({ type: 'rank', param: 3, label: 'Aクラス入り（リーグ3位以内）' });
+    pool.push({ type: 'winPct', param: og.winPctMin, label: `勝率${og.winPctMin.toFixed(3).slice(1)}以上` });
+  } else if (win === 'rebuilding') {
+    pool.push({ type: 'youthPA', param: og.youthPAMin, label: `若手（${og.youthAgeMax}歳以下）野手に計${og.youthPAMin}打席以上` });
+    pool.push({ type: 'winPct', param: og.rebuildWinPctMin, label: `勝率${og.rebuildWinPctMin.toFixed(3).slice(1)}以上（最下位脱出）` });
+  } else {
+    pool.push({ type: 'winPct', param: og.winPctMin, label: `勝率${og.winPctMin.toFixed(3).slice(1)}以上` });
+    pool.push({ type: 'rank', param: 3, label: 'Aクラス入り（リーグ3位以内）' });
+    pool.push({ type: 'youthPA', param: og.youthPAMin, label: `若手（${og.youthAgeMax}歳以下）野手に計${og.youthPAMin}打席以上` });
+  }
+  if (overBudget) pool.unshift({ type: 'payrollCap', label: '年俸総額を予算内へ圧縮' }); // 予算超過中は最優先で必ず出す
+
+  const rng = makeRng(hashSeed(masterSeed, 'ownergoal', yearIndex, teamId));
+  const n = Math.min(og.maxGoals, pool.length);
+  const goals = [];
+  const avail = pool.slice();
+  for (let i = 0; i < n; i++) {
+    const idx = i === 0 && overBudget ? 0 : rng.int(avail.length); // 予算圧縮は必ず採用
+    goals.push({ ...avail.splice(idx, 1)[0], priority: i === 0 ? 'high' : 'low' });
+  }
+  return goals;
+}
+
+/**
+ * シーズン末の達成判定（純関数・決定論）。
+ * @param {Array} goals generateOwnerGoals の返値
+ * @param {{standings:Array, teamId:string, league:Object, careerStats:Array, year:number, cfg:Object}} ctx
+ * @returns {Array<{goal:Object, achieved:boolean, actual:string}>}
+ */
+function evaluateOwnerGoals(goals, { standings, teamId, league, careerStats, year, cfg }) {
+  const og = cfg.tuning.ownerGoals;
+  const lr = ownerLeagueRankOf(standings, teamId);
+  const results = [];
+  for (const g of goals) {
+    let achieved = false;
+    let actual = '';
+    if (g.type === 'champion') { achieved = !!lr && lr.rank === 1; actual = lr ? `リーグ${lr.rank}位` : '不明'; }
+    else if (g.type === 'rank') { achieved = !!lr && lr.rank <= g.param; actual = lr ? `リーグ${lr.rank}位` : '不明'; }
+    else if (g.type === 'winPct') { achieved = !!lr && lr.winPct >= g.param; actual = lr ? `勝率${lr.winPct.toFixed(3)}` : '不明'; }
+    else if (g.type === 'youthPA') {
+      const byId = new Map(league.players.map((p) => [p.id, p]));
+      let pa = 0;
+      for (const s of careerStats) {
+        if (s.season !== year || s.teamId !== teamId) continue;
+        const p = byId.get(s.playerId);
+        if (p && p.role === 'fielder' && p.age <= og.youthAgeMax) pa += s.batting?.pa ?? 0;
+      }
+      achieved = pa >= g.param;
+      actual = `${pa}打席`;
+    } else if (g.type === 'payrollCap') {
+      const t = league.teams.find((x) => x.id === teamId);
+      achieved = !!(t?.finance && t.finance.payroll <= t.finance.budget);
+      actual = t?.finance ? `年俸${t.finance.payroll.toLocaleString()}/予算${t.finance.budget.toLocaleString()}` : '不明';
+    }
+    results.push({ goal: g, achieved, actual });
+  }
+  return results;
+}
+
+/** 判定結果→信任の増減（目標の優先度別±＋順位由来の小さな加減）。 */
+function trustDelta(results, standings, teamId, cfg) {
+  const og = cfg.tuning.ownerGoals;
+  let d = 0;
+  for (const r of results) {
+    const w = r.goal.priority === 'high' ? og.high : og.low;
+    d += r.achieved ? w.success : w.fail;
+  }
+  const lr = ownerLeagueRankOf(standings, teamId);
+  if (lr) d += lr.rank <= 3 ? og.aClassDelta : og.bClassDelta;
+  return d;
+}
+
+/** 解任時の移籍オファー元: 前年最低勝率の他球団（同率は teamId 昇順・決定論）。 */
+function pickTransferOffer(standings, currentTeamId) {
+  const wp = (s) => { const d = (s.w ?? 0) + (s.l ?? 0); return d ? s.w / d : 0.5; };
+  const cands = (standings ?? []).filter((s) => s.teamId !== currentTeamId)
+    .sort((a, b) => wp(a) - wp(b) || (a.teamId < b.teamId ? -1 : 1));
+  return cands.length ? cands[0].teamId : null;
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -14096,6 +14256,8 @@ function ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, 
 
 // H4: 育成方針・キャンプ（phaseH_fun_spec H4）。方針の意味論(parsePolicy)・AI自動方針・
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
+
+ // H5-B
 
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -14477,6 +14639,17 @@ function standingsForYear(state, year) {
 
 /** 現行 yearIndex のシーズンを開幕状態でセット（rt を張り替える）。 */
 function startYear(state) {
+  // H5-B: オーナー目標（プレイヤー球団のみ・yearIndex>=1・決定論）。旧セーブは ownerGoals 不在
+  //   → 同式で再生成できる（generateOwnerGoals は (masterSeed,yearIndex,teamId,履歴,finance) の純関数）。
+  if (state.playerTeamId && state.yearIndex >= 1 && state.ownerGoals?.yearIndex !== state.yearIndex) {
+    state.ownerGoals = {
+      yearIndex: state.yearIndex,
+      goals: generateOwnerGoals({
+        masterSeed: state.masterSeed, yearIndex: state.yearIndex, teamId: state.playerTeamId,
+        league: state.league, teamHistory: state.teamHistory, cfg: state.cfg,
+      }),
+    };
+  }
   // 時代トレンド（D3・§11.3）: 得点環境の緩やかな揺れ（投高打低↔打高投低）を bb.evBase に反映した
   //   シーズン用 config を作る。**yearIndex=0 は computeEra が identity ＝ eraSeasonConfig が
   //   state.cfg を同一参照で返す＝1年目レギュラーシーズンは D3 前と byte 一致**（既存50較正不変）。
@@ -14593,6 +14766,14 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     // H2: 中断中のドラフト会議の現在状態（残りプール等・live限定＝save には含めない。load は
     //   offseasonStage から driveOffseasonDraft を再駆動して再構築する）。
     awaitingDraft: null,
+    // H5-B: オーナー目標・信任（プレイヤー球団のみ・additive save）。goals は startYear が
+    //   yearIndex>=1 で決定論生成。ownerPending は解任イベントの裁定待ち（resolveOwnerDecision）。
+    ownerGoals: null,
+    ownerTrust: cfg.tuning.ownerGoals.trustStart,
+    ownerEvaluatedYear: null,
+    pleaUsed: false,
+    ownerPending: null,
+    lastOwnerReport: null,
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -14604,12 +14785,30 @@ function newGame(masterSeed, playerTeamId, options = {}) {
   //   （一時的に false へ落として実行し、burn-in 終了後に元へ戻す＝以後のプレイは指定どおり対話的）。
   if (burnIn > 0) {
     const savedInteractive = cfg.game.interactiveDraft;
+    const savedFiring = cfg.game.allowFiring; // H5-B: 前史に人間は居ない＝解任も無効で回す
     cfg.game.interactiveDraft = false;
+    cfg.game.allowFiring = false;
     for (let y = 0; y < burnIn; y++) {
       while (!state.rt.finished) advanceDay(state);
       advanceYear(state);
     }
     cfg.game.interactiveDraft = savedInteractive;
+    cfg.game.allowFiring = savedFiring;
+    // H5-B: プレイヤー着任はここから＝前史で溜まった信任・評価履歴をリセットし、着任年の目標を
+    //   現行 yearIndex で再生成する（startYear は前史最終 advanceYear 内で既に走っているため明示的に）。
+    state.ownerTrust = cfg.tuning.ownerGoals.trustStart;
+    state.ownerEvaluatedYear = null;
+    state.lastOwnerReport = null;
+    state.ownerGoals = null;
+    if (state.playerTeamId && state.yearIndex >= 1) {
+      state.ownerGoals = {
+        yearIndex: state.yearIndex,
+        goals: generateOwnerGoals({
+          masterSeed: state.masterSeed, yearIndex: state.yearIndex, teamId: state.playerTeamId,
+          league: state.league, teamHistory: state.teamHistory, cfg: state.cfg,
+        }),
+      };
+    }
     pruneBurnInHistory(state);
   }
   return state;
@@ -14844,6 +15043,68 @@ function advanceYear(state) {
   if (state.awaitingDraft) {
     throw new Error('advanceYear: ドラフト中断中（submitDraftPick で指名を解決してから呼ぶこと）');
   }
+  if (state.ownerPending) {
+    throw new Error('advanceYear: オーナー裁定中（resolveOwnerDecision で選択してから呼ぶこと）');
+  }
+  // H5-B: オーナー目標の評価（完了年・プレイヤー球団のみ・二重評価ガード）。表示＋信任のみに作用し、
+  //   オフ処理（driveOffseasonDraft）本体には一切干渉しない。
+  if (evaluateOwnerYear(state)) return null; // 解任イベント発生＝中断（state.ownerPending）
+  return driveOffseasonDraft(state);
+}
+
+/**
+ * H5-B: 完了年のオーナー評価。信任を更新し、解任条件を踏んだら state.ownerPending を立てて
+ * true（中断）を返す。評価済み年は何もしない（再入安全）。
+ */
+function evaluateOwnerYear(state) {
+  if (!state.playerTeamId || !state.ownerGoals || state.ownerGoals.yearIndex !== state.yearIndex) return false;
+  if (state.ownerEvaluatedYear === state.yearIndex) return false;
+  state.ownerEvaluatedYear = state.yearIndex;
+  const og = state.cfg.tuning.ownerGoals;
+  const standings = standingsForYear(state, state.year);
+  const results = evaluateOwnerGoals(state.ownerGoals.goals, {
+    standings, teamId: state.playerTeamId, league: state.league,
+    careerStats: state.careerStats, year: state.year, cfg: state.cfg,
+  });
+  const before = state.ownerTrust;
+  state.ownerTrust = clamp(state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg), 0, 100);
+  state.lastOwnerReport = { year: state.year, results, trustBefore: before, trustAfter: state.ownerTrust };
+  if (state.cfg.game.allowFiring && state.ownerTrust < og.fireBelow) {
+    const toTeam = pickTransferOffer(standings, state.playerTeamId);
+    if (toTeam) {
+      state.ownerPending = { yearIndex: state.yearIndex, toTeam, canPlea: !state.pleaUsed };
+      state.lastOwnerReport.fired = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * H5-B: 解任イベントの裁定。choice='transfer'（オファー球団へ移籍・信任リセット）または
+ * 'plea'（留任嘆願・キャリア1回限り・信任小回復）。選択は marketInterventions へ記録され、
+ * 裁定後はオフ処理（driveOffseasonDraft）を続行する（ドラフト中断ならそのまま null 連鎖）。
+ */
+function resolveOwnerDecision(state, choice) {
+  const pend = state.ownerPending;
+  if (!pend) throw new Error('resolveOwnerDecision: 裁定待ちの解任イベントが無い');
+  const og = state.cfg.tuning.ownerGoals;
+  if (choice === 'plea') {
+    if (!pend.canPlea) throw new Error('resolveOwnerDecision: 留任嘆願は使用済み');
+    state.pleaUsed = true;
+    state.ownerTrust = clamp(state.ownerTrust + og.pleaBonus, 0, 100);
+    state.lastOwnerReport.resolution = { choice: 'plea' };
+  } else if (choice === 'transfer') {
+    state.playerTeamId = pend.toTeam;
+    state.ownerTrust = og.transferResetTrust;
+    state.pleaUsed = false; // 新天地では嘆願権が戻る（球団との関係はリセット）
+    captureBaseManager(state); // 采配介入の基準を新球団の監督へ張り替え
+    state.lastOwnerReport.resolution = { choice: 'transfer', toTeam: pend.toTeam };
+  } else {
+    throw new Error(`resolveOwnerDecision: 不明な選択 ${choice}`);
+  }
+  state.marketInterventions.push({ yearIndex: state.yearIndex, phase: 'ownerFire', choice, toTeam: choice === 'transfer' ? pend.toTeam : null });
+  state.ownerPending = null;
   return driveOffseasonDraft(state);
 }
 
@@ -14948,6 +15209,13 @@ function save(state) {
     //   （シードから決定論再生成できる＝pool不要。marketInterventions の phase:'draft' ログだけで
     //   load が driveOffseasonDraft を再駆動し、同じ中断点を再構築する）。
     offseasonStage: state.offseasonStage ?? null,
+    // H5-B: オーナー信任（additive）。goals は startYear の純関数で再生成できるが、評価済みフラグ・
+    //   信任・嘆願・裁定待ちは状態そのもの＝直接保存する（R5以降オフの replay は無いため単純永続でよい）。
+    ownerTrust: state.ownerTrust,
+    ownerEvaluatedYear: state.ownerEvaluatedYear ?? null,
+    pleaUsed: !!state.pleaUsed,
+    ownerPending: state.ownerPending ?? null,
+    lastOwnerReport: state.lastOwnerReport ?? null,
     seasonState,
     rngCursors: { seed: rt ? rt.seed : null, cursor: rt ? rt.cursor : 0 },
   };
@@ -15053,6 +15321,14 @@ function load(blob, options = {}) {
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
     offseasonStage: data.offseasonStage ?? null, // H2: 旧セーブは null 補完（additive save field）
     awaitingDraft: null, // H2: 下で driveOffseasonDraft が再駆動して復元する（live限定・保存はしない）
+    // H5-B: オーナー信任（additive・旧セーブは初期値補完）。ownerGoals は下の startYear 相当処理
+    //   （restore後の rt 再構築フロー）で純関数再生成される（保存不要）。
+    ownerGoals: null,
+    ownerTrust: data.ownerTrust ?? cfg.tuning.ownerGoals.trustStart,
+    ownerEvaluatedYear: data.ownerEvaluatedYear ?? null,
+    pleaUsed: !!data.pleaUsed,
+    ownerPending: data.ownerPending ?? null,
+    lastOwnerReport: data.lastOwnerReport ?? null,
     rt: null,
   };
   // ★R5: 過去年のオフシーズン再計算（replay）は撤去した。開幕時点のリーグを save から直接
@@ -16066,6 +16342,18 @@ function renderOffseasonDigestScreen(off, u) {
   ]));
   const link = (id, name) => u.playerLink(id, name); // 引退者は byId 不在→素のテキスト（name必須）
   const margin = gs.cfg.tuning.market.trade.margin;
+
+  // H5-B: オーナー評価（完了年の目標達成判定＋信任推移。lastOwnerReport は advanceYear が確定済み）。
+  const rep = gs.lastOwnerReport;
+  if (rep && rep.year === prevYear) {
+    root.append(el('div', { class: 'card' }, [
+      el('div', { class: 'header' }, '📜 オーナー評価'),
+      ...rep.results.map((r) =>
+        el('div', {}, `${r.goal.priority === 'high' ? '【最重要】' : '【目標】'}${r.goal.label} → ${r.achieved ? '✅達成' : '❌未達'}（${r.actual}）`)),
+      el('div', { class: 'muted' }, `信任 ${rep.trustBefore} → ${rep.trustAfter}` +
+        (rep.fired ? `　※解任通告${rep.resolution ? (rep.resolution.choice === 'plea' ? '→留任嘆願' : `→${u.tname(rep.resolution.toTeam)}へ移籍`) : ''}` : '')),
+    ]));
+  }
 
   // --- 自チームの動き -------------------------------------------------------
   const moves = [];
@@ -18896,7 +19184,7 @@ function leagueNameOf(cfg, lid) {
  */
 function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
-  return createConfig({ ...ov, game: { interactiveDraft: true, ...(ov.game ?? {}) } });
+  return createConfig({ ...ov, game: { interactiveDraft: true, allowFiring: true, ...(ov.game ?? {}) } });
 }
 
 function startNewGame(seed, teamId) {
@@ -19056,6 +19344,23 @@ function renderHubHome(c) {
     c.append(el('div', { class: 'nextcard' }, [
       el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）`),
       el('div', { class: 'nextmatch' }, nextCard.text),
+    ]));
+  }
+
+  // H5-B: フロントより（今季のオーナー目標＋信任メーター）。yearIndex>=1 のみ（1年目は目標なし）。
+  if (gs.ownerGoals?.yearIndex === gs.yearIndex && gs.ownerGoals.goals.length) {
+    const trust = gs.ownerTrust;
+    const col = trust < 30 ? '#e0574a' : trust < 55 ? '#e8c93a' : '#5fd694';
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, '📜 フロントより — 今季の目標'),
+      ...gs.ownerGoals.goals.map((g) =>
+        el('div', {}, `${g.priority === 'high' ? '【最重要】' : '【目標】'}${g.label}`)),
+      el('div', { class: 'muted', style: 'margin-top:4px' }, [
+        `オーナー信任 ${trust}/100 `,
+        el('span', { style: `display:inline-block;width:80px;height:8px;background:#333;vertical-align:middle` }, [
+          el('span', { style: `display:block;width:${Math.round(trust * 0.8)}px;height:8px;background:${col}` }),
+        ]),
+      ]),
     ]));
   }
 
@@ -19473,7 +19778,8 @@ function loadFromBlob(blob) {
   // H2: ドラフト中断中のセーブは load() が driveOffseasonDraft を再駆動して同じ中断点
   //   （state.awaitingDraft）を再構築済み。rt.finished も true のままだが、advanceYear は
   //   awaitingDraft が立っている間は再度呼べない（throw）ため renderSeasonResult より先に判定する。
-  if (game.gs.awaitingDraft) renderDraftRoomScreen(draftDeps());
+  if (game.gs.ownerPending) renderOwnerDecisionScreen(); // H5-B: 裁定待ちセーブの復元
+  else if (game.gs.awaitingDraft) renderDraftRoomScreen(draftDeps());
   else if (game.gs.rt.finished) renderSeasonResult();
   else renderHub();
 }
@@ -19763,9 +20069,40 @@ function renderSeasonResult() {
 function advanceToNextYearUI() {
   const off = advanceYear(game.gs);
   if (off === null) {
+    // H5-B: 解任イベント（ownerPending）はドラフト中断より先に発生する（advanceYear冒頭で評価）。
+    if (game.gs.ownerPending) { renderOwnerDecisionScreen(); return; }
     renderDraftRoomScreen(draftDeps());
     return;
   }
+  finishOffseasonUI(off);
+}
+
+/** H5-B: 解任イベントの裁定画面（移籍オファー受諾 or 留任嘆願）。裁定後はオフ処理へ合流。 */
+function renderOwnerDecisionScreen() {
+  const gs = game.gs;
+  const pend = gs.ownerPending;
+  const rep = gs.lastOwnerReport;
+  const c = el('div', { class: 'card' }, [
+    el('div', { class: 'header' }, '⚠ オーナーからの通告'),
+    el('div', {}, `信任が地に落ちた（${rep ? rep.trustAfter : gs.ownerTrust}/100）。球団はあなたの解任を決定した。`),
+    el('div', { class: 'muted', style: 'margin:6px 0' },
+      (rep?.results ?? []).map((r) => `【${r.goal.priority === 'high' ? '最重要' : '目標'}】${r.goal.label} → ${r.achieved ? '達成' : '未達'}（${r.actual}）`).join('　')),
+    el('div', { style: 'margin-top:8px' }, [
+      el('button', { class: 'primary', onclick: () => { const off = resolveOwnerDecision(gs, 'transfer'); afterOwnerDecision(off); } },
+        `${tname(pend.toTeam)} からのオファーを受ける（移籍）`),
+      pend.canPlea
+        ? el('button', { style: 'margin-left:6px', onclick: () => { const off = resolveOwnerDecision(gs, 'plea'); afterOwnerDecision(off); } },
+            '留任を嘆願する（キャリアで1回だけ）')
+        : el('span', { class: 'muted', style: 'margin-left:6px' }, '（留任嘆願は使用済み）'),
+    ]),
+  ]);
+  const root = document.getElementById('app');
+  root.innerHTML = '';
+  root.append(c);
+}
+function afterOwnerDecision(off) {
+  autoSave();
+  if (off === null) { renderDraftRoomScreen(draftDeps()); return; } // 続けてドラフト中断
   finishOffseasonUI(off);
 }
 

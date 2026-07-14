@@ -556,6 +556,18 @@ export function renderOffseasonDigestScreen(off, u) {
   const link = (id, name) => u.playerLink(id, name); // 引退者は byId 不在→素のテキスト（name必須）
   const margin = gs.cfg.tuning.market.trade.margin;
 
+  // H5-B: オーナー評価（完了年の目標達成判定＋信任推移。lastOwnerReport は advanceYear が確定済み）。
+  const rep = gs.lastOwnerReport;
+  if (rep && rep.year === prevYear) {
+    root.append(el('div', { class: 'card' }, [
+      el('div', { class: 'header' }, '📜 オーナー評価'),
+      ...rep.results.map((r) =>
+        el('div', {}, `${r.goal.priority === 'high' ? '【最重要】' : '【目標】'}${r.goal.label} → ${r.achieved ? '✅達成' : '❌未達'}（${r.actual}）`)),
+      el('div', { class: 'muted' }, `信任 ${rep.trustBefore} → ${rep.trustAfter}` +
+        (rep.fired ? `　※解任通告${rep.resolution ? (rep.resolution.choice === 'plea' ? '→留任嘆願' : `→${u.tname(rep.resolution.toTeam)}へ移籍`) : ''}` : '')),
+    ]));
+  }
+
   // --- 自チームの動き -------------------------------------------------------
   const moves = [];
   const ivs = gs.marketInterventions.filter((iv) => (iv.yearIndex ?? 0) === prevYi);

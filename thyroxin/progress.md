@@ -2,6 +2,32 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-14 (H5-B: オーナー目標・信任・解任 — 経営レイヤー第2段)
+
+- 新モジュール `src/game/owner.mjs`（純関数群）: 目標生成は開幕時に決定論
+  （`hashSeed(masterSeed,'ownergoal',yearIndex,teamId)`）・**teamWindowState と整合**
+  （rebuilding に優勝/Aクラスを要求しない＝OOTPの「理不尽な目標」問題の構造的回避）。
+  payroll>budget 中は「予算内へ圧縮」が最優先で必ず出る（H5-Aと接続）
+- 信任 `ownerTrust`(0-100・初期50): 目標達成/失敗（high±12/-15・low±6/-8）＋順位の小さな加減。
+  閾値(20)割れで解任イベント＝「前年最低勝率球団からのオファー受諾（移籍・信任40リセット）」or
+  「留任嘆願（キャリア1回限り・+10）」の2択。**ハードゲームオーバーなし**（失敗の許容＝再起の物語）。
+  選択は marketInterventions {phase:'ownerFire'} へ記録
+- **`cfg.game.allowFiring` は既定 false**（H2 interactiveDraft と同じ後方互換パターン。
+  headless=テスト/較正/realism/前史の advanceYear ループは絶対に中断しない。ui の uiConfig() だけが
+  true）。当初既定 true で入れたら realism Part G と既存テスト10件が「多年ループ中の解任」で
+  即死した＝自動実行系は解任と共存できない（設計として正しい教訓）
+- 前史（burn-in）は interactiveDraft と同様に解任も無効で回し、**着任時に信任/目標をリセット**
+  （前史はプレイヤーの物語ではない）
+- バンドル衝突1件: owner.mjs の leagueRankOf が ui.mjs の同名関数と衝突（build は全モジュール
+  連結＝関数名グローバル）→ ownerLeagueRankOf へ改名。**新モジュールの関数名は横断 grep で
+  一意性を確認すること**
+- UI: ホームに「フロントより」（目標＋信任メーター）、ダイジェストに「オーナー評価」、
+  解任裁定画面（移籍/嘆願）。save/load は additive（信任等は直接保存・目標は load 時に純関数再生成）
+- 実装は親（Fable）直営（sonnet が起動即死を繰り返したため）。テスト5本新設
+- **npm test 458/458・calibrate 62/62・realism GATE 45/45・verify・smoke 11フロー 全PASS**
+
+次: H5-C（ファン関心・収入の閉ループ＝経営レイヤー最終段）。
+
 ## 2026-07-14 (H5-A: 年俸予算 — 経営レイヤー第1段・salary の実弾化)
 
 - `team.finance = {budget, payroll}` 新設。budget は独立シード 'finance'（teamEvalProfile と

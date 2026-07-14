@@ -1413,6 +1413,27 @@ export const TUNING_DEFAULT = {
   },
 
   // ==========================================================================
+  // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。src/game/owner.mjs が消費。
+  //   プレイヤー球団のみ・yearIndex>=1 のみ（1年目非干渉）。効果は表示＋解任時の playerTeamId
+  //   切替だけ＝エンジン非干渉。目標は teamWindowState と整合（rebuilding に優勝を要求しない）。
+  // ==========================================================================
+  ownerGoals: {
+    maxGoals: 2, // 1年に提示される目標の最大数（先頭=high優先度・以降=low）
+    trustStart: 50, // 信任の初期値（0-100）
+    fireBelow: 20, // 信任がこれ未満でオフに解任イベント（cfg.game.allowFiring=true時のみ）
+    pleaBonus: 10, // 留任嘆願（キャリア1回限り）の信任回復量
+    transferResetTrust: 40, // 移籍受諾後の新球団での信任初期値
+    high: { success: 12, fail: -15 }, // high優先度目標の達成/失敗の信任増減
+    low: { success: 6, fail: -8 }, // low優先度
+    aClassDelta: 3, // リーグ3位以内の付帯加点
+    bClassDelta: -3, // Bクラスの付帯減点
+    winPctMin: 0.48, // 「勝率X以上」目標の閾値（contending/neutral）
+    rebuildWinPctMin: 0.4, // rebuilding期の控えめな勝率目標
+    youthAgeMax: 25, // 「若手」の定義（この年齢以下）
+    youthPAMin: 800, // 若手起用目標の必要合計打席
+  },
+
+  // ==========================================================================
   // 演出・記録（C4・§16/§17）: 表彰・ニュース・記録・二つ名の判定定数。
   //   src/game/awards.mjs / src/game/news.mjs が消費。すべて "観測成績/WAR" ベースで
   //   選定・命名する（trueAbility を直接見ない＝三層構造）。集計値のみを参照し、
@@ -1540,6 +1561,11 @@ export const GAME_DEFAULT = {
   //   headless/既存テストは全自動のまま byte 不変。ui.mjs の startNewGame だけがオーバーライドで
   //   true を渡す）。true でも自チームの指名番以外は従来と同じAI自動（AI11球団のロジック不変）。
   interactiveDraft: false,
+  // H5-B（phaseH_fun_spec）: オーナー信任による解任。既定は false（H2 interactiveDraft と同じ
+  //   「後方互換最優先」パターン: headless=テスト/較正/realism/前史の advanceYear ループは絶対に
+  //   中断しない）。ui.mjs の uiConfig() だけがオーバーライドで true を渡す＝実プレイでのみ解任が
+  //   発生する。true でも解任は「移籍オファー受諾 or 留任嘆願(1回)」でハードゲームオーバーなし。
+  allowFiring: false,
 };
 
 /**

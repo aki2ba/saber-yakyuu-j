@@ -29,6 +29,8 @@ import {
   weeklyStorylineDigest, rivalryGameHeadlines, rivalriesOf, retirementRoadCandidates,
   // H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・観測集計のみから導出）。
   mediaReputation,
+  // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。
+  resolveOwnerDecision,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -1296,7 +1298,7 @@ function leagueNameOf(cfg, lid) {
  */
 function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
-  return createConfig({ ...ov, game: { interactiveDraft: true, ...(ov.game ?? {}) } });
+  return createConfig({ ...ov, game: { interactiveDraft: true, allowFiring: true, ...(ov.game ?? {}) } });
 }
 
 function startNewGame(seed, teamId) {
@@ -1456,6 +1458,23 @@ function renderHubHome(c) {
     c.append(el('div', { class: 'nextcard' }, [
       el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）`),
       el('div', { class: 'nextmatch' }, nextCard.text),
+    ]));
+  }
+
+  // H5-B: フロントより（今季のオーナー目標＋信任メーター）。yearIndex>=1 のみ（1年目は目標なし）。
+  if (gs.ownerGoals?.yearIndex === gs.yearIndex && gs.ownerGoals.goals.length) {
+    const trust = gs.ownerTrust;
+    const col = trust < 30 ? '#e0574a' : trust < 55 ? '#e8c93a' : '#5fd694';
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, '📜 フロントより — 今季の目標'),
+      ...gs.ownerGoals.goals.map((g) =>
+        el('div', {}, `${g.priority === 'high' ? '【最重要】' : '【目標】'}${g.label}`)),
+      el('div', { class: 'muted', style: 'margin-top:4px' }, [
+        `オーナー信任 ${trust}/100 `,
+        el('span', { style: `display:inline-block;width:80px;height:8px;background:#333;vertical-align:middle` }, [
+          el('span', { style: `display:block;width:${Math.round(trust * 0.8)}px;height:8px;background:${col}` }),
+        ]),
+      ]),
     ]));
   }
 
@@ -1873,7 +1892,8 @@ function loadFromBlob(blob) {
   // H2: ドラフト中断中のセーブは load() が driveOffseasonDraft を再駆動して同じ中断点
   //   （state.awaitingDraft）を再構築済み。rt.finished も true のままだが、advanceYear は
   //   awaitingDraft が立っている間は再度呼べない（throw）ため renderSeasonResult より先に判定する。
-  if (game.gs.awaitingDraft) renderDraftRoomScreen(draftDeps());
+  if (game.gs.ownerPending) renderOwnerDecisionScreen(); // H5-B: 裁定待ちセーブの復元
+  else if (game.gs.awaitingDraft) renderDraftRoomScreen(draftDeps());
   else if (game.gs.rt.finished) renderSeasonResult();
   else renderHub();
 }
@@ -2163,9 +2183,40 @@ function renderSeasonResult() {
 function advanceToNextYearUI() {
   const off = advanceYear(game.gs);
   if (off === null) {
+    // H5-B: 解任イベント（ownerPending）はドラフト中断より先に発生する（advanceYear冒頭で評価）。
+    if (game.gs.ownerPending) { renderOwnerDecisionScreen(); return; }
     renderDraftRoomScreen(draftDeps());
     return;
   }
+  finishOffseasonUI(off);
+}
+
+/** H5-B: 解任イベントの裁定画面（移籍オファー受諾 or 留任嘆願）。裁定後はオフ処理へ合流。 */
+function renderOwnerDecisionScreen() {
+  const gs = game.gs;
+  const pend = gs.ownerPending;
+  const rep = gs.lastOwnerReport;
+  const c = el('div', { class: 'card' }, [
+    el('div', { class: 'header' }, '⚠ オーナーからの通告'),
+    el('div', {}, `信任が地に落ちた（${rep ? rep.trustAfter : gs.ownerTrust}/100）。球団はあなたの解任を決定した。`),
+    el('div', { class: 'muted', style: 'margin:6px 0' },
+      (rep?.results ?? []).map((r) => `【${r.goal.priority === 'high' ? '最重要' : '目標'}】${r.goal.label} → ${r.achieved ? '達成' : '未達'}（${r.actual}）`).join('　')),
+    el('div', { style: 'margin-top:8px' }, [
+      el('button', { class: 'primary', onclick: () => { const off = resolveOwnerDecision(gs, 'transfer'); afterOwnerDecision(off); } },
+        `${tname(pend.toTeam)} からのオファーを受ける（移籍）`),
+      pend.canPlea
+        ? el('button', { style: 'margin-left:6px', onclick: () => { const off = resolveOwnerDecision(gs, 'plea'); afterOwnerDecision(off); } },
+            '留任を嘆願する（キャリアで1回だけ）')
+        : el('span', { class: 'muted', style: 'margin-left:6px' }, '（留任嘆願は使用済み）'),
+    ]),
+  ]);
+  const root = document.getElementById('app');
+  root.innerHTML = '';
+  root.append(c);
+}
+function afterOwnerDecision(off) {
+  autoSave();
+  if (off === null) { renderDraftRoomScreen(draftDeps()); return; } // 続けてドラフト中断
   finishOffseasonUI(off);
 }
 

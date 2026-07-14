@@ -34,16 +34,19 @@ import { clamp, clampRating } from '../model/util.mjs';
 export function applyAging(players, cfg, { seed }) {
   const aging = cfg.tuning.aging;
   const veloPerRating = cfg.tuning.maturity.veloPerRating;
+  // H3-1（ムラっ気）: drift SD 倍率。personality が無い（旧経路・テスト直呼び）選手は 1（無効果）。
+  const streakyMult = cfg.tuning.personality?.streakyDriftMult ?? 1;
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
-    agePlayer(p, prng, aging, veloPerRating);
+    const driftMult = p.personality === 'streaky' ? streakyMult : 1;
+    agePlayer(p, prng, aging, veloPerRating, driftMult);
   }
   return players;
 }
 
 /** 1選手を1年ぶん加齢させる（trueAbility を動かし age++）。 */
-function agePlayer(p, prng, aging, veloPerRating) {
+function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
   const t = p.trueAbility;
   const peak = t.career.peakAge;
   const dr = t.career.declineRate;
@@ -71,7 +74,7 @@ function agePlayer(p, prng, aging, veloPerRating) {
     t.career.youthDebt = debt + repay;
   }
 
-  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating };
+  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating, driftMult };
 
   // 共通素材（§2.2）
   ageRating(t.common, 'speed', 'speed', ctx);
@@ -128,9 +131,9 @@ function curveDelta(prof, ctx) {
   return d;
 }
 
-/** 年次ノイズ（若手ほど大きい＝高分散）。 */
+/** 年次ノイズ（若手ほど大きい＝高分散）。H3-1: ムラっ気は driftMult(既定1) 倍でSDが荒れる（平均は不変）。 */
 function drift(ctx) {
-  const sd = ctx.young ? ctx.aging.driftSdYoung : ctx.aging.driftSdOld;
+  const sd = (ctx.young ? ctx.aging.driftSdYoung : ctx.aging.driftSdOld) * (ctx.driftMult ?? 1);
   return ctx.prng.normal(0, sd);
 }
 
@@ -149,7 +152,7 @@ function ageVelocity(pitching, ctx) {
   const onset = ctx.peak + v.declineOffset;
   if (ctx.age < growEnd) d += v.grow * (ctx.young ? ctx.gm : 1);
   if (ctx.age >= onset) d -= v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
-  d += ctx.prng.normal(0, ctx.young ? v.driftSdYoung : v.driftSdOld);
+  d += ctx.prng.normal(0, (ctx.young ? v.driftSdYoung : v.driftSdOld) * (ctx.driftMult ?? 1));
   d += ctx.flatBonus * ctx.veloPerRating; // R7: rating単位の返済額を球速換算
   pitching.velocityKmh = clamp(pitching.velocityKmh + d, v.min, v.max);
 }

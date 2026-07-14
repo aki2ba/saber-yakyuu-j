@@ -15,7 +15,7 @@
 // ============================================================================
 import { hashSeed } from '../rng.mjs';
 import { createConfig } from '../config.mjs';
-import { generateLeague } from '../generate.mjs';
+import { generateLeague, assignPersonality } from '../generate.mjs';
 import { ENGINE_VERSION } from '../engine.mjs';
 import { startSeasonRuntime, advanceRuntimeDay, pendingDay, carryOverInjuries } from './season_runtime.mjs';
 import { applyAging } from './aging.mjs';
@@ -35,6 +35,7 @@ import {
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones,
   careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
+  mediaReputation, REPUTATION_LABELS, careerRispEdge, careerBaserunning,
 } from './awards.mjs';
 import { detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMoveHeadline } from './news.mjs';
 // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。表示層のみ
@@ -872,6 +873,11 @@ export function load(blob, options = {}) {
     players: snap.players,
     farm: snap.farm ?? [],
   };
+  // H3-1: 性格タグの後方互換補完（phaseH_fun_spec 全柱共通の鉄則6・H3-1）。personality は
+  //   id 基準の独立シードから決定論的に導出できるため、新規生成(generatePitcher/generateFielder)と
+  //   同じ式(assignPersonality)を旧セーブにも適用すれば同一の結果になる＝「後付けできる」。
+  for (const p of league.players) if (p.personality == null) p.personality = assignPersonality(p.id);
+  for (const p of league.farm) if (p.personality == null) p.personality = assignPersonality(p.id);
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -958,6 +964,7 @@ export {
   leagueRecords, teamRecords, championCounts, milestones,
   careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
   detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMoveHeadline,
+  mediaReputation, REPUTATION_LABELS, careerRispEdge, careerBaserunning,
 };
 // H1: ストーリーライン演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う）。
 export {

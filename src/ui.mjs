@@ -12,6 +12,7 @@ import {
   hitterWAR, pitcherWAR, uzrRuns, centeredOAAOuts,
   leagueBatting, leaguePitching, makeRng, hashSeed, TEAM_COLORS, TEAM_ABBR,
   createPlayerSeason, // E1: 育成/未出場選手のモーダル用の空観測ライン
+  PERSONALITY_LABELS, // H3-1: 性格タグの日本語表示
 } from './engine.mjs';
 // フェーズC1 ゲーム層API（配布バンドルではグローバル・開発時Node解決用に import も書く）。
 // バンドルでは import 行が剥がれ、これらは先行スクリプト（game/index.mjs 由来）のグローバルを参照する。
@@ -26,6 +27,8 @@ import {
   rosterMoveHeadline, // F2-4: 昇降格ニュース（フォールバック文面）
   // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。
   weeklyStorylineDigest, rivalryGameHeadlines, rivalriesOf, retirementRoadCandidates,
+  // H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・観測集計のみから導出）。
+  mediaReputation,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -575,6 +578,17 @@ function modalHeader(p, isPitcher, overlay, playerId, navIds) {
   const belong = gs ? (p.rosterStatus === 'minor' ? '育成（二軍）' : registered ? '支配下（一軍登録）' : '支配下（二軍）') + ' / ' : '';
   left.append(el('div', { class: 'muted' },
     `${state.teamName.get(p.teamId) || ''} / ${belong}${isPitcher ? '投手' : posJP(primaryPos(p))} / ${p.age}歳 / ${handLabel(p.throws)}投${handLabel(p.bats)}打`));
+  // H3: 性格タグ（常時・真値ではない表示用の個性）＋メディア評（キャリアモードのみ・観測から導出）。
+  if (p.personality || gs) {
+    const tags = [];
+    if (p.personality) tags.push(el('span', { class: 'persontag' }, PERSONALITY_LABELS[p.personality] ?? p.personality));
+    if (gs) {
+      for (const t of mediaReputation(p, gs.careerStats, gs.injuryLog, gs.cfg)) {
+        tags.push(el('span', { class: 'reptag' }, t.label));
+      }
+    }
+    if (tags.length) left.append(el('div', { class: 'reptags' }, tags));
+  }
   if (gs) {
     const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: allPlayersById(gs), cfg: gs.cfg });
     if (hist.length) {
@@ -2169,6 +2183,7 @@ function finishOffseasonUI(off) {
 function draftDeps() {
   return {
     el, game, tname, posJP, autoSave,
+    PERSONALITY_LABELS, // H3-1: スカウトレポートの性格タグ表示
     renderHub: () => renderHub(),
     onDraftComplete: (off) => finishOffseasonUI(off),
   };

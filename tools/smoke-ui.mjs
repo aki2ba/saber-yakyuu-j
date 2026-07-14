@@ -771,6 +771,11 @@ const tHeadTxt = textOf(tHead);
 assert.ok(tHeadTxt.includes('支配下（一軍登録）'), `モーダルヘッダに所属（一軍登録・F2-4） (${tHeadTxt})`);
 assert.ok(tHeadTxt.includes('歳') && (tHeadTxt.includes('右') || tHeadTxt.includes('左') || tHeadTxt.includes('両')), 'ヘッダに年齢/利き手');
 assert.ok(walk(tOverlay).some((n) => (n.className || '').includes('headnick')), 'ヘッダに二つ名バッジ');
+// H3-1: 性格タグ（.persontag・PERSONALITY_LABELS の8種のいずれか）がヘッダのタグ列に出る
+const tPerson = walk(tOverlay).find((n) => (n.className || '').includes('persontag'));
+assert.ok(tPerson, 'H3: ヘッダに性格タグ（.persontag）が表示される');
+assert.ok(['練習熱心', 'ムラっ気', 'お調子者', '寡黙', '闘志', 'クール', 'マイペース', 'リーダー'].includes(textOf(tPerson)),
+  `H3: 性格タグが8種のいずれか (${textOf(tPerson)})`);
 
 // E1b→F2a) 二軍サブタブ（F2-4）: 支配下の登録外＋育成（F2-1で1年目から在籍）・**二軍成績列**・育成バッジ
 subtabs.find((n) => textOf(n).includes('二軍'))._onclick();
@@ -856,9 +861,10 @@ if (textOf(hasClass('header')).includes('ドラフト会議')) {
   while (textOf(hasClass('header')).includes('ドラフト会議')) {
     assert.ok(rounds++ < 50, 'H2: ドラフト会議が50回以内に解決する（無限ループ検出）');
     // スカウトレポート（draftScoutView・真値非露出）の列一式が候補テーブルに揃っていること。
+    // H3-1: 性格列（スカウトは性格を直接観察できる設定・phaseH_fun_spec H3）を含む。
     const ths = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
-    assert.ok(['等級', '選手', '位置', '年齢', '経歴', 'ツール', '伸びしろ', '評判', '指名'].every((h) => ths.includes(h)),
-      `H2: ドラフト会議室に候補テーブルの列（等級/ツール/伸びしろ/経歴/評判等）が揃う (${ths.join('/')})`);
+    assert.ok(['等級', '選手', '位置', '年齢', '経歴', '性格', 'ツール', '伸びしろ', '評判', '指名'].every((h) => ths.includes(h)),
+      `H2/H3: ドラフト会議室に候補テーブルの列（等級/性格/ツール/伸びしろ/経歴/評判等）が揃う (${ths.join('/')})`);
     const pickBtn = btnByText('指名する');
     assert.ok(pickBtn, 'H2: ドラフト会議室に指名候補の指名ボタンがある');
     pickBtn._onclick();

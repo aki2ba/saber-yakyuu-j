@@ -43,9 +43,16 @@ function rollBreakout(p, cfg, prng, year) {
   const hist = p.trueAbility.career.injuryHistory ?? [];
   const recentMajor = hist.some((e) => e.year === year && e.severity === 'major');
   const young = p.age <= bo.youngAge;
-  const upP = bo.upBase * (young ? bo.youngUpMult : 1);
-  const downP =
+  let upP = bo.upBase * (young ? bo.youngUpMult : 1);
+  let downP =
     bo.downBase + (recentMajor ? bo.postInjuryDown : 0) + Math.max(0, p.age - bo.burnoutAge) * bo.burnoutPerYear;
+  // H3-1（お調子者）: 上方/下方の両確率へ同率で掛ける＝§11.1「下方≧上方」の比を保ったまま
+  //   分散だけ増やす（インフレ方向のバイアスを追加しない）。
+  if (p.personality === 'showboat') {
+    const mult = cfg.tuning.personality?.showboatBreakoutMult ?? 1;
+    upP *= mult;
+    downP *= mult;
+  }
   const r = prng.next(); // 1回の一様乱数で上/下/無しに振る（下方を厚く配置）
   if (r < upP) return applyUpBreak(p, bo, prng, year);
   if (r < upP + downP) return applyDownBreak(p, bo, prng, year, recentMajor);

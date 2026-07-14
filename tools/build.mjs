@@ -283,6 +283,10 @@ const html = `<!DOCTYPE html>
   .plink:hover { color:var(--gold); }
   .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }
   .headawards { font-size:11px; color:var(--muted); margin-top:2px; }
+  /* H3: 性格タグ（常時表示）＋メディア評（観測ベース評判ラベル・複数可）のチップ列 */
+  .reptags { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .persontag { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:999px; padding:1px 8px; }
+  .reptag { font-size:11px; color:#20160a; background:var(--clay); border-radius:999px; padding:1px 8px; font-weight:700; }
   /* E2: スポナビ風観戦（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替） */
   .matchup { flex:1; min-width:250px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); }
   .bso { display:flex; gap:16px; margin-bottom:8px; flex-wrap:wrap; }

@@ -97,13 +97,14 @@ export function renderDraftRoomScreen(u) {
     .sort((a, b) => (GRADE_ORDER[a.sv.grade] - GRADE_ORDER[b.sv.grade]) || (b.sv.myPercentile - a.sv.myPercentile) || (a.p.id < b.p.id ? -1 : 1));
 
   content.append(el('h3', { class: 'leaguename' }, `指名候補（${rows.length}人）`));
-  const headers = ['等級', '選手', '位置', '年齢', '経歴', 'ツール', '伸びしろ', '評判', '指名'];
+  const headers = ['等級', '選手', '位置', '年齢', '経歴', '性格', 'ツール', '伸びしろ', '評判', '指名'];
   const trs = rows.map(({ p, sv }) => el('tr', {}, [
     el('td', {}, sv.grade),
     el('td', { class: 'left' }, p.name),
     el('td', { class: 'left' }, typeLabel(p, u)),
     el('td', {}, String(p.age)),
     el('td', { class: 'left' }, sv.cohort),
+    el('td', { class: 'left' }, u.PERSONALITY_LABELS[sv.personality] ?? '-'), // H3-1: スカウトは性格を直接観察できる
     el('td', { class: 'left' }, toolsText(p.role, sv.tools)),
     el('td', { class: 'left' }, sv.upside),
     el('td', { class: 'left' }, hypeText(sv.hype)),

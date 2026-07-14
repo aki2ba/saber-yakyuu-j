@@ -659,10 +659,13 @@ function consensusEval(state, prospect) {
 /**
  * H2: スカウトレポート。自球団 profile での evaluateProspect（ノイズ込み）をプールの分位点で
  * 相対化し、真値非参照の等級・ツール別評価・伸びしろ・経歴タグ・世代内評判にまとめる。
+ * H3-1: personality だけは例外的に真値そのものを返す（trueAbility 内の能力レーティングとは異なり、
+ * 「性格」は隠し能力ではなく表示用の個性タグ＝スカウトが直接観察できる設定・phaseH_fun_spec H3）。
  * @param {Object} state GameState（cfg/masterSeed/yearIndex/playerTeamId/league.teams を使う）
  * @param {Object} prospect スカウト対象（ドラフトプールの1人）
  * @param {Array} [pool] 比較母集団（省略時は state.awaitingDraft.pool。それも無ければ prospect 単体）
- * @returns {{grade:string, tools:Object, upside:string, cohort:string, hype:?string, myPercentile:number, consensusPercentile:number}}
+ * @returns {{grade:string, tools:Object, upside:string, cohort:string, hype:?string, myPercentile:number,
+ *   consensusPercentile:number, personality:string|null}}
  */
 export function draftScoutView(state, prospect, pool = null) {
   const cfg = state.cfg;
@@ -715,7 +718,8 @@ export function draftScoutView(state, prospect, pool = null) {
   if (myConsensusPct >= sr.hypeTopPct) hype = '目玉';
   else if (myPct - myConsensusPct >= sr.hiddenGemGapPct) hype = '隠し玉';
 
-  return { grade, tools, upside, cohort, hype, myPercentile: myPct, consensusPercentile: myConsensusPct };
+  // H3-1: 性格タグはスカウトが直接観察できる設定（真値ではなく表示用の個性・phaseH_fun_spec H3）。
+  return { grade, tools, upside, cohort, hype, myPercentile: myPct, consensusPercentile: myConsensusPct, personality: prospect.personality ?? null };
 }
 
 /**

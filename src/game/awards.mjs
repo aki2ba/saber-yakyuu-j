@@ -247,7 +247,9 @@ function recomputeAwardHistory(playerId, { careerStats, teamHistory, playersById
 // --- 通算集計（二つ名・記録・マイルストーンの素。観測のみ・§17） ------------------
 /** 打撃の通算生カウント合算（careerStats の batting を全年で足す）。 */
 export function careerBatting(careerStats, playerId) {
-  const acc = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0, sb: 0, cs: 0, rbi: 0, ibb: 0 };
+  // H3-2: gdp（併殺打）を追加（「ブレーキ」の分子）。トップレベル生カウントなので
+  //   compactCareerStats が削る splits/byCount と違い古いシーズンでも欠落しない（§17と同じ理由）。
+  const acc = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0, sb: 0, cs: 0, rbi: 0, ibb: 0, gdp: 0 };
   let seasons = 0;
   for (const s of careerStats) {
     if (s.playerId !== playerId || !s.batting) continue;
@@ -272,6 +274,41 @@ export function careerPitching(careerStats, playerId) {
   }
   const ip = acc.outs / 3;
   return { ...acc, seasons, ip, era: ip ? (acc.er * 9) / ip : 0, bbPer9: ip ? (acc.bb * 9) / ip : 0, kPer9: ip ? (acc.so * 9) / ip : 0 };
+}
+
+/** 走塁の通算生カウント合算（H3-2「ブレーキ」の分母＝併殺機会。§17 走塁は非削除で全年安全）。 */
+export function careerBaserunning(careerStats, playerId) {
+  const acc = { gdpOpp: 0 };
+  for (const s of careerStats) {
+    if (s.playerId !== playerId || !s.baserunning) continue;
+    acc.gdpOpp += s.baserunning.gdpOpp || 0;
+  }
+  return acc;
+}
+
+/**
+ * H3-2: RISP splits を「保持されている年度分だけ」フェアに集計する（勝負師/劇場型/ブレーキの素）。
+ * compactCareerStats が直近 keepDetailYears 年より古いシーズンから splits（RISPを含む）を削るため、
+ * overall（通算全打席）と RISP を同じ年度集合から集計しないと非対称な比較になる。よって
+ * 「splits が残っている年度」の overall ラインと RISP ラインを対で積む（古い年度が消えても
+ * その年度は overall 側からも除外され、常にフェアな部分集合比較になる）。
+ * @returns {{sampleAb:number, rispAb:number, overallOPS:number, rispOPS:number, edge:number, rispShare:number}}
+ */
+export function careerRispEdge(careerStats, playerId) {
+  let oAb = 0, oH = 0, oB1 = 0, oB2 = 0, oB3 = 0, oHr = 0, oBb = 0, oHbp = 0, oSf = 0, oPa = 0;
+  let rAb = 0, rH = 0, rB1 = 0, rB2 = 0, rB3 = 0, rHr = 0, rBb = 0, rHbp = 0, rSf = 0, rPa = 0;
+  for (const s of careerStats) {
+    if (s.playerId !== playerId || !s.batting || !s.batting.splits || !s.batting.splits.risp) continue;
+    const b = s.batting;
+    oAb += b.ab; oH += b.h; oB1 += b.b1; oB2 += b.b2; oB3 += b.b3; oHr += b.hr; oBb += b.bb; oHbp += b.hbp; oSf += b.sf; oPa += b.pa;
+    const r = b.splits.risp;
+    rAb += r.ab; rH += r.h; rB1 += r.b1; rB2 += r.b2; rB3 += r.b3; rHr += r.hr; rBb += r.bb; rHbp += r.hbp; rSf += r.sf; rPa += r.pa;
+  }
+  const obp = (ab, h, bb, hbp, sf) => (ab + bb + hbp + sf ? (h + bb + hbp) / (ab + bb + hbp + sf) : 0);
+  const slg = (ab, b1, b2, b3, hr) => (ab ? (b1 + 2 * b2 + 3 * b3 + 4 * hr) / ab : 0);
+  const overallOPS = obp(oAb, oH, oBb, oHbp, oSf) + slg(oAb, oB1, oB2, oB3, oHr);
+  const rispOPS = obp(rAb, rH, rBb, rHbp, rSf) + slg(rAb, rB1, rB2, rB3, rHr);
+  return { sampleAb: oAb, rispAb: rAb, overallOPS, rispOPS, edge: rispOPS - overallOPS, rispShare: oPa ? rPa / oPa : 0 };
 }
 
 /**
@@ -299,6 +336,76 @@ export function nicknameFor(player, careerStats, cfg) {
   if (c.iso >= N.isoSlugger && c.hr >= N.isoSluggerHr) return 'スラッガー';
   if (c.bbPct >= N.onbaseBbPct) return '出塁の職人';
   return 'いぶし銀';
+}
+
+// --- H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・fun_design_evidence §4柱4） --------
+/** 評判タグ key→日本語ラベル。nicknameFor と違い**複数同時付与**（複数の物語が同時に湧いてよい）。 */
+export const REPUTATION_LABELS = {
+  clutch: '勝負師',
+  drama: '劇場型',
+  choke: 'ブレーキ',
+  glass: 'ガラスの体',
+  ironman: '鉄人',
+  fireman: '火消し',
+  mopup: '敗戦処理',
+};
+
+/**
+ * 評判ラベル（メディア評）: 通算 "観測" 集計（careerBatting/careerPitching/careerBaserunning/
+ * careerRispEdge）と injuryLog（試合中に発生した離脱の観測ログ・state.injuryLog）だけから
+ * 複数タグを独立判定する。trueAbility は一切参照しない（player からは role/id のみ使う＝
+ * nicknameFor と同じ作法）。「勝負強い」「ここ一番に弱い」はセイバー的に真の能力ではない
+ * （Clutchは運/文脈の産物）＝ラベルは実力の反映でなく**観測から勝手に貼られる物語**
+ * （真値とのズレそのものがコンテンツ・鉄則4）。
+ *
+ * 野手=RISP成績＋併殺率、投手(救援)=セーブ+ホールド率で判定する（config.mjs reputation の
+ * コメント参照: 文脈指標(WPA/Clutch/gmLI)はキャリアモードで常に0のため使わない）。
+ * @param {{id:string, role:'pitcher'|'fielder'}} player
+ * @param {Array} careerStats state.careerStats（完了シーズンの選手集計・全年ぶん）
+ * @param {Array} injuryLog state.injuryLog（試合中に発生した離脱の観測ログ・全年ぶん）
+ * @param {Object} cfg createConfig()（cfg.tuning.awards.reputation を参照）
+ * @returns {Array<{key:string, label:string}>} 該当した評判タグ（0件もありうる）
+ */
+export function mediaReputation(player, careerStats, injuryLog, cfg) {
+  const R = cfg.tuning.awards.reputation;
+  const tags = [];
+  const isPitcher = player.role === 'pitcher';
+  const c = isPitcher ? careerPitching(careerStats, player.id) : careerBatting(careerStats, player.id);
+
+  if (!isPitcher) {
+    const re = careerRispEdge(careerStats, player.id);
+    if (re.sampleAb >= R.minRispAb) {
+      if (re.edge >= R.clutchHot) tags.push('clutch');
+      if (re.rispShare >= R.dramaRispShare) tags.push('drama');
+      const br = careerBaserunning(careerStats, player.id);
+      const gdpRate = br.gdpOpp >= R.minGdpOpp ? c.gdp / br.gdpOpp : 0;
+      if (br.gdpOpp >= R.minGdpOpp && gdpRate >= R.gdpRateBrake && re.edge <= R.clutchCold) tags.push('choke');
+    }
+  }
+
+  // ガラスの体/鉄人: 役割に依らず通算 seasons ＋ injuryLog（観測イベント）から判定。
+  const own = (injuryLog ?? []).filter((e) => e.id === player.id);
+  const injuryCount = own.length;
+  const gamesLostSum = own.reduce((s, e) => s + (e.gamesLost || 0), 0);
+  if (c.seasons >= R.glassMinSeasons && (gamesLostSum >= R.injuryGlassGames || injuryCount >= R.injuryGlassCount)) {
+    tags.push('glass');
+  }
+  const sample = isPitcher ? c.bf : c.pa;
+  if (c.seasons >= R.ironManSeasons && injuryCount <= R.ironManMaxInjuries && sample > 0) {
+    tags.push('ironman');
+  }
+
+  // 火消し/敗戦処理: 投手の救援登板専用（セーブ+ホールド率の高低で二分。§SV/HLDはcontext非依存で常時有効）。
+  if (isPitcher) {
+    const reliefG = c.g - c.gs;
+    if (reliefG >= R.reliefMinG) {
+      const svHldRate = (c.sv + c.hld) / reliefG;
+      if (svHldRate >= R.firemanSvHldRate) tags.push('fireman');
+      else if (svHldRate <= R.mopupSvHldRate) tags.push('mopup');
+    }
+  }
+
+  return tags.map((key) => ({ key, label: REPUTATION_LABELS[key] }));
 }
 
 // --- 記録の時代補正（D3・§11.3「記録の文脈」）------------------------------------

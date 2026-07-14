@@ -112,18 +112,53 @@ function fielderProfInit() {
   return m;
 }
 
+// ============================================================================
+// H3-1: 性格タグ（phaseH_fun_spec H3・fun_design_evidence §4柱4）。
+//
+// キャラ付け＝愛着の取っ掛かりが主目的（表示のみ）。効果は小さく・オフシーズン処理限定・
+// 期待値を動かさない（分散/確率の形だけを傾ける）。8種のうち数値効果を持つのは一部のみ
+// （練習熱心=H4方針の効き／ムラっ気=aging drift SD／お調子者=breakout上下確率）で、
+// 残り（寡黙/闘志/クール/マイペース/リーダー）はフレーバー専用（config `tuning.personality`）。
+// 付与は id 基準の独立シード（generate.mjs assignPersonality・hashSeed(id,'personality')）＝
+// 生成のメイン乱数列を消費しない（durability/block と同じ流儀・§10.6の前例）。
+// ============================================================================
+export const PERSONALITIES = [
+  'hardworking', // 練習熱心
+  'streaky', // ムラっ気
+  'showboat', // お調子者
+  'reticent', // 寡黙
+  'fighter', // 闘志
+  'cool', // クール
+  'myPace', // マイペース
+  'leader', // リーダー
+];
+
+/** 性格キー→日本語表示ラベル。UI（選手モーダル/スカウトレポート）が使う。 */
+export const PERSONALITY_LABELS = {
+  hardworking: '練習熱心',
+  streaky: 'ムラっ気',
+  showboat: 'お調子者',
+  reticent: '寡黙',
+  fighter: '闘志',
+  cool: 'クール',
+  myPace: 'マイペース',
+  leader: 'リーダー',
+};
+
 /**
  * 選手（三層のコンテナ）。
  * @param {Object} o
  * @param {string} o.id
  * @param {string} o.name  完全架空の名前（§0法的前提）。生成は0-6。
  * @param {'pitcher'|'fielder'} o.role 登録区分（能力素材は両方保持）
+ * @param {string|null} o.personality H3-1: 性格タグ（PERSONALITIES のいずれか。旧セーブは null→load時補完）
  */
 export function createPlayer(o = {}) {
   return {
     id: o.id ?? null,
     name: o.name ?? '',
     role: o.role ?? 'fielder',
+    personality: o.personality ?? null, // H3-1（真値ではなく表示用の個性タグ。additive・旧セーブはnull）
     // 主守備位置（投手は 'P'）。ロスター構成の恒常化（C2b 世代交代の1:1補充）に使う
     // 不変の座標。加齢で positionProf が揺れても「本来の枠」を固定する（生成時に確定）。
     primaryPos: o.primaryPos ?? (o.role === 'pitcher' ? 'P' : null),

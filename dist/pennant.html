@@ -188,6 +188,10 @@
   .plink:hover { color:var(--gold); }
   .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }
   .headawards { font-size:11px; color:var(--muted); margin-top:2px; }
+  /* H3: 性格タグ（常時表示）＋メディア評（観測ベース評判ラベル・複数可）のチップ列 */
+  .reptags { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .persontag { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:999px; padding:1px 8px; }
+  .reptag { font-size:11px; color:#20160a; background:var(--clay); border-radius:999px; padding:1px 8px; font-weight:700; }
   /* E2: スポナビ風観戦（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替） */
   .matchup { flex:1; min-width:250px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); }
   .bso { display:flex; gap:16px; margin-bottom:8px; flex-wrap:wrap; }
@@ -628,18 +632,53 @@ function fielderProfInit() {
   return m;
 }
 
+// ============================================================================
+// H3-1: 性格タグ（phaseH_fun_spec H3・fun_design_evidence §4柱4）。
+//
+// キャラ付け＝愛着の取っ掛かりが主目的（表示のみ）。効果は小さく・オフシーズン処理限定・
+// 期待値を動かさない（分散/確率の形だけを傾ける）。8種のうち数値効果を持つのは一部のみ
+// （練習熱心=H4方針の効き／ムラっ気=aging drift SD／お調子者=breakout上下確率）で、
+// 残り（寡黙/闘志/クール/マイペース/リーダー）はフレーバー専用（config `tuning.personality`）。
+// 付与は id 基準の独立シード（generate.mjs assignPersonality・hashSeed(id,'personality')）＝
+// 生成のメイン乱数列を消費しない（durability/block と同じ流儀・§10.6の前例）。
+// ============================================================================
+const PERSONALITIES = [
+  'hardworking', // 練習熱心
+  'streaky', // ムラっ気
+  'showboat', // お調子者
+  'reticent', // 寡黙
+  'fighter', // 闘志
+  'cool', // クール
+  'myPace', // マイペース
+  'leader', // リーダー
+];
+
+/** 性格キー→日本語表示ラベル。UI（選手モーダル/スカウトレポート）が使う。 */
+const PERSONALITY_LABELS = {
+  hardworking: '練習熱心',
+  streaky: 'ムラっ気',
+  showboat: 'お調子者',
+  reticent: '寡黙',
+  fighter: '闘志',
+  cool: 'クール',
+  myPace: 'マイペース',
+  leader: 'リーダー',
+};
+
 /**
  * 選手（三層のコンテナ）。
  * @param {Object} o
  * @param {string} o.id
  * @param {string} o.name  完全架空の名前（§0法的前提）。生成は0-6。
  * @param {'pitcher'|'fielder'} o.role 登録区分（能力素材は両方保持）
+ * @param {string|null} o.personality H3-1: 性格タグ（PERSONALITIES のいずれか。旧セーブは null→load時補完）
  */
 function createPlayer(o = {}) {
   return {
     id: o.id ?? null,
     name: o.name ?? '',
     role: o.role ?? 'fielder',
+    personality: o.personality ?? null, // H3-1（真値ではなく表示用の個性タグ。additive・旧セーブはnull）
     // 主守備位置（投手は 'P'）。ロスター構成の恒常化（C2b 世代交代の1:1補充）に使う
     // 不変の座標。加齢で positionProf が揺れても「本来の枠」を固定する（生成時に確定）。
     primaryPos: o.primaryPos ?? (o.role === 'pitcher' ? 'P' : null),
@@ -2190,6 +2229,24 @@ const TUNING_DEFAULT = {
   },
 
   // ==========================================================================
+  // H3-1: 性格タグ（phaseH_fun_spec H3・fun_design_evidence §4柱4）。
+  //   p.personality（8種・独立シード付与＝generate.mjs assignPersonality）が読む効果ノブ。
+  //   すべて小さく・オフシーズン処理限定・期待値は動かさない（分散/確率の"形"だけ傾ける）。
+  //   寡黙/闘志/クール/マイペース/リーダーはフレーバー専用＝ここに対応する数値効果を持たない。
+  // ==========================================================================
+  personality: {
+    // ムラっ気: aging.mjs の年次ドリフトSD（drift/ageVelocity）に掛ける倍率。平均（curveDelta）は
+    //   不変＝「同じ成長曲線を、より荒れた足取りで辿る」だけなので多年の中心傾向を動かさない。
+    streakyDriftMult: 1.25,
+    // お調子者: breakout.mjs の上方/下方確率（upP/downP）に同率で掛ける倍率。§11.1「下方≧上方」の
+    //   比はそのまま保たれる（分散が増えるだけ＝インフレ方向のバイアスを追加しない）。
+    showboatBreakoutMult: 1.2,
+    // 練習熱心: H4（育成方針・キャンプ）の方針tiltStrengthに掛ける倍率。H4未実装のためここでは
+    //   値を保持するのみ（H4実装時に training.mjs 側から参照して接続する・現状は非消費）。
+    hardworkingTrainingMult: 1.3,
+  },
+
+  // ==========================================================================
   // 引退・世代交代（C2b・§10.6）: 能力・年齢・故障から引退を確率判定し、同チーム・同枠へ
   //   新人（ドラフト相当）を1:1で補充してリーグ人口/ロスター構成を恒常に保つ。
   //   生存バイアス（弱い個体が消え、加齢カーブが平らに見える＝鉄人が自動レア化）はそのまま正しい。
@@ -2432,6 +2489,45 @@ const TUNING_DEFAULT = {
     gloveMinInnings: 400, // 守備の栄誉賞の最低守備イニング（過小サンプル除外）
     rotyMinPa: 100, // 新人王の最低打席（scrub 除外）
     rotyMinIp: 20, // 新人王の最低投球回
+
+    // ========================================================================
+    // H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・fun_design_evidence §4柱4）。
+    //   通算 "観測" 集計と state.injuryLog（試合中の離脱イベント＝観測可能な公開情報）だけから
+    //   複数タグを独立判定する（nicknameFor と同じ三層構造の作法＝trueAbility は一切見ない）。
+    //
+    //   ★設計変更メモ（実装時の実測で判明）: spec 原案は Clutch/WPA/aLI（文脈指標）を主軸に
+    //   想定していたが、文脈指標(RE24/WPA/LI)は season.mjs の opts.context（2パス導出）でのみ
+    //   埋まり、実際のキャリアモード（game/season_runtime.mjs の日次進行）はこのフラグを立てて
+    //   いない＝プレイ中は常に0（calibrate.mjs 等の単発フル計算専用ツールでしか埋まらない）。
+    //   Clutch/WPA/gmLI 基準ではラベルが実プレイで一切発火しない死んだ機能になるため、
+    //   実際に埋まる観測値へ土台を差し替えた:
+    //     - 勝負師/劇場型/ブレーキ（野手）: RISP splits（対RISP成績。§B3b・game.mjs が毎打席
+    //       無条件で計上＝文脈指標と違い常時有効）＋併殺率(gdp/gdpOpp)。ただし splits は
+    //       compactCareerStats が直近 keepDetailYears 年より古いシーズンから削るため、
+    //       「保持されている年度分」だけの集計になる（overall/RISPを同じ年度集合でフェアに
+    //       比較する＝careerRispEdge）。「メディアは直近の記憶に残る活躍で物語を作る」という
+    //       趣旨には却って合致する。
+    //     - 火消し/敗戦処理（投手・救援専業）: 登板時レバレッジ(gmLI)の代わりに
+    //       セーブ+ホールド率(sv+hld)/救援登板数（既存のSV/HLD計上はcontext非依存で常時有効）。
+    //   閾値は12seed運用（burn-in15年+6年）の実測分布から「上位/下位 概ね1-2割が該当」する
+    //   水準に較正（tools/calibrate.mjs 相当の帯較正ではなく、この機能専用の実測サンプリング）。
+    // ========================================================================
+    reputation: {
+      minRispAb: 150, // RISP集計のサンプルゲート（保持年度分のRISP対象打席の元になる通算AB）
+      clutchHot: 0.09, // 勝負師: RISP OPS − 通算OPS（同一年度集合）がこれ以上
+      clutchCold: -0.04, // ブレーキの補助条件: 同エッジがこれ以下
+      dramaRispShare: 0.31, // 劇場型: 全打席に占めるRISP打席の割合がこれ以上（平均的には0.25-0.29程度）
+      gdpRateBrake: 0.42, // ブレーキ: 併殺率(gdp/gdpOpp)がこれ以上
+      minGdpOpp: 60, // ブレーキの併殺機会ゲート（過小サンプル除外）
+      injuryGlassGames: 150, // ガラスの体: 通算離脱試合数(gamesLost合計)がこれ以上
+      injuryGlassCount: 4, // または通算故障件数がこれ以上
+      glassMinSeasons: 2, // ガラスの体の最低通算シーズン数（デビュー直後の一度きりの負傷を除外）
+      ironManSeasons: 8, // 鉄人: 通算出場シーズン数がこれ以上
+      ironManMaxInjuries: 1, // かつ通算故障件数がこれ以下
+      reliefMinG: 100, // 火消し/敗戦処理の通算救援登板数(g-gs)ゲート
+      firemanSvHldRate: 0.40, // 火消し: 救援登板に占める(セーブ+ホールド)の割合がこれ以上
+      mopupSvHldRate: 0.05, // 敗戦処理: 同割合がこれ以下（高レバレッジ場面をほぼ任されない）
+    },
   },
 
   // ==========================================================================
@@ -3307,6 +3403,16 @@ function draw(rng, mean = 50, sd = 10) {
   return clampRating(rng.normal(mean, sd));
 }
 
+/**
+ * H3-1: 性格タグを id 基準の独立シードで決定論的に引く（generatePitcher/generateFielder が
+ * 呼ぶ本体のメイン乱数列は一切消費しない＝R6 durability/§B1 blocking と同じ「独立シード方式」。
+ * 既存セーブの補完（game/index.mjs load()）も本関数を呼ぶ＝新規生成と旧セーブ補完が同式で一致する。
+ */
+function assignPersonality(id) {
+  const rng = makeRng(hashSeed(id, 'personality'));
+  return PERSONALITIES[rng.int(PERSONALITIES.length)];
+}
+
 /** 完全架空の姓名を合成 */
 function generateName(rng) {
   return SURNAMES[rng.int(SURNAMES.length)] + '　' + GIVEN[rng.int(GIVEN.length)];
@@ -3382,6 +3488,7 @@ function generatePitcher(rng, id) {
     age: 18 + rng.int(20),
     trueAbility: t,
     scoutSeed: hashSeed(id, 'scout'),
+    personality: assignPersonality(id), // H3-1（独立シード・メイン列非消費）
   });
 }
 
@@ -3496,6 +3603,7 @@ function generateFielder(rng, id, primaryPos) {
     age: 18 + rng.int(20),
     trueAbility: t,
     scoutSeed: hashSeed(id, 'scout'),
+    personality: assignPersonality(id), // H3-1（独立シード・メイン列非消費）
   });
 }
 
@@ -9458,16 +9566,19 @@ function buildBoxScore(events) {
 function applyAging(players, cfg, { seed }) {
   const aging = cfg.tuning.aging;
   const veloPerRating = cfg.tuning.maturity.veloPerRating;
+  // H3-1（ムラっ気）: drift SD 倍率。personality が無い（旧経路・テスト直呼び）選手は 1（無効果）。
+  const streakyMult = cfg.tuning.personality?.streakyDriftMult ?? 1;
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
-    agePlayer(p, prng, aging, veloPerRating);
+    const driftMult = p.personality === 'streaky' ? streakyMult : 1;
+    agePlayer(p, prng, aging, veloPerRating, driftMult);
   }
   return players;
 }
 
 /** 1選手を1年ぶん加齢させる（trueAbility を動かし age++）。 */
-function agePlayer(p, prng, aging, veloPerRating) {
+function agePlayer(p, prng, aging, veloPerRating, driftMult = 1) {
   const t = p.trueAbility;
   const peak = t.career.peakAge;
   const dr = t.career.declineRate;
@@ -9495,7 +9606,7 @@ function agePlayer(p, prng, aging, veloPerRating) {
     t.career.youthDebt = debt + repay;
   }
 
-  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating };
+  const ctx = { age, peak, dr, gm, young, prng, aging, flatBonus, veloPerRating, driftMult };
 
   // 共通素材（§2.2）
   ageRating(t.common, 'speed', 'speed', ctx);
@@ -9552,9 +9663,9 @@ function curveDelta(prof, ctx) {
   return d;
 }
 
-/** 年次ノイズ（若手ほど大きい＝高分散）。 */
+/** 年次ノイズ（若手ほど大きい＝高分散）。H3-1: ムラっ気は driftMult(既定1) 倍でSDが荒れる（平均は不変）。 */
 function drift(ctx) {
-  const sd = ctx.young ? ctx.aging.driftSdYoung : ctx.aging.driftSdOld;
+  const sd = (ctx.young ? ctx.aging.driftSdYoung : ctx.aging.driftSdOld) * (ctx.driftMult ?? 1);
   return ctx.prng.normal(0, sd);
 }
 
@@ -9573,7 +9684,7 @@ function ageVelocity(pitching, ctx) {
   const onset = ctx.peak + v.declineOffset;
   if (ctx.age < growEnd) d += v.grow * (ctx.young ? ctx.gm : 1);
   if (ctx.age >= onset) d -= v.decline * ctx.dr * (1 + ctx.aging.declineAccel * (ctx.age - onset));
-  d += ctx.prng.normal(0, ctx.young ? v.driftSdYoung : v.driftSdOld);
+  d += ctx.prng.normal(0, (ctx.young ? v.driftSdYoung : v.driftSdOld) * (ctx.driftMult ?? 1));
   d += ctx.flatBonus * ctx.veloPerRating; // R7: rating単位の返済額を球速換算
   pitching.velocityKmh = clamp(pitching.velocityKmh + d, v.min, v.max);
 }
@@ -10249,10 +10360,13 @@ function consensusEval(state, prospect) {
 /**
  * H2: スカウトレポート。自球団 profile での evaluateProspect（ノイズ込み）をプールの分位点で
  * 相対化し、真値非参照の等級・ツール別評価・伸びしろ・経歴タグ・世代内評判にまとめる。
+ * H3-1: personality だけは例外的に真値そのものを返す（trueAbility 内の能力レーティングとは異なり、
+ * 「性格」は隠し能力ではなく表示用の個性タグ＝スカウトが直接観察できる設定・phaseH_fun_spec H3）。
  * @param {Object} state GameState（cfg/masterSeed/yearIndex/playerTeamId/league.teams を使う）
  * @param {Object} prospect スカウト対象（ドラフトプールの1人）
  * @param {Array} [pool] 比較母集団（省略時は state.awaitingDraft.pool。それも無ければ prospect 単体）
- * @returns {{grade:string, tools:Object, upside:string, cohort:string, hype:?string, myPercentile:number, consensusPercentile:number}}
+ * @returns {{grade:string, tools:Object, upside:string, cohort:string, hype:?string, myPercentile:number,
+ *   consensusPercentile:number, personality:string|null}}
  */
 function draftScoutView(state, prospect, pool = null) {
   const cfg = state.cfg;
@@ -10305,7 +10419,8 @@ function draftScoutView(state, prospect, pool = null) {
   if (myConsensusPct >= sr.hypeTopPct) hype = '目玉';
   else if (myPct - myConsensusPct >= sr.hiddenGemGapPct) hype = '隠し玉';
 
-  return { grade, tools, upside, cohort, hype, myPercentile: myPct, consensusPercentile: myConsensusPct };
+  // H3-1: 性格タグはスカウトが直接観察できる設定（真値ではなく表示用の個性・phaseH_fun_spec H3）。
+  return { grade, tools, upside, cohort, hype, myPercentile: myPct, consensusPercentile: myConsensusPct, personality: prospect.personality ?? null };
 }
 
 /**
@@ -11788,9 +11903,16 @@ function rollBreakout(p, cfg, prng, year) {
   const hist = p.trueAbility.career.injuryHistory ?? [];
   const recentMajor = hist.some((e) => e.year === year && e.severity === 'major');
   const young = p.age <= bo.youngAge;
-  const upP = bo.upBase * (young ? bo.youngUpMult : 1);
-  const downP =
+  let upP = bo.upBase * (young ? bo.youngUpMult : 1);
+  let downP =
     bo.downBase + (recentMajor ? bo.postInjuryDown : 0) + Math.max(0, p.age - bo.burnoutAge) * bo.burnoutPerYear;
+  // H3-1（お調子者）: 上方/下方の両確率へ同率で掛ける＝§11.1「下方≧上方」の比を保ったまま
+  //   分散だけ増やす（インフレ方向のバイアスを追加しない）。
+  if (p.personality === 'showboat') {
+    const mult = cfg.tuning.personality?.showboatBreakoutMult ?? 1;
+    upP *= mult;
+    downP *= mult;
+  }
   const r = prng.next(); // 1回の一様乱数で上/下/無しに振る（下方を厚く配置）
   if (r < upP) return applyUpBreak(p, bo, prng, year);
   if (r < upP + downP) return applyDownBreak(p, bo, prng, year, recentMajor);
@@ -12461,7 +12583,9 @@ function recomputeAwardHistory(playerId, { careerStats, teamHistory, playersById
 // --- 通算集計（二つ名・記録・マイルストーンの素。観測のみ・§17） ------------------
 /** 打撃の通算生カウント合算（careerStats の batting を全年で足す）。 */
 function careerBatting(careerStats, playerId) {
-  const acc = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0, sb: 0, cs: 0, rbi: 0, ibb: 0 };
+  // H3-2: gdp（併殺打）を追加（「ブレーキ」の分子）。トップレベル生カウントなので
+  //   compactCareerStats が削る splits/byCount と違い古いシーズンでも欠落しない（§17と同じ理由）。
+  const acc = { pa: 0, ab: 0, h: 0, b1: 0, b2: 0, b3: 0, hr: 0, bb: 0, hbp: 0, so: 0, sf: 0, sb: 0, cs: 0, rbi: 0, ibb: 0, gdp: 0 };
   let seasons = 0;
   for (const s of careerStats) {
     if (s.playerId !== playerId || !s.batting) continue;
@@ -12486,6 +12610,41 @@ function careerPitching(careerStats, playerId) {
   }
   const ip = acc.outs / 3;
   return { ...acc, seasons, ip, era: ip ? (acc.er * 9) / ip : 0, bbPer9: ip ? (acc.bb * 9) / ip : 0, kPer9: ip ? (acc.so * 9) / ip : 0 };
+}
+
+/** 走塁の通算生カウント合算（H3-2「ブレーキ」の分母＝併殺機会。§17 走塁は非削除で全年安全）。 */
+function careerBaserunning(careerStats, playerId) {
+  const acc = { gdpOpp: 0 };
+  for (const s of careerStats) {
+    if (s.playerId !== playerId || !s.baserunning) continue;
+    acc.gdpOpp += s.baserunning.gdpOpp || 0;
+  }
+  return acc;
+}
+
+/**
+ * H3-2: RISP splits を「保持されている年度分だけ」フェアに集計する（勝負師/劇場型/ブレーキの素）。
+ * compactCareerStats が直近 keepDetailYears 年より古いシーズンから splits（RISPを含む）を削るため、
+ * overall（通算全打席）と RISP を同じ年度集合から集計しないと非対称な比較になる。よって
+ * 「splits が残っている年度」の overall ラインと RISP ラインを対で積む（古い年度が消えても
+ * その年度は overall 側からも除外され、常にフェアな部分集合比較になる）。
+ * @returns {{sampleAb:number, rispAb:number, overallOPS:number, rispOPS:number, edge:number, rispShare:number}}
+ */
+function careerRispEdge(careerStats, playerId) {
+  let oAb = 0, oH = 0, oB1 = 0, oB2 = 0, oB3 = 0, oHr = 0, oBb = 0, oHbp = 0, oSf = 0, oPa = 0;
+  let rAb = 0, rH = 0, rB1 = 0, rB2 = 0, rB3 = 0, rHr = 0, rBb = 0, rHbp = 0, rSf = 0, rPa = 0;
+  for (const s of careerStats) {
+    if (s.playerId !== playerId || !s.batting || !s.batting.splits || !s.batting.splits.risp) continue;
+    const b = s.batting;
+    oAb += b.ab; oH += b.h; oB1 += b.b1; oB2 += b.b2; oB3 += b.b3; oHr += b.hr; oBb += b.bb; oHbp += b.hbp; oSf += b.sf; oPa += b.pa;
+    const r = b.splits.risp;
+    rAb += r.ab; rH += r.h; rB1 += r.b1; rB2 += r.b2; rB3 += r.b3; rHr += r.hr; rBb += r.bb; rHbp += r.hbp; rSf += r.sf; rPa += r.pa;
+  }
+  const obp = (ab, h, bb, hbp, sf) => (ab + bb + hbp + sf ? (h + bb + hbp) / (ab + bb + hbp + sf) : 0);
+  const slg = (ab, b1, b2, b3, hr) => (ab ? (b1 + 2 * b2 + 3 * b3 + 4 * hr) / ab : 0);
+  const overallOPS = obp(oAb, oH, oBb, oHbp, oSf) + slg(oAb, oB1, oB2, oB3, oHr);
+  const rispOPS = obp(rAb, rH, rBb, rHbp, rSf) + slg(rAb, rB1, rB2, rB3, rHr);
+  return { sampleAb: oAb, rispAb: rAb, overallOPS, rispOPS, edge: rispOPS - overallOPS, rispShare: oPa ? rPa / oPa : 0 };
 }
 
 /**
@@ -12513,6 +12672,76 @@ function nicknameFor(player, careerStats, cfg) {
   if (c.iso >= N.isoSlugger && c.hr >= N.isoSluggerHr) return 'スラッガー';
   if (c.bbPct >= N.onbaseBbPct) return '出塁の職人';
   return 'いぶし銀';
+}
+
+// --- H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・fun_design_evidence §4柱4） --------
+/** 評判タグ key→日本語ラベル。nicknameFor と違い**複数同時付与**（複数の物語が同時に湧いてよい）。 */
+const REPUTATION_LABELS = {
+  clutch: '勝負師',
+  drama: '劇場型',
+  choke: 'ブレーキ',
+  glass: 'ガラスの体',
+  ironman: '鉄人',
+  fireman: '火消し',
+  mopup: '敗戦処理',
+};
+
+/**
+ * 評判ラベル（メディア評）: 通算 "観測" 集計（careerBatting/careerPitching/careerBaserunning/
+ * careerRispEdge）と injuryLog（試合中に発生した離脱の観測ログ・state.injuryLog）だけから
+ * 複数タグを独立判定する。trueAbility は一切参照しない（player からは role/id のみ使う＝
+ * nicknameFor と同じ作法）。「勝負強い」「ここ一番に弱い」はセイバー的に真の能力ではない
+ * （Clutchは運/文脈の産物）＝ラベルは実力の反映でなく**観測から勝手に貼られる物語**
+ * （真値とのズレそのものがコンテンツ・鉄則4）。
+ *
+ * 野手=RISP成績＋併殺率、投手(救援)=セーブ+ホールド率で判定する（config.mjs reputation の
+ * コメント参照: 文脈指標(WPA/Clutch/gmLI)はキャリアモードで常に0のため使わない）。
+ * @param {{id:string, role:'pitcher'|'fielder'}} player
+ * @param {Array} careerStats state.careerStats（完了シーズンの選手集計・全年ぶん）
+ * @param {Array} injuryLog state.injuryLog（試合中に発生した離脱の観測ログ・全年ぶん）
+ * @param {Object} cfg createConfig()（cfg.tuning.awards.reputation を参照）
+ * @returns {Array<{key:string, label:string}>} 該当した評判タグ（0件もありうる）
+ */
+function mediaReputation(player, careerStats, injuryLog, cfg) {
+  const R = cfg.tuning.awards.reputation;
+  const tags = [];
+  const isPitcher = player.role === 'pitcher';
+  const c = isPitcher ? careerPitching(careerStats, player.id) : careerBatting(careerStats, player.id);
+
+  if (!isPitcher) {
+    const re = careerRispEdge(careerStats, player.id);
+    if (re.sampleAb >= R.minRispAb) {
+      if (re.edge >= R.clutchHot) tags.push('clutch');
+      if (re.rispShare >= R.dramaRispShare) tags.push('drama');
+      const br = careerBaserunning(careerStats, player.id);
+      const gdpRate = br.gdpOpp >= R.minGdpOpp ? c.gdp / br.gdpOpp : 0;
+      if (br.gdpOpp >= R.minGdpOpp && gdpRate >= R.gdpRateBrake && re.edge <= R.clutchCold) tags.push('choke');
+    }
+  }
+
+  // ガラスの体/鉄人: 役割に依らず通算 seasons ＋ injuryLog（観測イベント）から判定。
+  const own = (injuryLog ?? []).filter((e) => e.id === player.id);
+  const injuryCount = own.length;
+  const gamesLostSum = own.reduce((s, e) => s + (e.gamesLost || 0), 0);
+  if (c.seasons >= R.glassMinSeasons && (gamesLostSum >= R.injuryGlassGames || injuryCount >= R.injuryGlassCount)) {
+    tags.push('glass');
+  }
+  const sample = isPitcher ? c.bf : c.pa;
+  if (c.seasons >= R.ironManSeasons && injuryCount <= R.ironManMaxInjuries && sample > 0) {
+    tags.push('ironman');
+  }
+
+  // 火消し/敗戦処理: 投手の救援登板専用（セーブ+ホールド率の高低で二分。§SV/HLDはcontext非依存で常時有効）。
+  if (isPitcher) {
+    const reliefG = c.g - c.gs;
+    if (reliefG >= R.reliefMinG) {
+      const svHldRate = (c.sv + c.hld) / reliefG;
+      if (svHldRate >= R.firemanSvHldRate) tags.push('fireman');
+      else if (svHldRate <= R.mopupSvHldRate) tags.push('mopup');
+    }
+  }
+
+  return tags.map((key) => ({ key, label: REPUTATION_LABELS[key] }));
 }
 
 // --- 記録の時代補正（D3・§11.3「記録の文脈」）------------------------------------
@@ -14220,6 +14449,11 @@ function load(blob, options = {}) {
     players: snap.players,
     farm: snap.farm ?? [],
   };
+  // H3-1: 性格タグの後方互換補完（phaseH_fun_spec 全柱共通の鉄則6・H3-1）。personality は
+  //   id 基準の独立シードから決定論的に導出できるため、新規生成(generatePitcher/generateFielder)と
+  //   同じ式(assignPersonality)を旧セーブにも適用すれば同一の結果になる＝「後付けできる」。
+  for (const p of league.players) if (p.personality == null) p.personality = assignPersonality(p.id);
+  for (const p of league.farm) if (p.personality == null) p.personality = assignPersonality(p.id);
   const state = {
     schemaVersion: data.schemaVersion,
     engineVersion: data.engineVersion,
@@ -14411,13 +14645,14 @@ function renderDraftRoomScreen(u) {
     .sort((a, b) => (GRADE_ORDER[a.sv.grade] - GRADE_ORDER[b.sv.grade]) || (b.sv.myPercentile - a.sv.myPercentile) || (a.p.id < b.p.id ? -1 : 1));
 
   content.append(el('h3', { class: 'leaguename' }, `指名候補（${rows.length}人）`));
-  const headers = ['等級', '選手', '位置', '年齢', '経歴', 'ツール', '伸びしろ', '評判', '指名'];
+  const headers = ['等級', '選手', '位置', '年齢', '経歴', '性格', 'ツール', '伸びしろ', '評判', '指名'];
   const trs = rows.map(({ p, sv }) => el('tr', {}, [
     el('td', {}, sv.grade),
     el('td', { class: 'left' }, p.name),
     el('td', { class: 'left' }, typeLabel(p, u)),
     el('td', {}, String(p.age)),
     el('td', { class: 'left' }, sv.cohort),
+    el('td', { class: 'left' }, u.PERSONALITY_LABELS[sv.personality] ?? '-'), // H3-1: スカウトは性格を直接観察できる
     el('td', { class: 'left' }, toolsText(p.role, sv.tools)),
     el('td', { class: 'left' }, sv.upside),
     el('td', { class: 'left' }, hypeText(sv.hype)),
@@ -17214,6 +17449,17 @@ function modalHeader(p, isPitcher, overlay, playerId, navIds) {
   const belong = gs ? (p.rosterStatus === 'minor' ? '育成（二軍）' : registered ? '支配下（一軍登録）' : '支配下（二軍）') + ' / ' : '';
   left.append(el('div', { class: 'muted' },
     `${state.teamName.get(p.teamId) || ''} / ${belong}${isPitcher ? '投手' : posJP(primaryPos(p))} / ${p.age}歳 / ${handLabel(p.throws)}投${handLabel(p.bats)}打`));
+  // H3: 性格タグ（常時・真値ではない表示用の個性）＋メディア評（キャリアモードのみ・観測から導出）。
+  if (p.personality || gs) {
+    const tags = [];
+    if (p.personality) tags.push(el('span', { class: 'persontag' }, PERSONALITY_LABELS[p.personality] ?? p.personality));
+    if (gs) {
+      for (const t of mediaReputation(p, gs.careerStats, gs.injuryLog, gs.cfg)) {
+        tags.push(el('span', { class: 'reptag' }, t.label));
+      }
+    }
+    if (tags.length) left.append(el('div', { class: 'reptags' }, tags));
+  }
   if (gs) {
     const hist = playerAwardHistory(p.id, { careerStats: gs.careerStats, teamHistory: gs.teamHistory, playersById: allPlayersById(gs), cfg: gs.cfg });
     if (hist.length) {
@@ -18808,6 +19054,7 @@ function finishOffseasonUI(off) {
 function draftDeps() {
   return {
     el, game, tname, posJP, autoSave,
+    PERSONALITY_LABELS, // H3-1: スカウトレポートの性格タグ表示
     renderHub: () => renderHub(),
     onDraftComplete: (off) => finishOffseasonUI(off),
   };

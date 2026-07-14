@@ -13,14 +13,14 @@
 
 import { mulberry32, makeRng, hashSeed, rngFor, serializeRng, deserializeRng } from './rng.mjs';
 import { POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_162G, POSITION_ADJUST_INNINGS_FULL, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass } from './model/positions.mjs';
-import { createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand } from './model/player.mjs';
+import { createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand, PERSONALITIES, PERSONALITY_LABELS } from './model/player.mjs';
 import { createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt } from './model/battedball.mjs';
 import { createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine } from './model/statline.mjs';
 import {
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
 } from './config.mjs';
-import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations, generateFarmPlayers, devCountFor, TEAM_COLORS, TEAM_ABBR } from './generate.mjs';
+import { generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations, generateFarmPlayers, devCountFor, TEAM_COLORS, TEAM_ABBR, assignPersonality } from './generate.mjs';
 import { logit, expit, ratingDelta, log5 } from './sim/rates.mjs';
 import { PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance } from './sim/plateAppearance.mjs';
 import { generateBattedBall } from './sim/battedBall.mjs';
@@ -62,11 +62,12 @@ export {
   POSITIONS, FIELD_POSITIONS, POSITION_ADJUST_PER_162G, POSITION_ADJUST_INNINGS_FULL, POSITION_DIFFICULTY, PITCH_TYPES, FASTBALL_TYPES, pitchClass,
   selectPitch, selectPitchByCount,
   createPlayer, createTrueAbility, createPitch, validatePlayer, effectiveBats, isSameHand,
+  PERSONALITIES, PERSONALITY_LABELS, // H3-1: 性格タグ（8種）＋日本語ラベル
   createBattedBall, createBallpark, NEUTRAL_PARK, fenceDistanceAt,
   createPlayerSeason, createTeamSeason, addPlayerSeason, createSplitLine,
   CONFIG_VERSION, createConfig, createLeagueConstants, CALIBRATION_TARGETS,
   qualifiedPA, qualifiedIP, fieldingInningsFull, inRange,
-  generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations, generateFarmPlayers, devCountFor, TEAM_COLORS, TEAM_ABBR,
+  generateLeague, generateTeam, generatePitcher, generateFielder, generateName, generateManager, generatePark, buildParkFromDeviations, generateFarmPlayers, devCountFor, TEAM_COLORS, TEAM_ABBR, assignPersonality,
   logit, expit, ratingDelta, log5,
   PA_OUTCOME, paProbabilities, resolvePADiscipline, runPlateAppearance,
   generateBattedBall, battedType, computeGeometry, assignFielder, resolveBattedBall,

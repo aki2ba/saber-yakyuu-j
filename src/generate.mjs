@@ -10,7 +10,7 @@
 //   - masterSeed＋階層シードで、生成は決定論・順序非依存（誰が回しても同じリーグ）。
 // ============================================================================
 import { makeRng, hashSeed } from './rng.mjs';
-import { createPlayer, createTrueAbility, createPitch } from './model/player.mjs';
+import { createPlayer, createTrueAbility, createPitch, PERSONALITIES } from './model/player.mjs';
 import { FIELD_POSITIONS, PITCH_TYPES } from './model/positions.mjs';
 import { clamp, clampRating } from './model/util.mjs';
 import { createBallpark } from './model/battedball.mjs';
@@ -62,6 +62,16 @@ export const TEAM_ABBR = Object.fromEntries(TEAM_NAMES.map((n, i) => [n, TEAM_AB
 
 function draw(rng, mean = 50, sd = 10) {
   return clampRating(rng.normal(mean, sd));
+}
+
+/**
+ * H3-1: 性格タグを id 基準の独立シードで決定論的に引く（generatePitcher/generateFielder が
+ * 呼ぶ本体のメイン乱数列は一切消費しない＝R6 durability/§B1 blocking と同じ「独立シード方式」。
+ * 既存セーブの補完（game/index.mjs load()）も本関数を呼ぶ＝新規生成と旧セーブ補完が同式で一致する。
+ */
+export function assignPersonality(id) {
+  const rng = makeRng(hashSeed(id, 'personality'));
+  return PERSONALITIES[rng.int(PERSONALITIES.length)];
 }
 
 /** 完全架空の姓名を合成 */
@@ -139,6 +149,7 @@ export function generatePitcher(rng, id) {
     age: 18 + rng.int(20),
     trueAbility: t,
     scoutSeed: hashSeed(id, 'scout'),
+    personality: assignPersonality(id), // H3-1（独立シード・メイン列非消費）
   });
 }
 
@@ -253,6 +264,7 @@ export function generateFielder(rng, id, primaryPos) {
     age: 18 + rng.int(20),
     trueAbility: t,
     scoutSeed: hashSeed(id, 'scout'),
+    personality: assignPersonality(id), // H3-1（独立シード・メイン列非消費）
   });
 }
 

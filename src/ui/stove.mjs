@@ -20,7 +20,7 @@
 // ============================================================================
 import { makeRng, hashSeed, playerBatting, playerPitching } from '../engine.mjs';
 import { teamEvalProfile, evaluateProspect } from '../game/market.mjs';
-import { bidFA, proposeTrade } from '../game/index.mjs';
+import { bidFA, proposeTrade, retirementCeremonyText, ownTeamRetirementHeadlines } from '../game/index.mjs';
 import { teamScoutGrade } from './team.mjs';
 
 // 画面内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
@@ -451,10 +451,16 @@ export function renderOffseasonDigestScreen(off, u) {
     else if (pu.from === my) moves.push(el('div', { class: 'newsrow bad' }, ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる`]));
   }
   // 自チームの引退（引退者に teamId は無い→完了年の careerStats から最終所属を引く）
+  // H1-3: 功労者（通算PA/IP/受賞数が閾値超）は「引退セレモニー」の文面で個別ニュース化する。
   const finalTeam = new Map();
   for (const s of gs.careerStats) if (s.season === prevYear) finalTeam.set(s.playerId, s.teamId);
+  const ceremonies = off.retirementCeremonies ?? [];
+  const ceremonyIds = new Set(ceremonies.map((c) => c.playerId));
+  for (const h of ownTeamRetirementHeadlines(gs, ceremonies, my, prevYear, { tnameOf: u.tname })) {
+    moves.push(el('div', { class: 'newsrow good' }, h.text));
+  }
   for (const r of off.retirees ?? []) {
-    if (finalTeam.get(r.id) !== my) continue;
+    if (finalTeam.get(r.id) !== my || ceremonyIds.has(r.id)) continue;
     moves.push(el('div', { class: 'newsrow' }, [`引退: ${r.name}（${r.role === 'pitcher' ? '投手' : u.posJP(r.primaryPos)}・${r.finalAge}歳）`]));
   }
   // 自チームの育成昇格
@@ -527,6 +533,13 @@ export function renderOffseasonDigestScreen(off, u) {
     root.append(el('h3', { class: 'leaguename' }, `通算記録の到達（${off.milestones.length}件）`));
     root.append(el('div', { class: 'awardlist' }, off.milestones.map((m) => el('div', { class: 'awardrow' }, [
       el('span', { class: 'awardbadge' }, [link(m.playerId, m.name), `　${m.category} ${m.threshold}${m.unit}到達（通算${m.total}）`]),
+    ]))));
+  }
+  // H1-3: 引退セレモニー（リーグ全体・功労者=通算PA/IP/受賞数が閾値超の引退者を1枚のカードで表示）。
+  if (ceremonies.length) {
+    root.append(el('h3', { class: 'leaguename' }, `🎉 引退セレモニー（${ceremonies.length}人）`));
+    root.append(el('div', { class: 'awardlist' }, ceremonies.map((c) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, retirementCeremonyText(c, { tnameOf: u.tname })),
     ]))));
   }
 }

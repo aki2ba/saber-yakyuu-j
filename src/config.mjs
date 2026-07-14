@@ -1333,6 +1333,29 @@ export const TUNING_DEFAULT = {
     rotyMinPa: 100, // 新人王の最低打席（scrub 除外）
     rotyMinIp: 20, // 新人王の最低投球回
   },
+
+  // ==========================================================================
+  // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。
+  //   src/game/storylines.mjs が消費。表示層のみ（エンジン非干渉）。すべて観測集計/
+  //   transactionLog からの純関数（真値を一切参照しない＝三層構造の堅持）。
+  // ==========================================================================
+  storylines: {
+    // タイトル争い（H1-1）: 首位と2位の差がこれ以内なら「激戦」フラグ。rate=打率/防御率など率系、
+    //   count=HR/打点/盗塁/勝利/セーブ/奪三振など数え上げ系（カテゴリ別に単位が違うため二本立て）。
+    raceCloseMargin: { rate: 0.006, count: 3 },
+    rookieRaceTopN: 5, // 新人王レースの表示人数（リーグ別）
+    recordPaceThreshold: 1.05, // シーズン記録の105%超ペースで「記録ペース」ニュース
+    recordPaceMinProgress: 0.5, // 消化50%未満はペース判定の対象外（序盤のノイズ除外）
+    digestMaxItems: 6, // 「今週の見どころ」節に載せる最大件数
+    retirementRoad: {
+      ageThreshold: 37, // これ以上＋通算マイルストーン持ちを「引退ロード候補」ニュースの対象に
+      batterMilestones: { hits: 500, homeRuns: 100 }, // いずれか到達で候補（awards.milestonesより低い早期到達バー）
+      pitcherMilestones: { wins: 50, saves: 50, strikeouts: 500 },
+      ceremonyMinPA: 2000, // 「引退セレモニー」節を出す通算打席の下限（野手）
+      ceremonyMinIP: 600, // 同・通算投球回の下限（投手）
+      ceremonyMinAwards: 1, // 通算受賞件数がこれ以上ならPA/IPが薄くても功労者扱い
+    },
+  },
 };
 
 /**

@@ -24,6 +24,8 @@ import {
   careerEraPlus, // D3・§11.3: 記録の時代補正「+指標」（打高/投高時代を跨いで同価値化）
   DEF_AWARD_NAME, TITLE_LABELS, detectGameNotables, notableHeadline, streakOf, weeklyDigest,
   rosterMoveHeadline, // F2-4: 昇降格ニュース（フォールバック文面）
+  // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。
+  weeklyStorylineDigest, rivalryGameHeadlines, rivalriesOf, retirementRoadCandidates,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -577,6 +579,10 @@ function modalHeader(p, isPitcher, overlay, playerId, navIds) {
       const recent = hist.slice(-3).map((a) => `${a.year} ${a.label}${a.pos ? `（${posJP(a.pos)}）` : ''}`).join('・');
       left.append(el('div', { class: 'headawards' }, `🏅 ${recent}${hist.length > 3 ? ` 他${hist.length - 3}件` : ''}`));
     }
+    // H1-3: 引退ロード候補（年齢閾値＋通算マイルストーン）バッジ。引退判定そのものには非干渉。
+    if (p.rosterStatus === 'active' && retirementRoadCandidates(gs).some((c) => c.playerId === p.id)) {
+      left.append(el('div', { class: 'headawards' }, '🎬 今季が集大成のシーズンになるか'));
+    }
   }
   const right = el('div', { class: 'modalnavwrap' });
   if (navIds && navIds.length > 1) {
@@ -823,6 +829,23 @@ function renderModalCareer(box, p, isPitcher) {
   } else {
     box.append(el('div', { class: 'muted' }, 'まだ受賞はありません。'));
   }
+  // H1-2: ライバル・因縁（トレード相手/FA・戦力外の旧所属/同年同round指名の同期）。
+  const rivals = rivalriesOf(gs, p.id);
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, 'ライバル・因縁'));
+  box.append(rivals.length
+    ? el('div', { class: 'awardlist' }, rivals.map((r) => el('div', { class: 'awardrow' }, rivalryParts(r))))
+    : el('div', { class: 'muted' }, '記録された因縁関係はありません。'));
+}
+
+/** H1-2: 1件の因縁関係をモーダル用の要素列へ（playerLink付き）。 */
+function rivalryParts(r) {
+  if (r.type === 'trade') {
+    return [`${r.year}年トレード: `, playerLink(r.otherPlayerId), ` と交換で ${tname(r.oldTeamId)} → ${tname(r.newTeamId)}`];
+  }
+  if (r.type === 'faOld') return [`${r.year}年FA移籍: ${tname(r.oldTeamId)} → ${tname(r.newTeamId)}（古巣は${tname(r.oldTeamId)}）`];
+  if (r.type === 'pickupOld') return [`${r.year}年戦力外→拾い上げ: ${tname(r.oldTeamId)} → ${tname(r.newTeamId)}`];
+  if (r.type === 'draftmate') return [`${r.year}年ドラフト${r.round}巡目の同期: `, playerLink(r.otherPlayerId), `（${tname(r.matchTeamId)}）`];
+  return [];
 }
 
 /**
@@ -1121,6 +1144,11 @@ const game = {
 const pname = (id) => (state.byId.get(id) ? state.byId.get(id).name : id);
 const tname = (id) => state.teamName.get(id) || id;
 const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
+
+/** H1: storylines.mjs の見出し関数へ渡す名前解決束（pname/tname/leagueNameOfの共通ラップ）。 */
+function storyNames() {
+  return { pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid) };
+}
 
 // 球団アクセントカラー（UI表示専用）は generate.mjs の TEAM_NAMES とペアで定義され、
 // engine.mjs 経由で import 済み（TEAM_COLORS）。ここでは参照ヘルパーのみ。
@@ -1467,6 +1495,8 @@ function renderNewsFeed(c) {
   }
   // E4: 選手の活躍見出し（直近のボックススコア集計から・playerLink 付き）を上位2件だけホームにも出す。
   heads.push(...schedPlayerHeadlines(rt, scheduleDeps(), 2));
+  // H1-2: 因縁の一戦（古巣に牙をむく等）は一番目を引くので1件だけホームにも出す。
+  heads.push(...rivalryGameHeadlines(gs, storyNames(), 1).map((h) => ({ text: h.text, cls: h.cls })));
   c.append(el('h3', { class: 'leaguename' }, ['📰 ニュース　', el('button', { class: 'link', onclick: () => renderHub('news') }, '一覧へ →')]));
   if (!heads.length) {
     c.append(el('div', { class: 'newsfeed' }, [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
@@ -1496,12 +1526,24 @@ function renderNewsTab(c) {
   c.append(el('div', { class: 'newsfeed' }, heads.length
     ? heads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.parts || h.text))
     : [el('div', { class: 'newsrow info' }, 'シーズン序盤。見出しはこれから生まれます。')]));
+  // H1-1: 今週の見どころ（タイトル争い・新人王レース・記録ペース・引退ロード候補）。
+  const storylines = weeklyStorylineDigest(gs, storyNames());
+  c.append(el('h3', { class: 'leaguename' }, '🏆 今週の見どころ'));
+  c.append(el('div', { class: 'newsfeed' }, storylines.length
+    ? storylines.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))
+    : [el('div', { class: 'newsrow info' }, '目立った争い・ペースはまだありません。')]));
   // 選手の活躍（直近試合の当日ライン＝rec.box 集計から。選手名クリックで詳細モーダル）
   const perf = schedPlayerHeadlines(rt, scheduleDeps(), 10);
   c.append(el('h3', { class: 'leaguename' }, '⚾ 選手の活躍（直近の試合から）'));
   c.append(el('div', { class: 'newsfeed' }, perf.length
     ? perf.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.parts || h.text))
     : [el('div', { class: 'newsrow info' }, '直近の試合に目立った活躍はまだありません。')]));
+  // H1-2: 因縁の一戦（古巣に牙をむく・トレード相手・同期指名との対戦で活躍した回）。
+  const rivalryHeads = rivalryGameHeadlines(gs, storyNames(), 8);
+  if (rivalryHeads.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🔥 因縁の一戦'));
+    c.append(el('div', { class: 'newsfeed' }, rivalryHeads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.text))));
+  }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
   //   （market.runMarket の判定＝シーズン中の入替はない・§12.1）。

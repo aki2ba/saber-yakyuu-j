@@ -37,6 +37,9 @@ import {
   careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
 } from './awards.mjs';
 import { detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMoveHeadline } from './news.mjs';
+// H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。表示層のみ
+//   （エンジン非干渉）。advanceYear が transactionLog 追記＋引退セレモニー整形を行う。
+import { appendTransactionLog, retirementCeremonies } from './storylines.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
  *  v2（C2b）: オフシーズン遷移が加齢のみ→故障/ブレイク/引退/新人補充の完全版に拡張。
@@ -306,6 +309,9 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     retiredPlayers: [], // 引退者サマリ（記録/通算・§17集計値。replayで再構築するため save には含めない）
     interventions: [], // 人間介入ログ（采配プロファイル差し替え。save/replayで再現）
     marketInterventions: [], // 市場操作ログ（FA入札/トレード起案。オフシーズンで適用・save/replayで再現）
+    // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive・advanceYearで確定結果を追記）。
+    //   §17 と同じ思想（集計値のみ・生イベントは持たない）。旧セーブは load 時に [] 補完。
+    transactionLog: [],
     // R3: 前季の故障の「開幕時点の残り離脱 day 数」（開幕ILの素）。故障が試合由来になったため
     //   replay では再導出できない（season を再シムしない）→ save に永続する。
     pendingInjuries: [],
@@ -551,6 +557,11 @@ export function advanceYear(state) {
     year: completedYear,
   });
   off.milestones = milestones({ careerStats: state.careerStats, playersById: awardsById, cfg: state.cfg, year: completedYear });
+  // H1-2: 確定した取引（FA/トレード/拾い上げ/ドラフト）をコンパクト行として永続ログへ追記
+  //   （因縁ライバル追跡の素材・additive save field）。yearIndex はまだ完了年のもの（未インクリメント）。
+  appendTransactionLog(state, off, completedYear, state.yearIndex);
+  // H1-3: 確定した引退者のうち功労者を「引退セレモニー」カード用データへ整形（オフダイジェスト素材）。
+  off.retirementCeremonies = retirementCeremonies(state, off, completedYear);
   state.retiredPlayers.push(...off.retirees); // 記録用の永続サマリ
   // R5: 確定した受賞をそのまま永続する（前史で成績を刈っても過去の受賞者が変わらないように）
   state.awardsHistory.push({ year: completedYear, awards: off.awards });
@@ -627,6 +638,7 @@ export function save(state) {
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
+    transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -722,6 +734,7 @@ export function load(blob, options = {}) {
     awardsHistory: data.awardsHistory ?? [], // R5: 確定した年度別受賞
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
+    transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -780,5 +793,13 @@ export {
   careerBatting, careerPitching, careerEraPlus, DEF_AWARD_NAME, TITLE_LABELS,
   detectGameNotables, notableHeadline, streakOf, weeklyDigest, rosterMoveHeadline,
 };
+// H1: ストーリーライン演出APIの再エクスポート（UI/テストが './game/index.mjs' 経由で使う）。
+export {
+  titleRaces, titleRaceHeadlines, rookieRace, rookieRaceHeadlines,
+  recordPaces, recordPaceHeadlines, weeklyStorylineDigest,
+  appendTransactionLog, rivalriesOf, rivalryGameHeadlines,
+  retirementRoadCandidates, retirementRoadHeadlines,
+  retirementCeremonies, retirementCeremonyText, ownTeamRetirementHeadlines,
+} from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';

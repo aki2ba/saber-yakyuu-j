@@ -2,6 +2,49 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-14 (H1: ストーリーライン — 連続ニュース・ライバル・引退ロード実装)
+
+**きっかけ**: `thyroxin/specs/phaseH_fun_spec.md` H1節（正典: `fun_design_evidence.md` §4柱5）。
+5本柱のうち「エンジン非干渉・低リスク・即効」として最優先に置かれていた柱を実装。
+
+**実装**: 新モジュール `src/game/storylines.mjs`（ヘッドレス純関数群・表示層のみ・エンジン非干渉）。
+- **H1-1 レース追跡**: `titleRaces`（打率/HR/打点/盗塁/防御率/勝利/S/K の各リーグ上位3・規定は
+  リーグ内平均消化試合数に比例換算・首位2位差が`tuning.storylines.raceCloseMargin`以内で激戦
+  フラグ）／`rookieRace`（新人=前年成績なし選手を観測ベース近似 wOBA×PA／-FIP×IPで順位付け・
+  開幕年は対象外＝awards.mjsの新人王と同じ扱い）／`recordPaces`（既存`leagueRecords`のシーズン
+  記録と当季ペースを比較し105%超×消化50%以上を検出）。ニュースタブに「🏆 今週の見どころ」節。
+- **H1-2 ライバル・因縁**: `state.transactionLog`新設（additive・デフォルト[]）。advanceYearが
+  offのfa/trades(非rejected)/pickups/draftLog.picksをコンパクト行として追記。`rivalriesOf`が
+  トレード相手/FA・戦力外の旧所属/同年同round指名の同期を導出（選手モーダル「ライバル・因縁」
+  節）。`rivalryGameHeadlines`が自チーム試合で因縁対象選手が活躍(notable)した回を検出し
+  「古巣に牙をむく」等の見出しを生成（テンプレ選択はhashSeed(masterSeed,'story',year,day,
+  playerId)のrngで決定論）。ニュースタブ「🔥 因縁の一戦」節＋ホームフィードにも1件。
+- **H1-3 引退ロード**: `retirementRoadCandidates`（年齢閾値37歳＋通算マイルストーン到達で
+  「今季が集大成か」候補・選手モーダルヘッダにバッジ）。`retirementCeremonies`（確定引退者の
+  うち功労者=通算PA/IP/受賞数が閾値超をカード化・通算成績/受賞歴/二つ名/在籍球団）を
+  advanceYearが`off.retirementCeremonies`として算出。オフダイジェストに「🎉 引退セレモニー」
+  節（リーグ全体）＋自チーム功労者は既存の「自チームの動き」内で個別ニュース文に差し替え。
+
+**設計上の判断点**:
+- rt.table（finalizeRuntime後のみ埋まる）でなくrt.standings（常に最新のMap）を参照＝シーズン
+  中どの時点でもtitleRaces/recordPacesが動く。
+- rivalryGameHeadlinesは「自チーム試合(playerGameLog)のhome/away両サイド」を走査する1本の
+  アルゴリズムで、「自分が古巣と対戦」「相手が我々の元選手」の両方向を自然にカバー（コード分岐
+  不要）。既存のschedPlayerHeadlines（選手の活躍節）との重複除去は行わず独立節として追加
+  （dedupにはschedule.mjsの返り値へメタデータ追加が要るが影響範囲を絞るため見送り）。
+- retirementCeremoniesのplayerAwardHistory呼び出しはplayersById空Mapで安全（awardsHistoryが
+  対象年を全て覆うため未使用パスに落ちる・awards.mjsの既存フォールバック設計を活用）。
+
+**検証**: `test/game_h1_storylines.test.mjs`新設（14テスト・合成フィクスチャで境界値=
+raceCloseMargin/qualifiedPA/recordPaceThreshold/retirementRoad閾値を厳密検証＋実ゲームループで
+transactionLog行数一致・rivalriesOf往復整合・rivalryGameHeadlines決定論・retirementCeremonies
+集計整合）。npm test（404/404）・calibrate（全PASS）・realism（GATE 45/45・WATCH増減なし）・
+verify・smoke（全UI導線で例外なし）全PASS。burn-in30年後もtransactionLogはsave全体の3.2%と
+軽量（プルーニング不要と判断）。
+
+**次にやること**: H2（プレイヤー参加型ドラフト会議）— stage分割の設計は親レビュー必須（spec
+「委任メモ」）。着手前にH2節＋fun_design_evidence.md該当箇所を再読すること。
+
 ## 2026-07-14 (R8準備: 「ゲームとしての面白さ」の実例調査と設計提案)
 
 **きっかけ**: ユーザー指示「リアルにこだわってきたが、野球ゲームとしての面白さも追求したい。

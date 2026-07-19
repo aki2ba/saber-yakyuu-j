@@ -106,7 +106,22 @@ const TIP = {
   uzrTeam: 'ΣUZR: チーム守備の対平均得点（範囲＋失策＋フレーミング）。',
 };
 
+// --- テーマ切替（明色既定・ダーク切替。表示レイヤーのみ＝エンジン/セーブに不干渉） ---
+// localStorage/documentElement はヘッドレス環境（smoke）に無いので try/catch で握る（決定論に影響なし）。
+const THEME_KEY = 'saber_theme';
+function currentTheme() {
+  try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; } catch { return 'light'; }
+}
+function applyTheme(t) {
+  try { document.documentElement.setAttribute('data-theme', t); } catch { /* smoke: documentElement無し */ }
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* smoke/プライベートモード: 保存不可 */ }
+}
+function themeToggleBtn() {
+  return el('button', { class: 'link', title: '明色/ダークの切替', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, '◐ 配色');
+}
+
 export function initApp() {
+  applyTheme(currentTheme()); // 起動時に保存済みテーマを適用（既定=明色）
   const root = document.getElementById('app');
   if (!root) return;
   root.innerHTML = '';
@@ -120,7 +135,10 @@ function renderSetup() {
   // そのまま残す（sim ボタンが先頭＝既存スモーク経路を壊さない）。
   const playBtn = el('button', { class: 'primary', onclick: () => renderTitle() }, '🎮 ゲームを始める（キャリア）');
   return el('div', { class: 'setup' }, [
-    el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
+    el('div', { class: 'header' }, [
+      el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
+      el('div', { class: 'row' }, [themeToggleBtn()]),
+    ]),
     el('p', { class: 'muted' }, 'リーグシードごとに架空選手840人（12球団×支配下70人・ほかに育成選手）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
     el('div', { class: 'row' }, [el('label', {}, 'リーグシード: '), seedInput, btn]),
     el('div', { id: 'status', class: 'muted' }, ''),
@@ -179,7 +197,7 @@ function renderMain() {
   root.append(
     el('div', { class: 'header' }, [
       el('h2', {}, `シーズン${state.seasonN}（リーグseed ${state.leagueSeed}）`),
-      el('div', { class: 'row' }, [resim, back]),
+      el('div', { class: 'row' }, [resim, back, themeToggleBtn()]),
     ]),
     bar,
     content,
@@ -1366,6 +1384,7 @@ function renderHub(tab = 'hub') {
       // G4b: セーブ/ロードはヘッダー導線→overlayモーダル（ホームからは削除）
       el('button', { class: 'link', onclick: () => openSaveModal() }, '💾 セーブ'),
       el('button', { class: 'link', onclick: () => renderTitle() }, '≡ タイトル'),
+      themeToggleBtn(),
     ]),
   ]);
   const bar = el('div', { class: 'tabs' }, HUB_TABS.map(([k, label]) =>
@@ -1476,7 +1495,7 @@ function renderHubHome(c) {
         el('div', {}, `${g.priority === 'high' ? '【最重要】' : '【目標】'}${g.label}`)),
       el('div', { class: 'muted', style: 'margin-top:4px' }, [
         `オーナー信任 ${trust}/100 `,
-        el('span', { style: `display:inline-block;width:80px;height:8px;background:#333;vertical-align:middle` }, [
+        el('span', { style: `display:inline-block;width:80px;height:8px;background:var(--inset);border:1px solid var(--line);vertical-align:middle` }, [
           el('span', { style: `display:block;width:${Math.round(trust * 0.8)}px;height:8px;background:${col}` }),
         ]),
       ]),

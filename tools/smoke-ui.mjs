@@ -69,7 +69,9 @@ vm.runInContext('initApp();', sandbox);
 // R5: UI の既定は前史20年（16秒）だが、smoke では 1年に縮めてコードパスだけ通す
 //   （前史そのものの検証は test/game_c2b.test.mjs / probe で行う）。
 globalThis.SABER_CFG_OVERRIDES = { game: { burnInYears: 1 } };
-const simBtn = walk(appDiv).find((n) => n.tag === 'button' && n._onclick);
+// テーマ切替ボタン（◐ 配色）がヘッダー先頭に入ったため「最初のボタン」では拾えない＝文言で特定する
+const txt = (n) => { let s = n._text || ''; for (const c of n.children || []) s += typeof c === 'string' ? c : txt(c); return s; };
+const simBtn = walk(appDiv).find((n) => n.tag === 'button' && n._onclick && txt(n).includes('リーグ生成'));
 assert.ok(simBtn, 'シミュレートボタンが描画される');
 
 // 2) シミュレート実行（setTimeout をフラッシュ）

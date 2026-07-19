@@ -137,7 +137,8 @@ const html = `<!DOCTYPE html>
   button.link:hover { background:none; color:var(--ink); }
   :where(button,input):focus-visible { outline:2px solid var(--clay); outline-offset:1px; }
   input { background:var(--panel); color:var(--ink); border:1px solid var(--line2); border-radius:8px; padding:5px; }
-  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+  .setup .row label { white-space:nowrap; } /* 「シード:」等のラベルが縦に折れない */
   .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
   .header .row { flex-wrap:wrap; }
   /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設。

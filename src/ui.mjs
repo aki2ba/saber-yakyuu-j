@@ -1277,7 +1277,13 @@ function renderNewGame() {
   const drawTeams = () => {
     grid.innerHTML = '';
     for (const t of league.teams) {
-      grid.append(el('button', { class: 'teamcard', onclick: () => startNewGame(previewSeed, t.id) }, [
+      // 球団カラーの左バー（プレビューリーグは state 未反映のため TEAM_COLORS を名前で直引き）
+      const col = TEAM_COLORS[t.name] || 'var(--clay)';
+      grid.append(el('button', {
+        class: 'teamcard',
+        style: `border-left:4px solid ${col}`,
+        onclick: () => startNewGame(previewSeed, t.id),
+      }, [
         el('div', { class: 'tcname' }, t.name),
         el('div', { class: 'muted' }, `${leagueNameOf(cfg, t.league)}`),
       ]));

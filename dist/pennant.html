@@ -42,7 +42,8 @@
   button.link:hover { background:none; color:var(--ink); }
   :where(button,input):focus-visible { outline:2px solid var(--clay); outline-offset:1px; }
   input { background:var(--panel); color:var(--ink); border:1px solid var(--line2); border-radius:8px; padding:5px; }
-  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+  .setup .row label { white-space:nowrap; } /* 「シード:」等のラベルが縦に折れない */
   .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
   .header .row { flex-wrap:wrap; }
   /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設。
@@ -19369,7 +19370,13 @@ function renderNewGame() {
   const drawTeams = () => {
     grid.innerHTML = '';
     for (const t of league.teams) {
-      grid.append(el('button', { class: 'teamcard', onclick: () => startNewGame(previewSeed, t.id) }, [
+      // 球団カラーの左バー（プレビューリーグは state 未反映のため TEAM_COLORS を名前で直引き）
+      const col = TEAM_COLORS[t.name] || 'var(--clay)';
+      grid.append(el('button', {
+        class: 'teamcard',
+        style: `border-left:4px solid ${col}`,
+        onclick: () => startNewGame(previewSeed, t.id),
+      }, [
         el('div', { class: 'tcname' }, t.name),
         el('div', { class: 'muted' }, `${leagueNameOf(cfg, t.league)}`),
       ]));

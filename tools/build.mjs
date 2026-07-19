@@ -252,7 +252,7 @@ const html = `<!DOCTYPE html>
   .tendbtn { padding:4px 10px; font-size:12px; border-radius:999px; }
   .tendbtn.active { background:var(--clay); color:var(--clay-ink); border-color:var(--clay); font-weight:700; }
   .watchmid { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; margin:10px 0; }
-  svg.diamond { width:200px; background:var(--field); border-radius:8px; }
+  svg.diamond { width:240px; background:var(--field); border-radius:8px; }
   .benchbox { flex:1; min-width:180px; border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--panel); }
   .resrow { display:flex; align-items:center; gap:6px; font-size:12px; margin:4px 0; }
   .reslabel { width:60px; color:var(--muted); } .resval { width:40px; text-align:right; }

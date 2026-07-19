@@ -274,7 +274,9 @@ function renderStandings(c) {
           td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
         );
       }
-      return el('tr', {}, cells);
+      // キャリアモードでは自チーム行を強調（二軍順位・ホームのミニ順位と同じ流儀）
+      const my = game.gs && t.teamId === game.gs.playerTeamId;
+      return el('tr', { class: my ? 'myteam' : '' }, cells);
     });
     c.append(el('h3', { class: 'leaguename' }, blk.title));
     // 期待勝率=得失点からのピタゴラス実力勝率 / 運=実勝率−期待勝率を勝数換算（+は接戦強い/幸運）
@@ -1379,7 +1381,10 @@ function renderHub(tab = 'hub') {
   const myName = tname(gs.playerTeamId);
   const myRow = rt.standings.get(gs.playerTeamId);
   const header = el('div', { class: 'header' }, [
-    el('h2', {}, [`${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 / 第${pendingDayOf(rt)}節　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
+    el('h2', {}, [
+      // 自チーム色のチップ（チームカラーをUIの軸に＝スポナビのチームページ流）
+      el('span', { style: `display:inline-block;width:6px;height:16px;border-radius:2px;background:${teamColor(gs.playerTeamId)};box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);margin-right:7px;vertical-align:-2px` }),
+      `${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 / 第${pendingDayOf(rt)}節　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
     el('div', { class: 'row' }, [
       // G4b: セーブ/ロードはヘッダー導線→overlayモーダル（ホームからは削除）
       el('button', { class: 'link', onclick: () => openSaveModal() }, '💾 セーブ'),
@@ -1476,12 +1481,25 @@ function renderHubHome(c) {
   }
   // G4a: 進行ボタンは全タブ共通の .hubfooter（renderHub 末尾）へ一本化。ここでは出さない。
 
-  // 次戦カード
+  // 次戦カード（対戦カード化: 両チームの色チップ＋今季成績＝スポナビの試合カード流）
   const nextCard = nextPlayerCard(rt);
   if (nextCard) {
+    const oppRow = rt.standings.get(nextCard.oppId);
+    const myRow2 = rt.standings.get(gs.playerTeamId);
+    const chip = (id) => el('span', {
+      // 白系のチームカラー（白鷺等）が白面に沈まないよう薄い縁取りを足す
+      style: `display:inline-block;width:10px;height:10px;border-radius:2px;background:${teamColor(id)};box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);margin-right:6px;vertical-align:baseline`,
+    });
+    const rec = (r) => (r ? `${r.w}勝${r.l}敗${r.t}分` : '');
     c.append(el('div', { class: 'nextcard' }, [
-      el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）`),
-      el('div', { class: 'nextmatch' }, nextCard.text),
+      el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）${nextCard.isHome ? '　ホーム' : '　ビジター'}`),
+      el('div', { class: 'nextmatch' }, [
+        chip(gs.playerTeamId), `${tname(gs.playerTeamId)} `,
+        el('span', { class: 'muted', style: 'font-size:12px' }, rec(myRow2)),
+        el('span', { style: 'margin:0 8px;font-weight:400' }, nextCard.isHome ? 'vs' : '@'),
+        chip(nextCard.oppId), `${tname(nextCard.oppId)} `,
+        el('span', { class: 'muted', style: 'font-size:12px' }, rec(oppRow)),
+      ]),
     ]));
   }
 
@@ -1750,7 +1768,7 @@ function nextPlayerCard(rt) {
     if (g.home === game.gs.playerTeamId || g.away === game.gs.playerTeamId) {
       const isHome = g.home === game.gs.playerTeamId;
       const oppId = isHome ? g.away : g.home;
-      return { day: g.day, text: `${isHome ? 'HOME vs' : 'AWAY @'} ${tname(oppId)}` };
+      return { day: g.day, isHome, oppId, text: `${isHome ? 'HOME vs' : 'AWAY @'} ${tname(oppId)}` };
     }
   }
   return null;

@@ -2,6 +2,33 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-19 (打順の毎試合再構成 — 現代のラインナップ理論。ユーザー報告「OPS.500未満の捕手が1番」の解消)
+
+**きっかけ（ユーザー報告2件）**:
+1. 「EV119km/h・67m・27°の打球がライトの責任」→ **正しい（バグでない）**。`neutralResponsible`（fieldingGeometry.mjs）で
+   再現。この打球はFB・右方向で、RFの捕球確率(argmax p, spray28°で0.45)が2B(後方移動でbackPenalty・p≈0.005)を上回る。
+   「責任野手」はDRS/OAAの主語＝最も高確率で捕れる野手であって「失策者」ではない。
+2. 「OPS.500未満の捕手が1番」→ **本物の穴**。打順が編成時(trueAbility)アーキタイプで守備位置に固定され、
+   シーズン中の観測成績を一切反映していなかった（reviewAssignmentsは「誰がその位置を守るか」しか見直さない）。
+   12球団×8シードで再現: 1番の守備位置分布に捕手6/96・うち speed=33 の鈍足捕手が eye だけで1番。
+
+**実装（fix A: 打順を観測ベースで毎試合再構成）**:
+- `orderBattingLineup`（usage.mjs 新設）: その日のスタメンを **総合打力ov(=blendedWoba・観測＋スカウト・真値非参照)**
+  ＋**スタイル傾斜（出塁OBP偏差 / 長打ISO偏差・少打席は0へ回帰）** でスロット別重み最適配置。
+  現代のラインナップ理論（Tango et al. "The Book"）: 最強3打者を1・2・4番へ／#2最重要／#3は2死走者なしが多く軽視／
+  出塁は1-2番・長打は2/4/5番。速さは出塁の従属変数として独立ノブを持たない（＝鈍足スラッガーの1番も同時に抑制）。
+  ノブは `cfg.tuning.lineup`（refOBP/refISO/ovW/obpW/powW）に集約。決定論（乱数不使用・貪欲配置）。
+- **既定OFF（`cfg.game.dynamicLineup=false`）**: interactiveDraft/allowFiring/ファン予算連動と同じ
+  「headless既定OFF・UIのみON」パターン（プロジェクト標準手法・4例目）。ON時は継続最適化でリーグ攻撃が
+  ごく僅かに効率化し多年ERA帯が yi12=4.63 で §11.3 relaxed 上限4.6 を超える（＝headless較正の土台を動かす）ため、
+  ui.mjs の uiConfig() だけが true を渡す。OFF時は旧挙動と **bit同一**（calibrate/realism/verify 不変）。
+- テスト3本新設（orderBattingLineup の配置検証2本＋selectLineup の flag ON/OFF 検証1本）。
+
+**結果**: npm test（多年ERA帯 flag OFF で復帰）・usage 13/13 PASS。calibrate/realism は flag OFF で baseline bit 同一。
+
+次: (B) 1番アーキタイプ側（obpScore/leadoffSpeedW）の鈍足捕手抑制は dynamicLineup が実質カバーするため保留。
+   打順UIでの現代理論の見える化（1-2番=出塁/4番=長打の役割表示）は任意。
+
 ## 2026-07-14 (H5-C: ファン関心・収入の閉ループ — 経営レイヤー最終段。★phaseH 全柱完成)
 
 - `updateFanEconomy`（finance.mjs）: fanInterest(0-1) を毎オフ「勝率分位への回帰(0.25)＋

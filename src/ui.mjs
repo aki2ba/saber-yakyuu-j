@@ -1300,7 +1300,7 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, ...(ov.game ?? {}) },
+    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, ...(ov.game ?? {}) },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });

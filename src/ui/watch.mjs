@@ -357,9 +357,11 @@ function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
   return rows.batting.length || rows.pitching.length || rows.fielding.length ? rows : null;
 }
 
-/** 「▼ 指標の変化」セクション（現在の打席で変化した指標のみ・既定で開いた折りたたみ）。何も無ければ null。 */
+/** 「▼ 指標の変化」セクション（現在の打席で変化した指標のみ）。何も無ければ null。
+ *  既定は閉じる（速報タブの主役は打席の結果＝一球速報/スポナビ流。数字の壁で結果を埋めない）。
+ *  一球ごとに全再描画されるため、開閉は w.mdOpen（UIローカル状態・セーブ外）で保持する。 */
 function watchMetricDeltaBox(v, u) {
-  const { el, pname } = u;
+  const { el, pname, game } = u;
   const md = v.metricDelta;
   if (!md) return null;
   const rowEl = (r) => el('div', { class: 'mdrow ' + r.cls }, r.text);
@@ -368,7 +370,15 @@ function watchMetricDeltaBox(v, u) {
   if (md.pitching.length) groups.push(el('div', { class: 'mdgroup' }, [el('span', { class: 'mdname' }, `投 ${pname(md.pitcherId)}`), ...md.pitching.map(rowEl)]));
   if (md.fielding.length) groups.push(el('div', { class: 'mdgroup' }, [el('span', { class: 'mdname' }, `守 ${pname(md.fielderId)}`), ...md.fielding.map(rowEl)]));
   if (!groups.length) return null;
-  return el('details', { class: 'metricdelta', open: '' }, [el('summary', {}, '▼ 指標の変化'), ...groups]);
+  const w = game.watch;
+  const open = !!(w && w.mdOpen);
+  const attrs = { class: 'metricdelta' };
+  if (open) attrs.open = '';
+  const summary = el('summary', {
+    // ネイティブの details 開閉に任せると次の一球の再描画で状態が消えるため、自前でトグル＋再描画。
+    onclick: (ev) => { if (ev && ev.preventDefault) ev.preventDefault(); if (w) { w.mdOpen = !open; renderWatchScreen(u); } },
+  }, '▼ 指標の変化');
+  return el('details', attrs, [summary, ...groups]);
 }
 
 /** 観戦画面本体。u = ui.mjs の共有ヘルパー束（watchDeps()）。 */

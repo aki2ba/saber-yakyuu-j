@@ -370,12 +370,79 @@ export function selectLineup(state, ctx, cfg) {
     today[pos] = pid;
   }
 
-  // 打順スロットへ反映（交代者は同じ打順スロットを引き継ぐ）。9番'P'は initSide が当日先発を充填。
-  const lineup = chart.lineup.map((s) => ({ playerId: s.pos === 'P' ? null : today[s.pos], pos: s.pos }));
+  // 打順の反映。dynamicLineup=ON（実プレイ）なら現代のラインナップ理論で毎試合再構成、
+  //   OFF（headless既定＝テスト/較正/realism/前史）なら編成時アーキタイプの打順を守備位置に固定
+  //   （＝baselineとbit同一）。守備位置は各エントリ(playerId,pos)へ紐づくため並べ替えは純粋な置換で
+  //   安全（initSideはposで投手/守備を解決する）。9番'P'はスロット固定＝投手9番。
+  let lineup;
+  if (cfg.game?.dynamicLineup) {
+    // その日のスタメン9人（noDhは野手8人）を観測ベースの総合打力＋スタイル傾斜で各打順へ配置。
+    const batters = [];
+    for (const s of chart.lineup) if (s.pos !== 'P') batters.push({ playerId: today[s.pos], pos: s.pos });
+    const ordered = orderBattingLineup(state, batters, ctx, cfg);
+    let bi = 0;
+    lineup = chart.lineup.map((s) => (s.pos === 'P' ? { playerId: null, pos: 'P' } : ordered[bi++]));
+  } else {
+    // 旧挙動（交代者は同じ打順スロットを引き継ぐ）。9番'P'は initSide が当日先発を充填。
+    lineup = chart.lineup.map((s) => ({ playerId: s.pos === 'P' ? null : today[s.pos], pos: s.pos }));
+  }
   const inLineup = new Set(lineup.map((s) => s.playerId));
   // 休養者は代打要員としてベンチに残るが、離脱中(IL)は代打にも出せないので除外する（C2.4）。
   const bench = fielders.filter((pid) => !inLineup.has(pid) && !isInjured(state, pid, ctx.day));
   return { lineup, bench, rested: [...resting] };
+}
+
+/**
+ * 当日スタメンを打順スロットへ配置する（現代のラインナップ理論・§S3-2 打順）。
+ * 各打者の「総合打力(ov=blendedWoba・観測＋スカウト)」と「スタイル傾斜（出塁/長打の偏差）」を
+ * 観測statlineから算出し（真値非参照＝三層構造）、スロット別重み（cfg.tuning.lineup）で最適配置する。
+ *   value(打者,スロット)= ov·ovW[s] + obpTilt·obpW[s] + powTilt·powW[s]
+ * スロットを重要度(ovW)降順に貪欲充填 → 最強打者から #2>#4>#1>#5>#3>… の順で座る（決定論・乱数不使用）。
+ * スタイル傾斜は少打席ほど 0 へ回帰（w=PA/(PA+trustPA)）＝データの薄い選手は総合打力のみで並ぶ。
+ * @param {Array<{playerId:string,pos:string}>} batters その日のスタメン（投手を除く）
+ * @returns {Array<{playerId:string,pos:string}>} 打順順に並べ替えたエントリ（先頭=1番）
+ */
+export function orderBattingLineup(state, batters, ctx, cfg) {
+  const L = cfg.tuning.lineup;
+  const u = cfg.tuning.usage;
+  const byId = state.charts.dh.byId;
+  const feat = batters.map(({ playerId, pos }) => {
+    const b = ctx.getBat(playerId);
+    // 総合打力: 当日評価と揃える（プラトーン減点も反映＝相手先発に対する当日の打力で並べる）
+    const platoon =
+      ctx.oppPitcher && isSameHand(byId.get(playerId), ctx.oppPitcher) ? u.platoonWobaPenalty : 0;
+    const ov = blendedWoba(state, playerId, ctx.getBat, cfg) - platoon;
+    // スタイル傾斜（観測・少打席は0へ回帰）: 出塁=OBP偏差 / 長打=ISO(=SLG−AVG)偏差
+    const pa = b.pa || 0;
+    const w = pa / (pa + u.trustPA);
+    const obDen = b.ab + b.bb + b.hbp + b.sf;
+    const obp = obDen > 0 ? (b.b1 + b.b2 + b.b3 + b.hr + b.bb + b.hbp) / obDen : L.refOBP;
+    const iso = b.ab > 0 ? (b.b2 + 2 * b.b3 + 3 * b.hr) / b.ab : L.refISO;
+    return { playerId, pos, ov, obpTilt: w * (obp - L.refOBP), powTilt: w * (iso - L.refISO) };
+  });
+
+  const n = feat.length;
+  const slots = new Array(n).fill(null);
+  const used = new Set();
+  // スロットを重要度(ovW)降順に処理（同値は添字昇順で安定）。各スロットへ実効価値最良の未使用打者。
+  const bySlotImportance = Array.from({ length: n }, (_, s) => s).sort(
+    (a, c) => L.ovW[c] - L.ovW[a] || a - c,
+  );
+  for (const s of bySlotImportance) {
+    let best = -1;
+    let bv = -Infinity;
+    for (let i = 0; i < n; i++) {
+      if (used.has(i)) continue;
+      const v = feat[i].ov * L.ovW[s] + feat[i].obpTilt * L.obpW[s] + feat[i].powTilt * L.powW[s];
+      if (v > bv) {
+        bv = v;
+        best = i;
+      }
+    }
+    used.add(best);
+    slots[s] = { playerId: feat[best].playerId, pos: feat[best].pos };
+  }
+  return slots;
 }
 
 /**

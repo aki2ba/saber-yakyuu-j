@@ -100,29 +100,58 @@ const html = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>架空選手ペナント</title>
 <style>
-  :root { --bg:#0f3d2e; --panel:#123d2a; --ink:#f4f1e6; --clay:#c9a06a; --gold:#e8b84b;
-          --muted:#9fb8ac; --line:#2f6b4a; --chalk:#e9e4d0; }
+  /* ==== デザイントークン（明色既定＝スポーツメディア基調。ダークは data-theme="dark" で全変数を再割当） ====
+     --clay=ブランド強調色（明:深緑/暗:タン）・--clay-ink=その上の文字色。既存クラスは全てトークン参照。
+     --field はフィールド系SVG（盤面/スプレー/成長曲線）の面色で両テーマ共通＝中継グラフィック風。 */
+  :root {
+    --bg:#f0f2f1; --panel:#ffffff; --inset:#f3f5f3; --ink:#1b2823; --chalk:#1b2823;
+    --muted:#65746c; --line:#e0e6e2; --line2:#c8d2cc;
+    --clay:#156a3d; --clay-ink:#ffffff; --gold:#a5780a;
+    --head:#f5f7f6; --hover:#edf3ef; --myteam:#e6f1ea;
+    --pos:#188038; --neg:#d93025; --hit:#175fc0; --hr:#cf4126; --info:#2f74c0;
+    --field:#0c3122; --shadow:rgba(22,42,32,.12); --fade:rgba(27,40,35,.14);
+    --pc-ball:#62736a; --pc-called:#188038; --pc-whiff:#d93025; --pc-foul:#a5780a; --pc-inplay:#175fc0;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0b2e22; --panel:#123c2d; --inset:#0a2a1f; --ink:#f4f1e6; --chalk:#e9e4d0;
+    --muted:#9fb8ac; --line:#275641; --line2:#386950;
+    --clay:#c9a06a; --clay-ink:#20160a; --gold:#e8b84b;
+    --head:#0e3325; --hover:#1a4e39; --myteam:#1d5740;
+    --pos:#7bc47f; --neg:#e06d6d; --hit:#8fc7ff; --hr:#ff8a76; --info:#5aa9e6;
+    --field:#0c3122; --shadow:rgba(0,0,0,.5); --fade:rgba(0,0,0,.35);
+    --pc-ball:#f4f1e6; --pc-called:#7bc47f; --pc-whiff:#e06d6d; --pc-foul:#e8b84b; --pc-inplay:#8fc7ff;
+  }
   * { box-sizing:border-box; }
   body { font-family: system-ui,-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;
-         background:var(--bg); color:var(--ink); margin:0; padding:16px; line-height:1.5; }
-  h2 { font-size:17px; margin:6px 0; }
+         background:var(--bg); color:var(--ink); margin:0; padding:16px; line-height:1.55;
+         font-variant-numeric:tabular-nums; /* 統計表の桁揃え（B-Ref/FanGraphs流） */ }
+  #app { max-width:1080px; margin:0 auto; } /* デスクトップで表が間延びしない読み幅上限 */
+  h2 { font-size:18px; margin:6px 0; }
   .muted { color:var(--muted); font-size:12px; }
-  button { font-family:inherit; cursor:pointer; border:1px solid var(--line); background:#0c3122;
-           color:var(--ink); border-radius:6px; padding:6px 12px; }
-  button.primary { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--line2); background:var(--panel);
+           color:var(--ink); border-radius:8px; padding:6px 12px; }
+  button:hover { background:var(--hover); }
+  button.primary { background:var(--clay); color:var(--clay-ink); border-color:var(--clay); font-weight:700; }
+  button.primary:hover { filter:brightness(1.08); background:var(--clay); }
   button.link { border:none; background:none; color:var(--muted); padding:2px 6px; }
-  input { background:#0c3122; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:5px; }
-  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+  button.link:hover { background:none; color:var(--ink); }
+  :where(button,input):focus-visible { outline:2px solid var(--clay); outline-offset:1px; }
+  input { background:var(--panel); color:var(--ink); border:1px solid var(--line2); border-radius:8px; padding:5px; }
+  .setup .row { display:flex; gap:8px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+  .setup .row label { white-space:nowrap; } /* 「シード:」等のラベルが縦に折れない */
   .header { display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--clay); padding-bottom:4px; }
   .header .row { flex-wrap:wrap; }
-  /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設 */
-  .tabs { display:flex; gap:6px; position:sticky; top:0; z-index:6; background:var(--bg); padding:6px 0;
-          margin:6px 0; flex-wrap:nowrap; overflow-x:auto; }
-  .tab { padding:6px 14px; white-space:nowrap; flex:none; }
-  .tab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  /* G4a: ハブタブバー sticky＋モバイル横スクロール1行。進行フッターは全タブ常設。
+     メインタブ=下線型（スポナビ流）・サブタブ=ピル型＝階層を形で描き分ける */
+  .tabs { display:flex; gap:2px; position:sticky; top:0; z-index:6; background:var(--bg); padding:6px 0 0;
+          margin:6px 0 10px; flex-wrap:nowrap; overflow-x:auto; border-bottom:1px solid var(--line2); }
+  .tab { padding:8px 13px; white-space:nowrap; flex:none; border:none; background:none; border-radius:0;
+         color:var(--muted); font-weight:600; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab:hover { background:var(--hover); }
+  .tab.active { background:none; color:var(--clay); border-bottom-color:var(--clay); font-weight:700; }
   .hubfooter { position:fixed; left:0; right:0; bottom:0; z-index:8; display:flex; gap:6px;
-               background:var(--bg); border-top:1px solid var(--line); padding:8px;
-               box-shadow:0 -6px 8px -6px rgba(0,0,0,.5); }
+               background:var(--panel); border-top:1px solid var(--line2); padding:8px;
+               box-shadow:0 -6px 12px -6px var(--shadow); }
   .hubfooter button { flex:1; min-height:44px; white-space:nowrap; padding:6px 2px; }
   .hubspacer { height:68px; }
   @media (min-width:900px) {
@@ -130,29 +159,33 @@ const html = `<!DOCTYPE html>
     .hubfooter { justify-content:center; }
     .hubfooter button { flex:none; min-width:140px; }
   }
-  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; position:relative; }
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; position:relative;
+               background:var(--panel); box-shadow:0 1px 3px var(--shadow); }
   /* G5b: 表の右にまだ列がある気配（初期表示時のヒント。スクロール後の追従は保証しない＝仕様） */
   .tablewrap::after { content:''; position:absolute; top:0; right:0; bottom:0; width:14px;
-    background:linear-gradient(270deg, rgba(0,0,0,.35), transparent); pointer-events:none;
-    border-radius:0 8px 8px 0; }
+    background:linear-gradient(270deg, var(--fade), transparent); pointer-events:none;
+    border-radius:0 10px 10px 0; }
   .emptybox { text-align:center; padding:24px 8px; color:var(--muted); }
   table.stat { border-collapse:collapse; width:100%; font-size:13px; white-space:nowrap; }
-  table.stat th { position:sticky; top:0; background:#0c3122; color:var(--chalk); padding:6px 8px;
-                  text-align:right; cursor:pointer; user-select:none; border-bottom:1px solid var(--line); }
+  table.stat th { position:sticky; top:0; background:var(--head); color:var(--muted); padding:6px 8px;
+                  font-size:11px; font-weight:700; letter-spacing:.02em;
+                  text-align:right; cursor:pointer; user-select:none; border-bottom:1px solid var(--line2); }
   table.stat th.left, table.stat td.left { text-align:left; }
-  table.stat th.sorted { color:var(--gold); }
-  table.stat td { padding:5px 8px; text-align:right; border-bottom:1px solid #1c4a34; }
-  /* F4: 列数の多い成績表（打撃26列等）を横スクロールしても選手名が見えるよう先頭列を固定 */
+  table.stat th.sorted { color:var(--clay); }
+  table.stat td { padding:5px 8px; text-align:right; border-bottom:1px solid var(--line); }
+  /* F4: 列数の多い成績表（打撃26列等）を横スクロールしても選手名が見えるよう先頭列を固定
+     （表面=--panel の白カード上に乗るため、固定列の既定背景も --panel に合わせる） */
   table.stat th:first-child { left:0; z-index:2; }
-  table.stat td:first-child { position:sticky; left:0; background:var(--sticky-bg, var(--bg)); z-index:1; }
-  tr.clickable:hover { background:#174a34; cursor:pointer; }
+  table.stat td:first-child { position:sticky; left:0; background:var(--sticky-bg, var(--panel)); z-index:1; }
+  tr.clickable:hover { background:var(--hover); cursor:pointer; }
   /* 上記の先頭列固定より後ろに置き、自チーム強調/hoverが先頭セルだけ効かなくなるのを防ぐ */
-  tr.clickable:hover td:first-child { background:#174a34; }
-  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
+  tr.clickable:hover td:first-child { background:var(--hover); }
+  .overlay { position:fixed; inset:0; background:rgba(10,20,15,.55); display:flex; align-items:flex-start;
              justify-content:center; padding:20px; overflow:auto; z-index:10; }
   /* G9: モーダルは長い成分（打球SVG・経歴等）でも画面内に収まるようスクロール化。ヘッダーは常に見える */
-  .modal { background:var(--panel); border:1px solid var(--clay); border-radius:10px; padding:16px;
-           max-width:560px; width:100%; --sticky-bg:var(--panel); max-height:92vh; overflow:auto; }
+  .modal { background:var(--panel); border:1px solid var(--line2); border-radius:12px; padding:16px;
+           max-width:560px; width:100%; --sticky-bg:var(--panel); max-height:92vh; overflow:auto;
+           box-shadow:0 12px 40px var(--shadow); }
   .modalhead { display:flex; justify-content:space-between; align-items:center;
                position:sticky; top:0; background:var(--panel); z-index:2; padding:4px 0; margin:-4px 0 10px; }
   .modalnavwrap { display:flex; align-items:center; gap:4px; }
@@ -160,28 +193,31 @@ const html = `<!DOCTYPE html>
   .modalnav:disabled { opacity:.3; cursor:default; }
   .pname { font-size:18px; font-weight:700; }
   .kvgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
-  .kv { background:#0c3122; border-radius:6px; padding:6px; text-align:center; }
+  .kv { background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:6px; text-align:center; }
   .kvk { font-size:10px; color:var(--muted); } .kvv { font-size:15px; font-weight:700; }
   .abilities { display:grid; grid-template-columns:1fr 1fr; gap:6px 16px; margin-top:4px; }
-  .abtitle { font-size:11px; color:var(--gold); margin:4px 0 2px; }
+  .abtitle { font-size:11px; color:var(--gold); font-weight:700; margin:4px 0 2px; }
   .barrow { display:flex; align-items:center; gap:6px; font-size:11px; margin:2px 0; }
   .barlabel { width:64px; color:var(--muted); } .barval { width:22px; text-align:right; }
-  .bartrack { flex:1; height:8px; background:#0c3122; border-radius:4px; overflow:hidden; }
+  .bartrack { flex:1; height:8px; background:var(--inset); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .barfill { display:block; height:100%; }
   .spraywrap { margin-top:10px; text-align:center; }
-  svg.spray { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
-  svg.evla { width:280px; max-width:100%; background:#0c3122; border-radius:8px; }
+  svg.spray { width:280px; max-width:100%; background:var(--field); border-radius:8px; }
+  svg.evla { width:280px; max-width:100%; background:var(--field); border-radius:8px; }
   .sprayrow { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; align-items:flex-start; margin-top:8px; }
   /* G9: モーダルのタブ行は折返しせず横スクロール1行に（多タブ選手モーダルの2行化を解消） */
   .modaltabs { display:flex; gap:6px; margin:8px 0 12px; flex-wrap:nowrap; overflow-x:auto;
                border-bottom:1px solid var(--line); padding-bottom:8px; }
-  .mtab { padding:4px 12px; font-size:12px; white-space:nowrap; flex:none; }
-  .mtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .mtab { padding:4px 12px; font-size:12px; white-space:nowrap; flex:none; border-radius:999px; }
+  .mtab.active { background:var(--clay); color:var(--clay-ink); border-color:var(--clay); font-weight:700; }
   .modalbody { min-height:40px; }
   h4.teamsub { font-size:12px; color:var(--muted); margin:8px 0 3px; font-weight:600; }
-  h3.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); }
+  /* セクション見出しはスポナビ流「左アクセントバー」＝金色文字より紙面で立つ */
+  h3.leaguename { font-size:14px; margin:14px 0 6px; color:var(--ink); font-weight:700;
+                  border-left:4px solid var(--clay); padding-left:8px; }
   /* G7: 日程タブの月見出しは summary（<details class="schedmonth">内）でも同じ見た目にする */
-  summary.leaguename { font-size:14px; margin:12px 0 4px; color:var(--gold); cursor:pointer; }
+  summary.leaguename { font-size:14px; margin:14px 0 6px; color:var(--ink); font-weight:700;
+                       border-left:4px solid var(--clay); padding-left:8px; cursor:pointer; }
   .schedmonth { margin:4px 0; }
   .nextjump { margin:6px 0; }
   .schednext { outline:1px solid var(--gold); }
@@ -191,48 +227,50 @@ const html = `<!DOCTYPE html>
   .pschamp { margin-top:6px; font-weight:700; color:var(--gold); }
   .warlist { display:flex; flex-direction:column; gap:6px; }
   .warcard { display:flex; align-items:center; gap:12px; background:var(--panel);
-             border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
-  .warcard:hover { background:#174a34; cursor:pointer; }
+             border:1px solid var(--line); border-radius:8px; padding:8px 12px; box-shadow:0 1px 3px var(--shadow); }
+  .warcard:hover { background:var(--hover); cursor:pointer; }
   .warrank { width:24px; color:var(--muted); text-align:right; font-size:13px; }
   .warval { width:54px; font-size:20px; font-weight:800; color:var(--gold); text-align:right; }
   .warname { flex:1; font-size:14px; } .wn1 { font-weight:700; }
   /* --- フェーズC1b ゲームシェル --- */
   .teamgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin-top:10px; }
   .teamcard { text-align:left; padding:10px 12px; }
-  .teamcard:hover { background:#174a34; }
+  .teamcard:hover { background:var(--hover); }
   .tcname { font-weight:700; font-size:14px; }
-  .nextcard { border:1px solid var(--clay); border-radius:8px; padding:8px 12px; margin:8px 0; background:var(--panel); }
+  .nextcard { border:1px solid var(--line2); border-left:4px solid var(--clay); border-radius:8px;
+              padding:8px 12px; margin:8px 0; background:var(--panel); box-shadow:0 1px 3px var(--shadow); }
   .nextmatch { font-size:15px; font-weight:700; }
   .recentlist { display:flex; flex-direction:column; gap:3px; }
   .recentrow { display:flex; gap:10px; align-items:center; font-size:13px; }
   .recentrow .score { margin-left:auto; color:var(--muted); }
   .wl { display:inline-block; width:18px; text-align:center; font-weight:700; border-radius:4px; }
-  .wlw { color:#7bc47f; } .wll { color:#e06d6d; } .wlt { color:var(--muted); }
-  table.stat tr.myteam td { background:#1c4a34; font-weight:700; } /* (0,2,3)で先頭列固定の(0,2,2)に順序非依存で勝つ */
+  .wlw { color:var(--pos); } .wll { color:var(--neg); } .wlt { color:var(--muted); }
+  table.stat tr.myteam td { background:var(--myteam); font-weight:700; } /* (0,2,3)で先頭列固定の(0,2,2)に順序非依存で勝つ */
   .teamstate { margin:8px 0; font-size:14px; letter-spacing:1px; }
-  .mgrpanel, .savepanel { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:12px; }
+  .mgrpanel, .savepanel { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:12px; background:var(--panel); }
   .tendrow { display:flex; align-items:center; gap:6px; margin:4px 0; }
   .tendlabel { width:96px; color:var(--muted); font-size:13px; }
-  .tendbtn { padding:4px 10px; font-size:12px; }
-  .tendbtn.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .tendbtn { padding:4px 10px; font-size:12px; border-radius:999px; }
+  .tendbtn.active { background:var(--clay); color:var(--clay-ink); border-color:var(--clay); font-weight:700; }
   .watchmid { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; margin:10px 0; }
-  svg.diamond { width:200px; background:#0c3122; border-radius:8px; }
-  .benchbox { flex:1; min-width:180px; border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  svg.diamond { width:240px; background:var(--field); border-radius:8px; }
+  .benchbox { flex:1; min-width:180px; border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--panel); }
   .resrow { display:flex; align-items:center; gap:6px; font-size:12px; margin:4px 0; }
   .reslabel { width:60px; color:var(--muted); } .resval { width:40px; text-align:right; }
-  .restrack { flex:1; height:8px; background:#0c3122; border-radius:4px; overflow:hidden; }
+  .restrack { flex:1; height:8px; background:var(--inset); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .resfill { display:block; height:100%; background:var(--gold); }
-  .pbp { border:1px solid var(--line); border-radius:8px; padding:8px 12px; max-height:320px; overflow-y:auto; font-size:13px; }
-  .pbpline { padding:2px 0; border-bottom:1px solid #163d2c; }
-  .pbpline.ev-run { color:#7bc47f; }
-  .pbpline.ev-sub { color:#7fb0e0; }
+  .pbp { border:1px solid var(--line); border-radius:8px; padding:8px 12px; max-height:320px; overflow-y:auto;
+         font-size:13px; background:var(--panel); }
+  .pbpline { padding:2px 0; border-bottom:1px solid var(--line); }
+  .pbpline.ev-run { color:var(--pos); }
+  .pbpline.ev-sub { color:var(--info); }
   .pbpline.ev-start { color:var(--clay); font-weight:600; }
   /* E2改: 結果行の色分け（安打=青系/HR・得点=赤系強調/三振=グレー/四死球=緑系/失策・盗塁死=橙系） */
-  .pbpline.ev-hit, .curabresult.ev-hit, .fieldlabel.ev-hit { color:#8fc7ff; }
-  .pbpline.ev-bb, .curabresult.ev-bb, .fieldlabel.ev-bb { color:#7bc47f; }
+  .pbpline.ev-hit, .curabresult.ev-hit, .fieldlabel.ev-hit { color:var(--hit); }
+  .pbpline.ev-bb, .curabresult.ev-bb, .fieldlabel.ev-bb { color:var(--pos); }
   .pbpline.ev-k, .curabresult.ev-k, .fieldlabel.ev-k { color:var(--muted); }
-  .pbpline.ev-err, .curabresult.ev-err, .fieldlabel.ev-err { color:#e8b84b; }
-  .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr, .fieldlabel.ev-hr { color:#ff8a76; font-weight:700; }
+  .pbpline.ev-err, .curabresult.ev-err, .fieldlabel.ev-err { color:var(--gold); }
+  .pbpline.ev-score, .pbpline.ev-hr, .curabresult.ev-score, .curabresult.ev-hr, .fieldlabel.ev-hr { color:var(--hr); font-weight:700; }
   /* F4: 得点/HRの瞬間を一目で伝える演出（現在の打席の結果ボックスに一度だけ再生されるパルス。
      再生位置が進んだ描画(justAdvanced)でのみ .fx を付与＝タブ切替等の再描画では再発火しない）。 */
   @keyframes pulseScore { 0% { box-shadow:0 0 0 0 rgba(255,138,118,.55); } 70% { box-shadow:0 0 0 12px rgba(255,138,118,0); } 100% { box-shadow:0 0 0 0 rgba(255,138,118,0); } }
@@ -241,15 +279,15 @@ const html = `<!DOCTYPE html>
   .notable.fx { animation: notablePop .35s ease-out; }
   .finalscore { font-size:16px; font-weight:700; margin-right:auto; }
   table.scoreboard th.rcol, table.scoreboard td.rcol { color:var(--gold); font-weight:700; border-left:1px solid var(--line); }
-  .pbtrack { height:14px; background:#0c3122; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:10px 0; }
+  .pbtrack { height:14px; background:var(--inset); border:1px solid var(--line2); border-radius:8px; overflow:hidden; margin:10px 0; }
   .pbfill { height:100%; background:var(--clay); transition:width .1s; }
-  .championbanner { background:var(--panel); border:1px solid var(--gold); border-radius:8px; padding:12px; font-size:18px; font-weight:800; color:var(--gold); text-align:center; margin:12px 0; }
+  .championbanner { background:var(--panel); border:1px solid var(--gold); border-radius:8px; padding:12px; font-size:18px; font-weight:800; color:var(--gold); text-align:center; margin:12px 0; box-shadow:0 1px 3px var(--shadow); }
   /* C4 演出: ニュース/表彰/記録/二つ名 */
   .newsfeed { display:flex; flex-direction:column; gap:4px; margin:4px 0 8px; }
-  .newsrow { border-left:3px solid var(--line); background:var(--panel); border-radius:4px; padding:5px 10px; font-size:13px; }
+  .newsrow { border-left:3px solid var(--line2); background:var(--panel); border-radius:4px; padding:5px 10px; font-size:13px; box-shadow:0 1px 2px var(--shadow); }
   .newsrow.good { border-left-color:var(--gold); }
-  .newsrow.bad { border-left-color:#c96a5a; }
-  .newsrow.info { border-left-color:#5aa9e6; }
+  .newsrow.bad { border-left-color:var(--neg); }
+  .newsrow.info { border-left-color:var(--info); }
   .awardpanel { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:var(--panel); }
   .awardlgname { color:var(--gold); font-weight:700; border-bottom:1px solid var(--line); padding-bottom:4px; margin-bottom:6px; }
   /* G8: 表彰パネルをリーグ単位で折りたたみ */
@@ -257,47 +295,47 @@ const html = `<!DOCTYPE html>
   .awarddetails > summary { cursor:pointer; }
   .awarddetails .awardpanel { margin-top:6px; }
   .awardtop { display:flex; flex-wrap:wrap; gap:10px; }
-  .awardbig { flex:1; min-width:160px; background:#0c3122; border-radius:6px; padding:8px; }
+  .awardbig { flex:1; min-width:160px; background:var(--inset); border:1px solid var(--line); border-radius:6px; padding:8px; }
   .awardbigk { display:block; font-size:11px; color:var(--muted); }
   .awardbigv { display:block; font-weight:700; color:var(--gold); }
   .awardlist { display:flex; flex-direction:column; gap:3px; }
-  .awardrow { display:flex; gap:8px; align-items:center; background:#0c3122; border-radius:4px; padding:4px 8px; font-size:13px; }
+  .awardrow { display:flex; gap:8px; align-items:center; background:var(--inset); border:1px solid var(--line); border-radius:4px; padding:4px 8px; font-size:13px; }
   .awardyear { color:var(--muted); min-width:44px; }
   .awardbadge { color:var(--ink); }
   .nickname { display:flex; gap:8px; align-items:center; margin-top:6px; }
   .nickmark { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
   .nicktext { font-size:18px; font-weight:800; color:var(--gold); }
-  svg.growth { width:280px; max-width:100%; background:#0c3122; border-radius:8px; margin-top:6px; }
+  svg.growth { width:280px; max-width:100%; background:var(--field); border-radius:8px; margin-top:6px; }
   /* E1: チームタブ（一軍/二軍サブタブ）・選手名リンク・モーダルヘッダ（二つ名/受賞歴） */
   .subtabs { display:flex; gap:6px; margin:8px 0 4px; flex-wrap:wrap; }
-  .subtab { padding:5px 14px; font-size:13px; }
-  .subtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .subtab { padding:5px 14px; font-size:13px; border-radius:999px; }
+  .subtab.active { background:var(--clay); color:var(--clay-ink); border-color:var(--clay); font-weight:700; }
   /* G5a: 成績タブの列グループ切替（.subtabsより一段軽い見た目＝タブ切替と列フィルタの階層を区別） */
   .colgroups { display:flex; gap:4px; margin:4px 0 8px; flex-wrap:wrap; }
-  .colgroup { padding:3px 10px; font-size:11px; border-radius:999px; border:1px solid var(--line); background:none; color:var(--muted); }
+  .colgroup { padding:3px 10px; font-size:11px; border-radius:999px; border:1px solid var(--line2); background:none; color:var(--muted); }
   .colgroup.active { border-color:var(--clay); color:var(--clay); font-weight:700; }
   /* F2-4: 二軍サブタブの育成契約バッジ・二軍順位の折りたたみ */
-  .devbadge { margin-left:5px; font-size:10px; color:#20160a; background:var(--gold); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
+  .devbadge { margin-left:5px; font-size:10px; color:var(--clay-ink); background:var(--clay); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
   .farmstandings { margin-top:14px; }
-  .plink { color:#8fc7ff; cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
-  .plink:hover { color:var(--gold); }
+  .plink { color:var(--hit); cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
+  .plink:hover { color:var(--clay); }
   .headnick { margin-left:8px; font-size:13px; font-weight:700; color:var(--gold); }
   .headawards { font-size:11px; color:var(--muted); margin-top:2px; }
   /* H3: 性格タグ（常時表示）＋メディア評（観測ベース評判ラベル・複数可）のチップ列 */
   .reptags { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
-  .persontag { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:999px; padding:1px 8px; }
-  .reptag { font-size:11px; color:#20160a; background:var(--clay); border-radius:999px; padding:1px 8px; font-weight:700; }
+  .persontag { font-size:11px; color:var(--ink); background:var(--inset); border:1px solid var(--line2); border-radius:999px; padding:1px 8px; }
+  .reptag { font-size:11px; color:var(--clay-ink); background:var(--clay); border-radius:999px; padding:1px 8px; font-weight:700; }
   /* E2: スポナビ風観戦（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替） */
   .matchup { flex:1; min-width:250px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--panel); }
   .bso { display:flex; gap:16px; margin-bottom:8px; flex-wrap:wrap; }
   .bsorow { display:flex; align-items:center; gap:5px; }
   .bsolabel { color:var(--muted); font-size:12px; width:12px; font-weight:700; }
-  .lamp { width:11px; height:11px; border-radius:50%; background:#0c3122; border:1px solid var(--line); display:inline-block; }
-  .lamp.lb.on { background:#7bc47f; border-color:#7bc47f; }
+  .lamp { width:11px; height:11px; border-radius:50%; background:var(--inset); border:1px solid var(--line2); display:inline-block; }
+  .lamp.lb.on { background:var(--pos); border-color:var(--pos); }
   .lamp.ls.on { background:var(--gold); border-color:var(--gold); }
-  .lamp.lo.on { background:#c96a5a; border-color:#c96a5a; }
+  .lamp.lo.on { background:var(--neg); border-color:var(--neg); }
   .murow { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; margin:7px 0; font-size:13px; }
-  .mulabel { color:var(--muted); font-size:11px; border:1px solid var(--line); border-radius:4px; padding:0 6px; }
+  .mulabel { color:var(--muted); font-size:11px; border:1px solid var(--line2); border-radius:4px; padding:0 6px; }
   .muname { font-weight:700; font-size:14px; }
   .mutoday { color:var(--chalk); }
   .pbpline.ev-ab { color:var(--chalk); font-weight:600; }
@@ -306,9 +344,9 @@ const html = `<!DOCTYPE html>
   .curab { border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--panel); }
   .curabhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:4px; }
   .curabpitch { font-size:13px; padding:1px 0; color:var(--chalk); }
-  .curabresult { margin-top:6px; padding:6px 10px; border-radius:6px; background:#0c3122; font-size:15px; font-weight:700; }
+  .curabresult { margin-top:6px; padding:6px 10px; border-radius:6px; background:var(--inset); border:1px solid var(--line); font-size:15px; font-weight:700; }
   .reschips { display:inline-flex; gap:3px; flex-wrap:wrap; }
-  .reschip { font-size:11px; color:var(--chalk); background:#0c3122; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+  .reschip { font-size:11px; color:var(--ink); background:var(--inset); border:1px solid var(--line2); border-radius:4px; padding:0 5px; }
   /* §16: 打席ごとの指標変化（「▼ 指標の変化」折りたたみ・既定で開く・結果ボックスの下にぶら下げる） */
   .metricdelta { margin-top:6px; border-top:1px dashed var(--line); padding-top:6px; }
   .metricdelta summary { cursor:pointer; color:var(--muted); font-size:11px; font-weight:700; list-style:none; }
@@ -316,8 +354,8 @@ const html = `<!DOCTYPE html>
   .mdgroup { margin-top:4px; }
   .mdname { font-size:11px; color:var(--muted); margin-right:6px; }
   .mdrow { font-size:12px; padding:1px 0 1px 4px; color:var(--chalk); }
-  .mdrow.mdup { color:#7bc47f; }
-  .mdrow.mddown { color:#e06d6d; }
+  .mdrow.mdup { color:var(--pos); }
+  .mdrow.mddown { color:var(--neg); }
   .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
   .lineupcol { flex:1; min-width:230px; }
@@ -328,20 +366,22 @@ const html = `<!DOCTYPE html>
   /* F3: 打球フィールド図（対戦パネル右カラム・直近打席1件の実データ・静的画像・スポナビ風） */
   .fieldcol { align-items:center; text-align:center; flex:none; min-width:200px; }
   .duelhead { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:1px; margin-bottom:2px; align-self:flex-start; }
-  svg.fieldchart { width:200px; max-width:100%; background:#0c3122; border-radius:8px; }
+  svg.fieldchart { width:200px; max-width:100%; background:var(--field); border-radius:8px; }
   .fieldlabel { margin-top:6px; font-size:13px; font-weight:700; }
   .fieldsub { font-size:11px; margin-top:2px; }
   /* 一球判定の統一色（現打席リスト・実況一球行に適用）:
-     ボール=白/見逃しS=緑/空振り=赤/ファウル=黄/インプレー=青 */
-  .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:#f4f1e6; fill:#f4f1e6; }
-  .pc-called, .pbpline.pc-called, .curabpitch.pc-called { color:#7bc47f; fill:#7bc47f; }
-  .pc-whiff, .pbpline.pc-whiff, .curabpitch.pc-whiff { color:#e06d6d; fill:#e06d6d; }
-  .pc-foul, .pbpline.pc-foul, .curabpitch.pc-foul { color:#e8b84b; fill:#e8b84b; }
-  .pc-inplay, .pbpline.pc-inplay, .curabpitch.pc-inplay { color:#8fc7ff; fill:#8fc7ff; }
+     ボール=灰(明)/白(暗)・見逃しS=緑・空振り=赤・ファウル=黄・インプレー=青。
+     fill はフィールドSVG内の打球点にも使われるため、暗面で見える色をSVG専用に固定する
+     （--field は両テーマ共通の暗緑＝明テーマの文字色トークンでは沈む）。 */
+  .pc-ball, .pbpline.pc-ball, .curabpitch.pc-ball { color:var(--pc-ball); fill:#f4f1e6; }
+  .pc-called, .pbpline.pc-called, .curabpitch.pc-called { color:var(--pc-called); fill:#7bc47f; }
+  .pc-whiff, .pbpline.pc-whiff, .curabpitch.pc-whiff { color:var(--pc-whiff); fill:#e06d6d; }
+  .pc-foul, .pbpline.pc-foul, .curabpitch.pc-foul { color:var(--pc-foul); fill:#e8b84b; }
+  .pc-inplay, .pbpline.pc-inplay, .curabpitch.pc-inplay { color:var(--pc-inplay); fill:#8fc7ff; }
   /* E2ゾーニング改: watch内サブタブ（速報/対戦/ボックス/スタメン・G1aで4分割） */
   .wtabs { display:flex; gap:6px; margin:12px 0 4px; flex-wrap:wrap; }
-  .wtab { padding:5px 16px; font-size:13px; }
-  .wtab.active { background:var(--clay); color:#20160a; border-color:var(--clay); font-weight:700; }
+  .wtab { padding:5px 16px; font-size:13px; border-radius:999px; }
+  .wtab.active { background:var(--clay); color:var(--clay-ink); border-color:var(--clay); font-weight:700; }
   .reccols { display:flex; flex-wrap:wrap; gap:10px; }
   .reccol { flex:1; min-width:150px; }
   .rechead { color:var(--muted); font-size:12px; border-bottom:1px solid var(--line); margin-bottom:3px; }
@@ -357,28 +397,29 @@ const html = `<!DOCTYPE html>
      bar自身の高さとほぼ同一になり貼り付かなくなるため、display:contentsでボックス生成を回避する。 */
   .scorebarwrap { display:contents; }
   .scorebar { position:sticky; top:0; z-index:6; display:flex; align-items:center; justify-content:space-between;
-              gap:8px; background:#0d3526; border:1px solid var(--clay); border-radius:10px; padding:6px 10px; margin:8px 0; }
+              gap:8px; background:var(--panel); border:1px solid var(--line2); border-radius:10px; padding:6px 10px;
+              margin:8px 0; box-shadow:0 2px 8px var(--shadow); }
   .sbteam { display:flex; align-items:baseline; gap:8px; min-width:0;
             border-top:3px solid var(--team-accent, transparent); padding-top:2px; }
   .sbname { font-size:13px; font-weight:700; color:var(--chalk); white-space:nowrap; }
-  .sbteam.nowmy .sbname { color:var(--gold); }
+  .sbteam.nowmy .sbname { color:var(--clay); }
   .sbscore { font-size:26px; font-weight:800; line-height:1; }
   .sbmid { text-align:center; flex:1; }
   .sbinning { font-size:14px; font-weight:700; color:var(--gold); }
   .sbmid .bso { justify-content:center; gap:8px; margin:2px 0 0; }
   .sbmid .bsorow { gap:3px; } .sbmid .lamp { width:9px; height:9px; }
   .sbbases { display:flex; justify-content:center; gap:10px; margin-top:3px; }
-  .sbbase { width:9px; height:9px; transform:rotate(45deg); background:#0c3122; border:1px solid var(--clay); display:inline-block; }
+  .sbbase { width:9px; height:9px; transform:rotate(45deg); background:var(--inset); border:1px solid var(--line2); display:inline-block; }
   .sbbase.on { background:var(--gold); border-color:var(--gold); }
   .sblinescore { margin:0 0 8px; }
   .curabvs { font-size:12px; color:var(--chalk); margin-bottom:4px; }
   .dueltab { display:flex; flex-direction:column; gap:10px; align-items:center; margin-top:8px; }
   .dueltab .matchup { width:100%; }
-  .dueltab .curab { background:#0d3526; } /* 旧 .duelpanel .curab の背景を引き継ぐ（対戦タブでは curab は使わないが将来の統一のため） */
+  .dueltab .curab { background:var(--panel); } /* 旧 .duelpanel .curab の背景を引き継ぐ（対戦タブでは curab は使わないが将来の統一のため） */
   /* G1a: 進行バーを下部固定（親指到達域）。文言は変えずCSSだけで1行に収める */
   .watchctrl { position:fixed; left:0; right:0; bottom:0; z-index:8; display:flex; gap:4px; flex-wrap:nowrap;
-               background:var(--bg); border-top:1px solid var(--line); padding:8px; margin:0;
-               box-shadow:0 -6px 8px -6px rgba(0,0,0,.5); }
+               background:var(--panel); border-top:1px solid var(--line2); padding:8px; margin:0;
+               box-shadow:0 -6px 12px -6px var(--shadow); }
   .watchctrl button { flex:1; min-height:44px; min-width:0; padding:6px 1px; font-size:11px; white-space:nowrap; }
   .watchspacer { height:68px; }
   /* G1a: 観戦タブバー(.wtabs)もスコアバー直下にsticky化（ハブの.tabs同様・スクロール中も切替を失わない）。
@@ -417,20 +458,20 @@ const html = `<!DOCTYPE html>
   .glossarylegend { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
   .legendrow { display:flex; flex-wrap:wrap; gap:6px; }
   /* 既存の pc-*/ev-*/lb・ls・lo は他クラスとの併記が前提の色指定なので、凡例チップは独立した配色を持つ */
-  .legendchip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid var(--line); color:var(--chalk); }
-  .legendchip.pc-ball { color:#f4f1e6; border-color:#f4f1e6; }
-  .legendchip.pc-called { color:#7bc47f; border-color:#7bc47f; }
-  .legendchip.pc-whiff { color:#e06d6d; border-color:#e06d6d; }
-  .legendchip.pc-foul { color:#e8b84b; border-color:#e8b84b; }
-  .legendchip.pc-inplay { color:#8fc7ff; border-color:#8fc7ff; }
-  .legendchip.ev-hit { color:#8fc7ff; border-color:#8fc7ff; }
-  .legendchip.ev-hr { color:#ff8a76; border-color:#ff8a76; font-weight:700; }
+  .legendchip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid var(--line2); color:var(--chalk); }
+  .legendchip.pc-ball { color:var(--pc-ball); border-color:var(--pc-ball); }
+  .legendchip.pc-called { color:var(--pc-called); border-color:var(--pc-called); }
+  .legendchip.pc-whiff { color:var(--pc-whiff); border-color:var(--pc-whiff); }
+  .legendchip.pc-foul { color:var(--pc-foul); border-color:var(--pc-foul); }
+  .legendchip.pc-inplay { color:var(--pc-inplay); border-color:var(--pc-inplay); }
+  .legendchip.ev-hit { color:var(--hit); border-color:var(--hit); }
+  .legendchip.ev-hr { color:var(--hr); border-color:var(--hr); font-weight:700; }
   .legendchip.ev-k { color:var(--muted); border-color:var(--muted); }
-  .legendchip.ev-bb { color:#7bc47f; border-color:#7bc47f; }
-  .legendchip.ev-err { color:#e8b84b; border-color:#e8b84b; }
-  .legendchip.lamplegend.lb { color:#7bc47f; border-color:#7bc47f; }
+  .legendchip.ev-bb { color:var(--pos); border-color:var(--pos); }
+  .legendchip.ev-err { color:var(--gold); border-color:var(--gold); }
+  .legendchip.lamplegend.lb { color:var(--pos); border-color:var(--pos); }
   .legendchip.lamplegend.ls { color:var(--gold); border-color:var(--gold); }
-  .legendchip.lamplegend.lo { color:#c96a5a; border-color:#c96a5a; }
+  .legendchip.lamplegend.lo { color:var(--neg); border-color:var(--neg); }
 </style>
 </head>
 <body>

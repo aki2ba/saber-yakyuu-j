@@ -106,7 +106,22 @@ const TIP = {
   uzrTeam: 'ΣUZR: チーム守備の対平均得点（範囲＋失策＋フレーミング）。',
 };
 
+// --- テーマ切替（明色既定・ダーク切替。表示レイヤーのみ＝エンジン/セーブに不干渉） ---
+// localStorage/documentElement はヘッドレス環境（smoke）に無いので try/catch で握る（決定論に影響なし）。
+const THEME_KEY = 'saber_theme';
+function currentTheme() {
+  try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; } catch { return 'light'; }
+}
+function applyTheme(t) {
+  try { document.documentElement.setAttribute('data-theme', t); } catch { /* smoke: documentElement無し */ }
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* smoke/プライベートモード: 保存不可 */ }
+}
+function themeToggleBtn() {
+  return el('button', { class: 'link', title: '明色/ダークの切替', onclick: () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark') }, '◐ 配色');
+}
+
 export function initApp() {
+  applyTheme(currentTheme()); // 起動時に保存済みテーマを適用（既定=明色）
   const root = document.getElementById('app');
   if (!root) return;
   root.innerHTML = '';
@@ -120,7 +135,10 @@ function renderSetup() {
   // そのまま残す（sim ボタンが先頭＝既存スモーク経路を壊さない）。
   const playBtn = el('button', { class: 'primary', onclick: () => renderTitle() }, '🎮 ゲームを始める（キャリア）');
   return el('div', { class: 'setup' }, [
-    el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
+    el('div', { class: 'header' }, [
+      el('h2', {}, '架空選手ペナント（12球団 / 143試合・2リーグ制）'),
+      el('div', { class: 'row' }, [themeToggleBtn()]),
+    ]),
     el('p', { class: 'muted' }, 'リーグシードごとに架空選手840人（12球団×支配下70人・ほかに育成選手）が生成されます。生成後は「▶ 再シミュレート」で、同じ選手のまま毎回ちがう乱数で別のシーズンを回せます。'),
     el('div', { class: 'row' }, [el('label', {}, 'リーグシード: '), seedInput, btn]),
     el('div', { id: 'status', class: 'muted' }, ''),
@@ -179,7 +197,7 @@ function renderMain() {
   root.append(
     el('div', { class: 'header' }, [
       el('h2', {}, `シーズン${state.seasonN}（リーグseed ${state.leagueSeed}）`),
-      el('div', { class: 'row' }, [resim, back]),
+      el('div', { class: 'row' }, [resim, back, themeToggleBtn()]),
     ]),
     bar,
     content,
@@ -256,7 +274,9 @@ function renderStandings(c) {
           td(t.il ? `${t.il.w}-${t.il.l}-${t.il.t}` : '-'),
         );
       }
-      return el('tr', {}, cells);
+      // キャリアモードでは自チーム行を強調（二軍順位・ホームのミニ順位と同じ流儀）
+      const my = game.gs && t.teamId === game.gs.playerTeamId;
+      return el('tr', { class: my ? 'myteam' : '' }, cells);
     });
     c.append(el('h3', { class: 'leaguename' }, blk.title));
     // 期待勝率=得失点からのピタゴラス実力勝率 / 運=実勝率−期待勝率を勝数換算（+は接戦強い/幸運）
@@ -1257,7 +1277,13 @@ function renderNewGame() {
   const drawTeams = () => {
     grid.innerHTML = '';
     for (const t of league.teams) {
-      grid.append(el('button', { class: 'teamcard', onclick: () => startNewGame(previewSeed, t.id) }, [
+      // 球団カラーの左バー（プレビューリーグは state 未反映のため TEAM_COLORS を名前で直引き）
+      const col = TEAM_COLORS[t.name] || 'var(--clay)';
+      grid.append(el('button', {
+        class: 'teamcard',
+        style: `border-left:4px solid ${col}`,
+        onclick: () => startNewGame(previewSeed, t.id),
+      }, [
         el('div', { class: 'tcname' }, t.name),
         el('div', { class: 'muted' }, `${leagueNameOf(cfg, t.league)}`),
       ]));
@@ -1300,7 +1326,7 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, ...(ov.game ?? {}) },
+    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, ...(ov.game ?? {}) },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -1361,11 +1387,15 @@ function renderHub(tab = 'hub') {
   const myName = tname(gs.playerTeamId);
   const myRow = rt.standings.get(gs.playerTeamId);
   const header = el('div', { class: 'header' }, [
-    el('h2', {}, [`${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 / 第${pendingDayOf(rt)}節　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
+    el('h2', {}, [
+      // 自チーム色のチップ（チームカラーをUIの軸に＝スポナビのチームページ流）
+      el('span', { style: `display:inline-block;width:6px;height:16px;border-radius:2px;background:${teamColor(gs.playerTeamId)};box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);margin-right:7px;vertical-align:-2px` }),
+      `${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 / 第${pendingDayOf(rt)}節　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
     el('div', { class: 'row' }, [
       // G4b: セーブ/ロードはヘッダー導線→overlayモーダル（ホームからは削除）
       el('button', { class: 'link', onclick: () => openSaveModal() }, '💾 セーブ'),
       el('button', { class: 'link', onclick: () => renderTitle() }, '≡ タイトル'),
+      themeToggleBtn(),
     ]),
   ]);
   const bar = el('div', { class: 'tabs' }, HUB_TABS.map(([k, label]) =>
@@ -1457,12 +1487,25 @@ function renderHubHome(c) {
   }
   // G4a: 進行ボタンは全タブ共通の .hubfooter（renderHub 末尾）へ一本化。ここでは出さない。
 
-  // 次戦カード
+  // 次戦カード（対戦カード化: 両チームの色チップ＋今季成績＝スポナビの試合カード流）
   const nextCard = nextPlayerCard(rt);
   if (nextCard) {
+    const oppRow = rt.standings.get(nextCard.oppId);
+    const myRow2 = rt.standings.get(gs.playerTeamId);
+    const chip = (id) => el('span', {
+      // 白系のチームカラー（白鷺等）が白面に沈まないよう薄い縁取りを足す
+      style: `display:inline-block;width:10px;height:10px;border-radius:2px;background:${teamColor(id)};box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);margin-right:6px;vertical-align:baseline`,
+    });
+    const rec = (r) => (r ? `${r.w}勝${r.l}敗${r.t}分` : '');
     c.append(el('div', { class: 'nextcard' }, [
-      el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）`),
-      el('div', { class: 'nextmatch' }, nextCard.text),
+      el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）${nextCard.isHome ? '　ホーム' : '　ビジター'}`),
+      el('div', { class: 'nextmatch' }, [
+        chip(gs.playerTeamId), `${tname(gs.playerTeamId)} `,
+        el('span', { class: 'muted', style: 'font-size:12px' }, rec(myRow2)),
+        el('span', { style: 'margin:0 8px;font-weight:400' }, nextCard.isHome ? 'vs' : '@'),
+        chip(nextCard.oppId), `${tname(nextCard.oppId)} `,
+        el('span', { class: 'muted', style: 'font-size:12px' }, rec(oppRow)),
+      ]),
     ]));
   }
 
@@ -1476,7 +1519,7 @@ function renderHubHome(c) {
         el('div', {}, `${g.priority === 'high' ? '【最重要】' : '【目標】'}${g.label}`)),
       el('div', { class: 'muted', style: 'margin-top:4px' }, [
         `オーナー信任 ${trust}/100 `,
-        el('span', { style: `display:inline-block;width:80px;height:8px;background:#333;vertical-align:middle` }, [
+        el('span', { style: `display:inline-block;width:80px;height:8px;background:var(--inset);border:1px solid var(--line);vertical-align:middle` }, [
           el('span', { style: `display:block;width:${Math.round(trust * 0.8)}px;height:8px;background:${col}` }),
         ]),
       ]),
@@ -1731,7 +1774,7 @@ function nextPlayerCard(rt) {
     if (g.home === game.gs.playerTeamId || g.away === game.gs.playerTeamId) {
       const isHome = g.home === game.gs.playerTeamId;
       const oppId = isHome ? g.away : g.home;
-      return { day: g.day, text: `${isHome ? 'HOME vs' : 'AWAY @'} ${tname(oppId)}` };
+      return { day: g.day, isHome, oppId, text: `${isHome ? 'HOME vs' : 'AWAY @'} ${tname(oppId)}` };
     }
   }
   return null;

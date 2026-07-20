@@ -14,6 +14,7 @@ import {
   selectLineup,
   bullpenAvailable,
   reviewAssignments,
+  orderBattingLineup,
 } from '../src/sim/usage.mjs';
 
 const cfg = createConfig();
@@ -122,6 +123,93 @@ test('selectLineup: 相手先発が右なら同利きのRF正選手を左のベ�
     cfg,
   );
   assert.equal(vsL.lineup.find((s) => s.pos === 'RF').playerId, 'RRF', '対左投手は右の正選手のまま');
+});
+
+// --- 単体: 打順の再構成（現代のラインナップ理論・orderBattingLineup） --------------
+
+test('selectLineup: dynamicLineup OFF=編成時の打順固定 / ON=観測成績で再構成（headless既定OFF・§S3-2）', () => {
+  const POS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'];
+  const players = POS.map((pos) => mkF(`R${pos}`, { bat: 50 }));
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const defense = {};
+  const positionRank = {};
+  for (const pos of POS) {
+    defense[pos] = `R${pos}`;
+    positionRank[pos] = [`R${pos}`];
+  }
+  // 編成時の打順: 守備位置順（C=1番...RF=8番）＋投手9番。RRF(RF)は初期8番。
+  const lineup = [...POS.map((pos) => ({ playerId: `R${pos}`, pos })), { playerId: null, pos: 'P' }];
+  const chart = { byId, defense, positionRank, lineup, rotation: [], bullpen: [] };
+  const mkState = (cfgX) => {
+    const st = createUsageState({ id: 'T' }, { dh: chart, noDh: chart }, cfgX);
+    for (const pid of st.scoutEval.keys()) st.scoutEval.set(pid, 0); // スカウト評価を均一化
+    return st;
+  };
+  // RRF だけ好打（観測）＝ ON では上位打順へ、OFF では8番のまま。
+  const strong = { ...createBattingLine(), pa: 600, ab: 520, b1: 100, b2: 40, hr: 25, bb: 70 };
+  const getBat = (pid) => (pid === 'RRF' ? strong : createBattingLine());
+  const noRest = { next: () => 0.99 };
+  const ctx = { day: 0, dh: false, oppPitcher: null, rng: noRest, getBat };
+
+  const cfgOff = createConfig({ tuning: { usage: { scoutDefSd: 0 } } });
+  const off = selectLineup(mkState(cfgOff), ctx, cfgOff);
+  assert.equal(off.lineup[7].playerId, 'RRF', 'OFF: 好打のRFも編成時どおり8番のまま（旧挙動）');
+
+  const cfgOn = createConfig({ tuning: { usage: { scoutDefSd: 0 } }, game: { dynamicLineup: true } });
+  const on = selectLineup(mkState(cfgOn), ctx, cfgOn);
+  const rfSlot = on.lineup.findIndex((s) => s.playerId === 'RRF');
+  assert.ok(rfSlot <= 3, `ON: 好打のRFが上位打順へ（実測 ${rfSlot + 1}番）`);
+  assert.equal(on.lineup.find((s) => s.pos === 'RF').playerId, 'RRF', 'ON でも守備位置は保持（並べ替えは打順のみ）');
+});
+
+test('orderBattingLineup: 最強打者=2番 / 出塁型=1番 / 長打型=4番 / 不振打者=下位（真値非参照・§S3-2打順）', () => {
+  // 観測打撃ラインを目標 OBP/ISO 近傍で作る（十分な打席＝観測を信頼）
+  const line = ({ pa = 550, obp, iso, avg }) => {
+    const b = createBattingLine();
+    b.pa = pa;
+    b.ab = Math.round(pa * 0.9);
+    const hits = Math.round(b.ab * avg);
+    b.hr = Math.round((iso * b.ab) / 3);
+    b.b2 = Math.round((iso * b.ab) / 3);
+    b.b1 = Math.max(0, hits - b.hr - b.b2);
+    b.h = b.b1 + b.b2 + b.b3 + b.hr;
+    const onbase = Math.round(obp * (b.ab + b.bb));
+    b.bb = Math.max(0, onbase - b.h);
+    return b;
+  };
+  const bats = {
+    STAR: line({ obp: 0.4, iso: 0.23, avg: 0.31 }), // 最強総合
+    SLUG: line({ obp: 0.33, iso: 0.28, avg: 0.26 }), // 長打型
+    ONB: line({ obp: 0.39, iso: 0.08, avg: 0.29 }), // 出塁型（長打乏しい）
+    SLU2: line({ obp: 0.32, iso: 0.24, avg: 0.25 }), // 次点長打
+    BAL: line({ obp: 0.345, iso: 0.15, avg: 0.285 }),
+    AV1: line({ obp: 0.32, iso: 0.12, avg: 0.27 }),
+    AV2: line({ obp: 0.305, iso: 0.11, avg: 0.26 }),
+    WEAK: line({ pa: 420, obp: 0.28, iso: 0.09, avg: 0.22 }), // ≒OPS.49の不振打者
+    WK2: line({ obp: 0.29, iso: 0.1, avg: 0.24 }),
+  };
+  const ids = Object.keys(bats);
+  const byId = new Map(ids.map((id) => [id, { id, role: 'fielder', bats: 'R', throws: 'R' }]));
+  const state = { charts: { dh: { byId } }, scoutEval: new Map(ids.map((id) => [id, 0])) };
+  const posOf = { STAR: '3B', SLUG: '1B', ONB: '2B', SLU2: 'LF', BAL: 'RF', AV1: 'SS', AV2: 'CF', WEAK: 'C', WK2: 'DH' };
+  const batters = ids.map((id) => ({ playerId: id, pos: posOf[id] }));
+  const ordered = orderBattingLineup(state, batters, { getBat: (id) => bats[id], oppPitcher: null }, cfg);
+  const slot = ordered.map((e) => e.playerId); // index0=1番
+
+  assert.equal(slot[1], 'STAR', '最強総合は2番（現代理論の最重要スロット）');
+  assert.equal(slot[0], 'ONB', '出塁型は1番');
+  assert.equal(slot[3], 'SLUG', '最強長打は4番');
+  assert.equal(slot[4], 'SLU2', '次点長打は5番');
+  assert.ok(slot.indexOf('WEAK') >= 7, '不振打者(≒OPS.49)は下位（1番ではない）');
+});
+
+test('orderBattingLineup: 打順スロットは守備位置(pos)を保持し置換のみ（投手は含まれない）', () => {
+  const byId = new Map([['X', { id: 'X', role: 'fielder', bats: 'R', throws: 'R' }], ['Y', { id: 'Y', role: 'fielder', bats: 'R', throws: 'R' }]]);
+  const state = { charts: { dh: { byId } }, scoutEval: new Map([['X', 0], ['Y', 0]]) };
+  const batters = [{ playerId: 'X', pos: 'SS' }, { playerId: 'Y', pos: 'CF' }];
+  const ordered = orderBattingLineup(state, batters, { getBat: () => createBattingLine(), oppPitcher: null }, cfg);
+  assert.equal(ordered.length, 2, 'エントリ数は保存');
+  for (const e of ordered) assert.equal(e.pos, e.playerId === 'X' ? 'SS' : 'CF', '各打者は自分の守備位置を保持');
 });
 
 // --- 単体: D1-3 守備評価のスカウトノイズ（三層構造の徹底） -----------------------

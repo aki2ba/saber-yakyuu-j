@@ -69,7 +69,9 @@ vm.runInContext('initApp();', sandbox);
 // R5: UI の既定は前史20年（16秒）だが、smoke では 1年に縮めてコードパスだけ通す
 //   （前史そのものの検証は test/game_c2b.test.mjs / probe で行う）。
 globalThis.SABER_CFG_OVERRIDES = { game: { burnInYears: 1 } };
-const simBtn = walk(appDiv).find((n) => n.tag === 'button' && n._onclick);
+// テーマ切替ボタン（◐ 配色）がヘッダー先頭に入ったため「最初のボタン」では拾えない＝文言で特定する
+const txt = (n) => { let s = n._text || ''; for (const c of n.children || []) s += typeof c === 'string' ? c : txt(c); return s; };
+const simBtn = walk(appDiv).find((n) => n.tag === 'button' && n._onclick && txt(n).includes('リーグ生成'));
 assert.ok(simBtn, 'シミュレートボタンが描画される');
 
 // 2) シミュレート実行（setTimeout をフラッシュ）
@@ -516,15 +518,20 @@ allClass('wtab').find((n) => textOf(n) === '対戦')._onclick();
   const sub = textOf(hasClass('fieldsub'));
   assert.ok(/EV\d+km\/h/.test(sub) && /\d+m/.test(sub), `EV/飛距離が表示される (${sub})`);
 }
-// §16) 打席ごとの指標変化: 「▼ 指標の変化」折りたたみ（既定で開く・結果ボックス直下）＋矢印/差分の表記
+// §16) 打席ごとの指標変化: 「▼ 指標の変化」折りたたみ（UI刷新2/4: 既定は閉＝速報タブの主役は打席結果。
+//   summaryクリックで開閉し w.mdOpen で再描画をまたいで保持）＋矢印/差分の表記
 // .curabresult/.metricdelta は速報タブの現在の打席ボックス内にあるため速報タブへ戻す。
 allClass('wtab').find((n) => textOf(n) === '速報')._onclick();
 {
-  const md = hasClass('metricdelta');
+  let md = hasClass('metricdelta');
   assert.ok(md, '指標変化セクション(.metricdelta)が存在する（直前の打球ありの打席で確認）');
-  assert.ok('open' in md.attrs, '指標変化セクションは既定で開いた折りたたみ(open属性)');
-  const summary = walk(md).find((n) => n.tag === 'summary');
+  assert.ok(!('open' in md.attrs), '指標変化セクションは既定で閉じた折りたたみ（open属性なし）');
+  let summary = walk(md).find((n) => n.tag === 'summary');
   assert.ok(summary && textOf(summary).includes('指標の変化'), '見出し「▼ 指標の変化」');
+  summary._onclick(); // 開く（w.mdOpen=true で再描画）
+  md = hasClass('metricdelta');
+  assert.ok(md && 'open' in md.attrs, 'summaryクリックで開く（open属性が付く・w.mdOpenで保持）');
+  summary = walk(md).find((n) => n.tag === 'summary');
   const mdRows = allClass('mdrow').map(textOf);
   assert.ok(mdRows.length >= 1, `指標変化の行が出る (${mdRows.join(' | ')})`);
   assert.ok(mdRows.every((t) => /→.+（[+-]/.test(t)), `矢印(→)＋差分(+/-)の表記形式 (${mdRows.join(' | ')})`);

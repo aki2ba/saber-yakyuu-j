@@ -47,10 +47,21 @@ test('E3: 同一介入列（bidFA＋proposeTrade）— save→load→advanceYear
   const fcOthers = FORECAST.filter((p) => p.teamId !== 'T1');
   assert.ok(fcOthers.length >= 1, `FA宣言見込み（他球団）がいる（seed固定・got ${fcOthers.length}）`);
   bidFA(BASE, fcOthers[0].id);
-  const mine = BASE.league.players.find((p) => p.teamId === 'T1' && p.role === 'fielder');
-  const other = BASE.league.players.find(
-    (p) => p.teamId !== 'T1' && p.role === 'fielder' && p.primaryPos === mine.primaryPos,
-  );
+  // 起案対象は「主力級の若手×FA宣言予測外」に絞る。対象がオフに動く（引退/FA/淘汰/戦力外）と
+  // 起案は無効化される仕様で、旧実装の「先頭の野手」は選手アイデンティティ刷新（2026-07-20）の
+  // 世界引き直しで、ちょうどR7淘汰（低観測スコアの選手をドラフト枠確保のため放出）に
+  // かかる選手を引いた（決定論照合そのものは一致＝世界依存の副条件だけの問題）。
+  // 淘汰・戦力外は観測貢献の低い選手が対象＝真値上位の若手レギュラー級なら構造的にかからない。
+  const fcIdSet = new Set(FORECAST.map((p) => p.id));
+  const ability = (p) => {
+    const b = p.trueAbility.batting;
+    return b.ev + b.contact + b.eye + p.trueAbility.common.power;
+  };
+  const bestTradable = (pred) => BASE.league.players
+    .filter((p) => p.role === 'fielder' && p.age <= 28 && !fcIdSet.has(p.id) && pred(p))
+    .sort((a, b) => ability(b) - ability(a))[0];
+  const mine = bestTradable((p) => p.teamId === 'T1');
+  const other = bestTradable((p) => p.teamId !== 'T1' && p.primaryPos === mine.primaryPos);
   proposeTrade(BASE, mine.id, other.id);
 
   const blob = JSON.parse(JSON.stringify(save(BASE)));

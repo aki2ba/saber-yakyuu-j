@@ -20,7 +20,7 @@
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp, clampRating } from '../model/util.mjs';
-import { generateRookie, applyEraToRookie } from '../generate.mjs';
+import { generateRookie, applyEraToRookie, drawUniqueName, surnameCountsOf } from '../generate.mjs';
 import { applyAging } from './aging.mjs';
 import { observedWoba } from '../sim/manager.mjs';
 import { uzrRuns, totalFieldInnings } from '../sim/fielding.mjs';
@@ -202,7 +202,7 @@ function pickCohortAge(rng, cohort) {
  * スカウト観測（世代年齢・真値）付きで作る。surplus が選択肢を生み、球団評価差＝宝の源になる。
  * @returns {Map<string, Array>} typeKey('role:pos') → prospect[]
  */
-function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = null }) {
+function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = null, usedNames = null }) {
   const mk = cfg.tuning.market;
   const byType = new Map();
   for (const v of vacancies) {
@@ -210,6 +210,12 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = n
     if (!byType.has(tk)) byType.set(tk, { role: v.role, primaryPos: v.primaryPos, count: 0 });
     byType.get(tk).count++;
   }
+  // 選手アイデンティティ: 新人の名前を世界の既出名（引退者含む台帳）と衝突しないよう抽選する。
+  //   used はローカルコピー＝プール生成は league を書き換えない（H2の「プールはシードから毎回
+  //   再生成して再開する」replay 決定論を維持。台帳への追記は draft 確定後の marketStage2）。
+  const nameRng = makeRng(hashSeed(draftSeed, 'names'));
+  const used = new Set(usedNames ?? []);
+  const sur = surnameCountsOf(used);
   const pool = new Map();
   let gi = 0;
   for (const [tk, info] of byType) {
@@ -217,11 +223,16 @@ function generatePool(vacancies, cfg, { draftSeed, yearIndex, debutYear, era = n
     const arr = [];
     for (let i = 0; i < n; i++) {
       const id = `D${yearIndex}n${gi++}`;
-      const age = pickCohortAge(makeRng(hashSeed(draftSeed, 'cohortage', id)), mk.cohort);
+      const name = drawUniqueName(nameRng, used, sur, {
+        role: info.role,
+        primaryPos: info.role === 'fielder' ? info.primaryPos : null,
+      });
+      // 出自（高卒/大卒/社会人＝ドラフト時年齢）も名前キー＝その人固有（どの世界でも同じ年齢で指名される）。
+      const age = pickCohortAge(makeRng(hashSeed('togen-id-cohort', name)), mk.cohort);
       // era（時代トレンド・D3）: 世代の波・球速の経年上昇を新人生成時に反映（王朝均衡 boost は draft 後）。
       // R2: cfg を渡して applyMaturity を効かせる（新人＝年齢に応じた未成熟。旧実装は新人が
       //   いきなりリーグ平均能力を持ち、高卒18歳が即戦力レギュラーになっていた）。
-      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era, cfg });
+      const p = generateRookie(draftSeed, id, { role: info.role, primaryPos: info.primaryPos, ageMin: age, ageMax: age, debutYear, era, cfg, name });
       arr.push(p);
     }
     pool.set(tk, arr);
@@ -563,7 +574,9 @@ export function marketStage1(league, cfg, { vacancies, standings, masterSeed, ye
   league.farm = stillFarm;
 
   // ドラフトプール生成（era＝世代の波/球速上昇を反映・D3・§11.3）。ドラフト本体は呼ばない。
-  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era });
+  // usedNames: 世界の名前台帳（無い旧セーブは現役+育成から即席再構築＝引退者ぶんだけ台帳が薄い後方互換）。
+  const usedNames = league.usedNames ?? [...league.players, ...(league.farm ?? [])].map((p) => p.name);
+  const pool = generatePool(remainingVac, cfg, { draftSeed: hashSeed(masterSeed, 'draft', yearIndex), yearIndex, debutYear, era, usedNames });
   const order = waiverOrder(standings, league);
   return { promoted, promotions, remainingVac, pool, order, profiles, windowByTeam };
 }
@@ -574,6 +587,18 @@ export function marketStage1(league, cfg, { vacancies, standings, masterSeed, ye
  * league を in-place 更新する。戻り値なし。
  */
 export function marketStage2(league, cfg, { undrafted, order, balanceBoost = null, rookies }) {
+  // 選手アイデンティティ: この年のプール全員（指名済み＋漏れ）の名前を世界の台帳へ追記する。
+  //   指名漏れの名前も記帳＝後年の新人が同名で再登場して「引退者/既出のドッペルゲンガー」になるのを防ぐ。
+  //   ここ（draft確定後・1回だけ通る地点）で追記するので、H2 の「プール再生成 replay」とは干渉しない。
+  if (league.usedNames) {
+    const known = new Set(league.usedNames);
+    for (const p of [...rookies, ...undrafted]) {
+      if (!known.has(p.name)) {
+        known.add(p.name);
+        league.usedNames.push(p.name);
+      }
+    }
+  }
   // 王朝均衡（D3・§11.3）: 弱い球団に割り当たった新人へ再分配 boost を反映（戦力の平均回帰＝振り子）。
   //   pool 生成時は team 未確定ゆえ draft 割当後に適用（決定論・boost は standings 由来の純算術）。
   if (balanceBoost && balanceBoost.size) {

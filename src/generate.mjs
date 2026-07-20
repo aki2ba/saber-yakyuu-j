@@ -16,16 +16,105 @@ import { clamp, clampRating } from './model/util.mjs';
 import { createBallpark } from './model/battedball.mjs';
 import { hitScore } from './sim/team.mjs';
 
-// --- 名前パーツ（完全架空・common surname/given の手続き合成。プールは拡張可） ------
-// F2-1: リーグ総人口 ~1,000-1,300人へ拡大したため姓・名を各56へ増強（組合せ3,136＝衝突率を抑制）。
+// --- 名前パーツ（選手アイデンティティ刷新・2026-07-20） --------------------------------
+// ユーザー要望「同じ苗字ばかりでわかりづらい。珍しくて読みやすい苗字で、名前＝その選手、にしたい」。
+// 方針:
+//   - 実在する「全国数百〜数万人」帯の珍しめだが素直に読める苗字を厳選（名字由来net等の
+//     珍名ランキング帯を参考）。難読（小鳥遊・澪標等）・創作貴族風（西園寺・九条等）は廃止。
+//   - 有名NPB選手の特徴的な姓（立浪/鳥谷/掛布/王/新庄/則本/千賀/甲斐/源田/筒香/山川 等）は
+//     パブリシティ権への安全側配慮で収録しない（苗字単体に著作権はないが想起の芽を絶つ）。
+//   - フルネーム＝選手アイデンティティ（innateKindOf/identitySeed）。同じ名前は常に同じ選手。
 const SURNAMES = [
-  '青柳', '石垣', '大空', '海堂', '桐生', '黒瀬', '小鳥遊', '相良',
-  '志摩', '瀬川', '立花', '茅野', '鶴見', '灯野', '成瀬', '羽鳥',
-  '氷室', '深沢', '真壁', '御影', '柳沢', '結城', '芳賀', '鷲尾',
-  '綾瀬', '一之瀬', '宇津木', '恵那', '奥寺', '篝', '如月', '九条',
-  '燕堂', '西園寺', '汐見', '菫原', '瀬能', '空木', '橘田', '悠木',
-  '燈台', '波岡', '仁科', '布瀬', '帆村', '真鍋原', '三日月', '椋本',
-  '芽室', '八雲', '夕凪', '嵐田', '凛堂', '若栗', '澪標', '菖蒲谷',
+  '相原', '青鹿', '赤尾', '赤峰', '秋谷', '芥川', '朝比奈', '浅葉',
+  '安芸', '阿久津', '安曇', '跡部', '姉崎', '虻川', '天城', '雨宮',
+  '綾部', '鮎川', '新井田', '荒木田', '有働', '有馬', '粟津', '飯干',
+  '伊集院', '磯貝', '磯部', '一戸', '井手', '稲城', '犬飼', '茨木',
+  '今枝', '今城', '入江', '岩城', '岩渕', '宇喜多', '宇佐美', '牛尾',
+  '氏家', '碓井', '宇都', '鵜殿', '海野', '浦野', '瓜生', '江口',
+  '海老原', '襟川', '大蔵', '大迫', '大和田', '小笠', '荻野目', '長船',
+  '忍田', '小田切', '乙部', '帯金', '大八木', '奥住', '小椋', '尾上',
+  '鏡味', '柿崎', '筧', '桂川', '金森', '樺沢', '上条', '亀岡',
+  '苅田', '神林', '木皿', '北大路', '北見', '衣川', '君島', '肝付',
+  '久我', '草壁', '久住', '楠見', '国枝', '国広', '車田', '黒岩',
+  '桑野', '古閑', '小暮', '小柴', '越野', '木場', '小針', '狛江',
+  '小峰', '権田', '加賀谷', '加地', '勝間田', '金田一', '鹿又', '蒲原',
+  '菊間', '岸波', '木戸口', '京極', '桐山', '久保寺', '熊倉', '倉科',
+  '気仙', '神津', '高野瀬', '小金丸', '五味渕', '是枝', '近江', '児島',
+  '雑賀', '佐伯', '嵯峨', '坂巻', '相楽', '佐倉', '実方', '佐渡',
+  '真田', '猿橋', '沢城', '塩谷', '鹿野', '宍戸', '雫石', '信夫',
+  '柴崎', '渋川', '島津', '下条', '下平', '白波瀬', '城戸', '陣内',
+  '菅谷', '鈴鹿', '諏訪部', '瀬尾', '瀬戸口', '曽根崎', '園部', '曽谷',
+  '佐分利', '早乙女', '三瓶', '椎名', '重信', '宿谷', '白鳥', '進藤',
+  '須賀川', '菅生', '洲崎', '関谷', '千田', '沢渡', '汐入', '塩浜',
+  '高千穂', '田切', '竹之内', '竹宮', '橘川', '辰野', '玉置', '千歳',
+  '千早', '津々見', '津野田', '鶴丸', '手島', '土井垣', '土岐', '常盤',
+  '外川', '鳥海', '土肥', '高嶺', '滝波', '田名部', '玉城', '太刀川',
+  '立木', '舘野', '田水', '知念', '千国', '司城', '寺内', '土肥原',
+  '直江', '長曽根', '長束', '中丸', '名越', '梨本', '那須野', '灘',
+  '名取', '奈良岡', '成宮', '南雲', '新島', '仁井田', '二階堂', '西小路',
+  '布川', '沼澤', '根岸', '猫田', '野々村', '野呂', '名倉', '難波',
+  '韮沢', '布施川', '二本柳', '丹羽', '縄田', '奈半利', '羽賀', '萩野谷',
+  '長谷部', '波多野', '八丁', '花房', '羽生田', '早瀬', '速水', '播磨',
+  '彦坂', '土方', '一橋', '日野原', '兵藤', '平岩', '蛭田', '吹越',
+  '福王', '藤白', '二見', '船越', '古井戸', '古橋', '不破', '保科',
+  '穂積', '堀之内', '本庄', '袴田', '箱崎', '蜂谷', '早坂', '半井',
+  '日名子', '風呂本', '別府', '逸見', '洞口', '枚田', '舞原', '前園',
+  '真柴', '真下', '町屋', '松枝', '松代', '真鍋', '真山', '三雲',
+  '水城', '水無瀬', '御手洗', '水戸部', '峰岸', '三次', '宮腰', '六車',
+  '棟方', '村雨', '室伏', '目時', '毛塚', '百地', '籾山', '森重',
+  '諸星', '間宮', '馬渡', '万田', '三留', '妻鳥', '八巻', '矢作',
+  '矢富', '山名', '山野辺', '結城', '湯浅', '柚木', '弓削', '由利',
+  '横溝', '吉良', '若狭', '和久井', '鷲見', '渡会', '綿貫', '八代',
+  '矢吹', '世良', '龍造寺', '若泉', '脇坂', '和栗', '藍原', '会田',
+  '相田', '青島', '青野', '赤井', '赤枝', '赤城', '赤羽', '秋庭',
+  '秋葉', '浅香', '浅利', '芦沢', '芦名', '安宅', '厚見', '熱田',
+  '天羽', '穴吹', '姉川', '鮎沢', '荒垣', '荒瀬', '有吉', '有村',
+  '安西', '安斎', '飯尾', '飯星', '生駒', '井桁', '池水', '池辺',
+  '伊佐', '伊沢', '石亀', '石渡', '和泉', '泉谷', '磯崎', '磯野',
+  '板垣', '市毛', '一柳', '井筒', '井手口', '稲村', '乾', '犬塚',
+  '井原', '井村', '今関', '入山', '岩出', '岩波', '岩堀', '岩間',
+  '上杉', '上里', '宇垣', '宇治', '臼井', '打越', '宇津', '鵜飼',
+  '梅内', '梅原', '浦上', '浦沢', '漆原', '瓜田', '江頭', '江浦',
+  '江成', '江藤', '蝦名', '蛯原', '老川', '大井', '大江', '大草',
+  '大関', '太田垣', '大貫', '大庭', '大河内', '大楠', '大瀬', '大隈',
+  '沖', '沖田', '荻上', '奥貫', '奥富', '長田', '尾高', '小田島',
+  '音羽', '小野塚', '折笠', '折原', '恩田', '御宿', '海江田', '海保',
+  '加賀', '加古', '柿本', '影山', '笠井', '笠松', '梶', '梶浦',
+  '柏倉', '柏原', '粕谷', '片桐', '片瀬', '片野', '勝田', '勝浦',
+  '桂木', '数原', '香取', '金井', '金山', '神吉', '菅家', '萱野',
+  '苅部', '川井', '川岸', '川路', '川添', '川浪', '川俣', '河内',
+  '菊名', '岸根', '北爪', '北原', '君塚', '京谷', '桐谷', '久遠',
+  '久喜', '久慈', '串田', '楠田', '草刈', '久野', '呉屋', '向後',
+  '香西', '越水', '小関', '後藤田', '五味', '小杉', '小平', '駒井',
+  '小柳', '是永', '紺野', '神取', '児嶋', '犀川', '西条', '酒巻',
+  '榊', '榊原', '桜庭', '笹倉', '佐光', '実藤', '佐貫', '鮫島',
+  '猿渡', '沢井', '沢口', '三条', '塩入', '塩崎', '塩原', '敷島',
+  '重松', '品川', '品田', '篠宮', '斯波', '島貫', '清家', '志村',
+  '下館', '下山', '白川', '白土', '新谷', '陣野', '神保', '須賀',
+  '洲鎌', '鈴村', '須田', '砂押', '砂田', '住田', '住吉', '諏訪',
+  '瀬古', '瀬島', '瀬田', '妹尾', '曽我', '曽田', '園田', '染谷',
+  '田井', '大道', '高江洲', '高柳', '財前', '滝沢', '滝田', '田川',
+  '竹谷', '竹村', '竹脇', '田才', '多々良', '立石', '谷内', '伊達',
+  '田名網', '谷岡', '谷川', '種村', '田野倉', '玉井', '玉利', '田巻',
+  '田宮', '俵', '知花', '千種', '千原', '中条', '塚原', '津久井',
+  '辻村', '綱島', '恒吉', '津野', '妻木', '手塚', '勅使河原', '出羽',
+  '寺岡', '照井', '天童', '東郷', '堂島', '藤堂', '時任', '遠山',
+  '戸川', '都築', '土橋', '轟', '鳥羽', '利根川', '鳥飼', '富樫',
+  '外山', '直井', '仲里', '永島', '永瀬', '仲野', '長浜', '中曽',
+  '名波', '鍋島', '那波', '奈良崎', '南条', '南原', '新見', '新原',
+  '仁木', '西森', '二瓶', '貫井', '沼倉', '布施', '乃村', '野間',
+  '野々宮', '則武', '拝郷', '橋田', '蓮見', '畑山', '八谷', '花岡',
+  '塙', '原島', '春名', '日置', '東出', '疋田', '菱沼', '人見',
+  '日比野', '蛭川', '広橋', '深津', '福王寺', '藤枝', '船木', '船曳',
+  '古池', '古沢', '堀切', '本郷', '穂坂', '布袋', '門馬', '蒔田',
+  '孫崎', '正岡', '町井', '松波', '松風', '間野', '三国', '岬',
+  '水上', '水科', '水島', '水原', '三隅', '溝端', '三田村', '光岡',
+  '三戸', '御堂', '緑川', '峰', '美濃部', '宮永', '深山', '六角',
+  '村岡', '村雲', '村瀬', '室井', '茂木', '本橋', '森園', '矢口',
+  '八木沢', '矢島', '柳生', '安永', '山科', '山城', '山縣', '湯川',
+  '弓場', '由井', '横川', '横手', '横峯', '吉住', '淀川', '米川',
+  '米倉', '米原', '若木', '若山', '若柳', '脇田', '和気', '鰐淵',
+  '渡良瀬',
 ];
 const GIVEN = [
   '陽', '駿', '空良', '樹', '奏太', '海斗', '大河', '蒼真',
@@ -35,6 +124,45 @@ const GIVEN = [
   '澄人', '奏楽', '汰一', '瑞樹', '天翔', '透吾', '那由', '虹郎',
   '暖', '晴凪', '柊真', '楓雅', '穂高', '真昼', '深青', '結人',
   '遥斗', '洛', '凌雅', '瑠海', '蓮司', '禄', '航琉', '皐',
+  '瑛人', '旺祐', '海翔', '絃', '律', '千隼', '慧吾', '大雅',
+  '悠真', '陽翔', '蓮', '湊斗', '岳', '遼', '昴', '洸',
+  '峻', '迅', '魁', '亘', '錬', '廉', '凪', '惺',
+  '塁', '想', '弦', '陸', '快', '新', '光希', '春樹',
+  '秋人', '壮真', '玄', '隼世', '慶次', '港', '司', '伶',
+  '健太', '翔太', '大輔', '拓也', '亮太', '直樹', '和也', '智也',
+  '俊介', '恭平', '圭太', '竜也', '哲平', '直人', '拓海', '大地',
+  '一輝', '光一', '賢人', '元気', '誠', '淳', '亮', '学',
+  '博', '聡', '修', '稔', '徹', '昇', '潔', '武',
+  '隆', '勲', '進', '実', '剛', '豪', '清', '勝',
+  '慎太郎', '健太郎', '慎一郎', '幸太郎', '虎太郎', '凛太郎', '俊太郎', '朔太郎',
+  '龍太郎', '幸四郎', '洋一郎', '孝太郎', '鉄太郎', '雄一郎', '浩一郎', '純一郎',
+  '洋平', '涼平', '恭介', '敬太', '慶太', '啓介', '康平', '康介',
+  '幸平', '浩平', '晃平', '純平', '俊平', '鉄平', '隼平', '大介',
+  '洸介', '雄介', '孝介', '蒼介', '琢磨', '圭介', '涼介', '昂平',
+  '勇太', '勇人', '勇気', '祐介', '裕介', '裕也', '裕樹', '優斗',
+  '優真', '悠斗', '悠希', '悠李', '侑', '侑真', '佑', '佑真',
+  '陽斗', '陽向', '陽大', '颯太', '颯真', '颯人', '颯汰', '奏人',
+  '大和', '大樹', '大貴', '大晟', '太一', '泰生', '太陽', '昊',
+  '昂', '昂大', '晃', '晃太', '大翔', '泰雅', '昌平', '章吾',
+  '光佑', '光志', '光琉', '晴', '晴人', '晴真', '晴翔', '晴斗',
+  '青空', '青葉', '蒼', '蒼太', '蒼汰', '蒼空', '碧人', '碧斗',
+  '智樹', '知宏', '朋也', '友哉', '友樹', '賢吾', '賢太', '悟',
+  '慧斗', '聡太', '哲', '哲太', '敏', '慎', '脩', '匠',
+  '純', '仁', '侃', '旬', '洵', '皓', '巧', '将',
+  '翼', '要', '耀', '曜', '凜', '嵐', '武蔵', '丈',
+  '丈一郎', '源', '清志', '勝己', '正', '正人', '正樹', '昌',
+  '昌樹', '茂', '繁', '靖', '康', '宣', '敦', '篤',
+  '篤人', '暁人', '旺', '旺太郎', '央', '央介', '宗', '宗佑',
+  '宗一郎', '伊織', '右京', '慶一', '慶一郎', '敬', '恒', '奏',
+  '奏多', '奏介', '琉之介', '琉斗', '洸太', '洸希', '海', '海人',
+  '海成', '洋', '渉', '航平', '航大', '航太', '航志', '絢斗',
+  '彪', '彪真', '彪斗', '虎', '虎徹', '竜', '竜真', '龍',
+  '龍之介', '真', '真人', '真吾', '真治', '真幸', '雅', '雅人',
+  '雅樹', '成', '成海', '伸', '伸吾', '信', '信人', '望',
+  '望夢', '柊', '柊斗', '柾', '柾人', '航希', '拓', '拓斗',
+  '琢', '琢也', '紀', '紀人', '範', '倫', '倫太朗', '怜',
+  '怜央', '冴', '丞', '虎之介', '京', '京佑', '喬', '喬平',
+  '嵩', '嵩人', '遥', '遥人', '昴流', '要人', '劉生', '世那',
 ];
 
 // --- 架空チーム名（実在NPB球団名を避けた造語） -------------------------------
@@ -88,13 +216,91 @@ export function teamFinanceProfile(masterSeed, teamId, cfg) {
   return { budget: Math.round(clamp(r.normal(b.mean, b.sd), b.min, b.max)) };
 }
 
-/** 完全架空の姓名を合成 */
+/** 完全架空の姓名を合成（レガシー経路・直接呼び出しテスト用。実世界生成は drawUniqueName を使う） */
 export function generateName(rng) {
   return SURNAMES[rng.int(SURNAMES.length)] + '　' + GIVEN[rng.int(GIVEN.length)];
 }
 
-/** 投手を1人生成 */
-export function generatePitcher(rng, id) {
+// ============================================================================
+// 選手アイデンティティ（2026-07-20・ユーザー要望「名前＝その選手。同じ選手は同じ初期値」）
+//
+// フルネームから独立シードで決定論導出する＝**どの世界(masterSeed)・どのセーブでも
+// 同じ名前は同じ選手**（役割・守備位置・利き手・素質・性格・故障耐性・ドラフト時の出自）。
+// 世界が決めるのは「誰がいつどの球団に現れるか」（名前の抽選順）と、登場後の経過
+// （加齢・成長乱数・故障・時代の波 era・王朝均衡 boost）だけ。
+//   - 数値分布は従来の world-rng 生成と完全に同一（シード源が変わるだけ）＝較正53指標は分布不変
+//   - scoutSeed は従来どおり世界側（球団の見立て違いは世界の個性であって選手の属性ではない）
+// ============================================================================
+
+/** 生成本体（素質・利き手・球種）の乱数列。名前だけから決まる＝世界横断で同一 */
+export function identityBodyRng(name) {
+  return makeRng(hashSeed('togen-id-body', name));
+}
+
+// 野手ポジションの出現重み（チーム編成プラン CORE+DEPTH+EXTRA の必要数と整合＝棄却抽選が軽い）
+const POS_ID_WEIGHTS = [['C', 13], ['1B', 11], ['2B', 13], ['3B', 11], ['SS', 14], ['LF', 11], ['CF', 14], ['RF', 13]];
+
+/** 名前から役割と主ポジションを決定論導出（世界は「必要な型に合う名前」を探して採用する） */
+export function innateKindOf(name) {
+  const r = makeRng(hashSeed('togen-id-kind', name));
+  if (r.chance(0.5)) return { role: 'pitcher', primaryPos: 'P' };
+  let total = 0;
+  for (const [, w] of POS_ID_WEIGHTS) total += w;
+  let u = r.next() * total;
+  for (const [pos, w] of POS_ID_WEIGHTS) {
+    u -= w;
+    if (u <= 0) return { role: 'fielder', primaryPos: pos };
+  }
+  return { role: 'fielder', primaryPos: 'RF' };
+}
+
+/** 使用済みフルネーム集合から苗字の使用回数マップを作る（世界内の同姓抑制の入力） */
+export function surnameCountsOf(names) {
+  const m = new Map();
+  for (const n of names) {
+    const s = String(n).split('　')[0];
+    m.set(s, (m.get(s) ?? 0) + 1);
+  }
+  return m;
+}
+
+/**
+ * 世界内ユニークな名前を1つ引く（役割/ポジション型に合うアイデンティティを棄却抽選）。
+ *   - フルネームは used と衝突しない＝世界に同姓同名は存在しない
+ *   - 同姓は指数的に抑制（未使用=必ず採用 / n人使用中=0.25^n でしか採用しない）
+ *     →「同じ苗字ばかりでわかりづらい」の解消（ユーザー報告・旧実装は56姓に平均20人）
+ * used / surCount は呼び出し元が管理（この関数が採用時に更新する）。決定論（rng は専用ストリーム）。
+ * @param {{role:string, primaryPos:?string}} want 必要な型（primaryPos=null は役割のみ指定）
+ */
+export function drawUniqueName(rng, used, surCount, want) {
+  for (let pass = 0; pass < 2; pass++) {
+    const tries = pass === 0 ? 3000 : 30000;
+    for (let t = 0; t < tries; t++) {
+      const s = SURNAMES[rng.int(SURNAMES.length)];
+      if (pass === 0) {
+        const c = surCount.get(s) ?? 0;
+        if (c > 0 && rng.next() > Math.pow(0.25, c)) continue; // 同姓の指数抑制
+      }
+      const g = GIVEN[rng.int(GIVEN.length)];
+      const name = s + '　' + g;
+      if (used.has(name)) continue;
+      const kind = innateKindOf(name);
+      if (kind.role !== want.role) continue;
+      if (want.role === 'fielder' && want.primaryPos && kind.primaryPos !== want.primaryPos) continue;
+      used.add(name);
+      surCount.set(s, (surCount.get(s) ?? 0) + 1);
+      return name;
+    }
+    // pass 1: 名前空間が混んで型が見つからない場合は同姓抑制を捨てて再走査（安全弁）
+  }
+  // 究極の安全弁: 2万超の組合せが型条件込みで枯渇した場合のみ（実運用では到達しない）
+  return generateName(rng);
+}
+
+/** 投手を1人生成。
+ *  name を渡すと選手アイデンティティ経路＝呼び出し元は rng に identityBodyRng(name) を渡すこと。
+ *  性格・故障耐性も名前キーで引く（同じ名前=同じ選手）。name 省略時は従来の world-rng 経路（テスト互換）。 */
+export function generatePitcher(rng, id, name = null) {
   const velocityKmh = Math.round(clamp(rng.normal(146, 4.5), 130, 165)); // NPB先発平均~146
   const control = draw(rng, 50, 13); // S5較正: 分散を微拡大（平均不変）＝エース級FIPの裾→投手WAR王
   // （F2-5: 12→13。出場登録29人選抜でリーグ平均が上澄み化しエースの相対優位が圧縮→裾を再拡大）
@@ -150,20 +356,20 @@ export function generatePitcher(rng, id) {
     },
   });
 
-  // R6: 潜在的な故障耐性（生涯不変の真値）。独立シード(id基準)で引き、メインの生成ストリームを
-  //   一切消費しない＝既存リーグ生成は byte 不変（较正53指標に非干渉）。
-  t.career.durability = clampRating(makeRng(hashSeed(id, 'durability')).normal(50, 10));
+  // R6: 潜在的な故障耐性（生涯不変の真値）。独立シードで引き、メインの生成ストリームを
+  //   一切消費しない。アイデンティティ経路(name有)では名前キー＝世界横断で同一の耐性。
+  t.career.durability = clampRating(makeRng(hashSeed(name ?? id, 'durability')).normal(50, 10));
   return createPlayer({
     id,
-    name: generateName(rng),
+    name: name ?? generateName(rng),
     role: 'pitcher',
     primaryPos: 'P',
     bats: rng.chance(0.3) ? 'L' : 'R',
     throws: rng.chance(0.28) ? 'L' : 'R',
     age: 18 + rng.int(20),
     trueAbility: t,
-    scoutSeed: hashSeed(id, 'scout'),
-    personality: assignPersonality(id), // H3-1（独立シード・メイン列非消費）
+    scoutSeed: hashSeed(id, 'scout'), // 球団の見立てノイズは世界側（選手の属性ではない）
+    personality: assignPersonality(name ?? id), // H3-1（アイデンティティ経路では名前キー）
   });
 }
 
@@ -212,8 +418,9 @@ const STEAL_BASE = 48.67;
 const STEAL_PER_SPEED = 0.2636;
 const STEAL_SD = 12.17;
 
-/** 野手を1人生成（primaryPos を主守備位置に） */
-export function generateFielder(rng, id, primaryPos) {
+/** 野手を1人生成（primaryPos を主守備位置に）。
+ *  name を渡すと選手アイデンティティ経路（generatePitcher と同じ規約）。 */
+export function generateFielder(rng, id, primaryPos, name = null) {
   const speed = draw(rng, SPEED_BASE + (POS_SPEED_BIAS[primaryPos] ?? 0), SPEED_SD);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
   const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
@@ -263,22 +470,22 @@ export function generateFielder(rng, id, primaryPos) {
     },
   });
 
-  // ブロッキング（§B1・捕手専用）: 独立シード(id基準)で引き、メインの生成ストリームを一切乱さない
-  // （既存リーグ生成をバイト一致で保つ＝B1の変更を「一球シム化」だけに閉じる）。非捕手は既定50=WP/PB非関与。
-  if (primaryPos === 'C') t.fielding.blocking = clampRating(makeRng(hashSeed(id, 'block')).normal(50, 10));
+  // ブロッキング（§B1・捕手専用）: 独立シードで引き、メインの生成ストリームを一切乱さない。
+  // アイデンティティ経路(name有)では名前キー＝世界横断で同一。非捕手は既定50=WP/PB非関与。
+  if (primaryPos === 'C') t.fielding.blocking = clampRating(makeRng(hashSeed(name ?? id, 'block')).normal(50, 10));
 
-  t.career.durability = clampRating(makeRng(hashSeed(id, 'durability')).normal(50, 10)); // R6（同上・独立シード）
+  t.career.durability = clampRating(makeRng(hashSeed(name ?? id, 'durability')).normal(50, 10)); // R6（同上）
   return createPlayer({
     id,
-    name: generateName(rng),
+    name: name ?? generateName(rng),
     role: 'fielder',
     primaryPos,
     bats: rng.chance(0.35) ? 'L' : rng.chance(0.08) ? 'S' : 'R',
     throws: rng.chance(0.15) ? 'L' : 'R',
     age: 18 + rng.int(20),
     trueAbility: t,
-    scoutSeed: hashSeed(id, 'scout'),
-    personality: assignPersonality(id), // H3-1（独立シード・メイン列非消費）
+    scoutSeed: hashSeed(id, 'scout'), // 球団の見立てノイズは世界側（選手の属性ではない）
+    personality: assignPersonality(name ?? id), // H3-1（アイデンティティ経路では名前キー）
   });
 }
 
@@ -322,12 +529,14 @@ export function applyEraToRookie(p, era = null, boost = 0) {
  *   era=時代トレンド成分（D3・§11.3）。指定時は生成後に球速の経年上昇/世代の波を反映（乱数非消費）。
  * @returns {Object} Player（teamId は呼び出し側で設定）
  */
-export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear, era = null, cfg = null }) {
-  const rng = makeRng(hashSeed(seed, id));
-  const p = role === 'pitcher' ? generatePitcher(rng, id) : generateFielder(rng, id, primaryPos);
+export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, debutYear, era = null, cfg = null, name = null }) {
+  // 選手アイデンティティ（name有）: 素質・年齢帯内の抽選も名前キー＝どの世界でも同じ初期値で指名される。
+  //   世界依存で残るのは era（時代の波＝環境）と、指名後の成長・故障・王朝均衡 boost だけ。
+  const rng = name ? identityBodyRng(name) : makeRng(hashSeed(seed, id));
+  const p = role === 'pitcher' ? generatePitcher(rng, id, name) : generateFielder(rng, id, primaryPos, name);
   // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
   // 独立シードで引き直して上書きする（メイン列の順序は乱さない＝決定論）。
-  const aRng = makeRng(hashSeed(seed, id, 'age'));
+  const aRng = makeRng(name ? hashSeed('togen-id-age', name) : hashSeed(seed, id, 'age'));
   p.age = ageMin + aRng.int(Math.max(1, ageMax - ageMin + 1));
   p.birthSeason = debutYear != null ? debutYear - p.age : null;
   p.primaryPos = role === 'pitcher' ? 'P' : primaryPos;
@@ -346,7 +555,7 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
     //   毎年 youthDebtRepayPerYear ずつ返済して0へ収束させる＝一時的な弱さ（恒久劣化ではない）。
     const youthDebt = -(mk.youthDebtPerYear ?? 0) * Math.max(0, (mk.youthDebtRefAge ?? 0) - p.age);
     p.trueAbility.career.youthDebt = youthDebt;
-    applyMaturity(p, cfg, (mk.rookiePotentialLift ?? 0) + draftSkew(seed, id, cfg) + youthDebt);
+    applyMaturity(p, cfg, (mk.rookiePotentialLift ?? 0) + draftSkew(seed, id, cfg, name) + youthDebt);
   }
   return p;
 }
@@ -357,10 +566,11 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
  * 期待値0で設計する（bustProb の確率で mean=-skewBustMag/2 の凡庸オフセット、残りは平均 starScale
  * ＝ p*m/(2*(1-p)) の指数裾「大当たり」オフセット）＝多年平均に系統ドリフトを起こさない。
  */
-function draftSkew(seed, id, cfg) {
+function draftSkew(seed, id, cfg, name = null) {
   const dk = cfg.tuning.market.draft;
   if (!dk?.skewBustProb) return 0;
-  const r = makeRng(hashSeed(seed, id, 'skew'));
+  // アイデンティティ経路（name有）: 当たり/凡庸の歪みも名前キー＝「大器の名前」は世界横断で大器。
+  const r = makeRng(name ? hashSeed('togen-id-skew', name) : hashSeed(seed, id, 'skew'));
   const p = dk.skewBustProb;
   const m = dk.skewBustMag;
   if (r.chance(p)) return -m * r.next(); // 凡庸〜伸び悩み: uniform(-m, 0)
@@ -496,7 +706,7 @@ export function applyMaturity(p, cfg, extraLift = 0) {
  * 年齢は R2 の重み付き分布（roster.ageWeights・NPB実態の山型）から引き、確定後に applyMaturity で
  * 「ポテンシャル → その年齢での現在能力」へ変換する（＝若手は未成熟・ベテランは衰え＋生存バイアス）。
  */
-export function generateTeam(rng, teamId, cfg) {
+export function generateTeam(rng, teamId, cfg, alloc = null) {
   const R = cfg.tuning.roster;
   const nPitchers = R.pitchersMin + rng.int(R.pitchersMax - R.pitchersMin + 1);
   const nFielders = R.controlledPerTeam - nPitchers;
@@ -506,12 +716,18 @@ export function generateTeam(rng, teamId, cfg) {
   }
   const roster = [];
   for (let i = 0; i < nPitchers; i++) {
-    const p = generatePitcher(rng, `${teamId}P${i + 1}`);
+    const id = `${teamId}P${i + 1}`;
+    // アイデンティティ経路（alloc有=実世界生成）: 名前を先に確保し、素質は名前キーの独立列から。
+    // 年齢（キャリアの現在地）だけは世界が決める＝同じ選手が世界ごとに違う年齢で登場する。
+    const name = alloc ? drawUniqueName(alloc.rng, alloc.used, alloc.sur, { role: 'pitcher' }) : null;
+    const p = generatePitcher(name ? identityBodyRng(name) : rng, id, name);
     p.age = drawAgeWeighted(rng, R.ageWeights);
     roster.push(applyMaturity(p, cfg));
   }
   for (let i = 0; i < nFielders; i++) {
-    const p = generateFielder(rng, `${teamId}F${i + 1}`, plan[i]);
+    const id = `${teamId}F${i + 1}`;
+    const name = alloc ? drawUniqueName(alloc.rng, alloc.used, alloc.sur, { role: 'fielder', primaryPos: plan[i] }) : null;
+    const p = generateFielder(name ? identityBodyRng(name) : rng, id, plan[i], name);
     p.age = drawAgeWeighted(rng, R.ageWeights);
     roster.push(applyMaturity(p, cfg));
   }
@@ -533,15 +749,25 @@ export function devCountFor(devFocus, cfg) {
  * 能力の生成分布は支配下と同一（観測が薄い・ノイズ大なのは既存 §12.1 の farm 観測枠組みが担う）。
  * 年齢は 18-24 中心（若手最厚）。id は `${teamId}D{n}`＝支配下(P/F)と衝突しない。
  */
-export function generateFarmPlayers(rng, teamId, count, cfg) {
+export function generateFarmPlayers(rng, teamId, count, cfg, alloc = null) {
   const R = cfg.tuning.roster;
   const list = [];
   for (let i = 0; i < count; i++) {
     const id = `${teamId}D${i + 1}`;
     const isPitcher = rng.chance(R.devPitcherShare);
-    const p = isPitcher
-      ? generatePitcher(rng, id)
-      : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
+    let p;
+    if (alloc) {
+      // アイデンティティ経路: 役割は世界（球団の育成方針）・ポジションは名前=人物に従う
+      const name = drawUniqueName(alloc.rng, alloc.used, alloc.sur, { role: isPitcher ? 'pitcher' : 'fielder' });
+      const kind = innateKindOf(name);
+      p = isPitcher
+        ? generatePitcher(identityBodyRng(name), id, name)
+        : generateFielder(identityBodyRng(name), id, kind.primaryPos, name);
+    } else {
+      p = isPitcher
+        ? generatePitcher(rng, id)
+        : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
+    }
     p.age = drawAgeWeighted(rng, R.devAgeWeights); // 育成は支配下より若い（R2）
     p.rosterStatus = 'minor';
     p.teamId = teamId;
@@ -618,12 +844,21 @@ export function generateLeague(masterSeed, config) {
   const leagues = config.league.leagues ?? null;
   const perLeague = leagues ? Math.ceil(numTeams / leagues.length) : numTeams;
 
+  // 選手アイデンティティ: 名前の抽選機（世界内フルネーム一意＋同姓の指数抑制）。
+  //   名前列は専用シード＝チーム/球場/監督の各RNG系列とは独立。抽選はチーム順に逐次＝決定論。
+  //   ⚠️ used/sur は世界全体で共有するため、この抽選だけは「順序依存」＝チームのループ順を変えないこと。
+  const alloc = {
+    rng: makeRng(hashSeed(masterSeed, 'names')),
+    used: new Set(),
+    sur: new Map(),
+  };
+
   // 1) 全チームのロスターを生成（チームシードで決定論・順序非依存）＋攻撃力を測る。
   const built = [];
   for (let ti = 0; ti < numTeams; ti++) {
     const teamId = `T${ti + 1}`;
     const trng = makeRng(hashSeed(masterSeed, 'team', ti));
-    const roster = generateTeam(trng, teamId, config);
+    const roster = generateTeam(trng, teamId, config, alloc);
     for (const p of roster) p.teamId = teamId;
     const manager = generateManager(makeRng(hashSeed(masterSeed, 'manager', ti)));
     // 球場ジオメトリの生偏差（D2・§11.2）。park専用RNG系列＝選手/監督RNGを消費しない（選手はD2前とbyte同一）。
@@ -634,6 +869,7 @@ export function generateLeague(masterSeed, config) {
       teamId,
       devCountFor(manager.devFocus, config),
       config,
+      alloc,
     );
     // 攻撃力＝「一軍級の上位野手」のhitScore合計（F2-1: 全野手合計だと二軍層/育成の人数差で歪むため
     //   デプスチャートに乗る上位 offenseTopN 人で測る＝リーグ間の一軍攻撃力を均衡させる本来の目的に整合）。
@@ -711,7 +947,9 @@ export function generateLeague(masterSeed, config) {
     // 育成選手（F2-1）: league.players/team.playerIds と別枠の league.farm へ（既存 §12.1 farm 枠組み）。
     farm.push(...t.farm);
   });
-  return { masterSeed, teams, players, farm };
+  // usedNames: 世界で使用済みのフルネーム台帳（選手アイデンティティ）。ドラフト新人の命名が
+  //   引退者も含めた全既出名と衝突しないよう、market が読み・確定後に追記する（セーブへ永続）。
+  return { masterSeed, teams, players, farm, usedNames: [...alloc.used] };
 }
 
 /** Fisher–Yates（rng使用・決定論） */

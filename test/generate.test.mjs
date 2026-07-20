@@ -1,7 +1,7 @@
 // 架空選手ジェネレータ（0-6）の単体テスト。決定論・編成・三層の器・値域を固定する。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateLeague, generatePitcher, generateFielder, TEAM_COLORS, TEAM_ABBR } from '../src/generate.mjs';
+import { generateLeague, generatePitcher, generateFielder, TEAM_COLORS, TEAM_ABBR, innateKindOf, identityBodyRng } from '../src/generate.mjs';
 import { validatePlayer } from '../src/model/player.mjs';
 import { makeRng } from '../src/rng.mjs';
 import { createConfig } from '../src/config.mjs';
@@ -60,6 +60,49 @@ test('別masterSeedは別リーグ', () => {
   const a = generateLeague(1, cfg);
   const b = generateLeague(2, cfg);
   assert.notEqual(a.players[0].name + a.players[10].name, b.players[0].name + b.players[10].name);
+});
+
+// --- 選手アイデンティティ（2026-07-20・名前=人物） --------------------------------
+
+test('アイデンティティ: 世界内でフルネームは完全一意・同姓は少数に分散（旧56姓×平均20人の解消）', () => {
+  const lg = generateLeague(2026, cfg);
+  const names = [...lg.players, ...lg.farm].map((p) => p.name);
+  assert.equal(new Set(names).size, names.length, '同姓同名が存在しない');
+  const sur = new Map();
+  for (const n of names) {
+    const s = n.split('　')[0];
+    sur.set(s, (sur.get(s) ?? 0) + 1);
+  }
+  // プール713姓（2026-07-20拡張: 326→713・ユーザー要望「326は少ない」）: 世界1,136人で
+  // 同姓は平均1.6人・大半が世界内唯一の苗字になる（実NPBの支配下900人より同姓が少ない水準）。
+  const maxUse = Math.max(...sur.values());
+  assert.ok(maxUse <= 4, `同姓の最大人数が抑制されている (実測 max=${maxUse})`);
+  assert.ok(sur.size >= 550, `十分な種類の苗字が使われる (実測 ${sur.size}種)`);
+});
+
+test('アイデンティティ: 同じ名前は別世界でも同じ選手（役割/ポジ/利き手/素質の純関数検証）', () => {
+  // 名前拡張（識別空間26万人）で世界間の自然な重なりが数人まで減ったため、重なり頼みでなく
+  // 「世界Aの実在選手を、その名前だけからアイデンティティ経路で再構成→一致」を直接検証する
+  // （= innateKindOf/identityBodyRng が選手の innate を完全に決めることの証明）。
+  const A = generateLeague(1, cfg);
+  const sample = [...A.players, ...A.farm].filter((_, i) => i % 40 === 0); // 約30人を横断サンプル
+  assert.ok(sample.length >= 20, `十分なサンプル (${sample.length})`);
+  for (const p of sample) {
+    const kind = innateKindOf(p.name);
+    assert.equal(p.role, kind.role, `${p.name} の役割が名前から再構成できる`);
+    if (kind.role === 'fielder') assert.equal(p.primaryPos, kind.primaryPos, `${p.name} の主ポジ`);
+    // 同じ名前・同じ役割/ポジで再生成 → 利き手・素質（ポテンシャル）・耐性が完全一致
+    const q = kind.role === 'pitcher'
+      ? generatePitcher(identityBodyRng(p.name), 'REGEN', p.name)
+      : generateFielder(identityBodyRng(p.name), 'REGEN', kind.primaryPos, p.name);
+    assert.equal(p.bats + p.throws, q.bats + q.throws, `${p.name} の利き手`);
+    assert.equal(p.trueAbility.career.durability, q.trueAbility.career.durability, `${p.name} の耐性`);
+    assert.equal(p.personality, q.personality, `${p.name} の性格`);
+    // 生成直後のポテンシャルは applyMaturity(age) 適用前後で currentへ変換されるため、
+    // 年齢非依存の代表値（peakAge/declineRate＝カーブ形状）で同一人物性を確認する
+    assert.equal(p.trueAbility.career.peakAge, q.trueAbility.career.peakAge, `${p.name} のpeakAge`);
+    assert.equal(p.trueAbility.career.declineRate, q.trueAbility.career.declineRate, `${p.name} のdeclineRate`);
+  }
 });
 
 test('リーグ規模どおりの球団数・支配下70人/球団（投手33-36＋野手34-37）（F2-1）', () => {
@@ -168,19 +211,26 @@ test('R2: 高卒新人(18-19)は一軍平均を大きく下回る（即戦力レ
 });
 
 test('R2: 生成と加齢が同一カーブ — 18歳を9年加齢させると27歳の生成分布へ収束する', () => {
-  const lg = generateLeague(5, cfg);
+  // 18歳コホートは1世界に十数人と少なく、単一世界だと成長平均がシード依存で揺れる
+  // （選手アイデンティティ刷新の世界引き直しで seed5 が 5.6pt の下振れ世界になり発覚。
+  //   rSB/DH A/B と同じ「固定シード世界の小標本」問題）→ 3世界のコホートを合算して評価する。
   const mean = (arr) => arr.reduce((a, p) => a + overallAbility(p), 0) / arr.length;
-  const young = lg.players.filter((p) => p.age === 18).map((p) => JSON.parse(JSON.stringify(p)));
+  const young = [];
+  const born27 = [];
+  for (const seed of [5, 6, 7]) {
+    const lg = generateLeague(seed, cfg);
+    young.push(...lg.players.filter((p) => p.age === 18).map((p) => JSON.parse(JSON.stringify(p))));
+    born27.push(...lg.players.filter((p) => p.age === 27));
+  }
   const before = mean(young);
   for (let y = 0; y < 9; y++) applyAging(young, cfg, { seed: 777 + y });
   const after = mean(young);
   // ③やきゅつく的な楽しさ: 若手が実際に育つ（旧実装は9年で +1.8pt しか伸びなかった）
-  assert.ok(after - before > 6, `18→27歳で ${(after - before).toFixed(1)}pt 成長（旧実装 +1.8pt）`);
+  assert.ok(after - before > 6, `18→27歳で ${(after - before).toFixed(1)}pt 成長（旧実装 +1.8pt・3世界合算）`);
   // 内部整合: 育った27歳が「生成された27歳」と同水準（±4pt。個体差/成長分散gmの揺れを許容）
-  const born27 = mean(lg.players.filter((p) => p.age === 27));
   assert.ok(
-    Math.abs(after - born27) < 4,
-    `育った27歳(${after.toFixed(1)}) ≒ 生成された27歳(${born27.toFixed(1)})＝生成と加齢が同一カーブ`,
+    Math.abs(after - mean(born27)) < 4,
+    `育った27歳(${after.toFixed(1)}) ≒ 生成された27歳(${mean(born27).toFixed(1)})＝生成と加齢が同一カーブ`,
   );
 });
 

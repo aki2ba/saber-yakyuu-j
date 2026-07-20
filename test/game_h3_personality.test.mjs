@@ -57,13 +57,20 @@ test('H3-1: assignPersonality は id 基準の純関数（同一idは常に同�
   }
 });
 
-test('H3-1: 性格は id だけに依存する（masterSeed に依らない）＝独立シードで生成ストリームを乱さない', () => {
+test('選手アイデンティティ: 性格は名前だけに依存する（同じ名前は別 masterSeed でも同じ性格）', () => {
+  // 2026-07-20 アイデンティティ刷新: 実世界生成（alloc経路）の性格は id でなく名前キー
+  //   ＝「同じ名前は同じ選手」（世界横断）。旧主張「idのみ依存」は名前キー化で置き換え。
   const leagueA = generateLeague(1, cfg);
   const leagueB = generateLeague(2, cfg);
-  const pA = leagueA.players.find((p) => p.id === 'T1P1');
-  const pB = leagueB.players.find((p) => p.id === 'T1P1');
-  assert.ok(pA && pB, '両リーグに T1P1 が存在する（生成プランが同一のため）');
-  assert.equal(pA.personality, pB.personality, '同じ id は別 masterSeed でも同じ性格（idのみに依存）');
+  const byName = new Map(leagueB.players.map((p) => [p.name, p]));
+  let checked = 0;
+  for (const p of leagueA.players) {
+    const q = byName.get(p.name);
+    if (!q) continue;
+    assert.equal(p.personality, q.personality, `${p.name} の性格が世界間で一致する`);
+    checked++;
+  }
+  assert.ok(checked > 0, '両世界に共通の名前が存在する（名前空間2万に対し世界1136人×2）');
 });
 
 test('H3-1: generateLeague は決定論（同一masterSeedなら全選手のpersonalityが完全一致）', () => {
@@ -102,7 +109,8 @@ test('H3-1: 旧セーブ（personality欠落）は load 時に新規生成と同
   for (const p of blob.leagueSnapshot.farm) delete p.personality;
   const restored = load(blob, { cfg });
   for (const p of [...restored.league.players, ...(restored.league.farm ?? [])]) {
-    assert.equal(p.personality, assignPersonality(p.id), `${p.id}: load補完が assignPersonality と不一致`);
+    // 2026-07-20 選手アイデンティティ: 新規生成の personality は名前キー＝補完も名前キーで一致する
+    assert.equal(p.personality, assignPersonality(p.name), `${p.id}: load補完が assignPersonality(名前キー) と不一致`);
     assert.equal(p.personality, original.get(p.id), `${p.id}: load補完が新規生成時の値と不一致`);
   }
 });

@@ -1025,6 +1025,8 @@ function seasonStartLeague(state) {
     teams: state.league.teams,
     players: state.league.players,
     farm: state.league.farm ?? [],
+    // 選手アイデンティティ: 世界の名前台帳（引退者・指名漏れ含む既出フルネーム。ドラフト命名の衝突防止）
+    usedNames: state.league.usedNames ?? [],
   }));
   // 当季の育成→支配下昇格を逆順に巻き戻す（日次 replay が同じ昇格をもう一度再現するため）。
   //   applyFarmPromotionSwap は配列の位置を保存する入替なので、逆スワップで厳密に元へ戻る。
@@ -1077,12 +1079,17 @@ export function load(blob, options = {}) {
     teams: snap.teams,
     players: snap.players,
     farm: snap.farm ?? [],
+    // 選手アイデンティティ: 名前台帳。台帳の無い旧セーブは現役+育成から再構築（引退者ぶんは
+    //   復元不能＝以後の新人と稀に同名衝突しうるが、20,864通りの名前空間では実害なし）。
+    usedNames: snap.usedNames ?? [...snap.players, ...(snap.farm ?? [])].map((p) => p.name),
   };
   // H3-1: 性格タグの後方互換補完（phaseH_fun_spec 全柱共通の鉄則6・H3-1）。personality は
-  //   id 基準の独立シードから決定論的に導出できるため、新規生成(generatePitcher/generateFielder)と
+  //   独立シードから決定論的に導出できるため、新規生成(generatePitcher/generateFielder)と
   //   同じ式(assignPersonality)を旧セーブにも適用すれば同一の結果になる＝「後付けできる」。
-  for (const p of league.players) if (p.personality == null) p.personality = assignPersonality(p.id);
-  for (const p of league.farm) if (p.personality == null) p.personality = assignPersonality(p.id);
+  //   2026-07-20 選手アイデンティティ: 新規生成は名前キー（同じ名前=同じ選手）になったため補完も
+  //   名前キーで揃える（personality を保存済みの通常セーブはこの行を通らない＝影響は欠落補完のみ）。
+  for (const p of league.players) if (p.personality == null) p.personality = assignPersonality(p.name ?? p.id);
+  for (const p of league.farm) if (p.personality == null) p.personality = assignPersonality(p.name ?? p.id);
   // H5-A: team.finance の後方互換補完（phaseH_fun_spec 全柱共通の鉄則6）。budget は masterSeed×teamId
   //   の独立シードから決定論的に導出できる（personality と同じ「後付けできる」構造）ため、
   //   新規生成(generate.mjs teamFinanceProfile)と同じ式で欠けているチームだけ埋める。payroll は

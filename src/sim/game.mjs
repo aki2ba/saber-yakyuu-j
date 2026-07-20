@@ -46,6 +46,10 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
   if (ctx) {
     ctx.outs = outs; // ARM補殺の可否判定（3アウト目は作らない）
     ctx.outsAdded = 0; // 外野補殺/走塁死/併殺で増えたアウト。呼び出し側が outs へ加算する
+    // 空中アウトでは打者のアウトが確定済み（caller の outs++ は advanceRunners の後）＝
+    // 補殺の3アウト上限判定にこの「保留中の打者アウト」を含める（2026-07-20: 1死ライナー捕球＋
+    // タッグアップ2連刺しで outsAfter=4 になる違反を realism イベント不変量が検出→修正）。
+    ctx.pendingBatterOut = 0;
     // realism_r1_baserunning_spec: 毎打席リセットする出力フラグ（caller が読む）
     ctx.sacFly = false; // 犠飛が成立したか（§B・唯一の情報源）
     ctx.gbDp = false; // ゴロ併殺が成立したか（§A）
@@ -93,6 +97,9 @@ export function advanceRunners(bases, result, batterId, isAirOut, outs, rng, cfg
       return resolveGroundOutAdvance(bases, batterId, outs, b1, b2, b3, ctx, cfg, rng);
     }
     if (isAirOut && outs < 2) {
+      // 捕球＝打者アウトは確定（callerが後で outs++ する）。タッグアップ補殺の3アウト上限は
+      // このぶんを含めて数える（ctx.outs 自体は動かさない＝2死ボーナス等の判定基準を変えない）。
+      if (ctx) ctx.pendingBatterOut = 1;
       const bb = ctx && ctx.battedBall;
       if (!bb) {
         // ctxからbattedBallを渡さない呼び出し（ctxなしの単体テスト等）はレガシー挙動へ
@@ -224,8 +231,9 @@ const ADV_OUT = 'out'; // 走って刺された（走塁死・塁からは消え
  */
 function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
   // プレー死後（3アウト到達後）の進塁は発生しない。乱数を消費せず自重として扱う
-  // （realism_r1_baserunning_spec §D-1）。
-  if (ctx && ctx.outs + ctx.outsAdded >= 3) return ADV_HOLD;
+  // （realism_r1_baserunning_spec §D-1）。pendingBatterOut=空中アウトで確定済みの打者アウト
+  // （callerのouts++がadvanceRunnersの後のため、含めないと1死捕球+2連刺しで4アウトになる）。
+  if (ctx && ctx.outs + ctx.outsAdded + (ctx.pendingBatterOut || 0) >= 3) return ADV_HOLD;
   const def = ctx && ctx.def; // 打球を拾った外野手（ARMの主語）。内野処理なら null
   let p = baseProb;
   if (ctx) {
@@ -248,7 +256,7 @@ function resolveAdv(pid, baseProb, ctx, cfg, rng, scenario) {
       // （フォースの3アウト目による得点取り消しはここでは発生しない。killは常にタッグプレー）。
       // ctx.outsAdded を含めて数えることで、1打席で複数回刺して3アウトを超えることはない
       // （冒頭ガードで自動的に打ち切られる）。
-      const outsSoFar = ctx.outs + ctx.outsAdded;
+      const outsSoFar = ctx.outs + ctx.outsAdded + (ctx.pendingBatterOut || 0);
       // ゴロゴー（内野処理・外野手不在）でも本塁憤死は起こりうる（gbAdv3h・肩補正なし・§2.3）
       const canKill = outsSoFar < 3 && (def || scenario === 'gbAdv3h');
       const f = cfg.tuning.field;

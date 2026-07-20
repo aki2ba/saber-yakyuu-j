@@ -62,6 +62,48 @@ test('別masterSeedは別リーグ', () => {
   assert.notEqual(a.players[0].name + a.players[10].name, b.players[0].name + b.players[10].name);
 });
 
+// --- 選手アイデンティティ（2026-07-20・名前=人物） --------------------------------
+
+test('アイデンティティ: 世界内でフルネームは完全一意・同姓は少数に分散（旧56姓×平均20人の解消）', () => {
+  const lg = generateLeague(2026, cfg);
+  const names = [...lg.players, ...lg.farm].map((p) => p.name);
+  assert.equal(new Set(names).size, names.length, '同姓同名が存在しない');
+  const sur = new Map();
+  for (const n of names) {
+    const s = n.split('　')[0];
+    sur.set(s, (sur.get(s) ?? 0) + 1);
+  }
+  const maxUse = Math.max(...sur.values());
+  assert.ok(maxUse <= 7, `同姓の最大人数が抑制されている (実測 max=${maxUse})`);
+  assert.ok(sur.size >= 250, `十分な種類の苗字が使われる (実測 ${sur.size}種)`);
+});
+
+test('アイデンティティ: 同じ名前は別世界でも同じ選手（役割/ポジ/利き手/素質＝同年齢なら真値完全一致）', () => {
+  const A = generateLeague(1, cfg);
+  const B = generateLeague(2, cfg);
+  const byName = new Map([...B.players, ...B.farm].map((p) => [p.name, p]));
+  let common = 0;
+  let sameAge = 0;
+  for (const p of [...A.players, ...A.farm]) {
+    const q = byName.get(p.name);
+    if (!q) continue;
+    common++;
+    // 役割・ポジション・利き手・耐性は年齢に依らず一致（innate）
+    assert.equal(p.role, q.role, `${p.name} の役割`);
+    assert.equal(p.primaryPos, q.primaryPos, `${p.name} の主ポジ`);
+    assert.equal(p.bats + p.throws, q.bats + q.throws, `${p.name} の利き手`);
+    assert.equal(p.trueAbility.career.durability, q.trueAbility.career.durability, `${p.name} の耐性`);
+    // 現在能力は applyMaturity(age) 依存＝同年齢の個体のみ真値全体を厳密比較
+    if (p.age === q.age) {
+      sameAge++;
+      const strip = (x) => JSON.stringify({ ...x.trueAbility, career: { ...x.trueAbility.career, youthDebt: 0 } });
+      assert.equal(strip(p), strip(q), `${p.name} の真値（同年齢）`);
+    }
+  }
+  assert.ok(common >= 10, `両世界に共通の名前が十分ある (実測 ${common})`);
+  assert.ok(sameAge >= 1, `同年齢の共通個体が存在する (実測 ${sameAge})`);
+});
+
 test('リーグ規模どおりの球団数・支配下70人/球団（投手33-36＋野手34-37）（F2-1）', () => {
   const lg = generateLeague(7, cfg);
   const R = cfg.tuning.roster;

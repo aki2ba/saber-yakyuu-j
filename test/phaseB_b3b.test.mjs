@@ -149,7 +149,22 @@ test('rSB: 捕手の盗塁阻止runが肩と正相関・リーグΣrSB≈0（既
   assert.ok(catchers.length >= 8, `規定捕手が十分いる (${catchers.length})`);
   // 盗塁企図（許SB＋刺CS）が実際に捕手へ計上されている
   assert.ok(catchers.every((c) => c.att > 0), '全捕手が盗塁企図に相対している');
-  assert.ok(corr(catchers.map((c) => c.rSB), catchers.map((c) => c.arm)) > 0.4, 'corr(rSB,肩)>0.4');
+  // 相関は単一シーズンだと規定捕手13-17人の小標本でseed依存が強い（ブロッキングtestと同じ問題。
+  // 選手アイデンティティ刷新の世界引き直しで seed2026 が corr=0.23 の下振れ世界になり発覚:
+  // 2027=0.72 / 2028=0.46 と機構は健在）→ ブロッキングと同じ3シード平均で健全性を担保する。
+  const corrFor = (seed) => {
+    const lgS = seed === 2026 ? lg : generateLeague(seed, cfg);
+    const resS = seed === 2026 ? res : simulateSeason(lgS, cfg, { season: seed, seed, postseason: false });
+    const lcS = seed === 2026 ? lc : deriveLeagueConstants(resS);
+    const byIdS = new Map(lgS.players.map((p) => [p.id, p]));
+    const cs = resS.playerSeasons
+      .filter((s) => mainPosition(s.fielding) === 'C' && totalFieldInnings(s.fielding) >= 300)
+      .map((s) => ({ arm: byIdS.get(s.playerId).trueAbility.common.arm, rSB: catcherRsbRuns(s, cfg, lcS) }));
+    return corr(cs.map((c) => c.rSB), cs.map((c) => c.arm));
+  };
+  const seeds = [2026, 2027, 2028];
+  const avgCorr = seeds.reduce((a, s) => a + corrFor(s), 0) / seeds.length;
+  assert.ok(avgCorr > 0.4, `corr(rSB,肩)>0.4（3シード平均） (${avgCorr.toFixed(3)})`);
   // リーグΣ rSB ≈ 0（対リーグ平均・Σ許SB=lgSB, Σ刺CS=lgCS）
   let sumRsb = 0;
   for (const s of res.playerSeasons) sumRsb += catcherRsbRuns(s, cfg, lc);

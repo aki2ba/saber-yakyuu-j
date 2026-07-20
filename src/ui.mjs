@@ -40,7 +40,7 @@ import { renderWatchScreen } from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
 import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
-import { renderScheduleTab, schedPlayerHeadlines } from './ui/schedule.mjs';
+import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel } from './ui/schedule.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
 import { renderDraftRoomScreen } from './ui/draft.mjs';
 
@@ -422,6 +422,8 @@ function renderBatting(c) {
     });
   c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct'], 'war', 1, {
     emptyMsg: QUALIFY_EMPTY_MSG, groups: BAT_COL_GROUPS, getGroup: () => batColGroup, setGroup: (k) => { batColGroup = k; },
+    // UI刷新4: リーグ内百分位ヒート（FanGraphs流）。K%のみ低いほど良い
+    heat: { war: 1, avg: 1, obp: 1, slg: 1, ops: 1, woba: 1, xwoba: 1, wrcPlus: 1, wrcPlusPF: 1, opsPlus: 1, iso: 1, barrelPct: 1, hardHitPct: 1, bsr: 1, wpa: 1, bbPct: 1, kPct: -1 },
   }));
 }
 
@@ -447,6 +449,8 @@ function renderPitching(c) {
     });
   c.append(statTable(data, PIT_COLS, ['era', 'fip', 'whip', 'xfip', 'siera', 'kwera'], ['bbPct', 'kbbPct', 'lobPct'], 'war', 1, {
     emptyMsg: QUALIFY_EMPTY_MSG, groups: PIT_COL_GROUPS, getGroup: () => pitColGroup, setGroup: (k) => { pitColGroup = k; },
+    // UI刷新4: 失点系・与四球は低いほど良い（-1）
+    heat: { war: 1, era: -1, fip: -1, eraMinusPF: -1, fipMinusPF: -1, xfip: -1, siera: -1, kwera: -1, whip: -1, kPer9: 1, bbPct: -1, kbbPct: 1, wpa: 1 },
   }));
 }
 
@@ -466,13 +470,32 @@ function renderFielding(c) {
     })
     .filter((d) => d.inn >= 100 && d.pos !== 'DH'); // DHは守備表から除外（守備位置補正はWAR表に反映）
   const cols = [['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['pos', '守', 'left'], ['inn', '守備回'], ['oaa', 'OAA'], ['uzr', 'UZR'], ['e', '失策']];
-  c.append(statTable(data, cols, [], [], 'uzr', 1));
+  c.append(statTable(data, cols, [], [], 'uzr', 1, { heat: { oaa: 1, uzr: 1, e: -1 } }));
 }
 
 // --- 汎用ソート可能テーブル ------------------------------------------------
+// UI刷新4: opts.heat = {列キー: +1|-1}（+1=高いほど良い/-1=低いほど良い）を渡すと、
+//   規定到達者全体（dataの全行・表示100行制限より広い母集団）でのリーグ内百分位を
+//   セル背景のヒート（heat0..6・FanGraphs流の赤=良/青=悪）で表示する。表示のみ・決定論。
+function statHeatBand(sortedVals, v, dir) {
+  if (sortedVals.length < 8) return 3; // 少数母集団では色を出さない（ノイズ）
+  let lo = 0;
+  let hi = sortedVals.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (sortedVals[m] < v) lo = m + 1; else hi = m; }
+  let p = lo / (sortedVals.length - 1); // 昇順配列内の位置＝百分位
+  if (dir < 0) p = 1 - p;
+  return p >= 0.9 ? 6 : p >= 0.75 ? 5 : p >= 0.6 ? 4 : p > 0.4 ? 3 : p > 0.25 ? 2 : p > 0.1 ? 1 : 0;
+}
 function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {}) {
-  const { emptyMsg, groups, getGroup, setGroup } = opts;
+  const { emptyMsg, groups, getGroup, setGroup, heat } = opts;
   const wrap = el('div', { class: 'tablewrap' });
+  // ヒート列ごとの昇順値配列（百分位の母集団。dataは規定到達者全体＝1回だけ前計算）
+  const heatVals = new Map();
+  if (heat) {
+    for (const k of Object.keys(heat)) {
+      heatVals.set(k, data.map((d) => d[k]).filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((a, b) => a - b));
+    }
+  }
   // G5a: groups があるとき、getGroup() が指すグループ定義（第3要素=列キー配列）の並び順で
   //   cols から該当列を1つずつ拾って表示列を決める（cols側の元の並びではなくグループ配列側の並びを使う。
   //   例: saber 群は war を末尾に置きたいのでグループ配列の記載順をそのまま使う）。
@@ -502,6 +525,12 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id, navIds) }, curCols.map(([k, , align]) => {
       if (k === 'team') return teamCell(d, align); // G5a: 略称チップ（teamIdが無ければ文字列フォールバック）
       let v = d[k];
+      // ヒート帯の判定は生値で行う（表示用フォーマット前）
+      let heatCls = '';
+      if (heat && heat[k] && typeof v === 'number' && Number.isFinite(v)) {
+        const band = statHeatBand(heatVals.get(k), v, heat[k]);
+        if (band !== 3) heatCls = ' heat' + band;
+      }
       if (typeof v === 'number') {
         if (fmtDec3.includes(k)) v = fmt3(v);
         else if (fmtPct.includes(k)) v = pct(v);
@@ -510,7 +539,7 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
         else if (PLUSMINUS.has(k)) v = (v > 0 ? '+' : '') + v.toFixed(1);
         else if (!Number.isInteger(v)) v = v.toFixed(dec);
       }
-      return td(v, align);
+      return el('td', { class: (align || '') + heatCls }, String(v));
     })));
     wrap.append(el('table', { class: 'stat' }, [el('thead', {}, head), el('tbody', {}, rows)]));
   };
@@ -956,6 +985,41 @@ function barColor(v) { return v >= 70 ? '#e8b84b' : v >= 55 ? '#7bc47f' : v >= 4
 // 真値そのものは表示しない（バー幅も推定値ベース）。§1「合わせるのは分布」/ phaseC_spec 禁則。
 const SCOUT_GRADES = [[70, 'S'], [63, 'A'], [56, 'B'], [48, 'C'], [40, 'D']];
 function scoutGrade(v) { for (const [th, g] of SCOUT_GRADES) if (v >= th) return g; return 'E'; }
+
+/**
+ * コーチの見立てレーダー（UI刷新4・五角形）。値は scoutBars と同じ観測推定（obs＝軸ごと固定シードの
+ * 決定論ノイズ込み・真値は出さない）。--field 面の中継グラフィック風＝色は他のフィールドSVGと同じ
+ * 暗面前提のハードコード（テーマ非依存）。
+ * @param {Array<{label:string, v:number, g:string}>} axes 20-80スケールの軸（先頭が頂点・時計回り）
+ */
+function scoutRadar(axes) {
+  const W = 280; const H = 236; const cx = W / 2; const cy = H / 2 + 4; const R = 84;
+  const n = axes.length;
+  const pt = (i, r) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / n;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const poly = (r) => axes.map((_, i) => pt(i, r).map((x) => x.toFixed(1)).join(',')).join(' ');
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'radar' });
+  // 目盛りリング（40/60/80相当）＋中心からの軸線
+  for (const tv of [40, 60, 80]) {
+    svg.append(svgEl('polygon', { points: poly((R * (tv - 20)) / 60), fill: 'none', stroke: '#2f6b4a', 'stroke-width': tv === 80 ? 1.2 : 0.7 }));
+  }
+  for (let i = 0; i < n; i++) {
+    const [x2, y2] = pt(i, R);
+    svg.append(svgEl('line', { x1: cx, y1: cy, x2: x2.toFixed(1), y2: y2.toFixed(1), stroke: '#2f6b4a', 'stroke-width': 0.7 }));
+  }
+  // 値ポリゴン（20-80をリング半径へ写像）
+  const vp = axes.map((a, i) => pt(i, (R * (cl(a.v, 20, 80) - 20)) / 60));
+  svg.append(svgEl('polygon', { points: vp.map((p) => p.map((x) => x.toFixed(1)).join(',')).join(' '), fill: 'rgba(232,184,75,.32)', stroke: '#e8b84b', 'stroke-width': 1.6 }));
+  for (const p of vp) svg.append(svgEl('circle', { cx: p[0].toFixed(1), cy: p[1].toFixed(1), r: 2.4, fill: '#e8b84b' }));
+  // 軸ラベル＋等級（等級は scoutBars と同じ文字＝見立ての言語を統一）
+  axes.forEach((a, i) => {
+    const [lx, ly] = pt(i, R + 16);
+    svg.append(svgText({ x: lx.toFixed(1), y: (ly + 3.5).toFixed(1), fill: '#e9e4d0', 'font-size': '10', 'text-anchor': 'middle' }, `${a.label} ${a.g}`));
+  });
+  return svg;
+}
 function scoutBars(p) {
   const t = p.trueAbility;
   const role = p.role;
@@ -974,19 +1038,29 @@ function scoutBars(p) {
     ]);
   };
   const c = t.common;
+  // レーダーの軸値（barと同じ obs()＝軸キーが同じなら同じ決定論ノイズ → バーとレーダーが必ず一致）
+  const axis = (label, key, val) => { const v = obs(key, val); return { label, v, g: scoutGrade(v) }; };
   const groups = [section('共通', [bar('走力', 'speed', c.speed), bar('肩', 'arm', c.arm), bar('確実', 'hands', c.hands), bar('反応', 'reaction', c.reaction), bar('パワー', 'power', c.power)])];
+  let radarAxes;
   if (role === 'pitcher') {
     const pi = t.pitching;
     const veloR = cl20(50 + (pi.velocityKmh - 146) * 2); // 球速は等級用にrating換算（実km/hは伏せる）
     groups.push(section('投手', [bar('球速', 'velo', veloR), bar('制球', 'control', pi.control), bar('スタミナ', 'stamina', pi.stamina), bar('ゴロ率', 'gbRate', pi.gbRate), bar('クイック', 'hold', pi.hold)]));
     groups.push(section('球種', pi.pitches.map((x, i) => bar(pitchName(x.type), 'pitch' + i, x.current))));
+    // 投手の五角形＝投手軸（球速を頂点に時計回り）
+    radarAxes = [axis('球速', 'velo', veloR), axis('制球', 'control', pi.control), axis('スタミナ', 'stamina', pi.stamina), axis('ゴロ率', 'gbRate', pi.gbRate), axis('クイック', 'hold', pi.hold)];
   } else {
     const b = t.batting;
     groups.push(section('打撃', [bar('EV適性', 'ev', b.ev), bar('LA適性', 'la', b.la), bar('引張', 'pull', b.pull), bar('コンタクト', 'contact', b.contact), bar('選球眼', 'eye', b.eye)]));
     groups.push(section('走塁', [bar('盗塁技術', 'steal', t.baserunning.steal), bar('走塁IQ', 'brIQ', t.baserunning.baserunIQ)]));
     groups.push(section('守備', [bar('ポジIQ', 'posIQ', t.fielding.positioningIQ), bar('捕手F', 'framing', t.fielding.framing)]));
+    // 野手の五角形＝共通5軸（パワーを頂点に時計回り）
+    radarAxes = [axis('パワー', 'power', c.power), axis('確実', 'hands', c.hands), axis('走力', 'speed', c.speed), axis('肩', 'arm', c.arm), axis('反応', 'reaction', c.reaction)];
   }
-  return el('div', { class: 'abilities' }, groups);
+  return el('div', {}, [
+    el('div', { class: 'radarwrap' }, [scoutRadar(radarAxes)]),
+    el('div', { class: 'abilities' }, groups),
+  ]);
 }
 
 // --- スプレーチャート SVG（1-8, Lv2）--------------------------------------
@@ -1390,7 +1464,7 @@ function renderHub(tab = 'hub') {
     el('h2', {}, [
       // 自チーム色のチップ（チームカラーをUIの軸に＝スポナビのチームページ流）
       el('span', { style: `display:inline-block;width:6px;height:16px;border-radius:2px;background:${teamColor(gs.playerTeamId)};box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);margin-right:7px;vertical-align:-2px` }),
-      `${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 / 第${pendingDayOf(rt)}節　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
+      `${myName}　`, el('span', { class: 'muted' }, `${gs.year}年 ${schedDateLabel(pendingDayOf(rt) - 1)}　${myRow.w}勝${myRow.l}敗${myRow.t}分`)]),
     el('div', { class: 'row' }, [
       // G4b: セーブ/ロードはヘッダー導線→overlayモーダル（ホームからは削除）
       el('button', { class: 'link', onclick: () => openSaveModal() }, '💾 セーブ'),
@@ -1498,7 +1572,7 @@ function renderHubHome(c) {
     });
     const rec = (r) => (r ? `${r.w}勝${r.l}敗${r.t}分` : '');
     c.append(el('div', { class: 'nextcard' }, [
-      el('div', { class: 'muted' }, `次戦（第${nextCard.day + 1}節）${nextCard.isHome ? '　ホーム' : '　ビジター'}`),
+      el('div', { class: 'muted' }, `次戦 ${schedDateLabel(nextCard.day)}${nextCard.isHome ? '　ホーム' : '　ビジター'}`),
       el('div', { class: 'nextmatch' }, [
         chip(gs.playerTeamId), `${tname(gs.playerTeamId)} `,
         el('span', { class: 'muted', style: 'font-size:12px' }, rec(myRow2)),

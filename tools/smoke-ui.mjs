@@ -657,7 +657,7 @@ btnByText('日程・結果')._onclick();
   const schedTxt = textOf(appDiv);
   assert.ok(schedTxt.includes('○') && schedTxt.includes('●'), '勝敗マーク（○/●）が出る');
   const schedThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
-  for (const col of ['節', '相手', 'スコア', '勝敗', '先発']) {
+  for (const col of ['日付', '相手', 'スコア', '勝敗', '先発']) { // UI刷新4: 節→疑似カレンダー日付
     assert.ok(schedThs.some((t) => t.startsWith(col)), `日程表に${col}列 (${schedThs.join(',')})`);
   }
   assert.ok(allClass('plink').length >= 10, '先発投手名がリンク化（playerLink）');

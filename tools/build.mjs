@@ -111,6 +111,7 @@ const html = `<!DOCTYPE html>
     --pos:#188038; --neg:#d93025; --hit:#175fc0; --hr:#cf4126; --info:#2f74c0;
     --field:#0c3122; --shadow:rgba(22,42,32,.12); --fade:rgba(27,40,35,.14);
     --pc-ball:#62736a; --pc-called:#188038; --pc-whiff:#d93025; --pc-foul:#a5780a; --pc-inplay:#175fc0;
+    --heat-hi:196,30,58; --heat-lo:21,101,192; /* 成績ヒート(FanGraphs流: 赤=良/青=悪)のRGB三つ組 */
   }
   :root[data-theme="dark"] {
     --bg:#0b2e22; --panel:#123c2d; --inset:#0a2a1f; --ink:#f4f1e6; --chalk:#e9e4d0;
@@ -120,6 +121,7 @@ const html = `<!DOCTYPE html>
     --pos:#7bc47f; --neg:#e06d6d; --hit:#8fc7ff; --hr:#ff8a76; --info:#5aa9e6;
     --field:#0c3122; --shadow:rgba(0,0,0,.5); --fade:rgba(0,0,0,.35);
     --pc-ball:#f4f1e6; --pc-called:#7bc47f; --pc-whiff:#e06d6d; --pc-foul:#e8b84b; --pc-inplay:#8fc7ff;
+    --heat-hi:255,138,118; --heat-lo:143,199,255;
   }
   * { box-sizing:border-box; }
   body { font-family: system-ui,-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;
@@ -246,6 +248,14 @@ const html = `<!DOCTYPE html>
   .wl { display:inline-block; width:18px; text-align:center; font-weight:700; border-radius:4px; }
   .wlw { color:var(--pos); } .wll { color:var(--neg); } .wlt { color:var(--muted); }
   table.stat tr.myteam td { background:var(--myteam); font-weight:700; } /* (0,2,3)で先頭列固定の(0,2,2)に順序非依存で勝つ */
+  /* UI刷新4: 成績ヒート（リーグ内百分位・FanGraphs流の赤=良/青=悪）。heat3=中位は無色。
+     myteam ルールより後に置く＝同特異度の後勝ちで、自チーム行の数値セルにもヒートが見える */
+  table.stat td.heat0 { background:rgba(var(--heat-lo),.24); }
+  table.stat td.heat1 { background:rgba(var(--heat-lo),.14); }
+  table.stat td.heat2 { background:rgba(var(--heat-lo),.06); }
+  table.stat td.heat4 { background:rgba(var(--heat-hi),.06); }
+  table.stat td.heat5 { background:rgba(var(--heat-hi),.14); }
+  table.stat td.heat6 { background:rgba(var(--heat-hi),.24); }
   .teamstate { margin:8px 0; font-size:14px; letter-spacing:1px; }
   .mgrpanel, .savepanel { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:12px; background:var(--panel); }
   .tendrow { display:flex; align-items:center; gap:6px; margin:4px 0; }
@@ -306,6 +316,9 @@ const html = `<!DOCTYPE html>
   .nickmark { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
   .nicktext { font-size:18px; font-weight:800; color:var(--gold); }
   svg.growth { width:280px; max-width:100%; background:var(--field); border-radius:8px; margin-top:6px; }
+  /* UI刷新4: コーチの見立てレーダー（五角形・--field面＝他のフィールドSVGと同じ中継グラフィック風） */
+  .radarwrap { text-align:center; margin:4px 0 8px; }
+  svg.radar { width:260px; max-width:100%; background:var(--field); border-radius:8px; }
   /* E1: チームタブ（一軍/二軍サブタブ）・選手名リンク・モーダルヘッダ（二つ名/受賞歴） */
   .subtabs { display:flex; gap:6px; margin:8px 0 4px; flex-wrap:wrap; }
   .subtab { padding:5px 14px; font-size:13px; border-radius:999px; }

@@ -17,6 +17,21 @@ function schedMonthLabel(m) {
   return SCHED_MONTHS[Math.min(m, SCHED_MONTHS.length - 1)];
 }
 
+// 疑似カレンダー（UI刷新4・表示専用）: エンジンの節(day・0始まり)を月日と曜日へ写像する。
+//   月バケット（floor(day/26)＝上の SCHED_MONTHS）と必ず整合する設計:
+//   バケット0「3・4月」= 3/29,3/30,3/31,4/1..4/23（3日+23日=26日・NPBの3月末開幕）、
+//   バケット1以降 = 各月1日〜26日（27日以降は存在しない＝現実の日程の休日と同じく「無い日」）。
+//   曜日は開幕=金曜（NPB慣例）から機械的に巡回。進行・セーブ・エンジンには一切不干渉の純関数。
+const SCHED_WDAYS = ['金', '土', '日', '月', '火', '水', '木'];
+export function schedDateLabel(day) {
+  const m = Math.floor(day / 26);
+  const d = day % 26;
+  const wd = SCHED_WDAYS[day % 7];
+  if (m === 0) return d < 3 ? `3/${29 + d}(${wd})` : `4/${d - 2}(${wd})`;
+  const month = Math.min(m + 4, 11); // m=1→5月 … m=6→10月。以降は11月へ丸め（ポストシーズン安全弁）
+  return `${month}/${d + 1}(${wd})`;
+}
+
 /** 投球回表示（アウト数→「6.1」形式）。 */
 function schedIp(outs) {
   return `${Math.floor(outs / 3)}.${outs % 3}`;
@@ -85,7 +100,7 @@ export function renderScheduleTab(c, u) {
     const trs = list.map((r) => schedGameRow(r, u, myId, r === nextRow));
     const table = el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [
       el('thead', {}, el('tr', {}, [
-        el('th', {}, '節'), el('th', { class: 'left' }, '相手'), el('th', {}, 'スコア'),
+        el('th', {}, '日付'), el('th', { class: 'left' }, '相手'), el('th', {}, 'スコア'),
         el('th', {}, '勝敗'), el('th', { class: 'left' }, '先発'), el('th', { class: 'left' }, '相手先発'),
       ])),
       el('tbody', {}, trs),
@@ -110,7 +125,7 @@ function schedGameRow(r, u, myId, isNext = false) {
   const rowAttrs = isNext ? { id: 'schednext', class: 'schednext' } : {};
   if (!rec) {
     return el('tr', { ...rowAttrs, class: `${rowAttrs.class ? rowAttrs.class + ' ' : ''}schedfuture` }, [
-      td(g.day + 1), td(oppCell, 'left'), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
+      td(schedDateLabel(g.day)), td(oppCell, 'left'), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
     ]);
   }
   const my = isHome ? rec.homeScore : rec.awayScore;
@@ -122,7 +137,7 @@ function schedGameRow(r, u, myId, isNext = false) {
   const mySt = b ? (isHome ? b.starters.home : b.starters.away) : null;
   const oppSt = b ? (isHome ? b.starters.away : b.starters.home) : null;
   return el('tr', { ...rowAttrs, class: `${rowAttrs.class ? rowAttrs.class + ' ' : ''}clickable`, onclick: () => schedOpenBox(rec, u) }, [
-    td(g.day + 1),
+    td(schedDateLabel(g.day)),
     td(oppCell, 'left'),
     td(`${my}-${opp}${ext}`),
     el('td', {}, [el('span', { class: 'wl wl' + wl }, mark)]),
@@ -138,7 +153,7 @@ function schedOpenBox(rec, u) {
   const box = el('div', { class: 'modal boxmodal' });
   box.append(el('div', { class: 'modalhead' }, [
     el('span', { class: 'pname' },
-      `第${rec.day + 1}節　${tname(rec.away)} ${rec.awayScore} - ${rec.homeScore} ${tname(rec.home)}${rec.innings > 9 ? `（延長${rec.innings}回）` : ''}`),
+      `${schedDateLabel(rec.day)}　${tname(rec.away)} ${rec.awayScore} - ${rec.homeScore} ${tname(rec.home)}${rec.innings > 9 ? `（延長${rec.innings}回）` : ''}`),
     el('button', { class: 'link', onclick: () => overlay.remove() }, '✕'),
   ]));
   const b = rec.box;
@@ -238,7 +253,7 @@ export function schedPlayerHeadlines(rt, u, limit = 8) {
     if (!b) continue;
     const side = rec.home === myId ? 'home' : 'away';
     const oppId = rec.home === myId ? rec.away : rec.home;
-    const at = `（第${rec.day + 1}節 対${tname(oppId)}）`;
+    const at = `（${schedDateLabel(rec.day)} 対${tname(oppId)}）`;
     for (const bt of b.batters[side]) {
       if (bt.hr >= 2) out.push({ parts: [playerLink(bt.pid), ` が1試合${bt.hr}本塁打の固め打ち${at}`], cls: 'good' });
       else if (bt.h >= 3) out.push({ parts: [playerLink(bt.pid), ` が猛打賞（${bt.h}安打）${at}`], cls: 'good' });

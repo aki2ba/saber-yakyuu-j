@@ -20,6 +20,7 @@ import {
   appendTransactionLog, rivalriesOf, rivalryGameHeadlines,
   retirementRoadCandidates, retirementRoadHeadlines,
   retirementCeremonies, retirementCeremonyText, ownTeamRetirementHeadlines,
+  playerStoryOf, STORY_KIND_LABELS,
 } from '../src/game/storylines.mjs';
 
 const cfg = createConfig();
@@ -361,4 +362,150 @@ test('H1: 決定論 — 同一入力（state）は同一出力（純関数・エ
   assert.equal(pa, pb, 'recordPacesは同一inputで同一output');
   const after = JSON.stringify({ cs: st.careerStats.length, th: st.teamHistory.length, tl: st.transactionLog.length });
   assert.equal(after, before, 'storylines計算はcareerStats/teamHistory/transactionLogを一切変更しない');
+});
+
+// ============================================================================
+// P7: 選手詳細の「物語」欄（fun_theory_research_20260720 P7）のテスト。
+//   playerStoryOf: transactionLog/awardsHistory/careerStats/在籍情報だけから出自/移籍歴/栄光/節目/
+//   因縁を時系列へ合成する純関数。合成フィクスチャで各分岐を直接検証し、実ゲームループでも
+//   例外なく決定論的に動くことを確認する。
+// ============================================================================
+
+test('P7: playerStoryOf — 出自（ドラフト・競合くじ情報つき）', () => {
+  const st = fakeState([], [], {
+    transactionLog: [{ year: 2025, kind: 'draft', playerId: 'A', to: 'T1', round: 1, contenders: 3 }],
+    league: { players: [{ id: 'A', teamId: 'T1', role: 'fielder', primaryPos: '1B', age: 22, rosterStatus: 'active' }], farm: [] },
+  });
+  const story = playerStoryOf(st, 'A');
+  const origin = story.find((e) => e.kind === 'origin');
+  assert.ok(origin, '出自イベントが生成される');
+  assert.equal(origin.year, 2025);
+  assert.ok(origin.text.includes('3球団競合の末'), '競合くじ情報（contenders）が出自テキストに反映される');
+  assert.ok(origin.text.includes('ドラフト1位で'), 'ドラフト順位が反映される');
+});
+
+test('P7: playerStoryOf — 出自フォールバック（transactionLogに記録が無い選手は「生え抜き」）', () => {
+  const st = fakeState([], [], {
+    transactionLog: [],
+    league: { players: [{ id: 'B', teamId: 'T2', role: 'pitcher', primaryPos: 'P', age: 25, rosterStatus: 'active' }], farm: [] },
+  });
+  const story = playerStoryOf(st, 'B');
+  const origin = story.find((e) => e.kind === 'origin');
+  assert.ok(origin && origin.text.includes('生え抜き'), 'ドラフト記録の無い選手は生え抜きフォールバックになる');
+  assert.ok(origin.text.includes('T2'), '現在（唯一判明している）の所属球団名が使われる');
+});
+
+test('P7: playerStoryOf — 移籍歴（トレード/FA/戦力外拾い上げ）が年昇順で並ぶ', () => {
+  const st = fakeState([], [], {
+    transactionLog: [
+      { year: 2020, kind: 'draft', playerId: 'C', to: 'T1', round: 2 },
+      { year: 2023, kind: 'trade', playerId: 'C', playerId2: 'D', from: 'T1', to: 'T2' },
+      { year: 2025, kind: 'pickup', playerId: 'C', from: 'T2', to: 'T3' },
+    ],
+    league: { players: [{ id: 'C', teamId: 'T3', role: 'fielder', primaryPos: 'OF', age: 30, rosterStatus: 'active' }], farm: [] },
+  });
+  const story = playerStoryOf(st, 'C');
+  const kinds = story.map((e) => e.kind);
+  assert.deepEqual(kinds, ['origin', 'transfer', 'transfer'], '出自→移籍歴の順で年昇順に並ぶ');
+  assert.ok(story[1].year < story[2].year, '移籍イベントは年昇順');
+  assert.ok(story[1].text.includes('トレード'), 'トレード行が反映される');
+  assert.ok(story[2].text.includes('戦力外') && story[2].text.includes('拾い上げ'), '戦力外拾い上げが「宝拾い」文脈で反映される');
+});
+
+test('P7: playerStoryOf — 栄光（受賞履歴・二つ名）と節目（通算マイルストーン到達）', () => {
+  const rr = cfg.tuning.awards.milestones;
+  // statRow() は season を常に0固定（既存ヘルパーの既定挙動・他テストは総和のみ見るため無害）。
+  // ここは crossing の年を検証するため、生成後に明示的に season を上書きする。
+  const careerStats = [
+    { ...statRow('E', 'T1', { batting: batLine({ pa: 800, ab: 750, h: 600, sb: 120 }) }), season: 2020 },
+    { ...statRow('E', 'T1', { batting: batLine({ pa: 800, ab: 750, h: 500, sb: 100 }) }), season: 2021 },
+  ];
+  // 通算: h=1100（>= hits[0]=1000、2021年に到達）／sb=220（>= speedSb=200 → 二つ名「韋駄天」）
+  const awardsHistory = [{
+    year: 2020,
+    awards: { leagues: [{ leagueId: 'L1', mvp: { playerId: 'E', war: 6 }, roty: null, titles: {}, bestNine: [], gloves: [] }] },
+  }];
+  const st = fakeState([], [], {
+    careerStats, awardsHistory,
+    league: { players: [{ id: 'E', teamId: 'T1', role: 'fielder', primaryPos: 'OF', age: 28, rosterStatus: 'active' }], farm: [] },
+  });
+  const story = playerStoryOf(st, 'E');
+
+  const award = story.find((e) => e.kind === 'award');
+  assert.ok(award && award.text.includes('MVP') && award.year === 2020, '受賞履歴（MVP）が栄光イベントとして出る');
+
+  const nickname = story.find((e) => e.kind === 'nickname');
+  assert.ok(nickname, 'PAゲート・sbしきい値を満たすと二つ名イベントが出る');
+  assert.ok(nickname.text.includes('韋駄天'), 'nicknameFor と同じ二つ名（韋駄天）が使われる');
+  assert.equal(nickname.year, 2021, '二つ名イベントの年は最新在籍年');
+
+  const milestone = story.find((e) => e.kind === 'milestone');
+  assert.ok(milestone, '通算1000安打のマイルストーン到達が検出される');
+  assert.equal(milestone.year, 2021, 'crossingが起きた年（通算1100安打に達した年）');
+  assert.ok(milestone.text.includes(String(rr.hits[0])), 'config(cfg.tuning.awards.milestones)の閾値をそのまま使う');
+});
+
+test('P7: playerStoryOf — 二つ名しきい値未満（未知数）は栄光イベントに出さない', () => {
+  const careerStats = [statRow('N', 'T1', { season: 2020, batting: batLine({ pa: 50, ab: 45, h: 10 }) })];
+  const st = fakeState([], [], {
+    careerStats,
+    league: { players: [{ id: 'N', teamId: 'T1', role: 'fielder', primaryPos: 'OF', age: 20, rosterStatus: 'active' }], farm: [] },
+  });
+  const story = playerStoryOf(st, 'N');
+  assert.ok(!story.some((e) => e.kind === 'nickname'), 'サンプル不足（未知数）はノイズとして出さない');
+});
+
+test('P7: playerStoryOf — 因縁は同年同round指名の同期のみ（トレード等は移籍歴と重複させない）', () => {
+  const st = fakeState([], [], {
+    transactionLog: [
+      { year: 2022, kind: 'draft', playerId: 'F', to: 'T1', round: 3 },
+      { year: 2022, kind: 'draft', playerId: 'G', to: 'T2', round: 3 },
+      { year: 2023, kind: 'trade', playerId: 'F', playerId2: 'H', from: 'T1', to: 'T4' },
+    ],
+    league: { players: [{ id: 'F', teamId: 'T4', role: 'fielder', primaryPos: 'OF', age: 24, rosterStatus: 'active' }], farm: [] },
+  });
+  const story = playerStoryOf(st, 'F', names);
+  const rivalryEvents = story.filter((e) => e.kind === 'rivalry');
+  assert.equal(rivalryEvents.length, 1, 'draftmateのみが因縁として1件出る');
+  assert.ok(rivalryEvents[0].text.includes('G') && rivalryEvents[0].text.includes('同期指名'), '同期選手名とラベルが含まれる');
+  const transferEvents = story.filter((e) => e.kind === 'transfer');
+  assert.equal(transferEvents.length, 1, 'トレードは移籍歴側にのみ出る（因縁側では重複させない）');
+});
+
+test('P7: playerStoryOf — 決定論（同一state入力は同一出力・純関数）', () => {
+  const st = fakeState([], [], {
+    transactionLog: [{ year: 2019, kind: 'draft', playerId: 'Z', to: 'T1', round: 1, contenders: 2 }],
+    league: { players: [{ id: 'Z', teamId: 'T1', role: 'pitcher', primaryPos: 'P', age: 26, rosterStatus: 'active' }], farm: [] },
+  });
+  const a = JSON.stringify(playerStoryOf(st, 'Z', names));
+  const b = JSON.stringify(playerStoryOf(st, 'Z', names));
+  assert.equal(a, b, '同一state入力は同一出力');
+});
+
+test('P7: STORY_KIND_LABELS — playerStoryOf が返しうる全kindにラベルが定義されている', () => {
+  for (const k of ['origin', 'transfer', 'award', 'nickname', 'milestone', 'rivalry']) {
+    assert.ok(STORY_KIND_LABELS[k], `kind='${k}' の日本語ラベルが定義されている`);
+  }
+});
+
+test('P7: playerStoryOf — 実ゲームループでの結合（競合ドラフト行の出自反映・決定論・非干渉）', () => {
+  const st = runYears(SEED, 3);
+  const before = JSON.stringify({ cs: st.careerStats.length, tl: st.transactionLog.length });
+
+  const contestedDraft = st.transactionLog.find((r) => r.kind === 'draft' && r.contenders >= 2);
+  if (contestedDraft) {
+    const story = playerStoryOf(st, contestedDraft.playerId, names);
+    const origin = story.find((e) => e.kind === 'origin');
+    assert.ok(origin, 'ドラフト経由選手には出自イベントがある');
+    assert.ok(origin.text.includes(`${contestedDraft.contenders}球団競合の末`), '競合くじ情報が実データからも出自テキストへ反映される');
+  }
+
+  // 現役選手全員に対して例外なく動作し、決定論的に安定する（重い全走査だが件数は1球団分程度）。
+  for (const p of st.league.players.slice(0, 15)) {
+    const s1 = JSON.stringify(playerStoryOf(st, p.id, names));
+    const s2 = JSON.stringify(playerStoryOf(st, p.id, names));
+    assert.equal(s1, s2, `${p.id}: 同一stateからの同一出力（純関数）`);
+  }
+  const after = JSON.stringify({ cs: st.careerStats.length, tl: st.transactionLog.length });
+  assert.equal(after, before, 'playerStoryOfはcareerStats/transactionLogを一切変更しない');
 });

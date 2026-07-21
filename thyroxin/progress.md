@@ -2,6 +2,26 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-21 (P7: 選手詳細の「物語」欄 — fun_theory_research 実装第3弾)
+
+**きっかけ**: 承認済み実装順（P2→P5/P6→P7→P1）の第3弾。愛着②・世代物語⑤=「その選手の歩み」を
+1画面で物語る。実装Sonnet委任・レビュー/ゲート/コミットはオーケストレータ。
+
+**実装（表示層のみ・純関数・保存フィールド実質増なし）**:
+- `playerStoryOf(state, playerId, names)`（storylines.mjs）: transactionLog/awardsHistory/
+  careerStats/在籍情報だけから時系列 [{year,text,kind}] を毎回導出（§17・真値非参照）。
+  出自（ドラフト「n球団競合の末、{round}位で入団」/生え抜きフォールバック）・移籍歴（トレード/FA/
+  戦力外拾い上げ）・栄光（playerAwardHistory＋二つ名）・節目（awards.mjs milestones 閾値流用の
+  通算到達年検出）・因縁（同期指名のみ。トレード等は移籍歴と出処同一行のため二重掲載回避）
+- appendTransactionLog: draft行に additive `contenders`（競合くじ球団数・draftLog.lotteries由来。
+  旧セーブ行は未設定=後方互換）
+- UI: 選手モーダル「経歴」タブに「物語」節（awardlist流用のタイムライン・STORY_KIND_LABELS）
+
+**ゲート**: npm test 488 PASS（+9: game_h1_storylines.test.mjs 追記）・build・smoke 6フロー・
+verify identity・calibrate 62/62 全PASS。レビューで未使用変数1件を除去。
+
+**次**: P1（介入観戦=試合中の人間采配。仕様 thyroxin/specs/p1_interactive_manager_spec.md）。
+
 ## 2026-07-21 (P5+P6: 「今年の逸材」ドラフト前ニュース＋性格→文体接続 — fun_theory_research 実装第2弾)
 
 **きっかけ**: fun_theory_research_20260720 の承認済み実装順（P2→P5/P6→P7→P1）。P5=発掘の不確実性①の

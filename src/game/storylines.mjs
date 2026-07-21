@@ -30,6 +30,10 @@
 //   retirementCeremonyText(ceremony, names) … セレモニーカード1件のテキスト整形。
 //   ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, names)
 //                                     … 自チーム所属だった功労者の引退を個別ニュース化。
+//   playerStoryOf(state, playerId, names)  … P7: 選手詳細「物語」欄。transactionLog/awardsHistory/
+//                                     careerStats/在籍情報だけから、出自（ドラフト経緯 or 生え抜き）・
+//                                     移籍歴・栄光（受賞/二つ名）・節目（通算マイルストーン）・因縁
+//                                     （同期指名）を時系列 [{year,text,kind}] へ合成する純関数。
 //
 // 設計原則（phaseH_fun_spec 全柱共通の鉄則・厳守）:
 //   - 表示層のみ: すべて (state, careerStats, transactionLog, ...) の純関数。真値(trueAbility)は
@@ -41,7 +45,7 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { qualifiedPA, qualifiedIP } from '../config.mjs';
 import { observedWoba } from '../sim/manager.mjs';
-import { leagueRecords, careerBatting, careerPitching, nicknameFor, playerAwardHistory } from './awards.mjs';
+import { leagueRecords, careerBatting, careerPitching, nicknameFor, playerAwardHistory, milestones } from './awards.mjs';
 import { draftPreviewHeadlines, draftScoutView } from './market.mjs';
 
 const idAsc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -343,8 +347,17 @@ export function appendTransactionLog(state, off, completedYear, offYearIndex) {
   }
   const picks = off.draftLog ? off.draftLog.picks : null;
   if (picks) {
+    // P7: 競合くじ情報（何球団が競合したか）を additive フィールド contenders として付す
+    //   （pick.contested のときだけ・draftLog.lotteries から該当prospectの競合球団数を引く）。
+    //   playerStoryOf の「{n}球団競合の末」表現の素。旧セーブ由来の行は未設定＝後方互換。
+    const lotteryByProspect = new Map((off.draftLog.lotteries ?? []).map((l) => [l.prospectId, l]));
     for (const pick of picks) {
-      rows.push({ year: completedYear, kind: 'draft', playerId: pick.prospectId, to: pick.teamId, round: pick.round });
+      const row = { year: completedYear, kind: 'draft', playerId: pick.prospectId, to: pick.teamId, round: pick.round };
+      if (pick.contested) {
+        const lot = lotteryByProspect.get(pick.prospectId);
+        if (lot) row.contenders = lot.contenders.length;
+      }
+      rows.push(row);
     }
   }
   if (!state.transactionLog) state.transactionLog = [];
@@ -645,4 +658,157 @@ export function ownTeamRetirementHeadlines(state, ceremonies, myTeamId, complete
   return ceremonies
     .filter((c) => finalTeam.get(c.playerId) === myTeamId)
     .map((c) => ({ text: `【引退】${retirementCeremonyText(c, names)}`, cls: 'info', playerId: c.playerId }));
+}
+
+// ============================================================================
+// P7: 選手詳細の「物語」欄（fun_theory_research_20260720 P7・愛着/世代物語）
+//
+//   playerStoryOf(state, playerId, names) … 既存データ（transactionLog/awardsHistory/careerStats/
+//     在籍情報）だけから、その選手の歩みを時系列の出来事配列へ合成する純関数。保存データは増やさず
+//     （§17）、モーダルを開くたび毎回導出する。エンジン（sim/）・trueAbility には一切触れない。
+//   シグネチャ注記: 他の *Headlines 系関数（titleRaceHeadlines 等）と同じ規約で第3引数に
+//     names={pnameOf,tnameOf,posLabelOf}（省略時は識別子そのまま）を取る＝テキスト整形をUI側の
+//     名前解決に委ねる（本ファイルは表示名テーブルを持たない）。
+// ============================================================================
+
+/** state.league.players / farm / retiredPlayers を統合した playerId→選手レコードのマップ。
+ *  game/index.mjs の allPlayersById と同じ発想だが、循環import（index.mjs→storylines.mjs）を
+ *  避けるためここでも同じ3ソースから独立に構築する。 */
+function localPlayersById(state) {
+  const m = new Map((state.league?.players ?? []).map((p) => [p.id, p]));
+  for (const d of state.league?.farm ?? []) if (!m.has(d.id)) m.set(d.id, d);
+  for (const r of state.retiredPlayers ?? []) if (!m.has(r.id)) m.set(r.id, r);
+  return m;
+}
+
+/** その選手の careerStats のうち最古/最新の1行（season最小/最大）。無ければ null。 */
+function firstCareerRow(state, playerId) {
+  let best = null;
+  for (const s of state.careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!best || s.season < best.season) best = s;
+  }
+  return best;
+}
+function lastCareerRow(state, playerId) {
+  let best = null;
+  for (const s of state.careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!best || s.season > best.season) best = s;
+  }
+  return best;
+}
+
+/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁→節目/栄光）。 */
+const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'milestone', 'award', 'nickname'];
+
+/** kind→日本語カテゴリ名（UI側の見出し/アイコン分けに使える。栄光=award/nickname を束ねる）。 */
+export const STORY_KIND_LABELS = {
+  origin: '出自', transfer: '移籍歴', award: '栄光', nickname: '栄光', milestone: '節目', rivalry: '因縁',
+};
+
+/**
+ * P7: 選手の「物語」— その選手の歩みを時系列の出来事配列へ合成する（表示層のみ・純関数）。
+ * 既存データだけから毎回導出する（保存フィールドを増やさない＝§17）。trueAbility は一切参照しない。
+ *
+ *   出自   : transactionLog の draft 行（競合くじ情報 contenders があれば「n球団競合の末」を追記）。
+ *            ログに無い選手（初期世界生成/ログ開始前からの在籍）は最も古い在籍先を「生え抜き」として
+ *            フォールバック表示する（年不明＝year:null・タイムライン先頭に置く）。
+ *   移籍歴 : transactionLog のトレード/FA/戦力外拾い上げ（戦力外→復活は市場非効率の宝として素直に
+ *            事実を書くだけで十分ドラマになる＝誇張しない）。
+ *   栄光   : playerAwardHistory（MVP/新人王/タイトル/ベストナイン/守備の栄誉賞）＋ nicknameFor
+ *            （二つ名そのものには「獲得年」が無いため、直近の在籍年＝物語上「現在はこう呼ばれる」の
+ *            位置に1件だけ置く。「未知数」＝サンプル不足はノイズなので出さない）。
+ *   節目   : careerBatting/careerPitching の通算値が awards.mjs の milestones() 閾値
+ *            （安打/本塁打/勝利/セーブ/奪三振）を跨いだ年を検出（在籍全年を走査・閾値は流用のみで
+ *            変更しない）。
+ *   因縁   : rivalriesOf の draftmate（同年同round指名の同期）のみを採用する。trade/faOld/pickupOld
+ *            は移籍歴セクションと内容が重複する（transactionLogの同じ行が出処）ため、ここでは
+ *            二重掲載を避けて省く。
+ *
+ * @param {Object} state GameState（transactionLog/awardsHistory/careerStats/teamHistory/league/
+ *   retiredPlayers が必要。合成フィクスチャでも可＝欠けたフィールドは空扱い）
+ * @param {string} playerId
+ * @param {{pnameOf?:Function, tnameOf?:Function, posLabelOf?:Function}} names 表示名解決（省略時は
+ *   識別子そのまま。他の *Headlines 系関数と同じ規約）
+ * @returns {Array<{year:number|null, text:string, kind:string}>} 年昇順（同年は出自→移籍/因縁→
+ *   節目/栄光の順・さらに同点はテキスト昇順で決定論的に確定）
+ */
+export function playerStoryOf(state, playerId, names = {}) {
+  const { tnameOf = (id) => id, pnameOf = (id) => id, posLabelOf = (pos) => pos } = names;
+  const cfg = state.cfg;
+  const log = state.transactionLog || [];
+  const careerStats = state.careerStats || [];
+  const events = [];
+
+  const playersById = localPlayersById(state);
+  const rec = playersById.get(playerId) || null;
+
+  // --- 出自: ドラフト指名 or 生え抜きフォールバック ---
+  const myLogRows = log.filter((r) => r.playerId === playerId).sort((a, b) => a.year - b.year || idAsc(a.kind, b.kind));
+  const draftRow = myLogRows.find((r) => r.kind === 'draft');
+  if (draftRow) {
+    const team = tnameOf(draftRow.to);
+    const n = draftRow.contenders;
+    const prefix = n && n >= 2 ? `${n}球団競合の末、` : '';
+    events.push({ year: draftRow.year, text: `${prefix}ドラフト${draftRow.round}位で${team}に入団`, kind: 'origin' });
+  } else {
+    const earliestMove = myLogRows.find((r) => r.kind === 'trade' || r.kind === 'fa' || r.kind === 'pickup');
+    if (earliestMove) {
+      // ログ開始前からの在籍＝その最初の移籍の「元の所属」を生え抜き扱い（起源の年は不明）。
+      events.push({ year: null, text: `${tnameOf(earliestMove.from)}の生え抜き`, kind: 'origin' });
+    } else {
+      const fc = firstCareerRow(state, playerId);
+      const teamId = fc ? fc.teamId : (rec ? rec.teamId : null);
+      if (teamId != null) events.push({ year: fc ? fc.season : null, text: `${tnameOf(teamId)}の生え抜き`, kind: 'origin' });
+    }
+  }
+
+  // --- 移籍歴: トレード/FA/戦力外拾い上げ ---
+  for (const row of myLogRows) {
+    if (row.kind === 'trade') {
+      events.push({ year: row.year, text: `${tnameOf(row.from)}から${tnameOf(row.to)}へトレード`, kind: 'transfer' });
+    } else if (row.kind === 'fa') {
+      events.push({ year: row.year, text: `FAで${tnameOf(row.from)}から${tnameOf(row.to)}へ移籍`, kind: 'transfer' });
+    } else if (row.kind === 'pickup') {
+      events.push({ year: row.year, text: `${tnameOf(row.from)}を戦力外、${tnameOf(row.to)}が拾い上げ`, kind: 'transfer' });
+    }
+  }
+
+  // --- 栄光: 受賞履歴 ＋ 二つ名 ---
+  const hist = playerAwardHistory(playerId, {
+    careerStats, teamHistory: state.teamHistory || [], playersById, cfg, awardsHistory: state.awardsHistory || [],
+  });
+  for (const a of hist) {
+    events.push({ year: a.year, text: `${a.label}${a.pos ? `（${posLabelOf(a.pos)}）` : ''}を獲得`, kind: 'award' });
+  }
+  if (rec) {
+    const nick = nicknameFor(rec, careerStats, cfg);
+    if (nick !== '未知数') {
+      const lc = lastCareerRow(state, playerId);
+      events.push({ year: lc ? lc.season : state.year, text: `「${nick}」の異名で呼ばれるように`, kind: 'nickname' });
+    }
+  }
+
+  // --- 節目: 通算マイルストーン到達（awards.mjs の閾値をそのまま流用） ---
+  const years = [...new Set(careerStats.filter((s) => s.playerId === playerId).map((s) => s.season))].sort((a, b) => a - b);
+  for (const y of years) {
+    for (const m of milestones({ careerStats, playersById, cfg, year: y })) {
+      if (m.playerId !== playerId) continue;
+      events.push({ year: y, text: `通算${m.threshold}${m.unit}達成`, kind: 'milestone' });
+    }
+  }
+
+  // --- 因縁: 同年同round指名の同期のみ（トレード/FA/戦力外はtransactionLogの同一行＝移籍歴と重複するため省く） ---
+  for (const r of rivalriesOf(state, playerId)) {
+    if (r.type !== 'draftmate') continue;
+    events.push({ year: r.year, text: `${pnameOf(r.otherPlayerId)}とは同期指名（${r.round}位）の間柄（${tnameOf(r.matchTeamId)}）`, kind: 'rivalry' });
+  }
+
+  const yearKey = (y) => (y == null ? -Infinity : y);
+  events.sort((a, b) =>
+    yearKey(a.year) - yearKey(b.year) ||
+    STORY_KIND_ORDER.indexOf(a.kind) - STORY_KIND_ORDER.indexOf(b.kind) ||
+    idAsc(a.text, b.text));
+  return events;
 }

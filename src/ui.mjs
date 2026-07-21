@@ -28,6 +28,7 @@ import {
   // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。
   weeklyStorylineDigest, rivalryGameHeadlines, rivalriesOf, retirementRoadCandidates,
   draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
+  playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
   // H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・観測集計のみから導出）。
   mediaReputation,
   // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。
@@ -842,6 +843,18 @@ function renderModalCareer(box, p, isPitcher) {
   const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
   const nick = nicknameFor(p, gs.careerStats, gs.cfg);
   box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // P7: 「物語」節（fun_theory_research_20260720 P7）— 出自/移籍歴/栄光/節目/因縁を1画面の
+  //   タイムラインへ。transactionLog/awardsHistory/careerStats/在籍情報だけから毎回導出する純関数
+  //   （trueAbility 非参照・保存フィールド追加なし＝§17）。既存の受賞履歴と同じ awardlist/awardrow
+  //   スタイルを流用（タイムライン風の年+テキスト縦リスト）。
+  const story = playerStoryOf(gs, p.id, storyNames());
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '物語'));
+  box.append(story.length
+    ? el('div', { class: 'awardlist' }, story.map((ev) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardyear' }, ev.year != null ? `${ev.year}` : '？'),
+      el('span', { class: 'awardbadge' }, `【${STORY_KIND_LABELS[ev.kind] ?? ''}】${ev.text}`),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ物語は記録されていません。'));
   // 年度別成績表（当年は rt からも見えるが、careerStats は完了年ぶん＝確定値）。
   //   WAR は「その年のリーグ全体」から導いた定数で評価する（単一選手からの導出は歪むため）。
   const lcCache = new Map();

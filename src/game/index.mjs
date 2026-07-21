@@ -1200,6 +1200,7 @@ export {
   retirementRoadCandidates, retirementRoadHeadlines,
   retirementCeremonies, retirementCeremonyText, ownTeamRetirementHeadlines,
   draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
+  playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
 } from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';

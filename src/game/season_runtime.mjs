@@ -26,6 +26,7 @@ import { buildDepthChart } from '../sim/team.mjs';
 import { simulatePostseason } from '../sim/postseason.mjs';
 import { buildBoxScore } from './boxscore.mjs';
 import { applyRosterMovesForDay, createMovesState } from './roster_moves.mjs';
+import { getWpaRefTables, computeWpaHighlights } from './wpaSummary.mjs';
 
 /**
  * シーズン終了時点でまだ癒えていない故障を、翌シーズンの開幕IL（pendingInjuries）へ持ち越す（R3）。
@@ -359,6 +360,15 @@ export function advanceRuntimeDay(rt, opts = {}) {
       // E4: 日程・結果タブの簡易ボックススコア（両軍打者/投手の当日ライン・集計行のみ）。
       // live も load の replay も同一イベント列から再構築される（決定論・save は集計値のみ）。
       rec.box = buildBoxScore(events);
+      // P2: 勝因/敗因カード（fun_theory_research_20260720.md 提案P2）。自チーム視点でWPAが
+      // 最大/最小だったプレーの要約2件だけを additive に付与（wpaSummary.mjs・§17: 生イベント
+      // 非永続＝events自体はここで使い終われば捨てる。実選手の統計行には一切触れない）。
+      const wpaTables = getWpaRefTables(rt.league, rt.cfg);
+      const wpaHi = computeWpaHighlights(events, wpaTables, rt.cfg, rt.playerTeamId);
+      if (wpaHi) {
+        rec.box.wpaTop = wpaHi.top;
+        rec.box.wpaBottom = wpaHi.bottom;
+      }
     }
     games.push(rec);
     if (isPlayer) {

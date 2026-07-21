@@ -37,6 +37,19 @@ function schedIp(outs) {
   return `${Math.floor(outs / 3)}.${outs % 3}`;
 }
 
+const SCHED_HALF_JP = { top: '表', bottom: '裏' };
+const schedWpaVal = (v) => (v > 0 ? '+' : '') + (v ?? 0).toFixed(2);
+
+/**
+ * P2: 勝因/敗因カード（1行ぶんの表示パーツ）。box.wpaTop/wpaBottom（wpaSummary.mjs が
+ * additive に付与する要約 {pid,inning,half,desc,wpa}）から組む純関数。旧セーブ等で
+ * box.wpaTop/wpaBottom が無い試合は呼び出し側で丸ごとスキップする（additive・鉄則の後方互換）。
+ */
+export function schedWpaParts(item, u) {
+  const { playerLink } = u;
+  return [`${item.inning}回${SCHED_HALF_JP[item.half] ?? ''} `, playerLink(item.pid), `の${item.desc}（WPA ${schedWpaVal(item.wpa)}）`];
+}
+
 /** 自チーム視点の勝敗（'w'|'l'|'t'）。 */
 function schedWl(rec, myId) {
   if (rec.tie) return 't';
@@ -160,6 +173,13 @@ function schedOpenBox(rec, u) {
   if (!b) {
     box.append(el('div', { class: 'muted' }, 'この試合のボックススコアは記録されていません（旧セーブの試合）。'));
   } else {
+    // P2: 勝因/敗因カード（冒頭表示）。旧セーブの box には wpaTop/wpaBottom が無いので additive にスキップ。
+    if (b.wpaTop && b.wpaBottom) {
+      box.append(el('div', { class: 'newsfeed', style: 'margin-bottom:8px' }, [
+        el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(b.wpaTop, u)]),
+        el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(b.wpaBottom, u)]),
+      ]));
+    }
     box.append(schedLineScore(rec, b, u));
     for (const side of ['away', 'home']) {
       const teamId = side === 'home' ? rec.home : rec.away;

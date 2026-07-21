@@ -40,7 +40,7 @@ import { renderWatchScreen } from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
 import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
-import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel } from './ui/schedule.mjs';
+import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel, schedWpaParts } from './ui/schedule.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
 import { renderDraftRoomScreen } from './ui/draft.mjs';
 
@@ -2193,6 +2193,15 @@ function showAdvanceDigest(gs, snap) {
   box.append(el('div', {}, `期間戦績: ${w}勝${l}敗${t}分`));
   if (snap.rank.rank && after.rank) {
     box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
+  }
+  // P2: 直近試合の勝因/敗因カード（旧セーブ等で box.wpaTop/wpaBottom が無ければ additive にスキップ）。
+  const lastBox = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1].box : null;
+  if (lastBox?.wpaTop && lastBox?.wpaBottom) {
+    box.append(el('h3', { class: 'leaguename' }, '⚔ 直近試合の勝因/敗因'));
+    box.append(el('div', { class: 'newsfeed' }, [
+      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
+      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
+    ]));
   }
   box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
   box.append(el('div', { class: 'newsfeed' }, heads.length

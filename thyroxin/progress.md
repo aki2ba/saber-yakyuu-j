@@ -2,6 +2,30 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-21 (P5+P6: 「今年の逸材」ドラフト前ニュース＋性格→文体接続 — fun_theory_research 実装第2弾)
+
+**きっかけ**: fun_theory_research_20260720 の承認済み実装順（P2→P5/P6→P7→P1）。P5=発掘の不確実性①の
+演出、P6=選手への愛着②（H3性格タグの積み残し=文体接続）。実装はSonnet委任・レビュー/ゲート/コミットは
+オーケストレータ担当。
+
+**実装（表示層のみ・シムbyte不変）**:
+- P5 `draftClassHeadlines(state, names)`（storylines.mjs）: draftPreviewHeadlines（世代内評判
+  consensus上位）×draftScoutView（スカウトノイズ込み等級/伸びしろ/評判）から「今年の逸材/世代No.1
+  右腕・左腕/世代No.1野手/大器/隠し玉」見出しを生成。**真値(trueAbility)非参照**（鉄則3）。テンプレ選択は
+  hashSeed(masterSeed,'draftclass',…)の独立座標＝プール生成/ドラフト解決の乱数ストリーム非干渉。
+  表示はドラフト会議室round1（既存「今年の目玉」節の上・ui/draft.mjs）。ノブ: tuning.storylines.draftClassMax=6
+- P6 性格→文体: `notableHeadline` に第4引数 `personalityOf`（省略可・後方互換）を追加し、サイクル/
+  猛打賞見出しを全8性格（練習熱心/ムラっ気/お調子者/寡黙/闘志/クール/マイペース/リーダー）×各2
+  バリアントで分岐（news.mjs PERSONALITY_VOICES）。rivalryGameHeadlines も names.personalityOf で
+  性格に応じた一言を付記。分岐選択は hashSeed('newsvoice',…) 独立座標の決定論
+- 配線: ui.mjs storyNames()/watch.mjs 観戦終了notable → personalityOf=state.byId lookup
+
+**ゲート**: npm test 479 PASS（+11: test/game_p5_p6_flavor.test.mjs 新設）・build・smoke 6フロー・
+verify identity・calibrate 62/62 すべてPASS＝表示層のみの確認どおりシム/較正は不変。
+
+**次**: P7（選手詳細の「物語」欄・transactionLog/awardsHistory の純関数）→P1（介入観戦・仕様書
+thyroxin/specs/p1_interactive_manager_spec.md 済み）。
+
 ## 2026-07-20 (名前プール拡張 96→368＋実バグ修正「1イニング4アウト」 — ユーザー指摘「名前もバリエーション不足」)
 
 **きっかけ**: ユーザー指摘。名前96種では世界1,159人で同名平均12人（苗字より深刻）。しかも現行プールは

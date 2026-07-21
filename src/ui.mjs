@@ -27,6 +27,7 @@ import {
   rosterMoveHeadline, // F2-4: 昇降格ニュース（フォールバック文面）
   // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。
   weeklyStorylineDigest, rivalryGameHeadlines, rivalriesOf, retirementRoadCandidates,
+  draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
   // H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・観測集計のみから導出）。
   mediaReputation,
   // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。
@@ -1259,7 +1260,11 @@ const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 
 /** H1: storylines.mjs の見出し関数へ渡す名前解決束（pname/tname/leagueNameOfの共通ラップ）。 */
 function storyNames() {
-  return { pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid) };
+  return {
+    pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid),
+    posLabelOf: posJP, // P5: draftClassHeadlines の守備位置表示（他画面と同じくコード表示）
+    personalityOf: (id) => state.byId.get(id)?.personality ?? null, // P6: 性格→文体の接続
+  };
 }
 
 // 球団アクセントカラー（UI表示専用）は generate.mjs の TEAM_NAMES とペアで定義され、
@@ -2366,6 +2371,7 @@ function draftDeps() {
   return {
     el, game, tname, posJP, autoSave,
     PERSONALITY_LABELS, // H3-1: スカウトレポートの性格タグ表示
+    draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
     renderHub: () => renderHub(),
     onDraftComplete: (off) => finishOffseasonUI(off),
   };

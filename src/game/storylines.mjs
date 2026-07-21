@@ -16,6 +16,12 @@
 //                                     同年同round指名の同期）を導出。
 //   rivalryGameHeadlines(state, names, limit) … 自チーム試合で「因縁」該当選手が活躍した回を検出し
 //                                     見出しテキストを生成（テンプレ選択は hashSeed 決定論）。
+//                                     P6: names.personalityOf を渡すと対象選手の性格タグを短い
+//                                     一言として追記する（後方互換・省略時は従来と同一テキスト）。
+//   draftClassHeadlines(state, names) … P5: 「今年の逸材」ドラフト前ニュース。market.mjs の
+//                                     draftPreviewHeadlines（世代内評判consensus上位・真値非参照）
+//                                     と draftScoutView（等級/伸びしろ/評判）を素材に、「今年の逸材」
+//                                     「世代No.1右腕」「大器の匂い」等のテンプレ見出しへ変換する。
 //   retirementRoadCandidates(state)   … 開幕時点で年齢閾値＋通算マイルストーンを満たす「今季が
 //                                     集大成」候補（引退判定そのものには一切触れない）。
 //   retirementRoadHeadlines(state, names) … 上記の見出しテキスト。
@@ -36,6 +42,7 @@ import { makeRng, hashSeed } from '../rng.mjs';
 import { qualifiedPA, qualifiedIP } from '../config.mjs';
 import { observedWoba } from '../sim/manager.mjs';
 import { leagueRecords, careerBatting, careerPitching, nicknameFor, playerAwardHistory } from './awards.mjs';
+import { draftPreviewHeadlines, draftScoutView } from './market.mjs';
 
 const idAsc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -406,6 +413,20 @@ const RIVALRY_TEMPLATES = {
   ],
 };
 
+// P6: 性格タグの短い一言（rivalryGameHeadlines への付記用）。全 PERSONALITIES に最低1バリアント。
+// 決定論: hashSeed('newsvoice','rivalrySuffix',...) の独立座標＝テンプレ本体の選択（'story'座標）や
+// 既存の乱数ストリームに一切干渉しない。personality が未知/null なら何も付記しない（後方互換）。
+const PERSONALITY_RIVALRY_SUFFIX = {
+  hardworking: ['地道な努力の成果'],
+  streaky: ['ムラっ気が爆発した一戦', '乗ってくると誰にも止められない'],
+  showboat: ['「見せ場は逃さない」が持論', 'スタンドを沸かせる立ち回り'],
+  reticent: ['本人は多くを語らず', '口数少なく、結果だけを残す'],
+  fighter: ['闘志を前面に', '気迫のプレー'],
+  cool: ['表情ひとつ変えず', '淡々とこなす'],
+  myPace: ['いつも通りのマイペース', '周囲に流されぬ独自のリズム'],
+  leader: ['チームを鼓舞する一打', '後輩たちを引っ張る存在感'],
+};
+
 function isNotableBatter(bt) {
   return bt.hr >= 2 || bt.h >= 3;
 }
@@ -417,10 +438,12 @@ function isNotablePitcher(pt) {
  * 自チーム試合（state.rt.playerGameLog）で「因縁」該当選手が活躍(notable)した場合の見出し
  * （直近の試合から新しい順・最大 limit 件）。決定論: テンプレ選択は
  * hashSeed(masterSeed,'story',year,day,playerId) の rng（表示文言のみ・結果に非干渉）。
- * @param {{pnameOf:Function, tnameOf:Function}} names
+ * P6: names.personalityOf（id→PERSONALITIES|null）を渡すと、対象選手の性格タグに応じた短い
+ * 一言を末尾に付記する（fun_theory_research P6・後方互換=省略時は従来と同一テキスト）。
+ * @param {{pnameOf:Function, tnameOf:Function, personalityOf?:Function}} names
  */
 export function rivalryGameHeadlines(state, names = {}, limit = 5) {
-  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const { pnameOf = (id) => id, tnameOf = (id) => id, personalityOf = () => null } = names;
   const rt = state.rt;
   if (!rt || !rt.playerGameLog) return [];
   const out = [];
@@ -432,12 +455,12 @@ export function rivalryGameHeadlines(state, names = {}, limit = 5) {
       for (const bt of b.batters[side] || []) {
         if (!isNotableBatter(bt)) continue;
         const hit = matchRivalry(state, bt.pid, oppTeamThisGame);
-        if (hit) out.push(buildRivalryHeadline(state, bt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf));
+        if (hit) out.push(buildRivalryHeadline(state, bt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf, personalityOf));
       }
       for (const pt of b.pitchers[side] || []) {
         if (!isNotablePitcher(pt)) continue;
         const hit = matchRivalry(state, pt.pid, oppTeamThisGame);
-        if (hit) out.push(buildRivalryHeadline(state, pt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf));
+        if (hit) out.push(buildRivalryHeadline(state, pt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf, personalityOf));
       }
     }
     if (out.length >= limit) break;
@@ -445,11 +468,124 @@ export function rivalryGameHeadlines(state, names = {}, limit = 5) {
   return out.slice(0, limit);
 }
 
-function buildRivalryHeadline(state, playerId, day, oppTeamId, rivalry, pnameOf, tnameOf) {
+function buildRivalryHeadline(state, playerId, day, oppTeamId, rivalry, pnameOf, tnameOf, personalityOf = () => null) {
   const list = RIVALRY_TEMPLATES[rivalry.type] || RIVALRY_TEMPLATES.faOld;
   const r = makeRng(hashSeed(state.masterSeed, 'story', state.year, day, playerId));
   const tpl = list[r.int(list.length)];
-  return { text: tpl(pnameOf(playerId), tnameOf(oppTeamId)), cls: 'good', playerId, oppTeamId, day, type: rivalry.type };
+  let text = tpl(pnameOf(playerId), tnameOf(oppTeamId));
+  // P6: 性格タグの短い一言を付記（独立座標のhashSeed＝テンプレ本体の選択に非干渉・後方互換）。
+  const personality = personalityOf(playerId);
+  const suffixes = PERSONALITY_RIVALRY_SUFFIX[personality];
+  if (suffixes && suffixes.length) {
+    const sr = makeRng(hashSeed('newsvoice', 'rivalrySuffix', playerId, personality));
+    text += `（${suffixes[sr.int(suffixes.length)]}）`;
+  }
+  return { text, cls: 'good', playerId, oppTeamId, day, type: rivalry.type };
+}
+
+// ============================================================================
+// P5: 「今年の逸材」ドラフトクラス見出し（fun_theory_research_20260720 P5・phaseH_fun_spec 積み残し）
+// ============================================================================
+
+// テンプレ選択は hashSeed(masterSeed,'draftclass',yearIndex,kind,prospectId) の独立座標のみ＝
+// プール生成(generatePool)・ドラフト解決(runDraft)の乱数ストリームには一切干渉しない。
+const DRAFTCLASS_TOP_TEMPLATES = [
+  (n, role) => `今年の逸材、${n}（${role}）にドラフト戦線の視線集中`,
+  (n, role) => `世代最高評価は${n}（${role}）― スカウト陣の目玉`,
+  (n, role) => `${n}（${role}）、今年の指名候補生の頂点に立つ`,
+];
+const DRAFTCLASS_PITCHER_TOP_TEMPLATES = [
+  (n, arm) => `世代No.1${arm}との呼び声、${n}に球団関係者が熱視線`,
+  (n, arm) => `${n}、今年一番の${arm}との評判`,
+];
+const DRAFTCLASS_FIELDER_TOP_TEMPLATES = [
+  (n, pos) => `世代No.1の${pos}候補、${n}にドラフト上位球団が注目`,
+  (n, pos) => `${n}、今年の${pos}候補では随一の評価`,
+];
+const DRAFTCLASS_UPSIDE_TEMPLATES = [
+  (n, role) => `${n}（${role}）に「大器」の呼び声。伸びしろ十分の逸材`,
+  (n, role) => `${n}、完成度よりポテンシャル型 ― 大器の匂いを漂わせる`,
+  (n, role) => `${n}に大化けの期待。${role}としての伸びしろは世代屈指`,
+];
+const DRAFTCLASS_HIDDEN_TEMPLATES = [
+  (n) => `隠し玉との噂も。${n}の評価、球団間で見立てが割れる`,
+  (n) => `${n}に「隠し玉」の声 ― 一部球団だけが高く評価`,
+];
+
+/** draftClassHeadlines 内のテンプレ選択（決定論・独立座標）。 */
+function pickDraftClassTpl(masterSeed, yearIndex, kind, prospectId, list) {
+  const r = makeRng(hashSeed(masterSeed, 'draftclass', yearIndex, kind, prospectId));
+  return list[r.int(list.length)];
+}
+
+/**
+ * P5:「今年の逸材」ドラフト前ニュース。draftPreviewHeadlines（market.mjs・世代内評判consensus
+ * 上位・真値非参照）の顔ぶれを draftScoutView（同・スカウトノイズ込みの等級/伸びしろ/評判）で
+ * 肉付けし、テンプレ見出しへ変換する。真値(trueAbility)は一切参照しない（三層構造）。
+ * state.awaitingDraft.pool（H2・プレイヤー参加型ドラフトの中断ペイロード）が無ければ空配列。
+ * 呼び出し側は通常 round===1（プール確定直後・まだ誰も指名されていない状態）でのみ呼ぶ想定
+ * （draftPreviewHeadlines と同じ前提。draft.mjs の既存「今年の目玉」節と同条件）。
+ * @param {Object} state GameState（awaitingDraft/masterSeed/yearIndex/playerTeamId が必要）
+ * @param {{pnameOf?:Function, posLabelOf?:Function}} names pnameOf: prospectId→表示名
+ *   （既定は識別子そのまま・呼び出し側が pool から名前を引いて渡す）。posLabelOf: 守備位置コード
+ *   →表示ラベル（既定は識別子そのまま＝本アプリの他画面と同じくコード表示）。
+ * @returns {Array<{text:string, cls:string, prospectId:string, kind:string}>}
+ */
+export function draftClassHeadlines(state, names = {}) {
+  const aw = state.awaitingDraft;
+  if (!aw || !aw.pool || !aw.pool.length) return [];
+  const { pnameOf = (id) => id, posLabelOf = (pos) => pos } = names;
+  const preview = draftPreviewHeadlines(state); // consensus上位（真値非参照・追加の乱数消費なし）
+  if (!preview.length) return [];
+  const findP = (id) => aw.pool.find((p) => p.id === id);
+  const roleLabelOf = (p) => (p.role === 'pitcher' ? '投手' : posLabelOf(p.primaryPos));
+  const out = [];
+  const max = state.cfg.tuning.storylines.draftClassMax ?? 6;
+
+  // 総合トップ（世代内評判1位）＝「今年の逸材」。
+  const topP = findP(preview[0].prospectId);
+  if (topP) {
+    const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'top', topP.id, DRAFTCLASS_TOP_TEMPLATES);
+    out.push({ text: tpl(pnameOf(topP.id), roleLabelOf(topP)), cls: 'good', prospectId: topP.id, kind: 'top' });
+  }
+
+  // ロール別トップ（プレビュー内で最上位の投手/野手それぞれ1名・総合トップと重複しない場合のみ）。
+  let pitcherDone = false;
+  let fielderDone = false;
+  for (const h of preview) {
+    if (pitcherDone && fielderDone) break;
+    const p = findP(h.prospectId);
+    if (!p || p.id === topP?.id) continue;
+    if (p.role === 'pitcher' && !pitcherDone) {
+      pitcherDone = true;
+      const arm = `世代No.1${p.throws === 'L' ? '左腕' : '右腕'}`;
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'pitcherTop', p.id, DRAFTCLASS_PITCHER_TOP_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), arm), cls: 'info', prospectId: p.id, kind: 'pitcherTop' });
+    } else if (p.role === 'fielder' && !fielderDone) {
+      fielderDone = true;
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'fielderTop', p.id, DRAFTCLASS_FIELDER_TOP_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), posLabelOf(p.primaryPos)), cls: 'info', prospectId: p.id, kind: 'fielderTop' });
+    }
+  }
+
+  // 「大器」「隠し玉」評判（プレビュー内・自球団スカウトレポート＝draftScoutView 由来）。
+  const used = new Set(out.map((o) => o.prospectId));
+  for (const h of preview) {
+    if (out.length >= max) break;
+    const p = findP(h.prospectId);
+    if (!p || used.has(p.id)) continue;
+    const sv = draftScoutView(state, p, aw.pool);
+    if (sv.upside === '大器') {
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'upside', p.id, DRAFTCLASS_UPSIDE_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), roleLabelOf(p)), cls: 'info', prospectId: p.id, kind: 'upside' });
+      used.add(p.id);
+    } else if (sv.hype === '隠し玉') {
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'hidden', p.id, DRAFTCLASS_HIDDEN_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id)), cls: 'info', prospectId: p.id, kind: 'hidden' });
+      used.add(p.id);
+    }
+  }
+  return out.slice(0, max);
 }
 
 // ============================================================================

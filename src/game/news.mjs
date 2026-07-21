@@ -5,11 +5,70 @@
 //        ノーヒットノーラン・完全試合・サイクル安打・猛打賞を検出する（純関数）。
 //   streakOf(gameLog, teamId)   … 直近の連勝/連敗を数える。
 //   weeklyDigest({...})         … 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
+//   notableHeadline(n, pnameOf, tnameOf, personalityOf?) … 珍記録見出し。P6: personalityOf を渡すと
+//        対象選手（サイクル安打/猛打賞）の p.personality で文体が分岐する（phaseH_fun_spec P6）。
 //
 // 決定論: すべて入力（イベント列/試合ログ/順位表）の純関数。乱数非使用（onEvent は乱数非消費＝
 //   検出の有無は試合結果に一切影響しない＝既存50較正が不変）。生イベントは当該シーズンのみ（§17）。
+//   P6のテンプレ選択のみ独立座標のhashSeed（'newsvoice'）を使う＝乱数ストリーム非消費（表示文言のみ）。
 // ============================================================================
 import { gamesBehind } from '../sim/season.mjs';
+import { makeRng, hashSeed } from '../rng.mjs';
+
+// --- P6: 性格→文体（fun_theory_research P6・H3積み残し）----------------------------------
+//   各性格キー(PERSONALITIES・src/model/player.mjs)につき最低1バリアント。「(名前, 出来事の文言)
+//   → 見出し文」の関数を複数持たせ、選手id/性格/文脈キーのhashSeedで決定論的に選ぶ。
+//   personalityがnull/未知（旧セーブ等）の場合は `${name}が${achievement}` の従来文言にフォールバック
+//   （後方互換: personalityOf省略時の notableHeadline はこれまでと byte 同一のテキストを返す）。
+const PERSONALITY_VOICES = {
+  hardworking: [ // 練習熱心
+    (n, ach) => `${n}、地道な努力が実って${ach}`,
+    (n, ach) => `${n}、人一倍の練習量がついに結果に。${ach}`,
+  ],
+  streaky: [ // ムラっ気
+    (n, ach) => `${n}、ムラっ気が爆発して${ach}`,
+    (n, ach) => `${n}、波に乗ると止まらない。${ach}`,
+  ],
+  showboat: [ // お調子者
+    (n, ach) => `${n}がド派手に${ach}。「まあ僕なら当然です」`,
+    (n, ach) => `${n}、見せ場を演出して${ach}。スタンドも大盛り上がり`,
+  ],
+  reticent: [ // 寡黙
+    (n, ach) => `${n}は多くを語らず。バットが語った${ach}`,
+    (n, ach) => `${n}、口数少なく淡々と${ach}`,
+  ],
+  fighter: [ // 闘志
+    (n, ach) => `${n}、闘志むき出しで${ach}`,
+    (n, ach) => `${n}、気迫の一打で${ach}`,
+  ],
+  cool: [ // クール
+    (n, ach) => `${n}、顔色ひとつ変えず涼しい顔で${ach}`,
+    (n, ach) => `${n}、冷静沈着に${ach}`,
+  ],
+  myPace: [ // マイペース
+    (n, ach) => `${n}、マイペースにいつも通りの調子で${ach}`,
+    (n, ach) => `${n}、周りに流されず自分のリズムで${ach}`,
+  ],
+  leader: [ // リーダー
+    (n, ach) => `${n}がチームを鼓舞するように${ach}`,
+    (n, ach) => `${n}、後輩を引っ張るように${ach}`,
+  ],
+};
+
+/**
+ * 性格による文体分岐（P6）。personality が未知/null なら従来通り `${name}が${achievement}`。
+ * @param {string|null} personality PERSONALITIES のいずれか or null
+ * @param {string} name 表示名（pnameOf 済み）
+ * @param {string} achievement 出来事の文言（名前を含まない・例:「サイクル安打を達成」）
+ * @param {string} seedKey 決定論キー（通常は選手id）
+ * @param {string} kind 文脈キー（'cycle'|'multiHit'等・同一選手でも文脈で変える）
+ */
+function personalityFlavor(personality, name, achievement, seedKey, kind) {
+  const voices = PERSONALITY_VOICES[personality];
+  if (!voices || !voices.length) return `${name}が${achievement}`;
+  const r = makeRng(hashSeed('newsvoice', kind, seedKey, personality));
+  return voices[r.int(voices.length)](name, achievement);
+}
 
 const HIT_RESULTS = new Set(['1B', '2B', '3B', 'HR']);
 /** 出塁（安打＋四死球＋失策）。完全試合の判定に使う（走者を一人も出さない）。 */
@@ -57,12 +116,25 @@ export function detectGameNotables(events) {
   return { start, end, notables: out };
 }
 
-/** 珍記録を日本語見出しへ（pnameOf: id→選手名, tnameOf: id→球団名）。 */
-export function notableHeadline(n, pnameOf, tnameOf) {
+/**
+ * 珍記録を日本語見出しへ（pnameOf: id→選手名, tnameOf: id→球団名）。
+ * P6: personalityOf（id→PERSONALITIES|null。省略時は常にnull）を渡すと、対象選手（サイクル安打/
+ * 猛打賞の打者）の性格で文体が分岐する（fun_theory_research P6・H3積み残し）。personalityOf省略
+ * または未知の性格なら従来と同一の文言（後方互換・既存呼び出し元は無改修で動く）。
+ * @param {Function} [personalityOf] id → 'hardworking'|'streaky'|...|null（省略時は常にnull）
+ */
+export function notableHeadline(n, pnameOf, tnameOf, personalityOf = () => null) {
   if (n.kind === 'perfectGame') return `完全試合達成！ ${tnameOf(n.teamId)} の投手陣が ${tnameOf(n.opponent)} を完璧に封じる`;
   if (n.kind === 'noHitter') return `ノーヒットノーラン！ ${tnameOf(n.teamId)} が ${tnameOf(n.opponent)} 相手に無安打`;
-  if (n.kind === 'cycle') return `サイクル安打！ ${pnameOf(n.batterId)} が単打・二塁打・三塁打・本塁打をすべて記録`;
-  if (n.kind === 'multiHit') return `${pnameOf(n.batterId)} が猛打賞（${n.hits}安打）の固め打ち`;
+  if (n.kind === 'cycle') {
+    const name = pnameOf(n.batterId);
+    const flavored = personalityFlavor(personalityOf(n.batterId), name, '単打・二塁打・三塁打・本塁打をすべて記録', n.batterId, 'cycle');
+    return `サイクル安打！ ${flavored}`;
+  }
+  if (n.kind === 'multiHit') {
+    const name = pnameOf(n.batterId);
+    return personalityFlavor(personalityOf(n.batterId), name, `猛打賞（${n.hits}安打）の固め打ち`, n.batterId, 'multiHit');
+  }
   return '';
 }
 

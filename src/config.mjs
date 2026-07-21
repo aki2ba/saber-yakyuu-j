@@ -1577,6 +1577,7 @@ export const TUNING_DEFAULT = {
     recordPaceThreshold: 1.05, // シーズン記録の105%超ペースで「記録ペース」ニュース
     recordPaceMinProgress: 0.5, // 消化50%未満はペース判定の対象外（序盤のノイズ除外）
     digestMaxItems: 6, // 「今週の見どころ」節に載せる最大件数
+    draftClassMax: 6, // P5「今年の逸材」ドラフトクラス見出しの最大件数（draftClassHeadlines）
     retirementRoad: {
       ageThreshold: 37, // これ以上＋通算マイルストーン持ちを「引退ロード候補」ニュースの対象に
       batterMilestones: { hits: 500, homeRuns: 100 }, // いずれか到達で候補（awards.milestonesより低い早期到達バー）

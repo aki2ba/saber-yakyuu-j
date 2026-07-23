@@ -309,6 +309,9 @@
   .recval { color:var(--gold); }
   /* E4: 日程・結果タブ＋簡易ボックススコア */
   .schedfuture td { color:var(--muted); }
+  /* Q3: 「記憶に残る一日」特別デー（⭐バッジ行） */
+  .schedspecial td { color:var(--gold); }
+  .schedspecial td:first-child { font-weight:700; }
   .modal.boxmodal { max-width:760px; }
   /* G1a: 観戦コンパクトスコアボード（常設はこれだけ・sticky） */
   /* wrap(.scorebarwrap)がブロックボックスを生成すると.scorebarのsticky有効範囲(containing block)が
@@ -2759,6 +2762,15 @@ const TUNING_DEFAULT = {
       ceremonyMinIP: 600, // 同・通算投球回の下限（投手）
       ceremonyMinAwards: 1, // 通算受賞件数がこれ以上ならPA/IPが薄くても功労者扱い
     },
+    // Q3（thyroxin/research…20260723 Q3・「記憶に残る一日」特別デー）: game/storylines.mjs の
+    //   specialDaysOf が消費。低頻度（月1-2回程度）を狙った閾値＝表示層のみ・エンジン非干渉。
+    specialDays: {
+      // 節目リーチ: 現在の通算値からこの本数/勝数以内で次のマイルストーン（awards.milestones）に
+      //   届く選手がいれば、自チームの次の未消化試合を「節目リーチ」の特別デーにする。
+      milestoneReach: { hits: 5, homeRuns: 3, wins: 2, saves: 2, strikeouts: 5 },
+      pennantMaxGb: 1.5, // 首位攻防戦: 自チームとの直接のゲーム差がこれ以内の相手とのカード初戦
+      pennantMinGamesPlayed: 5, // 開幕直後（全球団横並び）の誤発火防止ガード（news.mjs rankAndGbと同型）
+    },
   },
 };
 
@@ -2826,6 +2838,11 @@ const GAME_DEFAULT = {
   //   streakyDriftMult(=1.25 相当の分散押し上げ)と同程度の桁に抑える小定数（tuningには置かない
   //   ＝Q1指示どおり cfg.tuning 非汚染。安定度1.0で倍率は 1.0−0.15=0.85、安定度0で1.0＝無効果）。
   usageTrustDriftSpan: 0.15,
+  // Q9（thyroxin/research…20260723 Q9・介入観戦「山場だけ」モード）: 観戦開始オーバーレイの
+  //   「⚡山場のみ介入」ボタンが opts.managerIntervention.minLI に渡す既定値。UIからのみ使用＝
+  //   cfg.tuning非汚染（較正非干渉）。sim/manager.mjs の leverageProxy（既存の継投レバレッジ代理）
+  //   をそのまま再利用した局面LIと比較する（pen.highLevThreshold=1.6と同程度の帯）。
+  clutchModeMinLI: 1.5,
 };
 
 /**
@@ -6328,20 +6345,38 @@ class InterventionPause extends Error {
 }
 
 /**
+ * Q9（介入観戦「山場だけ」モード）: situ（inning/scoreDiff/bases/outs）からレバレッジ代理値を
+ * 算出する。新規計算式は発明せず、sim/manager.mjs の leverageProxy（継投のレバレッジ駆動選択で
+ * 既に使われている「終盤×点差×走者数」の決定表）をそのまま再利用する（表示・フィルタ専用＝
+ * 乱数を消費せず、返り値をシム結果へ一切フィードバックしない）。
+ * situ.scoreDiff の符号（攻撃側/守備側どちらの視点か）は leverageProxy 内部で Math.abs を取るため
+ * 無関係（ph/reliefどちらの呼び出し地点でも同じ式で比較できる）。
+ */
+function situLeverage(situ, cfg) {
+  const pen = cfg.tuning.pen;
+  const bits = (situ.bases[0] ? 1 : 0) | (situ.bases[1] ? 2 : 0) | (situ.bases[2] ? 4 : 0);
+  return leverageProxy(situ.inning, situ.scoreDiff, bits, situ.outs, pen);
+}
+
+/**
  * 介入点を解決する（代打/継投で共通・§2）。
  * - ログに該当 seq があれば choice.pick を採用（null=見送り/続投。候補外の無効pidはAI判断へ
  *   フォールバック＝決定論を壊さず黙って続行）。
+ * - Q9: mgrInterv.minLI が設定されており、situ のレバレッジ代理値がそれ未満なら onDecision を
+ *   呼ばず常にAI判断(aiPick)を採用する（「山場だけ」モード）。seq は必ず1つ進める＝ログの座標系
+ *   （seq採番）は minLI の有無に関わらず不変＝既存ログとの互換性を壊さない。
  * - ログに無ければ onDecision へ問い合わせる。'PAUSE' を返せば InterventionPause を投げて中断。
  *   onDecision 省略時（or 'PAUSE'/選択オブジェクト以外を返した時）は常にAI判断(aiPick)を採用
  *   （load の replay・「以後おまかせ」後の完走・全おまかせテストが同じ経路で一切中断しない）。
- * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function}} mgrInterv
+ * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function, minLI?:number}} mgrInterv
  * @param {'ph'|'relief'} kind
  * @param {Object} situ UI表示用の局面要約（乱数非依存・純粋な読み取り値）
  * @param {?string} aiPick 従来ロジック（choosePinchHitter/chooseReliever）が選んだ行動
  * @param {Array<string>} candidates 選択可能な playerId 一覧（表示用・妥当性検証用）
+ * @param {Object} cfg （Q9のLI算出にのみ使う。乱数非依存の純粋な読み取り）
  * @returns {?string} 実際に採用する行動（null=見送り/続投）
  */
-function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
+function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates, cfg) {
   const seq = ++mgrInterv.seq;
   const logged = mgrInterv.logByKey.get(seq);
   if (logged && logged.kind === kind) {
@@ -6349,6 +6384,7 @@ function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
     if (pid === null) return null;
     return candidates.includes(pid) ? pid : aiPick; // 無効choice=AI判断へフォールバック（§2）
   }
+  if (mgrInterv.minLI > 0 && situLeverage(situ, cfg) < mgrInterv.minLI) return aiPick; // Q9: 山場以外はAIおまかせ
   if (!mgrInterv.onDecision) return aiPick;
   const decision = mgrInterv.onDecision({ seq, kind, situ, candidates: candidates.slice() });
   if (decision === 'PAUSE') throw new InterventionPause({ seq, kind, situ, candidates: candidates.slice() });
@@ -6838,7 +6874,11 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
   // 従来ロジックのみ（choosePinchHitter/chooseReliever の aiPick がそのまま採用される＝bit同一）。
   const mi = opts.managerIntervention ?? null;
   const mgrInterv = mi
-    ? { teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0, logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])) }
+    ? {
+        teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0,
+        logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])),
+        minLI: mi.minLI ?? 0, // Q9: 「山場だけ」モード（0=常に問う＝従来どおり）
+      }
     : null;
   // 観戦実況フック（フェーズC1・§16）: 存在するときのみ各プレー確定点で「構造化イベント」を発火する。
   // gc（文脈指標）と同じく乱数は一切消費しない＝onEvent の有無で試合結果は不変（決定論・較正50指標が不変）。
@@ -7551,7 +7591,7 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, bat
       batterId,
       onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
     };
-    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench);
+    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench, cfg);
   }
   if (!pick) return;
   batting.retired.add(batterId); // 退いた打者は再出場不可
@@ -7828,7 +7868,7 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg, mgrInterv) 
       inning, half: null, outs: 0, bases: [false, false, false], scoreDiff: lead,
       pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
     };
-    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding), cfg);
   }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
@@ -7869,7 +7909,7 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, out
       inning, half: null, outs, bases: bases.map((b) => !!b), scoreDiff: lead,
       pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
     };
-    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding), cfg);
   }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
@@ -13171,8 +13211,10 @@ function applyInterventionsForDay(rt, d) {
  *     schedule index に到達したら **その試合を処理せずに** cursor をそこに残したまま中断し、
  *     pendingPlayerGame:true を返す（呼び出し側が attemptPlayerGame でスクラッチ状態を使い
  *     再試行可能な形で処理する＝一度の失敗〜再試行で real な統計を二重計上しないため）。
- *   managerIntervention={teamId,log,onDecision}（P1）: log は全シーズンぶんを渡してよい
+ *   managerIntervention={teamId,log,onDecision,minLI?}（P1）: log は全シーズンぶんを渡してよい
  *     （day で内部フィルタする）。load の replay 等、絶対に一時停止しない用途（onDecision省略）で使う。
+ *     minLI（Q9・省略時0）: sim/game.mjs の resolveIntervention へそのまま転送し、局面のレバレッジ
+ *     代理値がこれ未満なら onDecision を呼ばずAI判断を採用する（「山場だけ」介入モード）。
  * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean, pendingPlayerGame?:boolean}}
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
@@ -13227,7 +13269,9 @@ function advanceRuntimeDay(rt, opts = {}) {
     // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
     //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
     onInjury: (ev) => rt.injuryLog.push(ev),
-    managerIntervention: mi ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision } : undefined,
+    managerIntervention: mi
+      ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision, minLI: mi.minLI ?? 0 }
+      : undefined,
   };
   const games = [];
   const playerGames = [];
@@ -13356,10 +13400,12 @@ function cloneStandingsRow(row) {
  * @param {Array} log 当該 day ぶんの介入ログ（{seq,kind,choice}。呼び出し側で year/day を絞り込み済み）
  * @param {?Function} onDecision ログに無い介入点に到達したときのコールバック（'PAUSE' で中断）。
  *   省略時は常にAI判断（load の replay 用途＝絶対に中断しない）。
+ * @param {number} [minLI=0] Q9「山場だけ」介入モード。局面のレバレッジ代理値がこれ未満なら
+ *   onDecision を呼ばずAI判断を採用する（sim/game.mjs resolveIntervention へそのまま転送）。
  * @returns {{paused:true, decision:Object, events:Array} | {paused:false, record:Object, events:Array, commit:Function}}
  *   commit() を呼ぶまで rt は一切変化しない（試合未確定）。
  */
-function attemptPlayerGame(rt, gi, log, onDecision) {
+function attemptPlayerGame(rt, gi, log, onDecision, minLI = 0) {
   const g = rt.schedule[gi];
   const d = g.day;
   const scratchStats = makeScratchStats(rt.season, rt.stats.stats);
@@ -13393,7 +13439,7 @@ function attemptPlayerGame(rt, gi, log, onDecision) {
     dayScale: rt.dayScale,
     season: rt.season,
     onInjury: (ev) => scratchInjuries.push(ev),
-    managerIntervention: { teamId: rt.playerTeamId, log, onDecision },
+    managerIntervention: { teamId: rt.playerTeamId, log, onDecision, minLI },
   };
   let res;
   try {
@@ -14864,6 +14910,8 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 
 
 
+
+
 const idAsc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ============================================================================
@@ -15698,6 +15746,165 @@ function playerStoryOf(state, playerId, names = {}) {
     STORY_KIND_ORDER.indexOf(a.kind) - STORY_KIND_ORDER.indexOf(b.kind) ||
     idAsc(a.text, b.text));
   return events;
+}
+
+// ============================================================================
+// Q3（thyroxin/research…20260723 Q3・「記憶に残る一日」特別デー・栄冠隠しマス/MLB The Show
+//   Storylinesの翻案）。
+//
+//   specialDaysOf(state, names) … 自チームの未消化日程から「特別な一日」を検出する純関数。
+//     4種（節目リーチ/同期対決/首位攻防戦/球団創設記念日）いずれも確定データ（careerStats/
+//     transactionLog/rt.standings/rt.schedule）だけの純関数判定＋独立座標hashSeed（記念日のみ）
+//     で、低頻度（月1-2回程度）に収まる閾値設計（cfg.tuning.storylines.specialDays）。
+//
+// 設計原則（storylines.mjs 全体と同じ鉄則）:
+//   - 表示層のみ・真値(trueAbility)非参照・保存なし（毎回導出・§17）。
+//   - 決定論: 球団創設記念日のみ hashSeed(masterSeed,'anniversary',teamId) の独立座標（年に依存
+//     しない＝毎年「その球団の何試合目か」という固定index）。他3種は乱数を一切使わない。
+// ============================================================================
+
+/** 現在時点（career確定済みシーズン＋当季進行中の観測）の通算集計。career行を直接pushせず、
+ *  一時配列に concat するだけ＝state.careerStats は不変。 */
+function careerTotalNow(state, playerId, isPitcher) {
+  const rows = state.careerStats || [];
+  const cur = state.rt?.stats?.stats?.get(playerId);
+  const merged = cur ? rows.concat([{ playerId, season: state.year, teamId: cur.teamId, batting: cur.batting, pitching: cur.pitching }]) : rows;
+  return isPitcher ? careerPitching(merged, playerId) : careerBatting(merged, playerId);
+}
+
+/** thresholds（昇順配列）のうち total 未満で最小のものへのギャップ（無ければ null）。 */
+function nextMilestoneGap(total, thresholds) {
+  for (const T of thresholds) {
+    if (total < T) return { threshold: T, gap: T - total };
+  }
+  return null;
+}
+
+const SPECIAL_MILESTONE_TEXT = {
+  hits: (t) => `通算${t}本安打`,
+  homeRuns: (t) => `通算${t}本塁打`,
+  wins: (t) => `通算${t}勝`,
+  saves: (t) => `通算${t}S`,
+  strikeouts: (t) => `通算${t}奪三振`,
+};
+
+/** 節目リーチ: 自チームの次の未消化試合を、通算マイルストーンまであと僅かな選手がいれば検出する。 */
+function specialMilestoneDays(state, unresolved, pnameOf) {
+  if (!unresolved.length) return [];
+  const nextGame = unresolved[0];
+  const myId = state.playerTeamId;
+  const thr = state.cfg.tuning.awards.milestones;
+  const reach = state.cfg.tuning.storylines.specialDays.milestoneReach;
+  const oppId = nextGame.home === myId ? nextGame.away : nextGame.home;
+  const out = [];
+  for (const p of state.league.players) {
+    if (p.teamId !== myId || p.rosterStatus !== 'active') continue;
+    const isPitcher = p.role === 'pitcher';
+    const cats = isPitcher ? ['wins', 'saves', 'strikeouts'] : ['hits', 'homeRuns'];
+    for (const key of cats) {
+      const total = careerTotalNow(state, p.id, isPitcher)[MILESTONE_FIELD[key]];
+      const next = nextMilestoneGap(total, thr[key]);
+      if (!next || next.gap <= 0 || next.gap > reach[key]) continue;
+      out.push({
+        day: nextGame.day, kind: 'milestone', oppId,
+        label: `${pnameOf(p.id)}、${SPECIAL_MILESTONE_TEXT[key](next.threshold)}まであと${next.gap}`,
+      });
+    }
+  }
+  return out;
+}
+
+/** 自チームの全日程（day昇順）のうち「対戦相手が直前の自チーム試合と変わった」行＝カード初戦。 */
+function seriesFirstGames(myGames, myId) {
+  const out = [];
+  let prevOpp = null;
+  for (const g of myGames) {
+    const opp = g.home === myId ? g.away : g.home;
+    if (opp !== prevOpp) out.push(g);
+    prevOpp = opp;
+  }
+  return out;
+}
+
+/** 同期対決: カード初戦の相手が、自チーム選手の draftmate/trade/faOld 因縁チームと一致する試合。 */
+function specialRivalryDays(state, seriesFirsts, unresolvedDays, myId, pnameOf, tnameOf) {
+  const roster = state.league.players.filter((p) => p.teamId === myId && p.rosterStatus === 'active');
+  const out = [];
+  for (const g of seriesFirsts) {
+    if (!unresolvedDays.has(g.day)) continue;
+    const oppId = g.home === myId ? g.away : g.home;
+    for (const p of roster) {
+      const hit = rivalriesOf(state, p.id).find((r) =>
+        (r.type === 'trade' || r.type === 'faOld' || r.type === 'draftmate') && (r.oldTeamId ?? r.matchTeamId) === oppId);
+      if (!hit) continue;
+      out.push({ day: g.day, kind: 'rivalry', oppId, label: `${pnameOf(p.id)}、${tnameOf(oppId)}との因縁の一戦` });
+      break; // 1試合につき代表1名（低頻度設計）
+    }
+  }
+  return out;
+}
+
+/** 首位攻防戦: カード初戦時点で自チームとのゲーム差が僅少（同リーグのみ）の相手との対決。 */
+function specialPennantDays(state, seriesFirsts, unresolvedDays, myId, tnameOf) {
+  const rt = state.rt;
+  const sd = state.cfg.tuning.storylines.specialDays;
+  const myRow = rt.standings.get(myId);
+  if (!myRow || myRow.g < sd.pennantMinGamesPlayed) return [];
+  const out = [];
+  for (const g of seriesFirsts) {
+    if (!unresolvedDays.has(g.day)) continue;
+    const oppId = g.home === myId ? g.away : g.home;
+    const oppRow = rt.standings.get(oppId);
+    if (!oppRow || oppRow.league !== myRow.league) continue;
+    const gb = Math.abs(gamesBehind(myRow, oppRow));
+    if (gb <= sd.pennantMaxGb) {
+      out.push({ day: g.day, kind: 'pennant', oppId, label: `首位攻防、${tnameOf(oppId)}とのゲーム差${gb.toFixed(1)}` });
+    }
+  }
+  return out;
+}
+
+/** 球団創設記念日: hashSeed(masterSeed,'anniversary',teamId) で球団ごとに固定の「自チーム何試合目」
+ *  index を選ぶ（年に依存しない座標＝毎年ほぼ同じ時期・全日程で1回だけ）。未消化でなければ返さない。 */
+function specialAnniversaryDay(state, myGames, myId, unresolvedDays) {
+  if (!myGames.length) return null;
+  const r = makeRng(hashSeed(state.masterSeed, 'anniversary', myId));
+  const g = myGames[r.int(myGames.length)];
+  if (!unresolvedDays.has(g.day)) return null;
+  const oppId = g.home === myId ? g.away : g.home;
+  return { day: g.day, kind: 'anniversary', oppId, label: '球団創設記念日' };
+}
+
+/**
+ * Q3: 自チームの未消化日程から「特別な一日」を検出する（純関数・毎回その場で導出・保存なし）。
+ * 4種: milestone（節目リーチ）/ rivalry（同期対決） / pennant（首位攻防戦） / anniversary（球団創設記念日）。
+ * @param {Object} state GameState（state.rt/state.league/state.careerStats/state.masterSeed/
+ *   state.playerTeamId が必要。シーズン中でなければ空配列）
+ * @param {{pnameOf?:Function, tnameOf?:Function}} names 表示名解決（省略時は識別子そのまま。
+ *   他の *Headlines 系関数と同じ規約）
+ * @returns {Array<{day:number, kind:'milestone'|'rivalry'|'pennant'|'anniversary', label:string, oppId:?string}>}
+ *   day昇順（同日は kind の検出順＝milestone→rivalry→pennant→anniversary）
+ */
+function specialDaysOf(state, names = {}) {
+  const rt = state.rt;
+  const myId = state.playerTeamId;
+  if (!rt || !myId) return [];
+  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const pending = pendingDay(rt);
+  const myGames = rt.schedule.filter((g) => g.home === myId || g.away === myId);
+  const unresolved = myGames.filter((g) => g.day >= pending);
+  const unresolvedDays = new Set(unresolved.map((g) => g.day));
+  const seriesFirsts = seriesFirstGames(myGames, myId);
+
+  const out = [
+    ...specialMilestoneDays(state, unresolved, pnameOf),
+    ...specialRivalryDays(state, seriesFirsts, unresolvedDays, myId, pnameOf, tnameOf),
+    ...specialPennantDays(state, seriesFirsts, unresolvedDays, myId, tnameOf),
+  ];
+  const anniv = specialAnniversaryDay(state, myGames, myId, unresolvedDays);
+  if (anniv) out.push(anniv);
+  out.sort((a, b) => a.day - b.day || idAsc(a.kind, b.kind));
+  return out;
 }
 
 // ============================================================================
@@ -17464,8 +17671,12 @@ function advanceTo(state, until, opts = {}) {
  * `opts.auto` を一度も使わない（常に false）まま最後まで進めた試合は、介入ログが最終的に空なら
  * 全自動と bit 同一になる（§0-4・§5テスト1の前提）。
  * @param {Object} state GameState（state.rt が組まれていること）
- * @param {{auto?:boolean}} [opts] auto=true: ログに無い介入点で中断せず常にAI判断で進める
- *   （「以後おまかせ」・全おまかせテスト用）。既定 false（通常の介入観戦＝未ログ点で必ず中断）。
+ * @param {{auto?:boolean, managerIntervention?:{minLI?:number}}} [opts] auto=true: ログに無い
+ *   介入点で中断せず常にAI判断で進める（「以後おまかせ」・全おまかせテスト用）。既定 false
+ *   （通常の介入観戦＝未ログ点で必ず中断）。managerIntervention.minLI（Q9・省略時0）:
+ *   「山場のみ介入」モード。局面のレバレッジ代理値がこれ未満の介入点は onDecision を呼ばず
+ *   AI判断を採用する（attemptPlayerGame→sim/game.mjs resolveInterventionへそのまま転送。
+ *   teamId/log は本関数が従来どおり自前で組む＝呼び出し側は minLI だけを気にすればよい）。
  * @returns {{seasonEnded:true} | {paused:true, decision:Object, events:Array} |
  *   {record:Object, events:Array, seasonEnded:boolean}}
  */
@@ -17482,7 +17693,8 @@ function playInteractiveGame(state, opts = {}) {
   const g = rt.schedule[gi];
   const log = state.gameInterventions.filter((e) => e.year === state.year && e.day === g.day);
   const onDecision = opts.auto ? undefined : () => 'PAUSE';
-  const attempt = attemptPlayerGame(rt, gi, log, onDecision);
+  const minLI = opts.managerIntervention?.minLI ?? 0;
+  const attempt = attemptPlayerGame(rt, gi, log, onDecision, minLI);
   if (attempt.paused) {
     // year/day は submitGameDecision がそのままログへ積める形に補って返す（§1データモデル）。
     return { paused: true, decision: { year: state.year, day: g.day, ...attempt.decision }, events: attempt.events };
@@ -18146,6 +18358,9 @@ function renderScheduleTab(c, u) {
   // G7: 現在月（次にプレイされる日を含む月）だけ既定で開く。
   const curDay = pendingDayOf(rt) - 1;
   const curMonth = Math.floor(curDay / dpm);
+  // Q3: 特別デー（day→1件・同日複数該当は検出順で先頭のみ）を⭐バッジ用に引けるようMap化。
+  const specialByDay = new Map();
+  for (const sd of u.specialDays ?? []) if (!specialByDay.has(sd.day)) specialByDay.set(sd.day, sd);
   // 自チーム全日程: schedule 順に走査し、消化済み（gi < cursor）は playerGameLog の対応行を引く
   // （playerGameLog は自チーム試合の消化順＝schedule 内の自チーム試合と 1:1 対応）。
   const rows = [];
@@ -18154,7 +18369,7 @@ function renderScheduleTab(c, u) {
     const g = rt.schedule[gi];
     if (g.home !== myId && g.away !== myId) continue;
     const rec = gi < rt.cursor ? rt.playerGameLog[k++] : null;
-    rows.push({ g, rec });
+    rows.push({ g, rec, special: specialByDay.get(g.day) ?? null });
   }
   // 通算
   let W = 0; let L = 0; let T = 0;
@@ -18206,17 +18421,27 @@ function renderScheduleTab(c, u) {
   }
 }
 
+/** Q3: 特別デーの日付セル（⭐バッジ＋ラベルをtitle属性で）。special=null なら通常セル。 */
+function schedDateCell(el, td, day, special) {
+  if (!special) return td(schedDateLabel(day));
+  return el('td', { title: special.label }, [`⭐${schedDateLabel(day)}`]);
+}
+
 /** 日程1試合ぶんの行（過去=結果＋クリックでボックススコア／未来=予定）。 */
 function schedGameRow(r, u, myId, isNext = false) {
   const { el, td, tname, playerLink } = u;
-  const { g, rec } = r;
+  const { g, rec, special } = r;
   const isHome = g.home === myId;
   const oppId = isHome ? g.away : g.home;
   const oppCell = `${isHome ? 'vs' : '@'} ${tname(oppId)}`;
   const rowAttrs = isNext ? { id: 'schednext', class: 'schednext' } : {};
+  if (special) rowAttrs.class = `${rowAttrs.class ? rowAttrs.class + ' ' : ''}schedspecial`;
+  const oppCellContent = special
+    ? [oppCell, el('div', { class: 'muted', style: 'font-size:11px' }, special.label)]
+    : oppCell;
   if (!rec) {
     return el('tr', { ...rowAttrs, class: `${rowAttrs.class ? rowAttrs.class + ' ' : ''}schedfuture` }, [
-      td(schedDateLabel(g.day)), td(oppCell, 'left'), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
+      schedDateCell(el, td, g.day, special), el('td', { class: 'left' }, oppCellContent), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
     ]);
   }
   const my = isHome ? rec.homeScore : rec.awayScore;
@@ -22038,6 +22263,7 @@ function scheduleDeps() {
   return {
     el, td, state, game, tname, pname, playerLink, posJP, fmt3, pendingDayOf,
     renderHub: () => renderHub('schedule'),
+    specialDays: specialDaysOf(game.gs, storyNames()), // Q3: 日程表の⭐バッジ用
   };
 }
 
@@ -22095,6 +22321,9 @@ function renderHubHome(c) {
         el('span', { class: 'muted', style: 'font-size:12px' }, rec(oppRow)),
       ]),
     ]));
+    // Q3: 次戦が「特別な一日」なら1行添える（thyroxin/research…20260723 Q3）。
+    const special = specialDaysOf(gs, storyNames()).find((sd) => sd.day === nextCard.day);
+    if (special) c.append(el('div', { class: 'muted', style: 'margin:2px 0 6px' }, `⭐今日は${special.label}`));
   }
 
   // H5-B: フロントより（今季のオーナー目標＋信任メーター）。yearIndex>=1 のみ（1年目は目標なし）。
@@ -22656,12 +22885,14 @@ function showNextGameChoices() {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '次の自チーム試合'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
-  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示'));
+  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示 / ⚡山場のみ介入=山場だけ指示・他はAIおまかせ'));
   box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
     el('button', { class: 'primary', onclick: () => { overlay.remove(); playNextPlayerGame('watch'); } }, '観戦'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('digest'); } }, 'ダイジェスト'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('skip'); } }, 'スキップ'),
     el('button', { onclick: () => { overlay.remove(); startInteractiveGame(); } }, '⚡介入観戦'),
+    // Q9（thyroxin/research…20260723 Q9）: LIが閾値以上の介入点だけ人間に問う「山場のみ」モード。
+    el('button', { onclick: () => { overlay.remove(); startInteractiveGame(game.gs.cfg.game.clutchModeMinLI); } }, '⚡山場のみ介入'),
   ]));
   overlay.append(box);
   document.getElementById('app').append(overlay);
@@ -22705,8 +22936,14 @@ function indexOfFirstAtbat(events) {
 // 中断中は state を一切書き換えないため、autoSave はここでは呼ばない（§0-3: シム途中状態は
 // シリアライズしない。保存は試合が確定した時だけ行う）。
 
-function startInteractiveGame() {
+// Q9: 現在進行中の介入観戦の「山場のみ」しきい値（LI）。0=常に問う（通常の介入観戦）。
+// UIローカルの一時状態（セーブ非対象）＝試合をまたいで引き継がない。
+let interactiveMinLI = 0;
+
+/** @param {number} [minLI=0] Q9「山場のみ介入」: 省略時0=従来どおり全介入点で問う。 */
+function startInteractiveGame(minLI = 0) {
   game.watch = null;
+  interactiveMinLI = minLI;
   driveInteractiveGame(false);
 }
 
@@ -22719,7 +22956,7 @@ function driveInteractiveGame(auto) {
   const gs = game.gs;
   const prevEvents = game.watch ? game.watch.events : null;
   const prevIdx = game.watch ? game.watch.idx : 0;
-  const result = playInteractiveGame(gs, { auto });
+  const result = playInteractiveGame(gs, { auto, managerIntervention: { minLI: interactiveMinLI } });
   if (result.paused) {
     const events = result.events || [];
     game.watch = {
@@ -22779,6 +23016,41 @@ function baseOccupancyLabel(bases) {
   return occ.length ? '走者' + occ.join('') : '走者なし';
 }
 
+// Q9（thyroxin/research…20260723 Q9）: 采配モーダルの投手心情コメント。当季観測（rt.stats.getPitch＝
+// 三層構造の観測層のみ・真値非参照）と当該登板の球数（situ.pitches）から一言テンプレを選ぶ。
+// hashSeed独立座標＝乱数消費なし・シム結果に一切干渉しない（表示専用）。
+const RELIEF_MOOD_ERA_HOT = 3.5; // 当季ERAがこれ以下なら「好調」寄りのコメント
+const RELIEF_MOOD_ERA_COLD = 4.8; // これ以上なら「不安定」寄りのコメント
+const RELIEF_MOOD_MIN_IP = 5; // 過小サンプル（登板数が浅い）はERA判定を出さない
+const RELIEF_MOOD_TIRED_PITCHES = 90; // このイニング内での球数がこれ以上なら「かさんでいる」を優先
+const RELIEF_MOOD_HOT = [
+  (n) => `${n}、ここ最近は好調です`,
+  (n) => `${n}、安定した投球が続いています`,
+];
+const RELIEF_MOOD_COLD = [
+  (n) => `${n}、ここ最近は失点が続いています`,
+  (n) => `${n}、制球に苦しむ場面が目立ちます`,
+];
+const RELIEF_MOOD_TIRED = [
+  (n) => `${n}、球数がかさんでいます`,
+  (n) => `${n}、疲れが見えてきました`,
+];
+const RELIEF_MOOD_NEUTRAL = [
+  (n) => `${n}、ここまでは無難な投球です`,
+];
+function pitcherMoodComment(gs, situ) {
+  const line = gs.rt.stats.getPitch(situ.pitcherId);
+  const ip = (line?.outs ?? 0) / 3;
+  const era = ip >= RELIEF_MOOD_MIN_IP ? (line.er * 9) / ip : null;
+  let pool;
+  if (situ.pitches >= RELIEF_MOOD_TIRED_PITCHES) pool = RELIEF_MOOD_TIRED;
+  else if (era != null && era <= RELIEF_MOOD_ERA_HOT) pool = RELIEF_MOOD_HOT;
+  else if (era != null && era >= RELIEF_MOOD_ERA_COLD) pool = RELIEF_MOOD_COLD;
+  else pool = RELIEF_MOOD_NEUTRAL;
+  const r = makeRng(hashSeed(gs.masterSeed, 'reliefmood', gs.year, situ.pitcherId, Math.round(situ.pitches)));
+  return pool[r.int(pool.length)](pname(situ.pitcherId));
+}
+
 /**
  * P1: 采配モーダル（代打/継投の意思決定）。§4。
  * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
@@ -22812,6 +23084,8 @@ function showManagerDecisionModal(decision) {
   } else {
     const pit = state.byId.get(situ.pitcherId);
     box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
+    // Q9: 投手心情コメント（当季観測のみ・hashSeed独立座標のテンプレ・乱数消費/シム結果に非干渉）。
+    box.append(el('p', { class: 'muted' }, `💬 ${pitcherMoodComment(gs, situ)}`));
     box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
       const p = state.byId.get(pid);
       const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;

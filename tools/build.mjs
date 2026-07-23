@@ -404,6 +404,9 @@ const html = `<!DOCTYPE html>
   .recval { color:var(--gold); }
   /* E4: 日程・結果タブ＋簡易ボックススコア */
   .schedfuture td { color:var(--muted); }
+  /* Q3: 「記憶に残る一日」特別デー（⭐バッジ行） */
+  .schedspecial td { color:var(--gold); }
+  .schedspecial td:first-child { font-weight:700; }
   .modal.boxmodal { max-width:760px; }
   /* G1a: 観戦コンパクトスコアボード（常設はこれだけ・sticky） */
   /* wrap(.scorebarwrap)がブロックボックスを生成すると.scorebarのsticky有効範囲(containing block)が

@@ -851,8 +851,12 @@ export function advanceTo(state, until, opts = {}) {
  * `opts.auto` を一度も使わない（常に false）まま最後まで進めた試合は、介入ログが最終的に空なら
  * 全自動と bit 同一になる（§0-4・§5テスト1の前提）。
  * @param {Object} state GameState（state.rt が組まれていること）
- * @param {{auto?:boolean}} [opts] auto=true: ログに無い介入点で中断せず常にAI判断で進める
- *   （「以後おまかせ」・全おまかせテスト用）。既定 false（通常の介入観戦＝未ログ点で必ず中断）。
+ * @param {{auto?:boolean, managerIntervention?:{minLI?:number}}} [opts] auto=true: ログに無い
+ *   介入点で中断せず常にAI判断で進める（「以後おまかせ」・全おまかせテスト用）。既定 false
+ *   （通常の介入観戦＝未ログ点で必ず中断）。managerIntervention.minLI（Q9・省略時0）:
+ *   「山場のみ介入」モード。局面のレバレッジ代理値がこれ未満の介入点は onDecision を呼ばず
+ *   AI判断を採用する（attemptPlayerGame→sim/game.mjs resolveInterventionへそのまま転送。
+ *   teamId/log は本関数が従来どおり自前で組む＝呼び出し側は minLI だけを気にすればよい）。
  * @returns {{seasonEnded:true} | {paused:true, decision:Object, events:Array} |
  *   {record:Object, events:Array, seasonEnded:boolean}}
  */
@@ -869,7 +873,8 @@ export function playInteractiveGame(state, opts = {}) {
   const g = rt.schedule[gi];
   const log = state.gameInterventions.filter((e) => e.year === state.year && e.day === g.day);
   const onDecision = opts.auto ? undefined : () => 'PAUSE';
-  const attempt = attemptPlayerGame(rt, gi, log, onDecision);
+  const minLI = opts.managerIntervention?.minLI ?? 0;
+  const attempt = attemptPlayerGame(rt, gi, log, onDecision, minLI);
   if (attempt.paused) {
     // year/day は submitGameDecision がそのままログへ積める形に補って返す（§1データモデル）。
     return { paused: true, decision: { year: state.year, day: g.day, ...attempt.decision }, events: attempt.events };
@@ -1309,6 +1314,7 @@ export {
   draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
   playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
   veteranFarewellHeadlines, departedPlayerFollowUpHeadlines, // P4: 戦力外・FAの感情演出（fun_theory_research P4）
+  specialDaysOf, // Q3: 「記憶に残る一日」特別デー（thyroxin/research…20260723 Q3）
 } from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';

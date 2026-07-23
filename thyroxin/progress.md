@@ -2,6 +2,28 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-23 (Q3+Q9: 特別デー＋介入観戦「山場だけ」モード — 調査第2弾Wave3・完)
+
+**実装**:
+- Q3 `specialDaysOf(state, names)`（storylines.mjs）: 自チーム未消化日程から「記憶に残る一日」を
+  検出する純関数。4種=節目リーチ（通算マイルストーンまで残り僅か・あと5安打等）/同期対決
+  （rivalriesOf該当選手が相手に居るカード初戦）/首位攻防戦（ゲーム差1.5以内・開幕直後ガード付）/
+  球団創設記念日（hashSeed('anniversary',teamId)の年非依存座標・年1回）。日程表に⭐バッジ＋
+  ラベル、次の試合導線にも表示。閾値は tuning.storylines.specialDays（表示専用・draftClassMax
+  と同じ置き場の慣行）
+- Q9 介入観戦「山場だけ」モード: `opts.managerIntervention.minLI`（additive・既定0=従来）。
+  resolveIntervention で「ログ照合→LI判定→onDecision」の順＝ログ済み決定は低LIでも尊重・
+  seq採番不変＝ログ互換。LIは既存 `leverageProxy`（継投レバレッジ駆動）を純粋再利用（新規計算の
+  発明なし・乱数非消費・シム結果に非干渉）。観戦選択肢に「⚡山場のみ介入」（cfg.game.clutchModeMinLI=1.5）。
+  継投モーダルに投手心情コメント💬（当季観測の傾向を文章化・hashSeed独立座標）
+
+**ゲート**: npm test 583 PASS（+17: Q3/Q9新規2ファイル）・build・smoke 13フロー（⭐バッジ＋
+山場モード完走を追加）・verify identity・calibrate 62/62・realism GATE 45/0 全PASS。
+
+**これで調査第2弾（baseball_game_mechanics_research_20260723）のQ1/Q2/Q3/Q4/Q8/Q9/Q10/Q11
+の8本実装完了。** 未着手はQ5（客員コーチ・鉄則リスク中）/Q6（リーダー進言）/Q7（似ている選手）/
+Q12（球団間ライバル世代継承）の4本＝次の自走候補。
+
 ## 2026-07-23 (Q1: 起用信頼度 — 調査第2弾Wave2・本命の双方向ループ)
 
 **きっかけ**: 調査第2弾の核心の発見「personalityは一方通行」への正面回答（栄冠ナイン信頼度の翻案）。

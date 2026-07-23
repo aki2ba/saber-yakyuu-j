@@ -307,8 +307,10 @@ function applyInterventionsForDay(rt, d) {
  *     schedule index に到達したら **その試合を処理せずに** cursor をそこに残したまま中断し、
  *     pendingPlayerGame:true を返す（呼び出し側が attemptPlayerGame でスクラッチ状態を使い
  *     再試行可能な形で処理する＝一度の失敗〜再試行で real な統計を二重計上しないため）。
- *   managerIntervention={teamId,log,onDecision}（P1）: log は全シーズンぶんを渡してよい
+ *   managerIntervention={teamId,log,onDecision,minLI?}（P1）: log は全シーズンぶんを渡してよい
  *     （day で内部フィルタする）。load の replay 等、絶対に一時停止しない用途（onDecision省略）で使う。
+ *     minLI（Q9・省略時0）: sim/game.mjs の resolveIntervention へそのまま転送し、局面のレバレッジ
+ *     代理値がこれ未満なら onDecision を呼ばずAI判断を採用する（「山場だけ」介入モード）。
  * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean, pendingPlayerGame?:boolean}}
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
@@ -363,7 +365,9 @@ export function advanceRuntimeDay(rt, opts = {}) {
     // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
     //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
     onInjury: (ev) => rt.injuryLog.push(ev),
-    managerIntervention: mi ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision } : undefined,
+    managerIntervention: mi
+      ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision, minLI: mi.minLI ?? 0 }
+      : undefined,
   };
   const games = [];
   const playerGames = [];
@@ -492,10 +496,12 @@ function cloneStandingsRow(row) {
  * @param {Array} log 当該 day ぶんの介入ログ（{seq,kind,choice}。呼び出し側で year/day を絞り込み済み）
  * @param {?Function} onDecision ログに無い介入点に到達したときのコールバック（'PAUSE' で中断）。
  *   省略時は常にAI判断（load の replay 用途＝絶対に中断しない）。
+ * @param {number} [minLI=0] Q9「山場だけ」介入モード。局面のレバレッジ代理値がこれ未満なら
+ *   onDecision を呼ばずAI判断を採用する（sim/game.mjs resolveIntervention へそのまま転送）。
  * @returns {{paused:true, decision:Object, events:Array} | {paused:false, record:Object, events:Array, commit:Function}}
  *   commit() を呼ぶまで rt は一切変化しない（試合未確定）。
  */
-export function attemptPlayerGame(rt, gi, log, onDecision) {
+export function attemptPlayerGame(rt, gi, log, onDecision, minLI = 0) {
   const g = rt.schedule[gi];
   const d = g.day;
   const scratchStats = makeScratchStats(rt.season, rt.stats.stats);
@@ -529,7 +535,7 @@ export function attemptPlayerGame(rt, gi, log, onDecision) {
     dayScale: rt.dayScale,
     season: rt.season,
     onInjury: (ev) => scratchInjuries.push(ev),
-    managerIntervention: { teamId: rt.playerTeamId, log, onDecision },
+    managerIntervention: { teamId: rt.playerTeamId, log, onDecision, minLI },
   };
   let res;
   try {

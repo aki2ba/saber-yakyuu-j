@@ -307,6 +307,11 @@ for (const tabName of ['順位', '日程・結果', 'ニュース', 'チーム',
   t._onclick();
 }
 
+// Q3（thyroxin/research…20260723 Q3）: 日程表の⭐特別デーバッジ。新規シーズン開幕直後は
+// 全試合が未消化＝球団創設記念日（anniversary・年1回・全日程が対象）が必ず1件検出される。
+btnByText('日程・結果')._onclick();
+assert.ok(walk(appDiv).some((n) => textOf(n).includes('⭐')), 'Q3: 日程表に⭐特別デーバッジが出る（球団創設記念日は毎年必ず1件）');
+
 // G5b) 順位表の詳細トグル（キャリアモードは既定OFF）: OFF時は交流戦列が無く、トグルONで現れる
 btnByText('順位')._onclick();
 assert.ok(!walk(appDiv).some((n) => n.tag === 'th' && textOf(n) === '交流戦'), 'G5b: キャリアモード既定では順位表に交流戦列が無い');
@@ -631,6 +636,33 @@ assert.ok(hasClass('scorebar'), 'P1: 試合完走後は通常の観戦画面（�
 if (btnByText('ホームへ戻る')) btnByText('ホームへ戻る')._onclick();
 assert.ok(hasClass('header'), 'P1: 観戦後にハブへ戻れる');
 console.log(`UI smoke OK (P1介入観戦): 次の試合へ→⚡介入観戦→采配モーダル${p1Pauses}回（先頭候補/そのまま・続投を選択）→試合完走→観戦画面→ホームへ、例外なし`);
+
+// ============================================================================
+// Q9（thyroxin/research…20260723 Q9）: 介入観戦「山場だけ」モード。
+//   「⚡山場のみ介入」ボタンで開始→P1と同じ流儀で完走まで通す（モーダルが一度も出ない試合も正常）。
+// ============================================================================
+btnByText('次の試合へ')._onclick();
+assert.ok(btnByText('⚡山場のみ介入'), '進行選択に「⚡山場のみ介入」ボタンがある');
+btnByText('⚡山場のみ介入')._onclick();
+let q9Pauses = 0;
+let q9Guard = 0;
+while (hasClass('mgrdecision')) {
+  assert.ok(q9Guard++ < 80, 'Q9: 山場のみ介入モーダルのループが収束しない');
+  q9Pauses++;
+  if (walk(appDiv).some((n) => textOf(n).includes('現投手'))) {
+    // kind='relief' の采配モーダルにのみ投手心情コメント（💬）が出る（ph では出なくてよい）。
+    assert.ok(walk(appDiv).some((n) => textOf(n).includes('💬')), 'Q9: 継投モーダルに投手心情コメント（💬）が出る');
+  }
+  const candidate = allClass('mgrcandidate')[0];
+  const fallback = btnByText('そのまま打たせる') || btnByText('続投');
+  assert.ok(candidate || fallback, 'Q9: 采配モーダルに候補ボタンか「そのまま/続投」がある');
+  (candidate || fallback)._onclick();
+}
+assert.ok(!hasClass('mgrdecision'), 'Q9: 全介入点を解決すると采配モーダルが消える');
+assert.ok(hasClass('scorebar'), 'Q9: 試合完走後は通常の観戦画面（スコアバー）へ渡る');
+if (btnByText('ホームへ戻る')) btnByText('ホームへ戻る')._onclick();
+assert.ok(hasClass('header'), 'Q9: 観戦後にハブへ戻れる');
+console.log(`UI smoke OK (Q9山場のみ介入): 次の試合へ→⚡山場のみ介入→采配モーダル${q9Pauses}回→試合完走→観戦画面→ホームへ、例外なし`);
 
 // G7) 進行（月末まで）→ シーズン終了まで（チャンク進行・プログレス）→ リザルト（日本一）
 btnByText('月末まで')._onclick(); // G2: 日次分割＋setTimeoutチャンク進行（同期フリーズ解消）

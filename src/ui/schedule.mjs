@@ -68,6 +68,9 @@ export function renderScheduleTab(c, u) {
   // G7: 現在月（次にプレイされる日を含む月）だけ既定で開く。
   const curDay = pendingDayOf(rt) - 1;
   const curMonth = Math.floor(curDay / dpm);
+  // Q3: 特別デー（day→1件・同日複数該当は検出順で先頭のみ）を⭐バッジ用に引けるようMap化。
+  const specialByDay = new Map();
+  for (const sd of u.specialDays ?? []) if (!specialByDay.has(sd.day)) specialByDay.set(sd.day, sd);
   // 自チーム全日程: schedule 順に走査し、消化済み（gi < cursor）は playerGameLog の対応行を引く
   // （playerGameLog は自チーム試合の消化順＝schedule 内の自チーム試合と 1:1 対応）。
   const rows = [];
@@ -76,7 +79,7 @@ export function renderScheduleTab(c, u) {
     const g = rt.schedule[gi];
     if (g.home !== myId && g.away !== myId) continue;
     const rec = gi < rt.cursor ? rt.playerGameLog[k++] : null;
-    rows.push({ g, rec });
+    rows.push({ g, rec, special: specialByDay.get(g.day) ?? null });
   }
   // 通算
   let W = 0; let L = 0; let T = 0;
@@ -128,17 +131,27 @@ export function renderScheduleTab(c, u) {
   }
 }
 
+/** Q3: 特別デーの日付セル（⭐バッジ＋ラベルをtitle属性で）。special=null なら通常セル。 */
+function schedDateCell(el, td, day, special) {
+  if (!special) return td(schedDateLabel(day));
+  return el('td', { title: special.label }, [`⭐${schedDateLabel(day)}`]);
+}
+
 /** 日程1試合ぶんの行（過去=結果＋クリックでボックススコア／未来=予定）。 */
 function schedGameRow(r, u, myId, isNext = false) {
   const { el, td, tname, playerLink } = u;
-  const { g, rec } = r;
+  const { g, rec, special } = r;
   const isHome = g.home === myId;
   const oppId = isHome ? g.away : g.home;
   const oppCell = `${isHome ? 'vs' : '@'} ${tname(oppId)}`;
   const rowAttrs = isNext ? { id: 'schednext', class: 'schednext' } : {};
+  if (special) rowAttrs.class = `${rowAttrs.class ? rowAttrs.class + ' ' : ''}schedspecial`;
+  const oppCellContent = special
+    ? [oppCell, el('div', { class: 'muted', style: 'font-size:11px' }, special.label)]
+    : oppCell;
   if (!rec) {
     return el('tr', { ...rowAttrs, class: `${rowAttrs.class ? rowAttrs.class + ' ' : ''}schedfuture` }, [
-      td(schedDateLabel(g.day)), td(oppCell, 'left'), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
+      schedDateCell(el, td, g.day, special), el('td', { class: 'left' }, oppCellContent), td('予定'), td('—'), td('-', 'left'), td('-', 'left'),
     ]);
   }
   const my = isHome ? rec.homeScore : rec.awayScore;

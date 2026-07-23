@@ -45,8 +45,10 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { qualifiedPA, qualifiedIP } from '../config.mjs';
 import { observedWoba } from '../sim/manager.mjs';
+import { gamesBehind } from '../sim/season.mjs';
 import { leagueRecords, careerBatting, careerPitching, nicknameFor, playerAwardHistory, milestones } from './awards.mjs';
 import { draftPreviewHeadlines, draftScoutView } from './market.mjs';
+import { pendingDay } from './season_runtime.mjs';
 
 const idAsc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -882,6 +884,165 @@ export function playerStoryOf(state, playerId, names = {}) {
     STORY_KIND_ORDER.indexOf(a.kind) - STORY_KIND_ORDER.indexOf(b.kind) ||
     idAsc(a.text, b.text));
   return events;
+}
+
+// ============================================================================
+// Q3（thyroxin/research…20260723 Q3・「記憶に残る一日」特別デー・栄冠隠しマス/MLB The Show
+//   Storylinesの翻案）。
+//
+//   specialDaysOf(state, names) … 自チームの未消化日程から「特別な一日」を検出する純関数。
+//     4種（節目リーチ/同期対決/首位攻防戦/球団創設記念日）いずれも確定データ（careerStats/
+//     transactionLog/rt.standings/rt.schedule）だけの純関数判定＋独立座標hashSeed（記念日のみ）
+//     で、低頻度（月1-2回程度）に収まる閾値設計（cfg.tuning.storylines.specialDays）。
+//
+// 設計原則（storylines.mjs 全体と同じ鉄則）:
+//   - 表示層のみ・真値(trueAbility)非参照・保存なし（毎回導出・§17）。
+//   - 決定論: 球団創設記念日のみ hashSeed(masterSeed,'anniversary',teamId) の独立座標（年に依存
+//     しない＝毎年「その球団の何試合目か」という固定index）。他3種は乱数を一切使わない。
+// ============================================================================
+
+/** 現在時点（career確定済みシーズン＋当季進行中の観測）の通算集計。career行を直接pushせず、
+ *  一時配列に concat するだけ＝state.careerStats は不変。 */
+function careerTotalNow(state, playerId, isPitcher) {
+  const rows = state.careerStats || [];
+  const cur = state.rt?.stats?.stats?.get(playerId);
+  const merged = cur ? rows.concat([{ playerId, season: state.year, teamId: cur.teamId, batting: cur.batting, pitching: cur.pitching }]) : rows;
+  return isPitcher ? careerPitching(merged, playerId) : careerBatting(merged, playerId);
+}
+
+/** thresholds（昇順配列）のうち total 未満で最小のものへのギャップ（無ければ null）。 */
+function nextMilestoneGap(total, thresholds) {
+  for (const T of thresholds) {
+    if (total < T) return { threshold: T, gap: T - total };
+  }
+  return null;
+}
+
+const SPECIAL_MILESTONE_TEXT = {
+  hits: (t) => `通算${t}本安打`,
+  homeRuns: (t) => `通算${t}本塁打`,
+  wins: (t) => `通算${t}勝`,
+  saves: (t) => `通算${t}S`,
+  strikeouts: (t) => `通算${t}奪三振`,
+};
+
+/** 節目リーチ: 自チームの次の未消化試合を、通算マイルストーンまであと僅かな選手がいれば検出する。 */
+function specialMilestoneDays(state, unresolved, pnameOf) {
+  if (!unresolved.length) return [];
+  const nextGame = unresolved[0];
+  const myId = state.playerTeamId;
+  const thr = state.cfg.tuning.awards.milestones;
+  const reach = state.cfg.tuning.storylines.specialDays.milestoneReach;
+  const oppId = nextGame.home === myId ? nextGame.away : nextGame.home;
+  const out = [];
+  for (const p of state.league.players) {
+    if (p.teamId !== myId || p.rosterStatus !== 'active') continue;
+    const isPitcher = p.role === 'pitcher';
+    const cats = isPitcher ? ['wins', 'saves', 'strikeouts'] : ['hits', 'homeRuns'];
+    for (const key of cats) {
+      const total = careerTotalNow(state, p.id, isPitcher)[MILESTONE_FIELD[key]];
+      const next = nextMilestoneGap(total, thr[key]);
+      if (!next || next.gap <= 0 || next.gap > reach[key]) continue;
+      out.push({
+        day: nextGame.day, kind: 'milestone', oppId,
+        label: `${pnameOf(p.id)}、${SPECIAL_MILESTONE_TEXT[key](next.threshold)}まであと${next.gap}`,
+      });
+    }
+  }
+  return out;
+}
+
+/** 自チームの全日程（day昇順）のうち「対戦相手が直前の自チーム試合と変わった」行＝カード初戦。 */
+function seriesFirstGames(myGames, myId) {
+  const out = [];
+  let prevOpp = null;
+  for (const g of myGames) {
+    const opp = g.home === myId ? g.away : g.home;
+    if (opp !== prevOpp) out.push(g);
+    prevOpp = opp;
+  }
+  return out;
+}
+
+/** 同期対決: カード初戦の相手が、自チーム選手の draftmate/trade/faOld 因縁チームと一致する試合。 */
+function specialRivalryDays(state, seriesFirsts, unresolvedDays, myId, pnameOf, tnameOf) {
+  const roster = state.league.players.filter((p) => p.teamId === myId && p.rosterStatus === 'active');
+  const out = [];
+  for (const g of seriesFirsts) {
+    if (!unresolvedDays.has(g.day)) continue;
+    const oppId = g.home === myId ? g.away : g.home;
+    for (const p of roster) {
+      const hit = rivalriesOf(state, p.id).find((r) =>
+        (r.type === 'trade' || r.type === 'faOld' || r.type === 'draftmate') && (r.oldTeamId ?? r.matchTeamId) === oppId);
+      if (!hit) continue;
+      out.push({ day: g.day, kind: 'rivalry', oppId, label: `${pnameOf(p.id)}、${tnameOf(oppId)}との因縁の一戦` });
+      break; // 1試合につき代表1名（低頻度設計）
+    }
+  }
+  return out;
+}
+
+/** 首位攻防戦: カード初戦時点で自チームとのゲーム差が僅少（同リーグのみ）の相手との対決。 */
+function specialPennantDays(state, seriesFirsts, unresolvedDays, myId, tnameOf) {
+  const rt = state.rt;
+  const sd = state.cfg.tuning.storylines.specialDays;
+  const myRow = rt.standings.get(myId);
+  if (!myRow || myRow.g < sd.pennantMinGamesPlayed) return [];
+  const out = [];
+  for (const g of seriesFirsts) {
+    if (!unresolvedDays.has(g.day)) continue;
+    const oppId = g.home === myId ? g.away : g.home;
+    const oppRow = rt.standings.get(oppId);
+    if (!oppRow || oppRow.league !== myRow.league) continue;
+    const gb = Math.abs(gamesBehind(myRow, oppRow));
+    if (gb <= sd.pennantMaxGb) {
+      out.push({ day: g.day, kind: 'pennant', oppId, label: `首位攻防、${tnameOf(oppId)}とのゲーム差${gb.toFixed(1)}` });
+    }
+  }
+  return out;
+}
+
+/** 球団創設記念日: hashSeed(masterSeed,'anniversary',teamId) で球団ごとに固定の「自チーム何試合目」
+ *  index を選ぶ（年に依存しない座標＝毎年ほぼ同じ時期・全日程で1回だけ）。未消化でなければ返さない。 */
+function specialAnniversaryDay(state, myGames, myId, unresolvedDays) {
+  if (!myGames.length) return null;
+  const r = makeRng(hashSeed(state.masterSeed, 'anniversary', myId));
+  const g = myGames[r.int(myGames.length)];
+  if (!unresolvedDays.has(g.day)) return null;
+  const oppId = g.home === myId ? g.away : g.home;
+  return { day: g.day, kind: 'anniversary', oppId, label: '球団創設記念日' };
+}
+
+/**
+ * Q3: 自チームの未消化日程から「特別な一日」を検出する（純関数・毎回その場で導出・保存なし）。
+ * 4種: milestone（節目リーチ）/ rivalry（同期対決） / pennant（首位攻防戦） / anniversary（球団創設記念日）。
+ * @param {Object} state GameState（state.rt/state.league/state.careerStats/state.masterSeed/
+ *   state.playerTeamId が必要。シーズン中でなければ空配列）
+ * @param {{pnameOf?:Function, tnameOf?:Function}} names 表示名解決（省略時は識別子そのまま。
+ *   他の *Headlines 系関数と同じ規約）
+ * @returns {Array<{day:number, kind:'milestone'|'rivalry'|'pennant'|'anniversary', label:string, oppId:?string}>}
+ *   day昇順（同日は kind の検出順＝milestone→rivalry→pennant→anniversary）
+ */
+export function specialDaysOf(state, names = {}) {
+  const rt = state.rt;
+  const myId = state.playerTeamId;
+  if (!rt || !myId) return [];
+  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const pending = pendingDay(rt);
+  const myGames = rt.schedule.filter((g) => g.home === myId || g.away === myId);
+  const unresolved = myGames.filter((g) => g.day >= pending);
+  const unresolvedDays = new Set(unresolved.map((g) => g.day));
+  const seriesFirsts = seriesFirstGames(myGames, myId);
+
+  const out = [
+    ...specialMilestoneDays(state, unresolved, pnameOf),
+    ...specialRivalryDays(state, seriesFirsts, unresolvedDays, myId, pnameOf, tnameOf),
+    ...specialPennantDays(state, seriesFirsts, unresolvedDays, myId, tnameOf),
+  ];
+  const anniv = specialAnniversaryDay(state, myGames, myId, unresolvedDays);
+  if (anniv) out.push(anniv);
+  out.sort((a, b) => a.day - b.day || idAsc(a.kind, b.kind));
+  return out;
 }
 
 // ============================================================================

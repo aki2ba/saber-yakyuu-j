@@ -46,6 +46,8 @@ import {
   ownerPressConference,
   // Q1: 起用信頼度（前季観測から導出・thyroxin/research…20260723 Q1）。
   usageStabilityOf, trustLabelOf, TRUST_LABELS_JP,
+  // Q3: 「記憶に残る一日」特別デー（同 Q3）。
+  specialDaysOf,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -1569,6 +1571,7 @@ function scheduleDeps() {
   return {
     el, td, state, game, tname, pname, playerLink, posJP, fmt3, pendingDayOf,
     renderHub: () => renderHub('schedule'),
+    specialDays: specialDaysOf(game.gs, storyNames()), // Q3: 日程表の⭐バッジ用
   };
 }
 
@@ -1626,6 +1629,9 @@ function renderHubHome(c) {
         el('span', { class: 'muted', style: 'font-size:12px' }, rec(oppRow)),
       ]),
     ]));
+    // Q3: 次戦が「特別な一日」なら1行添える（thyroxin/research…20260723 Q3）。
+    const special = specialDaysOf(gs, storyNames()).find((sd) => sd.day === nextCard.day);
+    if (special) c.append(el('div', { class: 'muted', style: 'margin:2px 0 6px' }, `⭐今日は${special.label}`));
   }
 
   // H5-B: フロントより（今季のオーナー目標＋信任メーター）。yearIndex>=1 のみ（1年目は目標なし）。
@@ -2187,12 +2193,14 @@ function showNextGameChoices() {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '次の自チーム試合'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
-  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示'));
+  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示 / ⚡山場のみ介入=山場だけ指示・他はAIおまかせ'));
   box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
     el('button', { class: 'primary', onclick: () => { overlay.remove(); playNextPlayerGame('watch'); } }, '観戦'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('digest'); } }, 'ダイジェスト'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('skip'); } }, 'スキップ'),
     el('button', { onclick: () => { overlay.remove(); startInteractiveGame(); } }, '⚡介入観戦'),
+    // Q9（thyroxin/research…20260723 Q9）: LIが閾値以上の介入点だけ人間に問う「山場のみ」モード。
+    el('button', { onclick: () => { overlay.remove(); startInteractiveGame(game.gs.cfg.game.clutchModeMinLI); } }, '⚡山場のみ介入'),
   ]));
   overlay.append(box);
   document.getElementById('app').append(overlay);
@@ -2236,8 +2244,14 @@ function indexOfFirstAtbat(events) {
 // 中断中は state を一切書き換えないため、autoSave はここでは呼ばない（§0-3: シム途中状態は
 // シリアライズしない。保存は試合が確定した時だけ行う）。
 
-function startInteractiveGame() {
+// Q9: 現在進行中の介入観戦の「山場のみ」しきい値（LI）。0=常に問う（通常の介入観戦）。
+// UIローカルの一時状態（セーブ非対象）＝試合をまたいで引き継がない。
+let interactiveMinLI = 0;
+
+/** @param {number} [minLI=0] Q9「山場のみ介入」: 省略時0=従来どおり全介入点で問う。 */
+function startInteractiveGame(minLI = 0) {
   game.watch = null;
+  interactiveMinLI = minLI;
   driveInteractiveGame(false);
 }
 
@@ -2250,7 +2264,7 @@ function driveInteractiveGame(auto) {
   const gs = game.gs;
   const prevEvents = game.watch ? game.watch.events : null;
   const prevIdx = game.watch ? game.watch.idx : 0;
-  const result = playInteractiveGame(gs, { auto });
+  const result = playInteractiveGame(gs, { auto, managerIntervention: { minLI: interactiveMinLI } });
   if (result.paused) {
     const events = result.events || [];
     game.watch = {
@@ -2310,6 +2324,41 @@ function baseOccupancyLabel(bases) {
   return occ.length ? '走者' + occ.join('') : '走者なし';
 }
 
+// Q9（thyroxin/research…20260723 Q9）: 采配モーダルの投手心情コメント。当季観測（rt.stats.getPitch＝
+// 三層構造の観測層のみ・真値非参照）と当該登板の球数（situ.pitches）から一言テンプレを選ぶ。
+// hashSeed独立座標＝乱数消費なし・シム結果に一切干渉しない（表示専用）。
+const RELIEF_MOOD_ERA_HOT = 3.5; // 当季ERAがこれ以下なら「好調」寄りのコメント
+const RELIEF_MOOD_ERA_COLD = 4.8; // これ以上なら「不安定」寄りのコメント
+const RELIEF_MOOD_MIN_IP = 5; // 過小サンプル（登板数が浅い）はERA判定を出さない
+const RELIEF_MOOD_TIRED_PITCHES = 90; // このイニング内での球数がこれ以上なら「かさんでいる」を優先
+const RELIEF_MOOD_HOT = [
+  (n) => `${n}、ここ最近は好調です`,
+  (n) => `${n}、安定した投球が続いています`,
+];
+const RELIEF_MOOD_COLD = [
+  (n) => `${n}、ここ最近は失点が続いています`,
+  (n) => `${n}、制球に苦しむ場面が目立ちます`,
+];
+const RELIEF_MOOD_TIRED = [
+  (n) => `${n}、球数がかさんでいます`,
+  (n) => `${n}、疲れが見えてきました`,
+];
+const RELIEF_MOOD_NEUTRAL = [
+  (n) => `${n}、ここまでは無難な投球です`,
+];
+function pitcherMoodComment(gs, situ) {
+  const line = gs.rt.stats.getPitch(situ.pitcherId);
+  const ip = (line?.outs ?? 0) / 3;
+  const era = ip >= RELIEF_MOOD_MIN_IP ? (line.er * 9) / ip : null;
+  let pool;
+  if (situ.pitches >= RELIEF_MOOD_TIRED_PITCHES) pool = RELIEF_MOOD_TIRED;
+  else if (era != null && era <= RELIEF_MOOD_ERA_HOT) pool = RELIEF_MOOD_HOT;
+  else if (era != null && era >= RELIEF_MOOD_ERA_COLD) pool = RELIEF_MOOD_COLD;
+  else pool = RELIEF_MOOD_NEUTRAL;
+  const r = makeRng(hashSeed(gs.masterSeed, 'reliefmood', gs.year, situ.pitcherId, Math.round(situ.pitches)));
+  return pool[r.int(pool.length)](pname(situ.pitcherId));
+}
+
 /**
  * P1: 采配モーダル（代打/継投の意思決定）。§4。
  * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
@@ -2343,6 +2392,8 @@ function showManagerDecisionModal(decision) {
   } else {
     const pit = state.byId.get(situ.pitcherId);
     box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
+    // Q9: 投手心情コメント（当季観測のみ・hashSeed独立座標のテンプレ・乱数消費/シム結果に非干渉）。
+    box.append(el('p', { class: 'muted' }, `💬 ${pitcherMoodComment(gs, situ)}`));
     box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
       const p = state.byId.get(pid);
       const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;

@@ -1612,6 +1612,25 @@ export const TUNING_DEFAULT = {
       wpaHiddenWrcMax: 100, // R8: 「打撃成績が地味」とみなす wRC+ の上限（リーグ平均=100未満）
       wpaHiddenMinWpa: 0.3, // R8: 隠れWPAリーダーとして拾う最低WPA
     },
+    // Wave B（thyroxin/specs/gm_analytics_spec.md・GM分析仕様）: フォーム判定（好調▲/不調▼）。
+    //   game/form.mjs が消費。自チーム選手のみ playerGameLog の窓（box集計）から算出する純関数。
+    //   表示層のみ・エンジン非干渉・真値/能力値レーティング非参照（観測statlineのみ）。
+    form: {
+      batWindowGames: 10, // 野手: 窓＝直近何試合（自チームの playerGameLog 末尾から）
+      batMinWindowPA: 20, // 窓の最低打席（未満はサンプル不足でtier=null。box近似のPA=ab+bb）
+      wobaGapHot: 0.040, // 窓wOBA近似がシーズンwOBAをこれ以上上回れば好調候補
+      wobaGapCold: 0.040, // 同・下回れば不調候補（対称の下限）
+      babipHotGuard: 0.400, // 窓BABIPがこれ超なら「出来すぎ」警報（平均回帰の定説・好調時に付記）
+      babipColdGuard: 0.230, // 窓BABIPがこれ未満なら「不運が過ぎる」警報（同定説・不調時に付記）
+      babipMinBip: 10, // BABIP警報を付けるための最低インプレー打球数（ab-so-hr、ゼロ割/極小サンプル回避）
+      pitLookbackApps: 3, // 投手: 窓＝直近何登板（自チームの playerGameLog を遡って登板を3件拾う）
+      pitLookbackMaxGames: 40, // 3登板を探して遡る試合数の上限（先発ローテ間隔を跨いでも見つからない場合の安全弁）
+      pitMinWindowOuts: 18, // 窓の最低アウト数（6回=18未満はサンプル不足でtier=null）
+      kbbGapHot: 0.08, // 窓K-BB%がシーズンK-BB%をこれ以上上回れば好調候補（DIPS理論・投手の先行指標）
+      kbbGapCold: 0.08, // 同・下回れば不調候補
+      eraGapHot: 1.5, // 窓の目安防御率(失点/9)がシーズンERAよりこれ以上低ければ好調候補
+      eraGapCold: 1.5, // 同・高ければ不調候補
+    },
   },
 };
 

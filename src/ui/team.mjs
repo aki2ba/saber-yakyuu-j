@@ -18,6 +18,10 @@ import { playerBatting, playerPitching, hitterWAR, pitcherWAR, deriveLeagueConst
 // H4: 「コーチの見立て」総合スカラーはヘッドレス層（game/training.mjs）が持つ（真値+スカウトノイズの
 //   観測式・キャンプ成果の前後差にも使う共通式）。ここでは等級化(scoutGrade)だけを担う。
 import { coachOverallScore } from '../game/training.mjs';
+// Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）バッジ。一軍一覧のみ。
+//   teamFormMap で全選手ぶんの tier を軽量に取り、hot/cold の選手だけ playerFormOf で reasons を
+//   取り直す（ホバー表示用・該当者は少数なので軽い）。
+import { playerFormOf, teamFormMap } from '../game/form.mjs';
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -116,7 +120,9 @@ export function renderTeamTab(c, u) {
       ? `成績は今季の二軍戦（ファーム）観測値。「育成」バッジ=育成契約（支配下70人枠の外・${nMinor}人）。`
       : '成績は今季の一軍観測値。')
     + '等級=コーチの見立て（スカウト評価の総合・真の実力ではない）。列見出しでソート、行クリックで選手詳細。'));
-  const rows = isFarm ? buildFarmRosterRows(players, u) : buildTeamRosterRows(players, u);
+  // Wave B: フォーム判定バッジは一軍一覧のみ（窓データ=playerGameLogは一軍試合のみのため）。
+  const formMap = isFarm ? null : teamFormMap(gs);
+  const rows = isFarm ? buildFarmRosterRows(players, u) : buildTeamRosterRows(players, u, formMap, gs);
   const batCols = isFarm ? FARM_BAT_COLS : TEAM_BAT_COLS;
   const pitCols = isFarm ? FARM_PIT_COLS : TEAM_PIT_COLS;
   const batSort = isFarm ? teamTabView.farmBatSort : teamTabView.batSort;
@@ -145,8 +151,12 @@ function injuredMap(u) {
   return { injured, curDay };
 }
 
-/** 選手配列 → 野手/投手の行データ（一軍サブタブ: 当年一軍観測＋WAR＋等級＋故障状態）。 */
-function buildTeamRosterRows(players, u) {
+/**
+ * 選手配列 → 野手/投手の行データ（一軍サブタブ: 当年一軍観測＋WAR＋等級＋故障状態）。
+ * formMap（Wave B・teamFormMap(gs)の結果）が渡されれば名前セルに好調▲/不調▼バッジを付ける
+ * （gs=game.gsが必要・hot/coldの選手だけ playerFormOf で reasons 先頭をホバー用に取り直す）。
+ */
+function buildTeamRosterRows(players, u, formMap = null, gs = null) {
   const { state } = u;
   const { injured, curDay } = injuredMap(u);
   const bat = [];
@@ -156,11 +166,15 @@ function buildTeamRosterRows(players, u) {
     const inj = injured.get(p.id);
     const status = inj ? `離脱中(残${inj.gamesLost - curDay})` : '';
     const grade = teamScoutGrade(p, state.cfg, u);
+    const formTier = formMap ? formMap.get(p.id) ?? null : null;
+    const formReason = (formTier === 'hot' || formTier === 'cold') && gs
+      ? playerFormOf(gs, p.id).reasons[0]?.text ?? ''
+      : '';
     if (p.role === 'pitcher') {
       const has = !!s && (s.pitching.g > 0 || s.pitching.outs > 0);
       const m = has ? playerPitching(s, state.lc, state.cfg) : null;
       pit.push({
-        id: p.id, name: p.name, age: p.age,
+        id: p.id, name: p.name, age: p.age, formTier, formReason,
         prole: m ? (m.gs * 2 >= m.g ? '先発' : '救援') : '-',
         g: m ? m.g : null, ip: m ? finiteOrNull(m.ip) : null,
         era: m ? finiteOrNull(m.era) : null, fip: m ? finiteOrNull(m.fip) : null,
@@ -173,7 +187,7 @@ function buildTeamRosterRows(players, u) {
       const has = !!s && s.batting.pa > 0;
       const m = has ? playerBatting(s, state.lc) : null;
       bat.push({
-        id: p.id, name: p.name, age: p.age, pos: u.posJP(u.primaryPos(p)),
+        id: p.id, name: p.name, age: p.age, pos: u.posJP(u.primaryPos(p)), formTier, formReason,
         pa: m ? m.pa : null, avg: m ? finiteOrNull(m.avg) : null, obp: m ? finiteOrNull(m.obp) : null,
         slg: m ? finiteOrNull(m.slg) : null, ops: m ? finiteOrNull(m.ops) : null,
         hr: m ? m.hr : null, rbi: m ? m.rbi : null, sb: m ? m.sb : null,
@@ -250,13 +264,20 @@ export function teamScoutGrade(p, cfg, u) {
 }
 
 /**
- * セル値（列キー別・null='-'）。name 列は育成バッジ（F2-4）を含む要素を返すことがある
- * （呼び出し側 teamRosterTable が要素/文字列の両方を td へ収める）。
+ * セル値（列キー別・null='-'）。name 列は育成バッジ（F2-4）／フォーム判定バッジ（Wave B）を
+ * 含む要素を返すことがある（呼び出し側 teamRosterTable が要素/文字列の両方を td へ収める）。
  */
 function teamRosterCell(k, d, u) {
   if (k === 'name' && d.minor) {
     // 育成契約バッジ（F2-4）: 二軍サブタブで「支配下の二軍」と「育成」を一目で区別する。
     return u.el('span', {}, [String(d.name), u.el('span', { class: 'devbadge' }, '育成')]);
+  }
+  if (k === 'name' && (d.formTier === 'hot' || d.formTier === 'cold')) {
+    // Wave B（gm_analytics_spec.md）: 好調▲/不調▼バッジ。ホバー title に reasons 先頭を表示。
+    const badge = d.formTier === 'hot'
+      ? u.el('span', { class: 'formbadge good', title: d.formReason || '' }, '▲')
+      : u.el('span', { class: 'formbadge bad', title: d.formReason || '' }, '▼');
+    return u.el('span', {}, [String(d.name), badge]);
   }
   const v = d[k];
   if (v == null || v === '') return v === '' ? '' : '-';

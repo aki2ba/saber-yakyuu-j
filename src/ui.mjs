@@ -50,6 +50,8 @@ import {
   specialDaysOf,
   // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）。
   analystColumnOf,
+  // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）。
+  playerFormOf,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -712,6 +714,9 @@ function renderModalBasic(box, p, s, isPitcher) {
   }
   // F2-4: 今季の二軍成績（現役・キャリアモード）。二軍集計 rt.farm.stats から観測値のみ表示。
   renderCurrentFarmLine(box, p, isPitcher);
+  // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）。自チーム選手のみ・
+  // tier=nullは非表示（他球団=窓データ無し／サンプル不足＝憶測を書かない）。
+  renderPlayerFormSection(box, p);
   // 三層構造の禁則（phaseC_spec 禁則・§1）: キャリアモードでは trueAbility（layer1・隠し値）を
   // 直接出さない。プレイヤーが見るのは観測成績＋スカウト評価＝「コーチの見立て」（scoutSeed 由来の
   // 決定論ノイズを乗せた粗い等級・layer3）。分析ダッシュボード（クイックシミュレート＝game.gs 無し）は
@@ -723,6 +728,22 @@ function renderModalBasic(box, p, s, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
     box.append(abilityBars(p.trueAbility, p.role));
   }
+}
+
+/**
+ * Wave B（thyroxin/specs/gm_analytics_spec.md）: 基本タブの「フォーム判定」節（キャリアモードのみ）。
+ * 自チーム選手のみ playerFormOf を呼ぶ（他球団は窓データが無くtier=null＝常に非表示）。
+ * サンプル不足（tier=null）のときも何も出さない（憶測を書かない）。
+ */
+function renderPlayerFormSection(box, p) {
+  const gs = game.gs;
+  if (!gs || p.teamId !== gs.playerTeamId) return;
+  const { tier, reasons } = playerFormOf(gs, p.id);
+  if (!tier || tier === 'normal' || !reasons.length) return;
+  const label = tier === 'hot' ? '▲ 好調の兆候' : '▼ 不調の兆候';
+  box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `フォーム判定 — ${label}`));
+  box.append(el('div', { class: tier === 'hot' ? 'formnote good' : 'formnote bad' },
+    reasons.map((r) => el('div', {}, r.text))));
 }
 
 /**

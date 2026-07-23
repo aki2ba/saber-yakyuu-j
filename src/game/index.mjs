@@ -55,6 +55,7 @@ import { coachProgressReports, coachReportPhase } from './coachReports.mjs';
 // Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
 import { hallOfFamers, nicknameAlbum, recordAlbum } from './gallery.mjs';
 import { analystColumnOf } from './analystColumn.mjs'; // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）
+import { playerFormOf, teamFormMap } from './form.mjs'; // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -1339,3 +1340,5 @@ export { ownerPressConference };
 export { usageStabilityOf, trustLabelOf, TRUST_LABELS_JP } from './trust.mjs';
 // R1+R7+R8: 「アナリストコラム」表示API（UI/テストが './game/index.mjs' 経由で使う）。
 export { analystColumnOf };
+// Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）表示API。
+export { playerFormOf, teamFormMap };

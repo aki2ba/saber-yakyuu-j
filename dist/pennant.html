@@ -234,6 +234,14 @@
   .colgroup.active { border-color:var(--clay); color:var(--clay); font-weight:700; }
   /* F2-4: 二軍サブタブの育成契約バッジ・二軍順位の折りたたみ */
   .devbadge { margin-left:5px; font-size:10px; color:var(--clay-ink); background:var(--clay); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
+  /* Wave B（gm_analytics_spec.md）: チーム一覧のフォーム判定バッジ（好調▲/不調▼・ホバーで根拠） */
+  .formbadge { margin-left:5px; font-weight:700; cursor:default; }
+  .formbadge.good { color:var(--pos); }
+  .formbadge.bad { color:var(--neg); }
+  /* Wave B: 選手モーダル基本タブのフォーム判定節（reasons全行） */
+  .formnote { font-size:12px; margin-top:2px; padding:4px 8px; border-radius:4px; background:var(--inset); }
+  .formnote.good { color:var(--pos); }
+  .formnote.bad { color:var(--neg); }
   .farmstandings { margin-top:14px; }
   .plink { color:var(--hit); cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
   .plink:hover { color:var(--clay); }
@@ -2787,6 +2795,25 @@ const TUNING_DEFAULT = {
       gameHighlightMinHr: 2, // R7快音判定: 1試合の最低本塁打数
       wpaHiddenWrcMax: 100, // R8: 「打撃成績が地味」とみなす wRC+ の上限（リーグ平均=100未満）
       wpaHiddenMinWpa: 0.3, // R8: 隠れWPAリーダーとして拾う最低WPA
+    },
+    // Wave B（thyroxin/specs/gm_analytics_spec.md・GM分析仕様）: フォーム判定（好調▲/不調▼）。
+    //   game/form.mjs が消費。自チーム選手のみ playerGameLog の窓（box集計）から算出する純関数。
+    //   表示層のみ・エンジン非干渉・真値/能力値レーティング非参照（観測statlineのみ）。
+    form: {
+      batWindowGames: 10, // 野手: 窓＝直近何試合（自チームの playerGameLog 末尾から）
+      batMinWindowPA: 20, // 窓の最低打席（未満はサンプル不足でtier=null。box近似のPA=ab+bb）
+      wobaGapHot: 0.040, // 窓wOBA近似がシーズンwOBAをこれ以上上回れば好調候補
+      wobaGapCold: 0.040, // 同・下回れば不調候補（対称の下限）
+      babipHotGuard: 0.400, // 窓BABIPがこれ超なら「出来すぎ」警報（平均回帰の定説・好調時に付記）
+      babipColdGuard: 0.230, // 窓BABIPがこれ未満なら「不運が過ぎる」警報（同定説・不調時に付記）
+      babipMinBip: 10, // BABIP警報を付けるための最低インプレー打球数（ab-so-hr、ゼロ割/極小サンプル回避）
+      pitLookbackApps: 3, // 投手: 窓＝直近何登板（自チームの playerGameLog を遡って登板を3件拾う）
+      pitLookbackMaxGames: 40, // 3登板を探して遡る試合数の上限（先発ローテ間隔を跨いでも見つからない場合の安全弁）
+      pitMinWindowOuts: 18, // 窓の最低アウト数（6回=18未満はサンプル不足でtier=null）
+      kbbGapHot: 0.08, // 窓K-BB%がシーズンK-BB%をこれ以上上回れば好調候補（DIPS理論・投手の先行指標）
+      kbbGapCold: 0.08, // 同・下回れば不調候補
+      eraGapHot: 1.5, // 窓の目安防御率(失点/9)がシーズンERAよりこれ以上低ければ好調候補
+      eraGapCold: 1.5, // 同・高ければ不調候補
     },
   },
 };
@@ -17417,6 +17444,260 @@ function analystColumnOf(state, names = {}) {
 }
 
 
+// ===== src/game/form.mjs =====
+// ============================================================================
+// Wave B（thyroxin/specs/gm_analytics_spec.md「GM分析仕様」§Wave B）: フォーム判定（好調▲/不調▼）
+//
+//   playerFormOf(state, playerId) … 自チーム選手のみ、直近窓（rt.playerGameLog の box集計）と
+//     シーズン累計の観測成績（rt.stats）を比較し、好調/不調の兆候を判定する純関数。
+//   teamFormMap(state)            … 自チーム選手ぶんの tier だけを軽量に返すバルクAPI
+//     （チーム一覧のバッジ表示用・playerFormOf を全選手に回すより lc/statsById を使い回して軽い）。
+//
+// 設計原則（CLAUDE.md鉄則・gm_analytics_spec.md §0・タスク仕様の厳守事項）:
+//   - 観測のみ: rt.stats（シーズン累計・正確値）と rt.playerGameLog の box（直近窓・集計値のみ）
+//     だけを使う。真値(trueAbility)・能力値レーティングは一切参照しない（三層構造・観測成績のみ）。
+//   - 他球団は tier=null: playerGameLog は自チーム試合のみが残る（§17・game/boxscore.mjsコメント
+//     参照）ため、他球団選手には直近窓のデータが存在しない。窓データの無いものは語らない。
+//   - 窓の近似について: box の打者行（game/boxscore.mjs batterOf）は ab/h/hr/bb/k のみを持ち、
+//     二塁打/三塁打/敬遠/犠飛の内訳が無い（§17: 生イベントはその場で捨てて集計行だけ残す設計）。
+//     このため窓wOBAは「本塁打以外の安打はすべて単打として扱う」近似で計算する（本塁打以外の
+//     安打は伸びるほど過小評価される片側バイアスだが、標準的な長短打配分ではその過小分は
+//     wOBAスケールで高々0.01〜0.02程度に収まる。wobaGapHot/Cold=0.040 はこの誤差を吸収できる
+//     余裕を持たせた値＝閾値選定の根拠）。同様に bb フィールドは死球を含む（boxscore.mjs
+//     の仕様どおり）ため、四球単独の重みで代用する。
+//   - セイバー定説準拠（各判定コメントに根拠定説を明記）:
+//       打者: BABIP極端値は平均回帰する（定説）——窓BABIPが著しく高い/低いときは見かけの
+//             好調/不調に注意を促す reason を追加する（analystColumn.mjs のxwOBA-wOBA乖離型と
+//             同じ発想の応用）。
+//       投手: K-BB%はDIPS理論（投手が自らコントロールできるのは主に奪三振/与四球/被本塁打の
+//             比率）に基づき、防御率より投手の実力・将来のERAを予測しやすい先行指標とされる
+//             （analystColumn.mjs のERA-SIERA乖離型と同じ定説）。
+//   - 目安防御率: season側・window側とも「自責点」ではなく box の r（総失点・在板中の失点）を
+//     ベースに揃える（box は自責/失策絡みの内訳を持たないため。coachReports.mjs の
+//     pitchingTrend/pitchingDescr と同じ「目安防御率」ラベル・同じ近似方針を踏襲）。
+//   - 決定論: 判定式そのものは乱数非使用（観測集計の比較のみ・hashSeedを消費しない）。
+//   - 表示層のみ・純関数・保存フィールド追加なし・usage AI（起用判断）には一切触れない。
+//   - 最低サンプルゲート: 窓20打席未満／窓6イニング(18アウト)未満は tier=null（憶測を書かない）。
+// ============================================================================
+
+
+
+// バンドルは全モジュールを同一スコープへconcatする（tools/build.mjs）ため、トップレベル名は
+// 全モジュールで一意にする（analystColumn.mjs の ac 接頭辞と同じ流儀で fm 接頭辞に統一）。
+const fmAvg3 = (v) => v.toFixed(3).replace(/^0\./, '.').replace(/^-0\./, '-.');
+const fmPct = (v) => `${(v * 100).toFixed(1)}%`;
+const FM_NULL = { tier: null, reasons: [] };
+
+/** playerGameLog の1試合分から、指定playerIdの打者/投手ボックス行を探す（無ければnull）。
+ *  coachReports.mjs の findBatterLine/findPitcherLine と同型（同一バンドルスコープにつき別名）。 */
+function fmFindBatterLine(rec, playerId) {
+  const box = rec.box;
+  if (!box) return null;
+  return (box.batters?.home ?? []).find((b) => b.pid === playerId)
+    ?? (box.batters?.away ?? []).find((b) => b.pid === playerId)
+    ?? null;
+}
+function fmFindPitcherLine(rec, playerId) {
+  const box = rec.box;
+  if (!box) return null;
+  return (box.pitchers?.home ?? []).find((p) => p.pid === playerId)
+    ?? (box.pitchers?.away ?? []).find((p) => p.pid === playerId)
+    ?? null;
+}
+
+/** 野手の窓集計（自チーム直近N試合・出場が無い試合は0のまま加算されない）。 */
+function fmBatWindow(rt, playerId, nGames) {
+  const recent = rt.playerGameLog.slice(-nGames);
+  const w = { ab: 0, h: 0, hr: 0, bb: 0, k: 0, games: 0 };
+  for (const rec of recent) {
+    const line = fmFindBatterLine(rec, playerId);
+    if (!line) continue;
+    w.ab += line.ab || 0;
+    w.h += line.h || 0;
+    w.hr += line.hr || 0;
+    w.bb += line.bb || 0;
+    w.k += line.k || 0;
+    w.games += 1;
+  }
+  return w;
+}
+
+/** 投手の窓集計（自チームのplayerGameLogを遡り、実際に登板した直近N登板を拾う）。 */
+function fmPitWindow(rt, playerId, nApps, maxGamesBack) {
+  const log = rt.playerGameLog;
+  const w = { outs: 0, r: 0, bb: 0, k: 0, h: 0, hr: 0, apps: 0 };
+  const start = Math.max(0, log.length - maxGamesBack);
+  for (let i = log.length - 1; i >= start && w.apps < nApps; i--) {
+    const line = fmFindPitcherLine(log[i], playerId);
+    if (!line || !(line.outs > 0)) continue;
+    w.outs += line.outs || 0;
+    w.r += line.r || 0;
+    w.bb += line.bb || 0;
+    w.k += line.k || 0;
+    w.h += line.h || 0;
+    w.hr += line.hr || 0;
+    w.apps += 1;
+  }
+  return w;
+}
+
+/** シーズン観測（rt.stats/rt.standings）からリーグ定数と playerId→PlayerSeason を作る（1回だけ）。 */
+function fmBuildCtx(state) {
+  const rt = state.rt;
+  if (!rt || !rt.stats || !rt.playerGameLog || !rt.standings) return null;
+  const seasons = [...rt.stats.stats.values()];
+  const standRows = [...rt.standings.values()];
+  if (!seasons.length || !standRows.length) return null;
+  const lc = deriveLeagueConstants({ playerSeasons: seasons, standings: standRows });
+  const statsById = new Map(seasons.map((s) => [s.playerId, s]));
+  return { lc, statsById };
+}
+
+/**
+ * 野手のフォーム判定。
+ * 根拠(BABIP平均回帰): インプレー打球の結果はリーグ平均へ回帰する傾向がある、という定説に基づき、
+ * 窓BABIPが極端（出来すぎ/出来なさすぎ）なときは見かけの好調/不調として reasons に注記する。
+ */
+function fmEvalBatter(state, ctx, playerId) {
+  const s = ctx.statsById.get(playerId);
+  if (!s || !s.batting || !(s.batting.pa > 0)) return FM_NULL;
+  const cfgF = state.cfg.tuning.storylines.form;
+  const w = fmBatWindow(state.rt, playerId, cfgF.batWindowGames);
+  const pa = w.ab + w.bb; // 窓PA近似（box にHBP/SF内訳が無いため ab+bb=PA近似）
+  if (pa < cfgF.batMinWindowPA) return FM_NULL;
+
+  const seasonWoba = playerBatting(s, ctx.lc).woba;
+  const W = ctx.lc.linearWeights;
+  const rawWindow = (W.bb * w.bb + W.b1 * (w.h - w.hr) + W.hr * w.hr) / pa; // 非本塁打安打=単打近似
+  const wobaWindow = ctx.lc.wobaScale ? ctx.lc.wobaScale * rawWindow : 0;
+  const diff = wobaWindow - seasonWoba;
+  const avgWindow = w.ab ? w.h / w.ab : 0;
+  const bip = w.ab - w.k - w.hr; // インプレー打球近似（sf無視）
+  const babipWindow = bip > 0 ? (w.h - w.hr) / bip : null;
+
+  let tier = 'normal';
+  if (diff >= cfgF.wobaGapHot) tier = 'hot';
+  else if (diff <= -cfgF.wobaGapCold) tier = 'cold';
+
+  const reasons = [];
+  if (tier === 'hot') {
+    reasons.push({
+      text: `直近${cfgF.batWindowGames}試合は打率${fmAvg3(avgWindow)}・窓wOBA近似${fmAvg3(wobaWindow)}——シーズンwOBA${fmAvg3(seasonWoba)}を${fmAvg3(diff)}上回る当たり方`,
+      kind: 'wobaGap',
+    });
+    if (babipWindow != null && bip >= cfgF.babipMinBip && babipWindow > cfgF.babipHotGuard) {
+      reasons.push({
+        text: `ただし窓BABIP${fmAvg3(babipWindow)}は出来すぎ水準——BABIPは平均回帰するという定説どおりなら、見かけの好調に注意`,
+        kind: 'babipGuard',
+      });
+    }
+  } else if (tier === 'cold') {
+    reasons.push({
+      text: `直近${cfgF.batWindowGames}試合は打率${fmAvg3(avgWindow)}・窓wOBA近似${fmAvg3(wobaWindow)}——シーズンwOBA${fmAvg3(seasonWoba)}を${fmAvg3(-diff)}下回る不振`,
+      kind: 'wobaGap',
+    });
+    if (babipWindow != null && bip >= cfgF.babipMinBip && babipWindow < cfgF.babipColdGuard) {
+      reasons.push({
+        text: `窓BABIP${fmAvg3(babipWindow)}は低すぎる水準——BABIPは平均回帰するという定説どおりなら、この先は運も戻ってくる公算`,
+        kind: 'babipGuard',
+      });
+    }
+  }
+  return { tier, reasons };
+}
+
+/**
+ * 投手のフォーム判定。
+ * 根拠(DIPS理論): K-BB%は防御率より投手の実力・将来の防御率を予測しやすい先行指標とされる定説。
+ * K-BB%と目安防御率の2シグナルが逆方向を指すときは判定を割らず 'normal'（憶測を書かない）。
+ */
+function fmEvalPitcher(state, ctx, playerId) {
+  const s = ctx.statsById.get(playerId);
+  if (!s || !s.pitching || !(s.pitching.outs > 0)) return FM_NULL;
+  const cfgF = state.cfg.tuning.storylines.form;
+  const w = fmPitWindow(state.rt, playerId, cfgF.pitLookbackApps, cfgF.pitLookbackMaxGames);
+  if (w.outs < cfgF.pitMinWindowOuts) return FM_NULL;
+
+  const seasonIp = s.pitching.outs / 3;
+  const seasonBf = s.pitching.bf;
+  const seasonKbb = seasonBf ? (s.pitching.so - s.pitching.bb) / seasonBf : 0;
+  const seasonEra = seasonIp ? (s.pitching.r * 9) / seasonIp : 0; // 「目安防御率」＝rベース（coachReports.mjsと同基準）
+
+  const bfWindow = w.outs + w.h + w.bb; // 対戦打者の近似（analystColumn.mjs acGameHighlightCandidatesと同じ近似式）
+  const kbbWindow = bfWindow ? (w.k - w.bb) / bfWindow : 0;
+  const ipWindow = w.outs / 3;
+  const eraWindow = ipWindow ? (w.r * 9) / ipWindow : 0;
+  const kbbDiff = kbbWindow - seasonKbb;
+  const eraDiff = eraWindow - seasonEra; // 負=改善（失点が少ないほど良い）
+
+  const kbbHot = kbbDiff >= cfgF.kbbGapHot;
+  const kbbCold = kbbDiff <= -cfgF.kbbGapCold;
+  const eraHot = eraDiff <= -cfgF.eraGapHot;
+  const eraCold = eraDiff >= cfgF.eraGapCold;
+
+  let tier = 'normal';
+  if ((kbbHot || eraHot) && !kbbCold && !eraCold) tier = 'hot';
+  else if ((kbbCold || eraCold) && !kbbHot && !eraHot) tier = 'cold';
+
+  const reasons = [];
+  if (tier === 'hot') {
+    if (kbbHot) reasons.push({
+      text: `直近${w.apps}登板のK-BB%は${fmPct(kbbWindow)}——シーズンK-BB%${fmPct(seasonKbb)}を上回る。DIPS理論で防御率より先行するとされる指標が上向いている`,
+      kind: 'kbbGap',
+    });
+    if (eraHot) reasons.push({
+      text: `直近${w.apps}登板の目安防御率は${eraWindow.toFixed(2)}——シーズン目安防御率${seasonEra.toFixed(2)}より失点が少ない`,
+      kind: 'runsGap',
+    });
+  } else if (tier === 'cold') {
+    if (kbbCold) reasons.push({
+      text: `直近${w.apps}登板のK-BB%は${fmPct(kbbWindow)}——シーズンK-BB%${fmPct(seasonKbb)}を下回る。DIPS理論で防御率より先行するとされる指標が下向いている`,
+      kind: 'kbbGap',
+    });
+    if (eraCold) reasons.push({
+      text: `直近${w.apps}登板の目安防御率は${eraWindow.toFixed(2)}——シーズン目安防御率${seasonEra.toFixed(2)}より失点が多い`,
+      kind: 'runsGap',
+    });
+  }
+  return { tier, reasons };
+}
+
+/**
+ * フォーム判定（好調▲/不調▼）。自チーム選手のみ窓判定が可能（playerGameLog は自チーム試合のみ・
+ * §17）。他球団選手・データ不足（最低サンプルゲート未達）は tier=null＝語らない。
+ * @param {Object} state GameState（rt/cfg/playerTeamId/league.players が必要）
+ * @param {string} playerId
+ * @returns {{tier: 'hot'|'normal'|'cold'|null, reasons: Array<{text:string, kind:string}>}}
+ */
+function playerFormOf(state, playerId) {
+  if (!state.rt || !state.playerTeamId) return FM_NULL;
+  const p = (state.league?.players ?? []).find((x) => x.id === playerId);
+  if (!p || p.teamId !== state.playerTeamId) return FM_NULL; // 他球団=窓データ無し（語らない）
+  const ctx = fmBuildCtx(state);
+  if (!ctx) return FM_NULL;
+  return p.role === 'pitcher' ? fmEvalPitcher(state, ctx, playerId) : fmEvalBatter(state, ctx, playerId);
+}
+
+/**
+ * チーム一覧バッジ用の軽量バルクAPI。自チーム選手ぶんの tier だけを返す（lc/statsById を
+ * 全選手で使い回すため playerFormOf を人数分呼ぶより軽い）。
+ * @param {Object} state GameState
+ * @returns {Map<string, 'hot'|'normal'|'cold'|null>} playerId → tier
+ */
+function teamFormMap(state) {
+  const out = new Map();
+  if (!state.rt || !state.playerTeamId) return out;
+  const ctx = fmBuildCtx(state);
+  if (!ctx) return out;
+  const myPlayers = (state.league?.players ?? []).filter((p) => p.teamId === state.playerTeamId);
+  for (const p of myPlayers) {
+    const { tier } = p.role === 'pitcher' ? fmEvalPitcher(state, ctx, p.id) : fmEvalBatter(state, ctx, p.id);
+    out.set(p.id, tier);
+  }
+  return out;
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -17468,6 +17749,7 @@ function analystColumnOf(state, names = {}) {
 // Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
 
  // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）
+ // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）
 
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -18736,6 +19018,8 @@ function allPlayersById(state) {
 
 // R1+R7+R8: 「アナリストコラム」表示API（UI/テストが './game/index.mjs' 経由で使う）。
 
+// Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）表示API。
+
 </script>
 <script>
 // ===== src/ui/draft.mjs =====
@@ -19940,6 +20224,10 @@ function renderOffseasonDigestScreen(off, u) {
 // H4: 「コーチの見立て」総合スカラーはヘッドレス層（game/training.mjs）が持つ（真値+スカウトノイズの
 //   観測式・キャンプ成果の前後差にも使う共通式）。ここでは等級化(scoutGrade)だけを担う。
 
+// Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）バッジ。一軍一覧のみ。
+//   teamFormMap で全選手ぶんの tier を軽量に取り、hot/cold の選手だけ playerFormOf で reasons を
+//   取り直す（ホバー表示用・該当者は少数なので軽い）。
+
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -20038,7 +20326,9 @@ function renderTeamTab(c, u) {
       ? `成績は今季の二軍戦（ファーム）観測値。「育成」バッジ=育成契約（支配下70人枠の外・${nMinor}人）。`
       : '成績は今季の一軍観測値。')
     + '等級=コーチの見立て（スカウト評価の総合・真の実力ではない）。列見出しでソート、行クリックで選手詳細。'));
-  const rows = isFarm ? buildFarmRosterRows(players, u) : buildTeamRosterRows(players, u);
+  // Wave B: フォーム判定バッジは一軍一覧のみ（窓データ=playerGameLogは一軍試合のみのため）。
+  const formMap = isFarm ? null : teamFormMap(gs);
+  const rows = isFarm ? buildFarmRosterRows(players, u) : buildTeamRosterRows(players, u, formMap, gs);
   const batCols = isFarm ? FARM_BAT_COLS : TEAM_BAT_COLS;
   const pitCols = isFarm ? FARM_PIT_COLS : TEAM_PIT_COLS;
   const batSort = isFarm ? teamTabView.farmBatSort : teamTabView.batSort;
@@ -20067,8 +20357,12 @@ function injuredMap(u) {
   return { injured, curDay };
 }
 
-/** 選手配列 → 野手/投手の行データ（一軍サブタブ: 当年一軍観測＋WAR＋等級＋故障状態）。 */
-function buildTeamRosterRows(players, u) {
+/**
+ * 選手配列 → 野手/投手の行データ（一軍サブタブ: 当年一軍観測＋WAR＋等級＋故障状態）。
+ * formMap（Wave B・teamFormMap(gs)の結果）が渡されれば名前セルに好調▲/不調▼バッジを付ける
+ * （gs=game.gsが必要・hot/coldの選手だけ playerFormOf で reasons 先頭をホバー用に取り直す）。
+ */
+function buildTeamRosterRows(players, u, formMap = null, gs = null) {
   const { state } = u;
   const { injured, curDay } = injuredMap(u);
   const bat = [];
@@ -20078,11 +20372,15 @@ function buildTeamRosterRows(players, u) {
     const inj = injured.get(p.id);
     const status = inj ? `離脱中(残${inj.gamesLost - curDay})` : '';
     const grade = teamScoutGrade(p, state.cfg, u);
+    const formTier = formMap ? formMap.get(p.id) ?? null : null;
+    const formReason = (formTier === 'hot' || formTier === 'cold') && gs
+      ? playerFormOf(gs, p.id).reasons[0]?.text ?? ''
+      : '';
     if (p.role === 'pitcher') {
       const has = !!s && (s.pitching.g > 0 || s.pitching.outs > 0);
       const m = has ? playerPitching(s, state.lc, state.cfg) : null;
       pit.push({
-        id: p.id, name: p.name, age: p.age,
+        id: p.id, name: p.name, age: p.age, formTier, formReason,
         prole: m ? (m.gs * 2 >= m.g ? '先発' : '救援') : '-',
         g: m ? m.g : null, ip: m ? finiteOrNull(m.ip) : null,
         era: m ? finiteOrNull(m.era) : null, fip: m ? finiteOrNull(m.fip) : null,
@@ -20095,7 +20393,7 @@ function buildTeamRosterRows(players, u) {
       const has = !!s && s.batting.pa > 0;
       const m = has ? playerBatting(s, state.lc) : null;
       bat.push({
-        id: p.id, name: p.name, age: p.age, pos: u.posJP(u.primaryPos(p)),
+        id: p.id, name: p.name, age: p.age, pos: u.posJP(u.primaryPos(p)), formTier, formReason,
         pa: m ? m.pa : null, avg: m ? finiteOrNull(m.avg) : null, obp: m ? finiteOrNull(m.obp) : null,
         slg: m ? finiteOrNull(m.slg) : null, ops: m ? finiteOrNull(m.ops) : null,
         hr: m ? m.hr : null, rbi: m ? m.rbi : null, sb: m ? m.sb : null,
@@ -20172,13 +20470,20 @@ function teamScoutGrade(p, cfg, u) {
 }
 
 /**
- * セル値（列キー別・null='-'）。name 列は育成バッジ（F2-4）を含む要素を返すことがある
- * （呼び出し側 teamRosterTable が要素/文字列の両方を td へ収める）。
+ * セル値（列キー別・null='-'）。name 列は育成バッジ（F2-4）／フォーム判定バッジ（Wave B）を
+ * 含む要素を返すことがある（呼び出し側 teamRosterTable が要素/文字列の両方を td へ収める）。
  */
 function teamRosterCell(k, d, u) {
   if (k === 'name' && d.minor) {
     // 育成契約バッジ（F2-4）: 二軍サブタブで「支配下の二軍」と「育成」を一目で区別する。
     return u.el('span', {}, [String(d.name), u.el('span', { class: 'devbadge' }, '育成')]);
+  }
+  if (k === 'name' && (d.formTier === 'hot' || d.formTier === 'cold')) {
+    // Wave B（gm_analytics_spec.md）: 好調▲/不調▼バッジ。ホバー title に reasons 先頭を表示。
+    const badge = d.formTier === 'hot'
+      ? u.el('span', { class: 'formbadge good', title: d.formReason || '' }, '▲')
+      : u.el('span', { class: 'formbadge bad', title: d.formReason || '' }, '▼');
+    return u.el('span', {}, [String(d.name), badge]);
   }
   const v = d[k];
   if (v == null || v === '') return v === '' ? '' : '-';
@@ -21998,6 +22303,9 @@ function renderModalBasic(box, p, s, isPitcher) {
   }
   // F2-4: 今季の二軍成績（現役・キャリアモード）。二軍集計 rt.farm.stats から観測値のみ表示。
   renderCurrentFarmLine(box, p, isPitcher);
+  // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）。自チーム選手のみ・
+  // tier=nullは非表示（他球団=窓データ無し／サンプル不足＝憶測を書かない）。
+  renderPlayerFormSection(box, p);
   // 三層構造の禁則（phaseC_spec 禁則・§1）: キャリアモードでは trueAbility（layer1・隠し値）を
   // 直接出さない。プレイヤーが見るのは観測成績＋スカウト評価＝「コーチの見立て」（scoutSeed 由来の
   // 決定論ノイズを乗せた粗い等級・layer3）。分析ダッシュボード（クイックシミュレート＝game.gs 無し）は
@@ -22009,6 +22317,22 @@ function renderModalBasic(box, p, s, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
     box.append(abilityBars(p.trueAbility, p.role));
   }
+}
+
+/**
+ * Wave B（thyroxin/specs/gm_analytics_spec.md）: 基本タブの「フォーム判定」節（キャリアモードのみ）。
+ * 自チーム選手のみ playerFormOf を呼ぶ（他球団は窓データが無くtier=null＝常に非表示）。
+ * サンプル不足（tier=null）のときも何も出さない（憶測を書かない）。
+ */
+function renderPlayerFormSection(box, p) {
+  const gs = game.gs;
+  if (!gs || p.teamId !== gs.playerTeamId) return;
+  const { tier, reasons } = playerFormOf(gs, p.id);
+  if (!tier || tier === 'normal' || !reasons.length) return;
+  const label = tier === 'hot' ? '▲ 好調の兆候' : '▼ 不調の兆候';
+  box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `フォーム判定 — ${label}`));
+  box.append(el('div', { class: tier === 'hot' ? 'formnote good' : 'formnote bad' },
+    reasons.map((r) => el('div', {}, r.text))));
 }
 
 /**

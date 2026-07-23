@@ -824,6 +824,16 @@ for (const col of ['位置', '年齢', '打席', '打率', 'OPS', '打点', '盗
 const rosterRows = () => walk(appDiv).filter((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
 assert.equal(rosterRows().length, 29, `一軍サブタブ=出場登録29人ちょうど (got ${rosterRows().length})`); // F2-2/F2-4
 assert.ok(subtabs.some((n) => textOf(n).includes('出場登録（29人）')), 'サブタブラベルに出場登録（29人）');
+// Wave B（gm_analytics_spec.md）: フォーム判定バッジ（好調▲/不調▼）は0件（全員 tier=null/normal も
+//   あり得る＝窓データの薄い序盤は自然）、または good/bad クラス付きの ▲/▼ のみという構造を確認する
+//   （件数そのものは決定論的な観測結果に依存するため両方を許容する構造アサーション）。
+{
+  const formBadges = allClass('formbadge');
+  assert.ok(
+    formBadges.every((n) => (n.className.includes('good') || n.className.includes('bad')) && (textOf(n) === '▲' || textOf(n) === '▼')),
+    `フォーム判定バッジは0件、またはgood/badクラス付きの▲/▼のみ (got ${formBadges.length})`,
+  );
+}
 // 等級セル（S/A/B/C/D/E のどれか）が出る
 const rosterCells = walk(appDiv).filter((n) => n.tag === 'td').map(textOf);
 assert.ok(rosterCells.some((t) => /^[SABCDE]$/.test(t)), 'スカウト等級（コーチの見立て）が表示される');

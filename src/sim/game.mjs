@@ -37,6 +37,53 @@ import { exposureProb, rollInjurySeverity } from './injury.mjs';
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
 // ARM（外野送球）対象ポジションは fieldingGeometry の IS_OUTFIELD を使う（単一の真実）
 
+// --- P1: 試合中の人間采配（介入観戦・§thyroxin/specs/p1_interactive_manager_spec.md） -------
+//
+// 介入点は既存フック（choosePinchHitter/chooseReliever の呼び出し地点）のみ。判断ロジックの
+// 新設はしない＝AIの判断(aiPick)をそのまま採用すれば全自動と bit 同一（乱数は一切消費しない）。
+
+/** 試合を人間の意思決定待ちで中断する合図（§2）。playInteractiveGame 側で catch し、
+ *  state は一切書き換えずに { paused:true, decision:point } として呼び出し側へ返す。 */
+export class InterventionPause extends Error {
+  constructor(point) {
+    super('InterventionPause');
+    this.point = point;
+  }
+}
+
+/**
+ * 介入点を解決する（代打/継投で共通・§2）。
+ * - ログに該当 seq があれば choice.pick を採用（null=見送り/続投。候補外の無効pidはAI判断へ
+ *   フォールバック＝決定論を壊さず黙って続行）。
+ * - ログに無ければ onDecision へ問い合わせる。'PAUSE' を返せば InterventionPause を投げて中断。
+ *   onDecision 省略時（or 'PAUSE'/選択オブジェクト以外を返した時）は常にAI判断(aiPick)を採用
+ *   （load の replay・「以後おまかせ」後の完走・全おまかせテストが同じ経路で一切中断しない）。
+ * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function}} mgrInterv
+ * @param {'ph'|'relief'} kind
+ * @param {Object} situ UI表示用の局面要約（乱数非依存・純粋な読み取り値）
+ * @param {?string} aiPick 従来ロジック（choosePinchHitter/chooseReliever）が選んだ行動
+ * @param {Array<string>} candidates 選択可能な playerId 一覧（表示用・妥当性検証用）
+ * @returns {?string} 実際に採用する行動（null=見送り/続投）
+ */
+function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
+  const seq = ++mgrInterv.seq;
+  const logged = mgrInterv.logByKey.get(seq);
+  if (logged && logged.kind === kind) {
+    const pid = logged.choice ? logged.choice.pick ?? null : null;
+    if (pid === null) return null;
+    return candidates.includes(pid) ? pid : aiPick; // 無効choice=AI判断へフォールバック（§2）
+  }
+  if (!mgrInterv.onDecision) return aiPick;
+  const decision = mgrInterv.onDecision({ seq, kind, situ, candidates: candidates.slice() });
+  if (decision === 'PAUSE') throw new InterventionPause({ seq, kind, situ, candidates: candidates.slice() });
+  if (decision && typeof decision === 'object') {
+    const pid = decision.pick ?? null;
+    if (pid === null) return null;
+    return candidates.includes(pid) ? pid : aiPick;
+  }
+  return aiPick;
+}
+
 /**
  * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
  * @param {boolean} isAirOut アウトが空中打球（犠飛判定用）
@@ -511,6 +558,12 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
   const maxInnings = opts.maxInnings ?? MAX_INNINGS;
+  // P1: 人間采配の介入（§2）。opts.managerIntervention が無ければ mgrInterv=null で
+  // 従来ロジックのみ（choosePinchHitter/chooseReliever の aiPick がそのまま採用される＝bit同一）。
+  const mi = opts.managerIntervention ?? null;
+  const mgrInterv = mi
+    ? { teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0, logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])) }
+    : null;
   // 観戦実況フック（フェーズC1・§16）: 存在するときのみ各プレー確定点で「構造化イベント」を発火する。
   // gc（文脈指標）と同じく乱数は一切消費しない＝onEvent の有無で試合結果は不変（決定論・較正50指標が不変）。
   // 言語化（EV/LA/落下点の実況文）はUI側の責務で、ここは素データだけを渡す（エンジンとUIの分離）。
@@ -554,10 +607,10 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
 
   let inning = 1;
   while (true) {
-    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc); // 表: away攻撃
+    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc, mgrInterv); // 表: away攻撃
     if (inning >= 9 && home.score > away.score) break; // 裏を省略（ホームリード）
     const bottomWalkoff = inning >= 9;
-    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc); // 裏: home攻撃
+    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc, mgrInterv); // 裏: home攻撃
     if (inning >= 9 && home.score !== away.score) break;
     inning++;
     if (inning > maxInnings) break;
@@ -656,10 +709,10 @@ function emptyCur() {
 }
 
 /** 半イニングを消化（batting=攻撃側, fielding=守備側）。battingIsHome=攻撃側がホーム（裏）か・
- *  gc=文脈指標フック（§B2・任意）。 */
-function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc) {
+ *  gc=文脈指標フック（§B2・任意）・mgrInterv=P1人間采配フック（§2・任意）。 */
+function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc, mgrInterv) {
   // 守備側の投手整備: 投手への代打の後始末→回頭の役割ベース継投（§S2-2/§S2-7）
-  halfStartPitching(fielding, batting.score, inning, statFor, cfg);
+  halfStartPitching(fielding, batting.score, inning, statFor, cfg, mgrInterv);
   // 守備固め（§S2-3: 8回以降・リード1-3・当日メモで優位時のみ）
   // 負傷退場の持ち越し（R3）: 塁上に居たため退けなかった選手をここで交代させる（両軍）。
   flushInjuryExits(fielding, inning, cfg);
@@ -697,7 +750,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (outs >= 3) break;
 
     // 代打（§S2-3）: 打席に入る前に差し替える（判断は manager.mjs）
-    maybePinchHit(batting, fielding, bases, inning, cfg, statFor);
+    maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, battingIsHome, mgrInterv);
 
     const batterId = batting.slots[batting.orderIdx].playerId;
     // 投手打席か（DH無し試合の9番スロット×現投手。代打後は該当しない）
@@ -801,7 +854,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           fldScore: fielding.score,
         });
         maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
-        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
+        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs, mgrInterv);
         continue;
       }
     }
@@ -1084,7 +1137,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
     // 継投（球数/失点による途中降板。回頭の交代は halfStartPitching が担う）
-    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
+    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs, mgrInterv);
 
     if (walkoff && batting.score > fielding.score) break; // サヨナラ
   }
@@ -1192,12 +1245,13 @@ function removeFromBench(side, pid) {
   if (i >= 0) side.bench.splice(i, 1);
 }
 
-/** 代打（§S2-3）。同スロットに入り、守備位置も引き継ぐ（守備イニング計上の整合）。 */
-function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
+/** 代打（§S2-3）。同スロットに入り、守備位置も引き継ぐ（守備イニング計上の整合）。
+ *  outs/battingIsHome/mgrInterv は P1（§2）の人間采配フック用（表示のみ・判断ロジックは不変）。 */
+function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, battingIsHome, mgrInterv) {
   const slot = batting.slots[batting.orderIdx];
   const batterId = slot.playerId;
   const isPitcher = batting.orderIdx === batting.pitcherSlot && batterId === batting.curPid;
-  const pick = choosePinchHitter(
+  let pick = choosePinchHitter(
     {
       side: batting,
       oppScore: fielding.score,
@@ -1209,6 +1263,20 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
     },
     cfg,
   );
+  // P1（§2・§0-3の間引き）: AIが代打候補を持つ場面（pick非null）のみ介入可能点になる。
+  if (pick && mgrInterv && mgrInterv.teamId === batting.teamId) {
+    const onDeckIdx = (batting.orderIdx + 1) % 9;
+    const situ = {
+      inning,
+      half: battingIsHome ? 'bottom' : 'top',
+      outs,
+      bases: bases.map((b) => !!b),
+      scoreDiff: batting.score - fielding.score,
+      batterId,
+      onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
+    };
+    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench);
+  }
   if (!pick) return;
   batting.retired.add(batterId); // 退いた打者は再出場不可
   slot.playerId = pick;
@@ -1438,7 +1506,7 @@ function installPitcher(side, pid, inning, lead) {
  * (2) 回頭の継投判断: 球数/失点で降板、セーブ機会は役割（7=setup7/8=setup8/9+=closer）へ。
  *     好投中の先発は7-8回を任せ、9回は完封継続中のみ続投（完投・完封を残す）。
  */
-function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
+function halfStartPitching(fielding, oppScore, inning, statFor, cfg, mgrInterv) {
   const pen = cfg.tuning.pen;
   const lead = fielding.score - oppScore;
 
@@ -1477,7 +1545,15 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
     change = due || saveSitu; // セーブ機会は回頭で適役へ繋ぐ（8回setup8→9回closer等）
   }
   if (!change) return;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  let next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  // P1（§2・§0-3の間引き）: 回頭の継投検討が発火する場面（change=true）のみ介入可能点になる。
+  if (mgrInterv && mgrInterv.teamId === fielding.teamId) {
+    const situ = {
+      inning, half: null, outs: 0, bases: [false, false, false], scoreDiff: lead,
+      pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
+    };
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+  }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
@@ -1494,7 +1570,7 @@ function relieverMaxOutsFor(fielding, pid, pen) {
 
 /** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。
  *  bases/outs を継投判断（レバレッジ駆動・§8.3 D4）へ渡す＝走者を背負った火消しで最良救援を投入。 */
-function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs) {
+function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs, mgrInterv) {
   const pen = cfg.tuning.pen;
   const c = fielding.cur;
   if (c.pid == null) return;
@@ -1510,7 +1586,15 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, out
   if (!remove) return;
 
   const lead = fielding.score - oppScore;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
+  let next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
+  // P1（§2・§0-3の間引き）: イニング途中の継投検討が発火する場面（remove=true）のみ介入可能点になる。
+  if (mgrInterv && mgrInterv.teamId === fielding.teamId) {
+    const situ = {
+      inning, half: null, outs, bases: bases.map((b) => !!b), scoreDiff: lead,
+      pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
+    };
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+  }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);

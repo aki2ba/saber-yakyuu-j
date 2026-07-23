@@ -2800,6 +2800,13 @@ const GAME_DEFAULT = {
   //   OFF時は編成時(trueAbility)アーキタイプの打順を守備位置に固定する旧挙動＝baselineとbit同一。
   //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す（＝プレイヤーの試合では現代的な打順になる）。
   dynamicLineup: false,
+  // P1（p1_interactive_manager_spec）: 試合中の人間采配（介入観戦・代打/継投）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup と同じ「headless既定OFF・UIのみON」第5例目。
+  //   テスト/較正/realism/前史/AI球団は従来と byte 同一）。ui.mjs の uiConfig() だけが
+  //   オーバーライドで true を渡す。true でも介入ログが空のまま完走した試合は全自動と bit 同一
+  //   （介入は既存の choosePinchHitter/chooseReliever 呼び出し地点への人間差し替えフックのみ・
+  //   判断ロジックの新設はしない）。
+  interactiveManager: false,
 };
 
 /**
@@ -6287,6 +6294,53 @@ function rollInjurySeverity(p, cfg, prng) {
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
 // ARM（外野送球）対象ポジションは fieldingGeometry の IS_OUTFIELD を使う（単一の真実）
 
+// --- P1: 試合中の人間采配（介入観戦・§thyroxin/specs/p1_interactive_manager_spec.md） -------
+//
+// 介入点は既存フック（choosePinchHitter/chooseReliever の呼び出し地点）のみ。判断ロジックの
+// 新設はしない＝AIの判断(aiPick)をそのまま採用すれば全自動と bit 同一（乱数は一切消費しない）。
+
+/** 試合を人間の意思決定待ちで中断する合図（§2）。playInteractiveGame 側で catch し、
+ *  state は一切書き換えずに { paused:true, decision:point } として呼び出し側へ返す。 */
+class InterventionPause extends Error {
+  constructor(point) {
+    super('InterventionPause');
+    this.point = point;
+  }
+}
+
+/**
+ * 介入点を解決する（代打/継投で共通・§2）。
+ * - ログに該当 seq があれば choice.pick を採用（null=見送り/続投。候補外の無効pidはAI判断へ
+ *   フォールバック＝決定論を壊さず黙って続行）。
+ * - ログに無ければ onDecision へ問い合わせる。'PAUSE' を返せば InterventionPause を投げて中断。
+ *   onDecision 省略時（or 'PAUSE'/選択オブジェクト以外を返した時）は常にAI判断(aiPick)を採用
+ *   （load の replay・「以後おまかせ」後の完走・全おまかせテストが同じ経路で一切中断しない）。
+ * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function}} mgrInterv
+ * @param {'ph'|'relief'} kind
+ * @param {Object} situ UI表示用の局面要約（乱数非依存・純粋な読み取り値）
+ * @param {?string} aiPick 従来ロジック（choosePinchHitter/chooseReliever）が選んだ行動
+ * @param {Array<string>} candidates 選択可能な playerId 一覧（表示用・妥当性検証用）
+ * @returns {?string} 実際に採用する行動（null=見送り/続投）
+ */
+function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
+  const seq = ++mgrInterv.seq;
+  const logged = mgrInterv.logByKey.get(seq);
+  if (logged && logged.kind === kind) {
+    const pid = logged.choice ? logged.choice.pick ?? null : null;
+    if (pid === null) return null;
+    return candidates.includes(pid) ? pid : aiPick; // 無効choice=AI判断へフォールバック（§2）
+  }
+  if (!mgrInterv.onDecision) return aiPick;
+  const decision = mgrInterv.onDecision({ seq, kind, situ, candidates: candidates.slice() });
+  if (decision === 'PAUSE') throw new InterventionPause({ seq, kind, situ, candidates: candidates.slice() });
+  if (decision && typeof decision === 'object') {
+    const pid = decision.pick ?? null;
+    if (pid === null) return null;
+    return candidates.includes(pid) ? pid : aiPick;
+  }
+  return aiPick;
+}
+
 /**
  * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
  * @param {boolean} isAirOut アウトが空中打球（犠飛判定用）
@@ -6761,6 +6815,12 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
   const maxInnings = opts.maxInnings ?? MAX_INNINGS;
+  // P1: 人間采配の介入（§2）。opts.managerIntervention が無ければ mgrInterv=null で
+  // 従来ロジックのみ（choosePinchHitter/chooseReliever の aiPick がそのまま採用される＝bit同一）。
+  const mi = opts.managerIntervention ?? null;
+  const mgrInterv = mi
+    ? { teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0, logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])) }
+    : null;
   // 観戦実況フック（フェーズC1・§16）: 存在するときのみ各プレー確定点で「構造化イベント」を発火する。
   // gc（文脈指標）と同じく乱数は一切消費しない＝onEvent の有無で試合結果は不変（決定論・較正50指標が不変）。
   // 言語化（EV/LA/落下点の実況文）はUI側の責務で、ここは素データだけを渡す（エンジンとUIの分離）。
@@ -6804,10 +6864,10 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
 
   let inning = 1;
   while (true) {
-    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc); // 表: away攻撃
+    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc, mgrInterv); // 表: away攻撃
     if (inning >= 9 && home.score > away.score) break; // 裏を省略（ホームリード）
     const bottomWalkoff = inning >= 9;
-    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc); // 裏: home攻撃
+    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc, mgrInterv); // 裏: home攻撃
     if (inning >= 9 && home.score !== away.score) break;
     inning++;
     if (inning > maxInnings) break;
@@ -6906,10 +6966,10 @@ function emptyCur() {
 }
 
 /** 半イニングを消化（batting=攻撃側, fielding=守備側）。battingIsHome=攻撃側がホーム（裏）か・
- *  gc=文脈指標フック（§B2・任意）。 */
-function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc) {
+ *  gc=文脈指標フック（§B2・任意）・mgrInterv=P1人間采配フック（§2・任意）。 */
+function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc, mgrInterv) {
   // 守備側の投手整備: 投手への代打の後始末→回頭の役割ベース継投（§S2-2/§S2-7）
-  halfStartPitching(fielding, batting.score, inning, statFor, cfg);
+  halfStartPitching(fielding, batting.score, inning, statFor, cfg, mgrInterv);
   // 守備固め（§S2-3: 8回以降・リード1-3・当日メモで優位時のみ）
   // 負傷退場の持ち越し（R3）: 塁上に居たため退けなかった選手をここで交代させる（両軍）。
   flushInjuryExits(fielding, inning, cfg);
@@ -6947,7 +7007,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (outs >= 3) break;
 
     // 代打（§S2-3）: 打席に入る前に差し替える（判断は manager.mjs）
-    maybePinchHit(batting, fielding, bases, inning, cfg, statFor);
+    maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, battingIsHome, mgrInterv);
 
     const batterId = batting.slots[batting.orderIdx].playerId;
     // 投手打席か（DH無し試合の9番スロット×現投手。代打後は該当しない）
@@ -7051,7 +7111,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           fldScore: fielding.score,
         });
         maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
-        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
+        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs, mgrInterv);
         continue;
       }
     }
@@ -7334,7 +7394,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
     // 継投（球数/失点による途中降板。回頭の交代は halfStartPitching が担う）
-    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
+    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs, mgrInterv);
 
     if (walkoff && batting.score > fielding.score) break; // サヨナラ
   }
@@ -7442,12 +7502,13 @@ function removeFromBench(side, pid) {
   if (i >= 0) side.bench.splice(i, 1);
 }
 
-/** 代打（§S2-3）。同スロットに入り、守備位置も引き継ぐ（守備イニング計上の整合）。 */
-function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
+/** 代打（§S2-3）。同スロットに入り、守備位置も引き継ぐ（守備イニング計上の整合）。
+ *  outs/battingIsHome/mgrInterv は P1（§2）の人間采配フック用（表示のみ・判断ロジックは不変）。 */
+function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, battingIsHome, mgrInterv) {
   const slot = batting.slots[batting.orderIdx];
   const batterId = slot.playerId;
   const isPitcher = batting.orderIdx === batting.pitcherSlot && batterId === batting.curPid;
-  const pick = choosePinchHitter(
+  let pick = choosePinchHitter(
     {
       side: batting,
       oppScore: fielding.score,
@@ -7459,6 +7520,20 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
     },
     cfg,
   );
+  // P1（§2・§0-3の間引き）: AIが代打候補を持つ場面（pick非null）のみ介入可能点になる。
+  if (pick && mgrInterv && mgrInterv.teamId === batting.teamId) {
+    const onDeckIdx = (batting.orderIdx + 1) % 9;
+    const situ = {
+      inning,
+      half: battingIsHome ? 'bottom' : 'top',
+      outs,
+      bases: bases.map((b) => !!b),
+      scoreDiff: batting.score - fielding.score,
+      batterId,
+      onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
+    };
+    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench);
+  }
   if (!pick) return;
   batting.retired.add(batterId); // 退いた打者は再出場不可
   slot.playerId = pick;
@@ -7688,7 +7763,7 @@ function installPitcher(side, pid, inning, lead) {
  * (2) 回頭の継投判断: 球数/失点で降板、セーブ機会は役割（7=setup7/8=setup8/9+=closer）へ。
  *     好投中の先発は7-8回を任せ、9回は完封継続中のみ続投（完投・完封を残す）。
  */
-function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
+function halfStartPitching(fielding, oppScore, inning, statFor, cfg, mgrInterv) {
   const pen = cfg.tuning.pen;
   const lead = fielding.score - oppScore;
 
@@ -7727,7 +7802,15 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
     change = due || saveSitu; // セーブ機会は回頭で適役へ繋ぐ（8回setup8→9回closer等）
   }
   if (!change) return;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  let next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  // P1（§2・§0-3の間引き）: 回頭の継投検討が発火する場面（change=true）のみ介入可能点になる。
+  if (mgrInterv && mgrInterv.teamId === fielding.teamId) {
+    const situ = {
+      inning, half: null, outs: 0, bases: [false, false, false], scoreDiff: lead,
+      pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
+    };
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+  }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
@@ -7744,7 +7827,7 @@ function relieverMaxOutsFor(fielding, pid, pen) {
 
 /** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。
  *  bases/outs を継投判断（レバレッジ駆動・§8.3 D4）へ渡す＝走者を背負った火消しで最良救援を投入。 */
-function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs) {
+function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs, mgrInterv) {
   const pen = cfg.tuning.pen;
   const c = fielding.cur;
   if (c.pid == null) return;
@@ -7760,7 +7843,15 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, out
   if (!remove) return;
 
   const lead = fielding.score - oppScore;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
+  let next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
+  // P1（§2・§0-3の間引き）: イニング途中の継投検討が発火する場面（remove=true）のみ介入可能点になる。
+  if (mgrInterv && mgrInterv.teamId === fielding.teamId) {
+    const situ = {
+      inning, half: null, outs, bases: bases.map((b) => !!b), scoreDiff: lead,
+      pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
+    };
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+  }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
@@ -9209,6 +9300,9 @@ function playScheduledGame(ctx, g, gi) {
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
     onInjury,
     season: ctx.season ?? null, // R6: 直近故障の残債（指数減衰）の計算に使う
+    // P1: 人間采配の介入フック（§2）。ctx.managerIntervention 未設定（通常シム/AI戦）では
+    // undefined のまま＝simulateGame 側で mgrInterv=null となり従来と bit 同一。
+    managerIntervention: ctx.managerIntervention ?? undefined,
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
@@ -12652,6 +12746,7 @@ function computeWpaHighlights(events, tables, cfg, playerTeamId) {
 
 
 
+
 /**
  * シーズン終了時点でまだ癒えていない故障を、翌シーズンの開幕IL（pendingInjuries）へ持ち越す（R3）。
  * 「9月に全治半年の大怪我 → 翌年の開幕も出られない」を表現する。
@@ -12924,17 +13019,43 @@ function applyInterventionsForDay(rt, d) {
  * 1日（節）ぶんの試合をまとめて消化する。schedule は day 昇順・同一 day が連続するため、
  * cursor は必ず day 境界で止まる（save/load の cursor 再走が day 単位で正確になる）。
  * @param {Object} rt SeasonRuntime
- * @param {{collectPlayerEvents?:boolean}} opts collectPlayerEvents=自チーム試合の観戦実況イベントを返す
- * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean}}
+ * @param {{collectPlayerEvents?:boolean, interactive?:boolean, managerIntervention?:Object}} opts
+ *   collectPlayerEvents=自チーム試合の観戦実況イベントを返す。
+ *   interactive=true（P1・game/index.mjs の playInteractiveGame 専用）: 自チーム戦の
+ *     schedule index に到達したら **その試合を処理せずに** cursor をそこに残したまま中断し、
+ *     pendingPlayerGame:true を返す（呼び出し側が attemptPlayerGame でスクラッチ状態を使い
+ *     再試行可能な形で処理する＝一度の失敗〜再試行で real な統計を二重計上しないため）。
+ *   managerIntervention={teamId,log,onDecision}（P1）: log は全シーズンぶんを渡してよい
+ *     （day で内部フィルタする）。load の replay 等、絶対に一時停止しない用途（onDecision省略）で使う。
+ * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean, pendingPlayerGame?:boolean}}
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
 function advanceRuntimeDay(rt, opts = {}) {
   if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: false };
+  if (rt.cursor >= rt.schedule.length) {
+    // P1: interactive の自チーム最終戦を commit した直後は、この呼び出し時点で既に全日程を
+    //   消化済み（cursor が length に達している）が rt.finished はまだ立っていない。
+    //   通常経路（1回の呼び出しで最終日の試合処理→即finalize）と同じ結果になるよう、
+    //   day-prep（介入プロファイル/出場登録入替）を再実行せず finalize だけ行う
+    //   （finalizeRuntime が内部でファーム残日程の消化も行う）。
+    finalizeRuntime(rt);
+    return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: true };
+  }
   const d = pendingDay(rt);
-  applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
-  // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
-  // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
-  const rosterMoves = applyRosterMovesForDay(rt, d);
+  // P1: interactive モードは同じ day を複数回（試合の中断→再開のたび）再入場しうる。
+  //   day単位の準備（介入プロファイル反映/出場登録入替）は day ごとに一度だけでよい
+  //   （二重適用防止・IL復帰やロスター入替の再発火を避ける）。
+  let rosterMoves;
+  if (rt.dayPrepped === d) {
+    rosterMoves = rt.dayPreppedMoves;
+  } else {
+    applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
+    // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
+    // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
+    rosterMoves = applyRosterMovesForDay(rt, d);
+    rt.dayPrepped = d;
+    rt.dayPreppedMoves = rosterMoves;
+  }
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
@@ -12942,6 +13063,9 @@ function advanceRuntimeDay(rt, opts = {}) {
     standings: rt.standings,
     runSplit: rt.runSplit,
   };
+  // P1: 人間采配の介入（§2）。opts.managerIntervention 未設定（通常/AI戦/旧経路）では
+  //   undefined のまま＝ctx.managerIntervention も undefined で simulateGame は従来どおり。
+  const mi = opts.managerIntervention;
   const ctx = {
     seed: rt.seed,
     park: rt.park,
@@ -12957,6 +13081,7 @@ function advanceRuntimeDay(rt, opts = {}) {
     // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
     //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
     onInjury: (ev) => rt.injuryLog.push(ev),
+    managerIntervention: mi ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision } : undefined,
   };
   const games = [];
   const playerGames = [];
@@ -12964,6 +13089,11 @@ function advanceRuntimeDay(rt, opts = {}) {
   while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
     const g = rt.schedule[rt.cursor];
     const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
+    if (isPlayer && opts.interactive) {
+      // P1: 自チーム戦は呼び出し側（playInteractiveGame）が attemptPlayerGame で個別に処理する。
+      //   cursor はこの試合の index のまま＝次回もここから再開する（決定論）。
+      return { day: d, games, farmGames: [], rosterMoves, playerGames, playerEvents, seasonEnded: false, pendingPlayerGame: true };
+    }
     // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
     // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
     // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
@@ -13011,6 +13141,142 @@ function advanceRuntimeDay(rt, opts = {}) {
     seasonEnded = true;
   }
   return { day: d, games, farmGames, rosterMoves, playerGames, playerEvents, seasonEnded };
+}
+
+// ============================================================================
+// P1（試合中の人間采配・介入観戦）: 自チーム1試合ぶんを「中断→再試行可能」な形で処理する。
+//
+// simulateGame は再開不可能（介入ログを1件足して常に inning1 から再シミュレートする＝
+// thyroxin/specs/p1_interactive_manager_spec.md §0-3「決定論なので同じ経過を高速に辿り」）。
+// 実 statFor/standings/usageByTeam を直接使うと、一度中断した試行の「中断点より前」の
+// 打席が real な集計へ既に加算されてしまい、再試行で同じ打席がもう一度加算される
+// （二重計上）。よって毎回「シーズン開始からの累積値を種にしたスクラッチ状態」で試み、
+// 中断（InterventionPause）なら丸ごと破棄、完走したときだけ rt へコミットする
+// （H2 プレイヤー参加型ドラフトの cloneLeague→最終コミットと同型のパターン）。
+// ============================================================================
+
+/** 選手成績のスクラッチ集計器（clone-on-touch）。読みは real season stats（sourceStats）に
+ *  フォールバックし、書きは触れた選手だけスクラッチへ複製してから行う＝実データは無傷。 */
+function makeScratchStats(season, sourceStats) {
+  const stats = new Map();
+  const emptyBat = createBattingLine();
+  const emptyPitch = createPitchingLine();
+  const statFor = (pid, teamId) => {
+    let s = stats.get(pid);
+    if (!s) {
+      const src = sourceStats.get(pid);
+      // JSONクローン: playerSeason は save() が既に平坦なJSONへ落とす構造（プレーンネスト＋数値
+      // カウンタのみ）。structuredClone はビルド後smoke（vmコンテキスト）に存在しないため使わない。
+      s = src ? JSON.parse(JSON.stringify(src)) : createPlayerSeason(pid, season);
+      s.teamId = teamId;
+      stats.set(pid, s);
+    }
+    return s;
+  };
+  const getBat = (pid) => (stats.get(pid) ?? sourceStats.get(pid))?.batting ?? emptyBat;
+  const getPitch = (pid) => (stats.get(pid) ?? sourceStats.get(pid))?.pitching ?? emptyPitch;
+  return { stats, statFor, getBat, getPitch };
+}
+
+/** usage state（起用AIの当季蓄積）のうち試合中に変化しうる Map/オブジェクトだけを複製する。
+ *  charts/scoutEval/defEval/rangeEval は当季固定の読み取り専用データ＝参照共有で安全かつ軽量。
+ *  structuredClone はビルド後smoke（vmコンテキスト）に存在しないため使わない:
+ *  assign はプレーンネスト（JSONクローン）、lastSnap は Map<pid, フラットな観測カウント>。 */
+function cloneUsageStateForRetry(u) {
+  return {
+    ...u,
+    assign: JSON.parse(JSON.stringify(u.assign)),
+    lastSnap: u.lastSnap ? new Map([...u.lastSnap].map(([k, v]) => [k, { ...v }])) : null,
+    consecStarts: new Map(u.consecStarts),
+    startsByPid: new Map(u.startsByPid),
+    startsAtPos: new Map([...u.startsAtPos].map(([k, v]) => [k, new Map(v)])),
+    lastStartDay: new Map(u.lastStartDay),
+    startDaysByPid: new Map([...u.startDaysByPid].map(([k, v]) => [k, v.slice()])),
+    pitchedByDay: new Map([...u.pitchedByDay].map(([k, v]) => [k, new Map(v)])),
+    injuredUntil: new Map(u.injuredUntil),
+  };
+}
+
+/** 順位表の1行を複製（プレーンオブジェクト＋ネストil）。 */
+function cloneStandingsRow(row) {
+  return { ...row, il: { ...row.il } };
+}
+
+/**
+ * 自チーム1試合（schedule[gi]）を人間采配フック付きで試みる（P1）。
+ * @param {Object} rt SeasonRuntime（rt.cursor は必ず gi を指していること＝advanceRuntimeDay の
+ *   pendingPlayerGame 直後の呼び出し前提）
+ * @param {number} gi schedule内index（自チーム戦）
+ * @param {Array} log 当該 day ぶんの介入ログ（{seq,kind,choice}。呼び出し側で year/day を絞り込み済み）
+ * @param {?Function} onDecision ログに無い介入点に到達したときのコールバック（'PAUSE' で中断）。
+ *   省略時は常にAI判断（load の replay 用途＝絶対に中断しない）。
+ * @returns {{paused:true, decision:Object, events:Array} | {paused:false, record:Object, events:Array, commit:Function}}
+ *   commit() を呼ぶまで rt は一切変化しない（試合未確定）。
+ */
+function attemptPlayerGame(rt, gi, log, onDecision) {
+  const g = rt.schedule[gi];
+  const d = g.day;
+  const scratchStats = makeScratchStats(rt.season, rt.stats.stats);
+  const scratchUsage = new Map(rt.usageByTeam);
+  scratchUsage.set(g.home, cloneUsageStateForRetry(rt.usageByTeam.get(g.home)));
+  scratchUsage.set(g.away, cloneUsageStateForRetry(rt.usageByTeam.get(g.away)));
+  const scratchStandings = new Map(rt.standings);
+  scratchStandings.set(g.home, cloneStandingsRow(rt.standings.get(g.home)));
+  scratchStandings.set(g.away, cloneStandingsRow(rt.standings.get(g.away)));
+  const scratchRunSplit = { dh: { ...rt.runSplit.dh }, noDh: { ...rt.runSplit.noDh } };
+  const scratchInjuries = [];
+  const events = [];
+  const pass = {
+    statFor: scratchStats.statFor,
+    getBat: scratchStats.getBat,
+    getPitch: scratchStats.getPitch,
+    standings: scratchStandings,
+    runSplit: scratchRunSplit,
+    onEvent: (e) => events.push(e),
+  };
+  const ctx = {
+    seed: rt.seed,
+    park: rt.park,
+    parkByTeam: rt.parkByTeam,
+    cfg: rt.cfg,
+    leagueDh: rt.leagueDh,
+    teamById: rt.teamById,
+    chartsByTeam: rt.chartsByTeam,
+    usageByTeam: scratchUsage,
+    pass,
+    dayScale: rt.dayScale,
+    season: rt.season,
+    onInjury: (ev) => scratchInjuries.push(ev),
+    managerIntervention: { teamId: rt.playerTeamId, log, onDecision },
+  };
+  let res;
+  try {
+    res = playScheduledGame(ctx, g, gi);
+  } catch (e) {
+    if (e instanceof InterventionPause) return { paused: true, decision: e.point, events };
+    throw e;
+  }
+  const rec = { day: d, home: g.home, away: g.away, homeScore: res.homeScore, awayScore: res.awayScore, tie: res.tie, innings: res.innings };
+  rec.box = buildBoxScore(events);
+  const wpaTables = getWpaRefTables(rt.league, rt.cfg);
+  const wpaHi = computeWpaHighlights(events, wpaTables, rt.cfg, rt.playerTeamId);
+  if (wpaHi) {
+    rec.box.wpaTop = wpaHi.top;
+    rec.box.wpaBottom = wpaHi.bottom;
+  }
+  const commit = () => {
+    for (const [pid, s] of scratchStats.stats) rt.stats.stats.set(pid, s);
+    rt.usageByTeam.set(g.home, scratchUsage.get(g.home));
+    rt.usageByTeam.set(g.away, scratchUsage.get(g.away));
+    rt.standings.set(g.home, scratchStandings.get(g.home));
+    rt.standings.set(g.away, scratchStandings.get(g.away));
+    rt.runSplit.dh = scratchRunSplit.dh;
+    rt.runSplit.noDh = scratchRunSplit.noDh;
+    for (const ev of scratchInjuries) rt.injuryLog.push(ev);
+    rt.playerGameLog.push(rec);
+    rt.cursor = gi + 1;
+  };
+  return { paused: false, record: rec, events, commit };
 }
 
 /** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */
@@ -15914,6 +16180,10 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     pleaUsed: false,
     ownerPending: null,
     lastOwnerReport: null,
+    // P1（p1_interactive_manager_spec）: 試合中の人間采配（代打/継投）の介入ログ。additive。
+    //   [{year, day, seq, kind:'ph'|'relief', choice:{pick:playerId|null}}]（自チーム戦のみ）。
+    //   「おまかせ」はログに積まない＝ログ空の試合は完全従来挙動（bit同一・§0-4）。
+    gameInterventions: [],
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -16158,6 +16428,73 @@ function advanceTo(state, until, opts = {}) {
 }
 
 /**
+ * ★P1（試合中の人間采配・介入観戦）: `advanceTo(state,'nextPlayerGame')` の対話版。
+ * 自チーム戦の日まで通常どおり日を消化し（自チーム戦の無い日は従来と完全同一の全自動）、
+ * 自チーム戦の schedule index に到達したら attemptPlayerGame（season_runtime.mjs）で
+ * 「スクラッチ状態で試行→完走したときだけコミット」する（§3・H2プレイヤー参加型ドラフトの
+ * cloneLeague→最終コミットと同型）。
+ *
+ * ログに無い介入点（choosePinchHitter/chooseReliever が非null判断をした場面）に到達すると
+ * 試合を中断して `{paused:true, decision}` を返す（state は一切書き換えない＝試合未確定）。
+ * 呼び出し側（UI）は `submitGameDecision` でログへ1件追記してから本関数を **再び呼び直す**
+ * （決定論なので同じ経過を高速に辿り、次の未ログ介入点 or 試合終了まで進む）。
+ * 途中で観戦をやめた場合（「以後おまかせ」）は `opts.auto:true` で呼び直す。ログに無い介入点は
+ * 一切中断せず常にAI判断（choosePinchHitter/chooseReliever の aiPick）で完走する（§3・§4）。
+ * `opts.auto` を一度も使わない（常に false）まま最後まで進めた試合は、介入ログが最終的に空なら
+ * 全自動と bit 同一になる（§0-4・§5テスト1の前提）。
+ * @param {Object} state GameState（state.rt が組まれていること）
+ * @param {{auto?:boolean}} [opts] auto=true: ログに無い介入点で中断せず常にAI判断で進める
+ *   （「以後おまかせ」・全おまかせテスト用）。既定 false（通常の介入観戦＝未ログ点で必ず中断）。
+ * @returns {{seasonEnded:true} | {paused:true, decision:Object, events:Array} |
+ *   {record:Object, events:Array, seasonEnded:boolean}}
+ */
+function playInteractiveGame(state, opts = {}) {
+  const rt = state.rt;
+  if (!rt || rt.finished) return { seasonEnded: true };
+  let day;
+  do {
+    day = advanceDay(state, { collectPlayerEvents: true, interactive: true });
+    if (rt.finished) return { seasonEnded: true };
+  } while (!day.pendingPlayerGame);
+
+  const gi = rt.cursor;
+  const g = rt.schedule[gi];
+  const log = state.gameInterventions.filter((e) => e.year === state.year && e.day === g.day);
+  const onDecision = opts.auto ? undefined : () => 'PAUSE';
+  const attempt = attemptPlayerGame(rt, gi, log, onDecision);
+  if (attempt.paused) {
+    // year/day は submitGameDecision がそのままログへ積める形に補って返す（§1データモデル）。
+    return { paused: true, decision: { year: state.year, day: g.day, ...attempt.decision }, events: attempt.events };
+  }
+  attempt.commit();
+  // 残りの同日試合（あれば）＋日締め処理（farm/順位確定/年送り準備）を従来経路で消化する。
+  // ★注意: advanceDay は「現在の pendingDay ぶんだけ」処理して返る（day境界で必ず止まる）ため、
+  //   自チーム戦がその日最後の試合だった（cursor が翌日 or 全日程消化末尾へ進んだ）場合は
+  //   ここで advanceDay を呼ばない＝翌日（＝次の自チーム戦かもしれない）を勝手に進めない。
+  let seasonEnded = false;
+  if (rt.cursor >= rt.schedule.length || rt.schedule[rt.cursor].day === g.day) {
+    const rest = advanceDay(state, {});
+    seasonEnded = !!rest.seasonEnded;
+  }
+  return { record: attempt.record, events: attempt.events, seasonEnded };
+}
+
+/**
+ * ★P1: 試合中の人間采配の決定を1件追記する（H2 submitDraftPick と同型の「ログ追記のみ」API）。
+ * 即座には何もシミュレートしない＝呼び出し側が playInteractiveGame を再度呼んで続きを進める。
+ * @param {Object} state GameState
+ * @param {{year:number, day:number, seq:number, kind:'ph'|'relief', choice:{pick:?string}}} decision
+ *   year/day/seq/kind は直前に受け取った `decision`（playInteractiveGame の一時停止点）をそのまま渡す。
+ */
+function submitGameDecision(state, decision) {
+  const { year, day, seq, kind, choice } = decision;
+  if (year == null || day == null || seq == null || !kind) {
+    throw new Error('submitGameDecision: year/day/seq/kind が必要');
+  }
+  state.gameInterventions.push({ year, day, seq, kind, choice: choice ?? { pick: null } });
+}
+
+/**
  * オフシーズン遷移（C2b・完全版）: 完了したシーズンから翌年開幕へ。全選手へ
  * 故障→ブレイク→加齢→引退/新人補充を適用し（真値を動かす・ロスターを世代交代・§10）、
  * yearIndex++・year++ したうえで翌シーズンを開幕状態でセットする。
@@ -16336,6 +16673,7 @@ function save(state) {
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
+    gameInterventions: state.gameInterventions, // P1: 試合中の人間采配ログ（additive・replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
     trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
@@ -16461,6 +16799,7 @@ function load(blob, options = {}) {
     awardsHistory: data.awardsHistory ?? [], // R5: 確定した年度別受賞
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
+    gameInterventions: data.gameInterventions ?? [], // P1: 試合中の人間采配ログ（旧セーブは [] 補完）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
     trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
@@ -16490,7 +16829,12 @@ function load(blob, options = {}) {
   if (ss) {
     // 保存時 cursor まで日次 replay（advanceDay ではなく advanceRuntimeDay ＝ 履歴の二重記録を避ける。
     // 完了済みシーズンの careerStats/teamHistory は blob から復元済み）。
-    while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt);
+    // P1: 当季ぶんの人間采配ログを replay にも通す（onDecision省略＝ログに無い介入点は常にAI判断
+    //   ＝絶対に中断しない。save は必ず「試合が確定した」cursor でしか行われないため、当該試合の
+    //   ログは既に完結しており、この replay が新たな一時停止を生むことは無い＝§0-3）。
+    const replayLog = state.gameInterventions.filter((e) => e.year === state.year);
+    const miOpt = replayLog.length ? { managerIntervention: { teamId: state.playerTeamId, log: replayLog } } : {};
+    while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt, miOpt);
     verifyStandings(state.rt, ss.standings);
     // 二軍の復元検証（F2-2）: replay が再構築した farm の進行位置/順位が保存スナップショットと
     // 一致するか（一軍と同じ決定論の門番。farm 不成立構成では両方 null で素通り）。
@@ -20509,7 +20853,7 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, ...(ov.game ?? {}) },
+    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true, ...(ov.game ?? {}) },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -21171,11 +21515,12 @@ function showNextGameChoices() {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '次の自チーム試合'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
-  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ'));
+  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示'));
   box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
     el('button', { class: 'primary', onclick: () => { overlay.remove(); playNextPlayerGame('watch'); } }, '観戦'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('digest'); } }, 'ダイジェスト'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('skip'); } }, 'スキップ'),
+    el('button', { onclick: () => { overlay.remove(); startInteractiveGame(); } }, '⚡介入観戦'),
   ]));
   overlay.append(box);
   document.getElementById('app').append(overlay);
@@ -21210,6 +21555,134 @@ function playNextPlayerGame(mode) {
 function indexOfFirstAtbat(events) {
   const i = events.findIndex((e) => e.type === 'atbat' || e.type === 'pa');
   return i < 0 ? events.length : i + 1;
+}
+
+// --- P1: 試合中の人間采配（介入観戦） -----------------------------------------
+// thyroxin/specs/p1_interactive_manager_spec.md。playInteractiveGame は決定論の再シミュレートで
+// 動くため（介入ログ+1件で最初からやり直す＝H2プレイヤー参加型ドラフトと同型）、UI 側は
+// 「一時停止→モーダルで選択→submitGameDecision→再度 playInteractiveGame」を繰り返すだけでよい。
+// 中断中は state を一切書き換えないため、autoSave はここでは呼ばない（§0-3: シム途中状態は
+// シリアライズしない。保存は試合が確定した時だけ行う）。
+
+function startInteractiveGame() {
+  game.watch = null;
+  driveInteractiveGame(false);
+}
+
+/**
+ * playInteractiveGame を1回進める。paused ならモーダルで人間の指示を仰ぎ、完走したら通常の
+ * 観戦画面（既存 watch.mjs・pitch単位で振り返れる）へ渡す。
+ * @param {boolean} auto 「以後おまかせ」後の呼び出し=true（ログに無い介入点は以後すべてAI判断）
+ */
+function driveInteractiveGame(auto) {
+  const gs = game.gs;
+  const prevEvents = game.watch ? game.watch.events : null;
+  const prevIdx = game.watch ? game.watch.idx : 0;
+  const result = playInteractiveGame(gs, { auto });
+  if (result.paused) {
+    const events = result.events || [];
+    game.watch = {
+      rec: null, // 試合はまだ未確定（決着後にrenderSeasonResult等へ渡すrecordが無い）
+      events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, events) : events.length,
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: false,
+    };
+    renderWatch();
+    showManagerDecisionModal(result.decision);
+    return;
+  }
+  autoSave(); // 試合が確定した時だけ保存（§0-3）
+  if (gs.rt.finished && !result.record) { renderSeasonResult(); return; }
+  if (result.record) {
+    game.watch = {
+      rec: result.record,
+      events: result.events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, result.events) : indexOfFirstAtbat(result.events),
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: true,
+    };
+    renderWatch();
+  } else {
+    renderHub();
+  }
+}
+
+/** 前回停止点までに消化した打席開始(atbat)数を数え、新イベント列で同じ数だけ進んだ位置まで
+ *  早送りする（§4「前回の停止点付近まで自動早送り」。決定論的リプレイなので、直前までに
+ *  解決済みの介入点のプレフィックスは新イベント列でも一致する）。 */
+function watchIdxCarryOver(oldEvents, oldIdx, newEvents) {
+  if (!oldEvents || !oldEvents.length) return indexOfFirstAtbat(newEvents);
+  let count = 0;
+  for (let i = 0; i < oldIdx && i < oldEvents.length; i++) if (oldEvents[i].type === 'atbat') count++;
+  let seen = 0;
+  for (let i = 0; i < newEvents.length; i++) {
+    if (newEvents[i].type === 'atbat') {
+      seen++;
+      if (seen > count) return i + 1;
+    }
+  }
+  return newEvents.length;
+}
+
+/** 走者表記「走者一二塁」（無ければ「走者なし」）。 */
+function baseOccupancyLabel(bases) {
+  const labels = ['一', '二', '三'];
+  const occ = labels.filter((_, i) => bases && bases[i]);
+  return occ.length ? '走者' + occ.join('') : '走者なし';
+}
+
+/**
+ * P1: 采配モーダル（代打/継投の意思決定）。§4。
+ * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
+ * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ */
+function showManagerDecisionModal(decision) {
+  const gs = game.gs;
+  const { situ, candidates, kind } = decision;
+  const submit = (pick) => {
+    submitGameDecision(gs, { year: decision.year, day: decision.day, seq: decision.seq, kind, choice: { pick } });
+    overlay.remove();
+    driveInteractiveGame(false);
+  };
+  const half = situ.half === 'bottom' ? '裏' : '表';
+  const overlay = el('div', { class: 'overlay mgrdecision' }); // クリックでは閉じない（決定は取り消し不可・キー操作不要）
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' }, `${situ.inning}回${half} ${situ.outs}死 ${baseOccupancyLabel(situ.bases)}　監督、指示を`),
+  ]));
+  if (kind === 'ph') {
+    const batter = state.byId.get(situ.batterId);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
+  } else {
+    const pit = state.byId.get(situ.pitcherId);
+    box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
+  }
+  box.append(el('div', { class: 'row' }, [
+    el('button', { class: 'link', onclick: () => { overlay.remove(); driveInteractiveGame(true); } }, '以後おまかせ'),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
 }
 
 // G2: 週/月の進行を日次分割で実行（runToSeasonEnd と同じチャンク進行パターン・決定論は advanceDay の逐次で不変）。

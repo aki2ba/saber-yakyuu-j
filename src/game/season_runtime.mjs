@@ -11,7 +11,7 @@
 //   （seed と cursor が RNG カーソルに相当する。usage/集計はこの再走で厳密に再現される）。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
-import { createTeamSeason } from '../model/statline.mjs';
+import { createTeamSeason, createPlayerSeason, createBattingLine, createPitchingLine } from '../model/statline.mjs';
 import { NEUTRAL_PARK } from '../model/battedball.mjs';
 import {
   buildSchedule,
@@ -24,6 +24,7 @@ import {
 import { createUsageState } from '../sim/usage.mjs';
 import { buildDepthChart } from '../sim/team.mjs';
 import { simulatePostseason } from '../sim/postseason.mjs';
+import { InterventionPause } from '../sim/game.mjs';
 import { buildBoxScore } from './boxscore.mjs';
 import { applyRosterMovesForDay, createMovesState } from './roster_moves.mjs';
 import { getWpaRefTables, computeWpaHighlights } from './wpaSummary.mjs';
@@ -300,17 +301,43 @@ function applyInterventionsForDay(rt, d) {
  * 1日（節）ぶんの試合をまとめて消化する。schedule は day 昇順・同一 day が連続するため、
  * cursor は必ず day 境界で止まる（save/load の cursor 再走が day 単位で正確になる）。
  * @param {Object} rt SeasonRuntime
- * @param {{collectPlayerEvents?:boolean}} opts collectPlayerEvents=自チーム試合の観戦実況イベントを返す
- * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean}}
+ * @param {{collectPlayerEvents?:boolean, interactive?:boolean, managerIntervention?:Object}} opts
+ *   collectPlayerEvents=自チーム試合の観戦実況イベントを返す。
+ *   interactive=true（P1・game/index.mjs の playInteractiveGame 専用）: 自チーム戦の
+ *     schedule index に到達したら **その試合を処理せずに** cursor をそこに残したまま中断し、
+ *     pendingPlayerGame:true を返す（呼び出し側が attemptPlayerGame でスクラッチ状態を使い
+ *     再試行可能な形で処理する＝一度の失敗〜再試行で real な統計を二重計上しないため）。
+ *   managerIntervention={teamId,log,onDecision}（P1）: log は全シーズンぶんを渡してよい
+ *     （day で内部フィルタする）。load の replay 等、絶対に一時停止しない用途（onDecision省略）で使う。
+ * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean, pendingPlayerGame?:boolean}}
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
 export function advanceRuntimeDay(rt, opts = {}) {
   if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: false };
+  if (rt.cursor >= rt.schedule.length) {
+    // P1: interactive の自チーム最終戦を commit した直後は、この呼び出し時点で既に全日程を
+    //   消化済み（cursor が length に達している）が rt.finished はまだ立っていない。
+    //   通常経路（1回の呼び出しで最終日の試合処理→即finalize）と同じ結果になるよう、
+    //   day-prep（介入プロファイル/出場登録入替）を再実行せず finalize だけ行う
+    //   （finalizeRuntime が内部でファーム残日程の消化も行う）。
+    finalizeRuntime(rt);
+    return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: true };
+  }
   const d = pendingDay(rt);
-  applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
-  // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
-  // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
-  const rosterMoves = applyRosterMovesForDay(rt, d);
+  // P1: interactive モードは同じ day を複数回（試合の中断→再開のたび）再入場しうる。
+  //   day単位の準備（介入プロファイル反映/出場登録入替）は day ごとに一度だけでよい
+  //   （二重適用防止・IL復帰やロスター入替の再発火を避ける）。
+  let rosterMoves;
+  if (rt.dayPrepped === d) {
+    rosterMoves = rt.dayPreppedMoves;
+  } else {
+    applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
+    // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
+    // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
+    rosterMoves = applyRosterMovesForDay(rt, d);
+    rt.dayPrepped = d;
+    rt.dayPreppedMoves = rosterMoves;
+  }
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
@@ -318,6 +345,9 @@ export function advanceRuntimeDay(rt, opts = {}) {
     standings: rt.standings,
     runSplit: rt.runSplit,
   };
+  // P1: 人間采配の介入（§2）。opts.managerIntervention 未設定（通常/AI戦/旧経路）では
+  //   undefined のまま＝ctx.managerIntervention も undefined で simulateGame は従来どおり。
+  const mi = opts.managerIntervention;
   const ctx = {
     seed: rt.seed,
     park: rt.park,
@@ -333,6 +363,7 @@ export function advanceRuntimeDay(rt, opts = {}) {
     // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
     //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
     onInjury: (ev) => rt.injuryLog.push(ev),
+    managerIntervention: mi ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision } : undefined,
   };
   const games = [];
   const playerGames = [];
@@ -340,6 +371,11 @@ export function advanceRuntimeDay(rt, opts = {}) {
   while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
     const g = rt.schedule[rt.cursor];
     const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
+    if (isPlayer && opts.interactive) {
+      // P1: 自チーム戦は呼び出し側（playInteractiveGame）が attemptPlayerGame で個別に処理する。
+      //   cursor はこの試合の index のまま＝次回もここから再開する（決定論）。
+      return { day: d, games, farmGames: [], rosterMoves, playerGames, playerEvents, seasonEnded: false, pendingPlayerGame: true };
+    }
     // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
     // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
     // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
@@ -387,6 +423,142 @@ export function advanceRuntimeDay(rt, opts = {}) {
     seasonEnded = true;
   }
   return { day: d, games, farmGames, rosterMoves, playerGames, playerEvents, seasonEnded };
+}
+
+// ============================================================================
+// P1（試合中の人間采配・介入観戦）: 自チーム1試合ぶんを「中断→再試行可能」な形で処理する。
+//
+// simulateGame は再開不可能（介入ログを1件足して常に inning1 から再シミュレートする＝
+// thyroxin/specs/p1_interactive_manager_spec.md §0-3「決定論なので同じ経過を高速に辿り」）。
+// 実 statFor/standings/usageByTeam を直接使うと、一度中断した試行の「中断点より前」の
+// 打席が real な集計へ既に加算されてしまい、再試行で同じ打席がもう一度加算される
+// （二重計上）。よって毎回「シーズン開始からの累積値を種にしたスクラッチ状態」で試み、
+// 中断（InterventionPause）なら丸ごと破棄、完走したときだけ rt へコミットする
+// （H2 プレイヤー参加型ドラフトの cloneLeague→最終コミットと同型のパターン）。
+// ============================================================================
+
+/** 選手成績のスクラッチ集計器（clone-on-touch）。読みは real season stats（sourceStats）に
+ *  フォールバックし、書きは触れた選手だけスクラッチへ複製してから行う＝実データは無傷。 */
+function makeScratchStats(season, sourceStats) {
+  const stats = new Map();
+  const emptyBat = createBattingLine();
+  const emptyPitch = createPitchingLine();
+  const statFor = (pid, teamId) => {
+    let s = stats.get(pid);
+    if (!s) {
+      const src = sourceStats.get(pid);
+      // JSONクローン: playerSeason は save() が既に平坦なJSONへ落とす構造（プレーンネスト＋数値
+      // カウンタのみ）。structuredClone はビルド後smoke（vmコンテキスト）に存在しないため使わない。
+      s = src ? JSON.parse(JSON.stringify(src)) : createPlayerSeason(pid, season);
+      s.teamId = teamId;
+      stats.set(pid, s);
+    }
+    return s;
+  };
+  const getBat = (pid) => (stats.get(pid) ?? sourceStats.get(pid))?.batting ?? emptyBat;
+  const getPitch = (pid) => (stats.get(pid) ?? sourceStats.get(pid))?.pitching ?? emptyPitch;
+  return { stats, statFor, getBat, getPitch };
+}
+
+/** usage state（起用AIの当季蓄積）のうち試合中に変化しうる Map/オブジェクトだけを複製する。
+ *  charts/scoutEval/defEval/rangeEval は当季固定の読み取り専用データ＝参照共有で安全かつ軽量。
+ *  structuredClone はビルド後smoke（vmコンテキスト）に存在しないため使わない:
+ *  assign はプレーンネスト（JSONクローン）、lastSnap は Map<pid, フラットな観測カウント>。 */
+function cloneUsageStateForRetry(u) {
+  return {
+    ...u,
+    assign: JSON.parse(JSON.stringify(u.assign)),
+    lastSnap: u.lastSnap ? new Map([...u.lastSnap].map(([k, v]) => [k, { ...v }])) : null,
+    consecStarts: new Map(u.consecStarts),
+    startsByPid: new Map(u.startsByPid),
+    startsAtPos: new Map([...u.startsAtPos].map(([k, v]) => [k, new Map(v)])),
+    lastStartDay: new Map(u.lastStartDay),
+    startDaysByPid: new Map([...u.startDaysByPid].map(([k, v]) => [k, v.slice()])),
+    pitchedByDay: new Map([...u.pitchedByDay].map(([k, v]) => [k, new Map(v)])),
+    injuredUntil: new Map(u.injuredUntil),
+  };
+}
+
+/** 順位表の1行を複製（プレーンオブジェクト＋ネストil）。 */
+function cloneStandingsRow(row) {
+  return { ...row, il: { ...row.il } };
+}
+
+/**
+ * 自チーム1試合（schedule[gi]）を人間采配フック付きで試みる（P1）。
+ * @param {Object} rt SeasonRuntime（rt.cursor は必ず gi を指していること＝advanceRuntimeDay の
+ *   pendingPlayerGame 直後の呼び出し前提）
+ * @param {number} gi schedule内index（自チーム戦）
+ * @param {Array} log 当該 day ぶんの介入ログ（{seq,kind,choice}。呼び出し側で year/day を絞り込み済み）
+ * @param {?Function} onDecision ログに無い介入点に到達したときのコールバック（'PAUSE' で中断）。
+ *   省略時は常にAI判断（load の replay 用途＝絶対に中断しない）。
+ * @returns {{paused:true, decision:Object, events:Array} | {paused:false, record:Object, events:Array, commit:Function}}
+ *   commit() を呼ぶまで rt は一切変化しない（試合未確定）。
+ */
+export function attemptPlayerGame(rt, gi, log, onDecision) {
+  const g = rt.schedule[gi];
+  const d = g.day;
+  const scratchStats = makeScratchStats(rt.season, rt.stats.stats);
+  const scratchUsage = new Map(rt.usageByTeam);
+  scratchUsage.set(g.home, cloneUsageStateForRetry(rt.usageByTeam.get(g.home)));
+  scratchUsage.set(g.away, cloneUsageStateForRetry(rt.usageByTeam.get(g.away)));
+  const scratchStandings = new Map(rt.standings);
+  scratchStandings.set(g.home, cloneStandingsRow(rt.standings.get(g.home)));
+  scratchStandings.set(g.away, cloneStandingsRow(rt.standings.get(g.away)));
+  const scratchRunSplit = { dh: { ...rt.runSplit.dh }, noDh: { ...rt.runSplit.noDh } };
+  const scratchInjuries = [];
+  const events = [];
+  const pass = {
+    statFor: scratchStats.statFor,
+    getBat: scratchStats.getBat,
+    getPitch: scratchStats.getPitch,
+    standings: scratchStandings,
+    runSplit: scratchRunSplit,
+    onEvent: (e) => events.push(e),
+  };
+  const ctx = {
+    seed: rt.seed,
+    park: rt.park,
+    parkByTeam: rt.parkByTeam,
+    cfg: rt.cfg,
+    leagueDh: rt.leagueDh,
+    teamById: rt.teamById,
+    chartsByTeam: rt.chartsByTeam,
+    usageByTeam: scratchUsage,
+    pass,
+    dayScale: rt.dayScale,
+    season: rt.season,
+    onInjury: (ev) => scratchInjuries.push(ev),
+    managerIntervention: { teamId: rt.playerTeamId, log, onDecision },
+  };
+  let res;
+  try {
+    res = playScheduledGame(ctx, g, gi);
+  } catch (e) {
+    if (e instanceof InterventionPause) return { paused: true, decision: e.point, events };
+    throw e;
+  }
+  const rec = { day: d, home: g.home, away: g.away, homeScore: res.homeScore, awayScore: res.awayScore, tie: res.tie, innings: res.innings };
+  rec.box = buildBoxScore(events);
+  const wpaTables = getWpaRefTables(rt.league, rt.cfg);
+  const wpaHi = computeWpaHighlights(events, wpaTables, rt.cfg, rt.playerTeamId);
+  if (wpaHi) {
+    rec.box.wpaTop = wpaHi.top;
+    rec.box.wpaBottom = wpaHi.bottom;
+  }
+  const commit = () => {
+    for (const [pid, s] of scratchStats.stats) rt.stats.stats.set(pid, s);
+    rt.usageByTeam.set(g.home, scratchUsage.get(g.home));
+    rt.usageByTeam.set(g.away, scratchUsage.get(g.away));
+    rt.standings.set(g.home, scratchStandings.get(g.home));
+    rt.standings.set(g.away, scratchStandings.get(g.away));
+    rt.runSplit.dh = scratchRunSplit.dh;
+    rt.runSplit.noDh = scratchRunSplit.noDh;
+    for (const ev of scratchInjuries) rt.injuryLog.push(ev);
+    rt.playerGameLog.push(rec);
+    rt.cursor = gi + 1;
+  };
+  return { paused: false, record: rec, events, commit };
 }
 
 /** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */

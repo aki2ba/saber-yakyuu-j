@@ -1627,6 +1627,13 @@ export const GAME_DEFAULT = {
   //   OFF時は編成時(trueAbility)アーキタイプの打順を守備位置に固定する旧挙動＝baselineとbit同一。
   //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す（＝プレイヤーの試合では現代的な打順になる）。
   dynamicLineup: false,
+  // P1（p1_interactive_manager_spec）: 試合中の人間采配（介入観戦・代打/継投）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup と同じ「headless既定OFF・UIのみON」第5例目。
+  //   テスト/較正/realism/前史/AI球団は従来と byte 同一）。ui.mjs の uiConfig() だけが
+  //   オーバーライドで true を渡す。true でも介入ログが空のまま完走した試合は全自動と bit 同一
+  //   （介入は既存の choosePinchHitter/chooseReliever 呼び出し地点への人間差し替えフックのみ・
+  //   判断ロジックの新設はしない）。
+  interactiveManager: false,
 };
 
 /**

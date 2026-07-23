@@ -2,6 +2,36 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-22 (P1: 試合中の人間采配「介入観戦」 — fun_theory_research 実装本丸・鉄則9の完成形)
+
+**きっかけ**: 承認済み実装順の最終弾＝面白さ研究の本丸（自律性×即時フィードバック×失敗の自己帰属）。
+仕様は事前作成の thyroxin/specs/p1_interactive_manager_spec.md。実装Sonnet委任・レビュー/ゲート/
+コミットはオーケストレータ。
+
+**実装**:
+- `cfg.game.interactiveManager` 新設・既定false（headless既定OFF・UIのみONの第5例目）。
+- sim層（game.mjs）: `choosePinchHitter`/`chooseReliever` の呼び出し地点に `resolveIntervention`
+  を挿入（代打=AIが候補を持つ場面のみ・継投=交代検討発火場面のみ＝間引きは既存判断に便乗）。
+  AI判断を先に計算→人間ログで上書きの構造＝乱数消費ゼロ・無効pidはAI判断へフォールバック。
+  未ログ介入点は `InterventionPause` 例外で中断（onDecision省略時は常にAI＝replay安全）。
+- ゲーム層: `playInteractiveGame`/`submitGameDecision`（H2ドラフトと同型「ログ+1件で最初から
+  再シム」）。attemptPlayerGame はスクラッチ状態（成績/起用/順位表clone-on-write）で試行し
+  完走時のみコミット＝中断破棄で二重計上を構造排除。同一日再入場は dayPrepped ガードで冪等。
+  save/load: `gameInterventions` additive・load replayに介入ログを通し verifyStandings で検算。
+- UI: 進行選択に「⚡介入観戦」・采配モーダル（代打候補/そのまま・ブルペン/続投・以後おまかせ）・
+  再開時は打席数ベースで前回停止点まで自動早送り。
+- **レビューで実バグ1件検出・修正**: season_runtime の `structuredClone` がビルド後smokeの
+  vmコンテキストに存在せず介入観戦開始で即クラッシュ。しかも従来のゲート一括実行が
+  `cmd | tail` のパイプでexit codeを握り潰しsmoke失敗を見逃していた（発覚経緯として記録）。
+  JSONクローン＋Map手動複製へ置換。ほかsmokeのデバッグ出力除去・未使用変数除去。
+
+**ゲート**: npm test 493 PASS（+5: game_p1_interactive.test.mjs 全おまかせbit同一/決定論/中断→
+再開/無効choice/save-load）・smoke 7フロー（P1介入観戦: モーダル3回→完走を明示確認・exit 0）・
+verify identity・calibrate 62/62・realism GATE 45/0 全PASS＝フラグ既定OFFでシム/較正完全不変。
+
+**これで fun_theory_research P2/P5/P6/P7/P1 全弾実装完了**（P3短期目標・P4戦力外演出は未着手の
+提案残）。
+
 ## 2026-07-21 (P7: 選手詳細の「物語」欄 — fun_theory_research 実装第3弾)
 
 **きっかけ**: 承認済み実装順（P2→P5/P6→P7→P1）の第3弾。愛着②・世代物語⑤=「その選手の歩み」を

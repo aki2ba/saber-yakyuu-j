@@ -19,6 +19,7 @@ import {
 import {
   newGame, advanceDay, advanceTo, advanceYear, save, load, allPlayersById,
   setManagerProfile, clearManagerProfile,
+  playInteractiveGame, submitGameDecision, // P1: 試合中の人間采配（介入観戦）
   // C4 演出: 表彰/記録/二つ名/ニュース（バンドルではグローバル・開発時Node解決用に import）。
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones, careerBatting, careerPitching,
@@ -1418,7 +1419,7 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, ...(ov.game ?? {}) },
+    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true, ...(ov.game ?? {}) },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -2080,11 +2081,12 @@ function showNextGameChoices() {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '次の自チーム試合'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
-  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ'));
+  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示'));
   box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
     el('button', { class: 'primary', onclick: () => { overlay.remove(); playNextPlayerGame('watch'); } }, '観戦'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('digest'); } }, 'ダイジェスト'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('skip'); } }, 'スキップ'),
+    el('button', { onclick: () => { overlay.remove(); startInteractiveGame(); } }, '⚡介入観戦'),
   ]));
   overlay.append(box);
   document.getElementById('app').append(overlay);
@@ -2119,6 +2121,134 @@ function playNextPlayerGame(mode) {
 function indexOfFirstAtbat(events) {
   const i = events.findIndex((e) => e.type === 'atbat' || e.type === 'pa');
   return i < 0 ? events.length : i + 1;
+}
+
+// --- P1: 試合中の人間采配（介入観戦） -----------------------------------------
+// thyroxin/specs/p1_interactive_manager_spec.md。playInteractiveGame は決定論の再シミュレートで
+// 動くため（介入ログ+1件で最初からやり直す＝H2プレイヤー参加型ドラフトと同型）、UI 側は
+// 「一時停止→モーダルで選択→submitGameDecision→再度 playInteractiveGame」を繰り返すだけでよい。
+// 中断中は state を一切書き換えないため、autoSave はここでは呼ばない（§0-3: シム途中状態は
+// シリアライズしない。保存は試合が確定した時だけ行う）。
+
+function startInteractiveGame() {
+  game.watch = null;
+  driveInteractiveGame(false);
+}
+
+/**
+ * playInteractiveGame を1回進める。paused ならモーダルで人間の指示を仰ぎ、完走したら通常の
+ * 観戦画面（既存 watch.mjs・pitch単位で振り返れる）へ渡す。
+ * @param {boolean} auto 「以後おまかせ」後の呼び出し=true（ログに無い介入点は以後すべてAI判断）
+ */
+function driveInteractiveGame(auto) {
+  const gs = game.gs;
+  const prevEvents = game.watch ? game.watch.events : null;
+  const prevIdx = game.watch ? game.watch.idx : 0;
+  const result = playInteractiveGame(gs, { auto });
+  if (result.paused) {
+    const events = result.events || [];
+    game.watch = {
+      rec: null, // 試合はまだ未確定（決着後にrenderSeasonResult等へ渡すrecordが無い）
+      events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, events) : events.length,
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: false,
+    };
+    renderWatch();
+    showManagerDecisionModal(result.decision);
+    return;
+  }
+  autoSave(); // 試合が確定した時だけ保存（§0-3）
+  if (gs.rt.finished && !result.record) { renderSeasonResult(); return; }
+  if (result.record) {
+    game.watch = {
+      rec: result.record,
+      events: result.events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, result.events) : indexOfFirstAtbat(result.events),
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: true,
+    };
+    renderWatch();
+  } else {
+    renderHub();
+  }
+}
+
+/** 前回停止点までに消化した打席開始(atbat)数を数え、新イベント列で同じ数だけ進んだ位置まで
+ *  早送りする（§4「前回の停止点付近まで自動早送り」。決定論的リプレイなので、直前までに
+ *  解決済みの介入点のプレフィックスは新イベント列でも一致する）。 */
+function watchIdxCarryOver(oldEvents, oldIdx, newEvents) {
+  if (!oldEvents || !oldEvents.length) return indexOfFirstAtbat(newEvents);
+  let count = 0;
+  for (let i = 0; i < oldIdx && i < oldEvents.length; i++) if (oldEvents[i].type === 'atbat') count++;
+  let seen = 0;
+  for (let i = 0; i < newEvents.length; i++) {
+    if (newEvents[i].type === 'atbat') {
+      seen++;
+      if (seen > count) return i + 1;
+    }
+  }
+  return newEvents.length;
+}
+
+/** 走者表記「走者一二塁」（無ければ「走者なし」）。 */
+function baseOccupancyLabel(bases) {
+  const labels = ['一', '二', '三'];
+  const occ = labels.filter((_, i) => bases && bases[i]);
+  return occ.length ? '走者' + occ.join('') : '走者なし';
+}
+
+/**
+ * P1: 采配モーダル（代打/継投の意思決定）。§4。
+ * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
+ * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ */
+function showManagerDecisionModal(decision) {
+  const gs = game.gs;
+  const { situ, candidates, kind } = decision;
+  const submit = (pick) => {
+    submitGameDecision(gs, { year: decision.year, day: decision.day, seq: decision.seq, kind, choice: { pick } });
+    overlay.remove();
+    driveInteractiveGame(false);
+  };
+  const half = situ.half === 'bottom' ? '裏' : '表';
+  const overlay = el('div', { class: 'overlay mgrdecision' }); // クリックでは閉じない（決定は取り消し不可・キー操作不要）
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' }, `${situ.inning}回${half} ${situ.outs}死 ${baseOccupancyLabel(situ.bases)}　監督、指示を`),
+  ]));
+  if (kind === 'ph') {
+    const batter = state.byId.get(situ.batterId);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
+  } else {
+    const pit = state.byId.get(situ.pitcherId);
+    box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
+  }
+  box.append(el('div', { class: 'row' }, [
+    el('button', { class: 'link', onclick: () => { overlay.remove(); driveInteractiveGame(true); } }, '以後おまかせ'),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
 }
 
 // G2: 週/月の進行を日次分割で実行（runToSeasonEnd と同じチャンク進行パターン・決定論は advanceDay の逐次で不変）。

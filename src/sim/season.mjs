@@ -283,6 +283,9 @@ export function playScheduledGame(ctx, g, gi) {
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
     onInjury,
     season: ctx.season ?? null, // R6: 直近故障の残債（指数減衰）の計算に使う
+    // P1: 人間采配の介入フック（§2）。ctx.managerIntervention 未設定（通常シム/AI戦）では
+    // undefined のまま＝simulateGame 側で mgrInterv=null となり従来と bit 同一。
+    managerIntervention: ctx.managerIntervention ?? undefined,
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新

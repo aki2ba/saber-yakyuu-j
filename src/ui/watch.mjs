@@ -874,8 +874,9 @@ function watchFeedTab(root, v, u, w) {
   if (v.ended) {
     const { notables } = detectGameNotables(w.events);
     const notableLines = [];
+    const personalityOf = (id) => u.state.byId.get(id)?.personality ?? null; // P6: 性格→文体の接続
     for (const n of notables) {
-      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id));
+      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id), personalityOf);
       if (head) notableLines.push({ cls: 'newsrow good notable' + (w.justAdvanced ? ' fx' : ''), text: `🎉 ${head}` });
     }
     lines = [...notableLines, ...lines];

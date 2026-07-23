@@ -2,6 +2,107 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-22 (P3+P4: 週次目標＋戦力外/FAの感情演出 — fun_theory_research 残提案の完遂)
+
+**きっかけ**: P2/P5/P6/P7/P1完了後の残り2提案。P3=フロー理論「明確な目標」＋FM「あと1試合」、
+P4=やきゅつく「経営の痛み」・愛着。実装Sonnet委任・レビュー/ゲート/コミットはオーケストレータ。
+
+**実装**:
+- P3 `src/game/goals.mjs` 新設: `generateWeeklyGoal`（hashSeed('weeklygoal')独立座標・週の文脈と
+  整合するテンプレのみ＝連敗していないのに「連敗を止めろ」を出さない=H5-B「窓状態と整合」流儀）・
+  `evaluateWeeklyGoal`（週末にplayerGameLogから純関数判定）・`recordCompletedWeeklyGoals`
+  （advanceDayのフラグゲート内のみ）・`weeklyGoalTrustBonus`（シーズン末信任へ達成率×最大+5を
+  trustDelta合流点でadditive加算）。新フラグ `cfg.game.weeklyGoals` 既定false（headless既定OFF・
+  UIのみONの第6例目・前史burn-inでも明示無効化）。`state.weeklyGoalLog` additive save field。
+  ファン関心(fanInterest)には触れない（予算経由でAI市場へ波及するため信任のみ）。
+  UI: ハブに「🎯今週の目標」カード（前週の達成/未達を即時フィードバック）・進行ダイジェストに
+  新確定週の結果一覧。
+- P4 storylines.mjs: `veteranFarewellHeadlines`（戦力外のうち在籍5年以上 or 通算800安打/80勝の
+  功労者だけ「在籍N年・通算成績」付きの感情見出しへ差し替え・オフダイジェスト）・
+  `departedPlayerFollowUpHeadlines`（前年流出選手が当季観測成績で代替水準を明確に上回れば
+  「去った選手たちの今」後日談・ニュースタブ）。表示のみ・数値不変・真値非参照。
+  「引き止めの選択」は研究レポート表のとおりスコープ外。
+
+**ゲート**: npm test 519 PASS（+26: P3テスト18/P4テスト8）・build(50モジュール)・smoke 12フロー・
+verify identity・calibrate 62/62 全PASS（pipefail付きでexit code確認＝P1の教訓反映）。
+realismはsim非接触のため対象外。
+
+**これで fun_theory_research の提案P1〜P7全弾実装完了。**
+
+## 2026-07-22 (P1: 試合中の人間采配「介入観戦」 — fun_theory_research 実装本丸・鉄則9の完成形)
+
+**きっかけ**: 承認済み実装順の最終弾＝面白さ研究の本丸（自律性×即時フィードバック×失敗の自己帰属）。
+仕様は事前作成の thyroxin/specs/p1_interactive_manager_spec.md。実装Sonnet委任・レビュー/ゲート/
+コミットはオーケストレータ。
+
+**実装**:
+- `cfg.game.interactiveManager` 新設・既定false（headless既定OFF・UIのみONの第5例目）。
+- sim層（game.mjs）: `choosePinchHitter`/`chooseReliever` の呼び出し地点に `resolveIntervention`
+  を挿入（代打=AIが候補を持つ場面のみ・継投=交代検討発火場面のみ＝間引きは既存判断に便乗）。
+  AI判断を先に計算→人間ログで上書きの構造＝乱数消費ゼロ・無効pidはAI判断へフォールバック。
+  未ログ介入点は `InterventionPause` 例外で中断（onDecision省略時は常にAI＝replay安全）。
+- ゲーム層: `playInteractiveGame`/`submitGameDecision`（H2ドラフトと同型「ログ+1件で最初から
+  再シム」）。attemptPlayerGame はスクラッチ状態（成績/起用/順位表clone-on-write）で試行し
+  完走時のみコミット＝中断破棄で二重計上を構造排除。同一日再入場は dayPrepped ガードで冪等。
+  save/load: `gameInterventions` additive・load replayに介入ログを通し verifyStandings で検算。
+- UI: 進行選択に「⚡介入観戦」・采配モーダル（代打候補/そのまま・ブルペン/続投・以後おまかせ）・
+  再開時は打席数ベースで前回停止点まで自動早送り。
+- **レビューで実バグ1件検出・修正**: season_runtime の `structuredClone` がビルド後smokeの
+  vmコンテキストに存在せず介入観戦開始で即クラッシュ。しかも従来のゲート一括実行が
+  `cmd | tail` のパイプでexit codeを握り潰しsmoke失敗を見逃していた（発覚経緯として記録）。
+  JSONクローン＋Map手動複製へ置換。ほかsmokeのデバッグ出力除去・未使用変数除去。
+
+**ゲート**: npm test 493 PASS（+5: game_p1_interactive.test.mjs 全おまかせbit同一/決定論/中断→
+再開/無効choice/save-load）・smoke 7フロー（P1介入観戦: モーダル3回→完走を明示確認・exit 0）・
+verify identity・calibrate 62/62・realism GATE 45/0 全PASS＝フラグ既定OFFでシム/較正完全不変。
+
+**これで fun_theory_research P2/P5/P6/P7/P1 全弾実装完了**（P3短期目標・P4戦力外演出は未着手の
+提案残）。
+
+## 2026-07-21 (P7: 選手詳細の「物語」欄 — fun_theory_research 実装第3弾)
+
+**きっかけ**: 承認済み実装順（P2→P5/P6→P7→P1）の第3弾。愛着②・世代物語⑤=「その選手の歩み」を
+1画面で物語る。実装Sonnet委任・レビュー/ゲート/コミットはオーケストレータ。
+
+**実装（表示層のみ・純関数・保存フィールド実質増なし）**:
+- `playerStoryOf(state, playerId, names)`（storylines.mjs）: transactionLog/awardsHistory/
+  careerStats/在籍情報だけから時系列 [{year,text,kind}] を毎回導出（§17・真値非参照）。
+  出自（ドラフト「n球団競合の末、{round}位で入団」/生え抜きフォールバック）・移籍歴（トレード/FA/
+  戦力外拾い上げ）・栄光（playerAwardHistory＋二つ名）・節目（awards.mjs milestones 閾値流用の
+  通算到達年検出）・因縁（同期指名のみ。トレード等は移籍歴と出処同一行のため二重掲載回避）
+- appendTransactionLog: draft行に additive `contenders`（競合くじ球団数・draftLog.lotteries由来。
+  旧セーブ行は未設定=後方互換）
+- UI: 選手モーダル「経歴」タブに「物語」節（awardlist流用のタイムライン・STORY_KIND_LABELS）
+
+**ゲート**: npm test 488 PASS（+9: game_h1_storylines.test.mjs 追記）・build・smoke 6フロー・
+verify identity・calibrate 62/62 全PASS。レビューで未使用変数1件を除去。
+
+**次**: P1（介入観戦=試合中の人間采配。仕様 thyroxin/specs/p1_interactive_manager_spec.md）。
+
+## 2026-07-21 (P5+P6: 「今年の逸材」ドラフト前ニュース＋性格→文体接続 — fun_theory_research 実装第2弾)
+
+**きっかけ**: fun_theory_research_20260720 の承認済み実装順（P2→P5/P6→P7→P1）。P5=発掘の不確実性①の
+演出、P6=選手への愛着②（H3性格タグの積み残し=文体接続）。実装はSonnet委任・レビュー/ゲート/コミットは
+オーケストレータ担当。
+
+**実装（表示層のみ・シムbyte不変）**:
+- P5 `draftClassHeadlines(state, names)`（storylines.mjs）: draftPreviewHeadlines（世代内評判
+  consensus上位）×draftScoutView（スカウトノイズ込み等級/伸びしろ/評判）から「今年の逸材/世代No.1
+  右腕・左腕/世代No.1野手/大器/隠し玉」見出しを生成。**真値(trueAbility)非参照**（鉄則3）。テンプレ選択は
+  hashSeed(masterSeed,'draftclass',…)の独立座標＝プール生成/ドラフト解決の乱数ストリーム非干渉。
+  表示はドラフト会議室round1（既存「今年の目玉」節の上・ui/draft.mjs）。ノブ: tuning.storylines.draftClassMax=6
+- P6 性格→文体: `notableHeadline` に第4引数 `personalityOf`（省略可・後方互換）を追加し、サイクル/
+  猛打賞見出しを全8性格（練習熱心/ムラっ気/お調子者/寡黙/闘志/クール/マイペース/リーダー）×各2
+  バリアントで分岐（news.mjs PERSONALITY_VOICES）。rivalryGameHeadlines も names.personalityOf で
+  性格に応じた一言を付記。分岐選択は hashSeed('newsvoice',…) 独立座標の決定論
+- 配線: ui.mjs storyNames()/watch.mjs 観戦終了notable → personalityOf=state.byId lookup
+
+**ゲート**: npm test 479 PASS（+11: test/game_p5_p6_flavor.test.mjs 新設）・build・smoke 6フロー・
+verify identity・calibrate 62/62 すべてPASS＝表示層のみの確認どおりシム/較正は不変。
+
+**次**: P7（選手詳細の「物語」欄・transactionLog/awardsHistory の純関数）→P1（介入観戦・仕様書
+thyroxin/specs/p1_interactive_manager_spec.md 済み）。
+
 ## 2026-07-20 (名前プール拡張 96→368＋実バグ修正「1イニング4アウト」 — ユーザー指摘「名前もバリエーション不足」)
 
 **きっかけ**: ユーザー指摘。名前96種では世界1,159人で同名平均12人（苗字より深刻）。しかも現行プールは

@@ -17,7 +17,7 @@ import { hashSeed } from '../rng.mjs';
 import { createConfig } from '../config.mjs';
 import { generateLeague, assignPersonality } from '../generate.mjs';
 import { ENGINE_VERSION } from '../engine.mjs';
-import { startSeasonRuntime, advanceRuntimeDay, pendingDay, carryOverInjuries } from './season_runtime.mjs';
+import { startSeasonRuntime, advanceRuntimeDay, pendingDay, carryOverInjuries, attemptPlayerGame } from './season_runtime.mjs';
 import { applyAging } from './aging.mjs';
 import { applySeasonInjuries } from './injury.mjs';
 import { applyBreakouts } from './breakout.mjs';
@@ -47,6 +47,9 @@ import { appendTransactionLog, retirementCeremonies } from './storylines.mjs';
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 import { parsePolicy, coachOverallScore, TRAINING_LABELS, TRAINING_KINDS } from './training.mjs';
 import { generateOwnerGoals, evaluateOwnerGoals, trustDelta, pickTransferOffer } from './owner.mjs'; // H5-B
+// P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
+//   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
+import { recordCompletedWeeklyGoals, weeklyGoalTrustBonus } from './goals.mjs';
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -566,6 +569,14 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     pleaUsed: false,
     ownerPending: null,
     lastOwnerReport: null,
+    // P1（p1_interactive_manager_spec）: 試合中の人間采配（代打/継投）の介入ログ。additive。
+    //   [{year, day, seq, kind:'ph'|'relief', choice:{pick:playerId|null}}]（自チーム戦のみ）。
+    //   「おまかせ」はログに積まない＝ログ空の試合は完全従来挙動（bit同一・§0-4）。
+    gameInterventions: [],
+    // P3（fun_theory_research_20260720 P3）: 週次目標の達成ログ（additive save field・§17集計値
+    //   のみ）。[{year,week,type,label,achieved}]。cfg.game.weeklyGoals=false のときは常に空
+    //   （advanceDay がフラグゲート内でしか書き込まない）。
+    weeklyGoalLog: [],
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -578,14 +589,17 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
   if (burnIn > 0) {
     const savedInteractive = cfg.game.interactiveDraft;
     const savedFiring = cfg.game.allowFiring; // H5-B: 前史に人間は居ない＝解任も無効で回す
+    const savedWeeklyGoals = cfg.game.weeklyGoals; // P3: 前史に人間は居ない＝週次目標も無効化
     cfg.game.interactiveDraft = false;
     cfg.game.allowFiring = false;
+    cfg.game.weeklyGoals = false;
     for (let y = 0; y < burnIn; y++) {
       while (!state.rt.finished) advanceDay(state);
       advanceYear(state);
     }
     cfg.game.interactiveDraft = savedInteractive;
     cfg.game.allowFiring = savedFiring;
+    cfg.game.weeklyGoals = savedWeeklyGoals;
     // H5-B: プレイヤー着任はここから＝前史で溜まった信任・評価履歴をリセットし、着任年の目標を
     //   現行 yearIndex で再生成する（startYear は前史最終 advanceYear 内で既に走っているため明示的に）。
     state.ownerTrust = cfg.tuning.ownerGoals.trustStart;
@@ -775,6 +789,9 @@ function recordSeasonHistory(state) {
  */
 export function advanceDay(state, opts = {}) {
   const step = advanceRuntimeDay(state.rt, opts);
+  // P3: 週次目標（フラグゲート内のみ・OFF時は状態も乱数も一切変えない）。load の replay は
+  //   advanceRuntimeDay を直接呼ぶ（本関数を経由しない）ため、二重記録の心配はない。
+  if (state.cfg.game.weeklyGoals) recordCompletedWeeklyGoals(state);
   if (step.seasonEnded) recordSeasonHistory(state);
   return step;
 }
@@ -807,6 +824,73 @@ export function advanceTo(state, until, opts = {}) {
     return steps;
   }
   throw new Error(`advanceTo: 未知の until '${until}'`);
+}
+
+/**
+ * ★P1（試合中の人間采配・介入観戦）: `advanceTo(state,'nextPlayerGame')` の対話版。
+ * 自チーム戦の日まで通常どおり日を消化し（自チーム戦の無い日は従来と完全同一の全自動）、
+ * 自チーム戦の schedule index に到達したら attemptPlayerGame（season_runtime.mjs）で
+ * 「スクラッチ状態で試行→完走したときだけコミット」する（§3・H2プレイヤー参加型ドラフトの
+ * cloneLeague→最終コミットと同型）。
+ *
+ * ログに無い介入点（choosePinchHitter/chooseReliever が非null判断をした場面）に到達すると
+ * 試合を中断して `{paused:true, decision}` を返す（state は一切書き換えない＝試合未確定）。
+ * 呼び出し側（UI）は `submitGameDecision` でログへ1件追記してから本関数を **再び呼び直す**
+ * （決定論なので同じ経過を高速に辿り、次の未ログ介入点 or 試合終了まで進む）。
+ * 途中で観戦をやめた場合（「以後おまかせ」）は `opts.auto:true` で呼び直す。ログに無い介入点は
+ * 一切中断せず常にAI判断（choosePinchHitter/chooseReliever の aiPick）で完走する（§3・§4）。
+ * `opts.auto` を一度も使わない（常に false）まま最後まで進めた試合は、介入ログが最終的に空なら
+ * 全自動と bit 同一になる（§0-4・§5テスト1の前提）。
+ * @param {Object} state GameState（state.rt が組まれていること）
+ * @param {{auto?:boolean}} [opts] auto=true: ログに無い介入点で中断せず常にAI判断で進める
+ *   （「以後おまかせ」・全おまかせテスト用）。既定 false（通常の介入観戦＝未ログ点で必ず中断）。
+ * @returns {{seasonEnded:true} | {paused:true, decision:Object, events:Array} |
+ *   {record:Object, events:Array, seasonEnded:boolean}}
+ */
+export function playInteractiveGame(state, opts = {}) {
+  const rt = state.rt;
+  if (!rt || rt.finished) return { seasonEnded: true };
+  let day;
+  do {
+    day = advanceDay(state, { collectPlayerEvents: true, interactive: true });
+    if (rt.finished) return { seasonEnded: true };
+  } while (!day.pendingPlayerGame);
+
+  const gi = rt.cursor;
+  const g = rt.schedule[gi];
+  const log = state.gameInterventions.filter((e) => e.year === state.year && e.day === g.day);
+  const onDecision = opts.auto ? undefined : () => 'PAUSE';
+  const attempt = attemptPlayerGame(rt, gi, log, onDecision);
+  if (attempt.paused) {
+    // year/day は submitGameDecision がそのままログへ積める形に補って返す（§1データモデル）。
+    return { paused: true, decision: { year: state.year, day: g.day, ...attempt.decision }, events: attempt.events };
+  }
+  attempt.commit();
+  // 残りの同日試合（あれば）＋日締め処理（farm/順位確定/年送り準備）を従来経路で消化する。
+  // ★注意: advanceDay は「現在の pendingDay ぶんだけ」処理して返る（day境界で必ず止まる）ため、
+  //   自チーム戦がその日最後の試合だった（cursor が翌日 or 全日程消化末尾へ進んだ）場合は
+  //   ここで advanceDay を呼ばない＝翌日（＝次の自チーム戦かもしれない）を勝手に進めない。
+  let seasonEnded = false;
+  if (rt.cursor >= rt.schedule.length || rt.schedule[rt.cursor].day === g.day) {
+    const rest = advanceDay(state, {});
+    seasonEnded = !!rest.seasonEnded;
+  }
+  return { record: attempt.record, events: attempt.events, seasonEnded };
+}
+
+/**
+ * ★P1: 試合中の人間采配の決定を1件追記する（H2 submitDraftPick と同型の「ログ追記のみ」API）。
+ * 即座には何もシミュレートしない＝呼び出し側が playInteractiveGame を再度呼んで続きを進める。
+ * @param {Object} state GameState
+ * @param {{year:number, day:number, seq:number, kind:'ph'|'relief', choice:{pick:?string}}} decision
+ *   year/day/seq/kind は直前に受け取った `decision`（playInteractiveGame の一時停止点）をそのまま渡す。
+ */
+export function submitGameDecision(state, decision) {
+  const { year, day, seq, kind, choice } = decision;
+  if (year == null || day == null || seq == null || !kind) {
+    throw new Error('submitGameDecision: year/day/seq/kind が必要');
+  }
+  state.gameInterventions.push({ year, day, seq, kind, choice: choice ?? { pick: null } });
 }
 
 /**
@@ -859,7 +943,12 @@ function evaluateOwnerYear(state) {
     careerStats: state.careerStats, year: state.year, cfg: state.cfg,
   });
   const before = state.ownerTrust;
-  state.ownerTrust = clamp(state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg), 0, 100);
+  // P3: 週次目標達成率ボーナス（cfg.game.weeklyGoals=false なら常に0＝既存挙動と bit 同一）を
+  //   trustDelta と同じ合流点で additive に加算する。
+  state.ownerTrust = clamp(
+    state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg) + weeklyGoalTrustBonus(state),
+    0, 100,
+  );
   state.lastOwnerReport = { year: state.year, results, trustBefore: before, trustAfter: state.ownerTrust };
   if (state.cfg.game.allowFiring && state.ownerTrust < og.fireBelow) {
     const toTeam = pickTransferOffer(standings, state.playerTeamId);
@@ -988,8 +1077,10 @@ export function save(state) {
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
+    gameInterventions: state.gameInterventions, // P1: 試合中の人間采配ログ（additive・replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
     trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
+    weeklyGoalLog: state.weeklyGoalLog, // P3: 週次目標の達成ログ（additive・直接永続＝replay対象外）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -1113,8 +1204,10 @@ export function load(blob, options = {}) {
     awardsHistory: data.awardsHistory ?? [], // R5: 確定した年度別受賞
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
+    gameInterventions: data.gameInterventions ?? [], // P1: 試合中の人間采配ログ（旧セーブは [] 補完）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
     trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
+    weeklyGoalLog: data.weeklyGoalLog ?? [], // P3: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -1142,7 +1235,12 @@ export function load(blob, options = {}) {
   if (ss) {
     // 保存時 cursor まで日次 replay（advanceDay ではなく advanceRuntimeDay ＝ 履歴の二重記録を避ける。
     // 完了済みシーズンの careerStats/teamHistory は blob から復元済み）。
-    while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt);
+    // P1: 当季ぶんの人間采配ログを replay にも通す（onDecision省略＝ログに無い介入点は常にAI判断
+    //   ＝絶対に中断しない。save は必ず「試合が確定した」cursor でしか行われないため、当該試合の
+    //   ログは既に完結しており、この replay が新たな一時停止を生むことは無い＝§0-3）。
+    const replayLog = state.gameInterventions.filter((e) => e.year === state.year);
+    const miOpt = replayLog.length ? { managerIntervention: { teamId: state.playerTeamId, log: replayLog } } : {};
+    while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt, miOpt);
     verifyStandings(state.rt, ss.standings);
     // 二軍の復元検証（F2-2）: replay が再構築した farm の進行位置/順位が保存スナップショットと
     // 一致するか（一軍と同じ決定論の門番。farm 不成立構成では両方 null で素通り）。
@@ -1199,6 +1297,9 @@ export {
   appendTransactionLog, rivalriesOf, rivalryGameHeadlines,
   retirementRoadCandidates, retirementRoadHeadlines,
   retirementCeremonies, retirementCeremonyText, ownTeamRetirementHeadlines,
+  draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
+  playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
+  veteranFarewellHeadlines, departedPlayerFollowUpHeadlines, // P4: 戦力外・FAの感情演出（fun_theory_research P4）
 } from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
@@ -1208,3 +1309,7 @@ export { draftScoutView, draftPreviewHeadlines };
 // H4: 育成方針・キャンプの意味論APIを再エクスポート（UI/テストが './game/index.mjs' 経由で使う。
 //   setTrainingPolicy/clearTrainingPolicy は本ファイルで直接 export 済み）。
 export { TRAINING_LABELS, TRAINING_KINDS, parsePolicy, coachOverallScore };
+// P3: 週次目標の表示API（UI/テストが './game/index.mjs' 経由で使う。状態を書き換える
+//   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
+//   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
+export { generateWeeklyGoal, evaluateWeeklyGoal } from './goals.mjs';

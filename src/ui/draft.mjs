@@ -16,6 +16,7 @@
 //     （stove.mjs/team.mjs と同じ流儀。ui.mjs のヘルパーは u=draftDeps() 経由で受け取る）。
 // ============================================================================
 import { submitDraftPick, draftScoutView, draftPreviewHeadlines } from '../game/index.mjs';
+// P5: draftClassHeadlines は u（draftDeps()）経由で受け取る（分割モジュールの既存流儀通り）。
 
 const GRADE_ORDER = { S: 0, A: 1, B: 2, C: 3, D: 4 };
 
@@ -57,6 +58,18 @@ export function renderDraftRoomScreen(u) {
   if (aw.contested) {
     content.append(el('div', { class: 'newsrow bad', style: 'margin:6px 0' },
       '前回指名した選手は競合くじで外れました。別の候補を再指名してください。'));
+  }
+
+  // ドラフト前ニュース「今年の逸材」（P5: draftClassHeadlines・fun_theory_research P5）。
+  //   draftPreviewHeadlines（世代内評判consensus上位）と同じ前提＝round1（プール確定直後）でのみ表示。
+  if (aw.round === 1) {
+    const pnameOf = (id) => { const pr = aw.pool.find((p) => p.id === id); return pr ? pr.name : id; };
+    const classHeads = u.draftClassHeadlines(gs, { pnameOf, posLabelOf: u.posJP });
+    if (classHeads.length) {
+      content.append(el('h3', { class: 'leaguename' }, `📰 今年の逸材`));
+      content.append(el('div', { class: 'newsfeed' }, classHeads.map((h) =>
+        el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+    }
   }
 
   // ドラフト前ニュース「今年の目玉」（H2: draftPreviewHeadlines・世代内評判consensus上位）。

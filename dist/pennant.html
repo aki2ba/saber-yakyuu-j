@@ -2750,6 +2750,7 @@ const TUNING_DEFAULT = {
     recordPaceThreshold: 1.05, // シーズン記録の105%超ペースで「記録ペース」ニュース
     recordPaceMinProgress: 0.5, // 消化50%未満はペース判定の対象外（序盤のノイズ除外）
     digestMaxItems: 6, // 「今週の見どころ」節に載せる最大件数
+    draftClassMax: 6, // P5「今年の逸材」ドラフトクラス見出しの最大件数（draftClassHeadlines）
     retirementRoad: {
       ageThreshold: 37, // これ以上＋通算マイルストーン持ちを「引退ロード候補」ニュースの対象に
       batterMilestones: { hits: 500, homeRuns: 100 }, // いずれか到達で候補（awards.milestonesより低い早期到達バー）
@@ -2799,6 +2800,22 @@ const GAME_DEFAULT = {
   //   OFF時は編成時(trueAbility)アーキタイプの打順を守備位置に固定する旧挙動＝baselineとbit同一。
   //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す（＝プレイヤーの試合では現代的な打順になる）。
   dynamicLineup: false,
+  // P1（p1_interactive_manager_spec）: 試合中の人間采配（介入観戦・代打/継投）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup と同じ「headless既定OFF・UIのみON」第5例目。
+  //   テスト/較正/realism/前史/AI球団は従来と byte 同一）。ui.mjs の uiConfig() だけが
+  //   オーバーライドで true を渡す。true でも介入ログが空のまま完走した試合は全自動と bit 同一
+  //   （介入は既存の choosePinchHitter/chooseReliever 呼び出し地点への人間差し替えフックのみ・
+  //   判断ロジックの新設はしない）。
+  interactiveManager: false,
+  // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup/interactiveManager と同じ「headless既定OFF・
+  //   UIのみON」第6例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す。true でも効果は表示＋シーズン末の
+  //   信任へ小さく加算するだけ（エンジン/tuning非干渉。生成・判定は game/goals.mjs）。
+  weeklyGoals: false,
+  // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
+  //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
+  weeklyGoalTrustBonusMax: 5,
 };
 
 /**
@@ -6286,6 +6303,53 @@ function rollInjurySeverity(p, cfg, prng) {
 const MAX_INNINGS = 12; // NPB延長規定（超えたら引分）
 // ARM（外野送球）対象ポジションは fieldingGeometry の IS_OUTFIELD を使う（単一の真実）
 
+// --- P1: 試合中の人間采配（介入観戦・§thyroxin/specs/p1_interactive_manager_spec.md） -------
+//
+// 介入点は既存フック（choosePinchHitter/chooseReliever の呼び出し地点）のみ。判断ロジックの
+// 新設はしない＝AIの判断(aiPick)をそのまま採用すれば全自動と bit 同一（乱数は一切消費しない）。
+
+/** 試合を人間の意思決定待ちで中断する合図（§2）。playInteractiveGame 側で catch し、
+ *  state は一切書き換えずに { paused:true, decision:point } として呼び出し側へ返す。 */
+class InterventionPause extends Error {
+  constructor(point) {
+    super('InterventionPause');
+    this.point = point;
+  }
+}
+
+/**
+ * 介入点を解決する（代打/継投で共通・§2）。
+ * - ログに該当 seq があれば choice.pick を採用（null=見送り/続投。候補外の無効pidはAI判断へ
+ *   フォールバック＝決定論を壊さず黙って続行）。
+ * - ログに無ければ onDecision へ問い合わせる。'PAUSE' を返せば InterventionPause を投げて中断。
+ *   onDecision 省略時（or 'PAUSE'/選択オブジェクト以外を返した時）は常にAI判断(aiPick)を採用
+ *   （load の replay・「以後おまかせ」後の完走・全おまかせテストが同じ経路で一切中断しない）。
+ * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function}} mgrInterv
+ * @param {'ph'|'relief'} kind
+ * @param {Object} situ UI表示用の局面要約（乱数非依存・純粋な読み取り値）
+ * @param {?string} aiPick 従来ロジック（choosePinchHitter/chooseReliever）が選んだ行動
+ * @param {Array<string>} candidates 選択可能な playerId 一覧（表示用・妥当性検証用）
+ * @returns {?string} 実際に採用する行動（null=見送り/続投）
+ */
+function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
+  const seq = ++mgrInterv.seq;
+  const logged = mgrInterv.logByKey.get(seq);
+  if (logged && logged.kind === kind) {
+    const pid = logged.choice ? logged.choice.pick ?? null : null;
+    if (pid === null) return null;
+    return candidates.includes(pid) ? pid : aiPick; // 無効choice=AI判断へフォールバック（§2）
+  }
+  if (!mgrInterv.onDecision) return aiPick;
+  const decision = mgrInterv.onDecision({ seq, kind, situ, candidates: candidates.slice() });
+  if (decision === 'PAUSE') throw new InterventionPause({ seq, kind, situ, candidates: candidates.slice() });
+  if (decision && typeof decision === 'object') {
+    const pid = decision.pick ?? null;
+    if (pid === null) return null;
+    return candidates.includes(pid) ? pid : aiPick;
+  }
+  return aiPick;
+}
+
 /**
  * 走者を進める。bases=[1B,2B,3B]（playerId or null）。得点数を返し bases を破壊的更新。
  * @param {boolean} isAirOut アウトが空中打球（犠飛判定用）
@@ -6760,6 +6824,12 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
   const home = initSide(homeInit, cfg);
   const away = initSide(awayInit, cfg);
   const maxInnings = opts.maxInnings ?? MAX_INNINGS;
+  // P1: 人間采配の介入（§2）。opts.managerIntervention が無ければ mgrInterv=null で
+  // 従来ロジックのみ（choosePinchHitter/chooseReliever の aiPick がそのまま採用される＝bit同一）。
+  const mi = opts.managerIntervention ?? null;
+  const mgrInterv = mi
+    ? { teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0, logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])) }
+    : null;
   // 観戦実況フック（フェーズC1・§16）: 存在するときのみ各プレー確定点で「構造化イベント」を発火する。
   // gc（文脈指標）と同じく乱数は一切消費しない＝onEvent の有無で試合結果は不変（決定論・較正50指標が不変）。
   // 言語化（EV/LA/落下点の実況文）はUI側の責務で、ここは素データだけを渡す（エンジンとUIの分離）。
@@ -6803,10 +6873,10 @@ function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBattedBall,
 
   let inning = 1;
   while (true) {
-    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc); // 表: away攻撃
+    playHalf(away, home, cfg, rng, statFor, park, false, onBattedBall, recordRun, inning, false, gc, mgrInterv); // 表: away攻撃
     if (inning >= 9 && home.score > away.score) break; // 裏を省略（ホームリード）
     const bottomWalkoff = inning >= 9;
-    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc); // 裏: home攻撃
+    playHalf(home, away, cfg, rng, statFor, park, bottomWalkoff, onBattedBall, recordRun, inning, true, gc, mgrInterv); // 裏: home攻撃
     if (inning >= 9 && home.score !== away.score) break;
     inning++;
     if (inning > maxInnings) break;
@@ -6905,10 +6975,10 @@ function emptyCur() {
 }
 
 /** 半イニングを消化（batting=攻撃側, fielding=守備側）。battingIsHome=攻撃側がホーム（裏）か・
- *  gc=文脈指標フック（§B2・任意）。 */
-function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc) {
+ *  gc=文脈指標フック（§B2・任意）・mgrInterv=P1人間采配フック（§2・任意）。 */
+function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedBall, recordRun, inning, battingIsHome, gc, mgrInterv) {
   // 守備側の投手整備: 投手への代打の後始末→回頭の役割ベース継投（§S2-2/§S2-7）
-  halfStartPitching(fielding, batting.score, inning, statFor, cfg);
+  halfStartPitching(fielding, batting.score, inning, statFor, cfg, mgrInterv);
   // 守備固め（§S2-3: 8回以降・リード1-3・当日メモで優位時のみ）
   // 負傷退場の持ち越し（R3）: 塁上に居たため退けなかった選手をここで交代させる（両軍）。
   flushInjuryExits(fielding, inning, cfg);
@@ -6946,7 +7016,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     if (outs >= 3) break;
 
     // 代打（§S2-3）: 打席に入る前に差し替える（判断は manager.mjs）
-    maybePinchHit(batting, fielding, bases, inning, cfg, statFor);
+    maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, battingIsHome, mgrInterv);
 
     const batterId = batting.slots[batting.orderIdx].playerId;
     // 投手打席か（DH無し試合の9番スロット×現投手。代打後は該当しない）
@@ -7050,7 +7120,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           fldScore: fielding.score,
         });
         maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
-        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
+        if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs, mgrInterv);
         continue;
       }
     }
@@ -7333,7 +7403,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     maybePinchRun(batting, fielding, bases, inning, cfg, statFor);
 
     // 継投（球数/失点による途中降板。回頭の交代は halfStartPitching が担う）
-    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs);
+    if (outs < 3) maybeChangePitcher(fielding, statFor, batting.score, inning, cfg, bases, outs, mgrInterv);
 
     if (walkoff && batting.score > fielding.score) break; // サヨナラ
   }
@@ -7441,12 +7511,13 @@ function removeFromBench(side, pid) {
   if (i >= 0) side.bench.splice(i, 1);
 }
 
-/** 代打（§S2-3）。同スロットに入り、守備位置も引き継ぐ（守備イニング計上の整合）。 */
-function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
+/** 代打（§S2-3）。同スロットに入り、守備位置も引き継ぐ（守備イニング計上の整合）。
+ *  outs/battingIsHome/mgrInterv は P1（§2）の人間采配フック用（表示のみ・判断ロジックは不変）。 */
+function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, battingIsHome, mgrInterv) {
   const slot = batting.slots[batting.orderIdx];
   const batterId = slot.playerId;
   const isPitcher = batting.orderIdx === batting.pitcherSlot && batterId === batting.curPid;
-  const pick = choosePinchHitter(
+  let pick = choosePinchHitter(
     {
       side: batting,
       oppScore: fielding.score,
@@ -7458,6 +7529,20 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor) {
     },
     cfg,
   );
+  // P1（§2・§0-3の間引き）: AIが代打候補を持つ場面（pick非null）のみ介入可能点になる。
+  if (pick && mgrInterv && mgrInterv.teamId === batting.teamId) {
+    const onDeckIdx = (batting.orderIdx + 1) % 9;
+    const situ = {
+      inning,
+      half: battingIsHome ? 'bottom' : 'top',
+      outs,
+      bases: bases.map((b) => !!b),
+      scoreDiff: batting.score - fielding.score,
+      batterId,
+      onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
+    };
+    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench);
+  }
   if (!pick) return;
   batting.retired.add(batterId); // 退いた打者は再出場不可
   slot.playerId = pick;
@@ -7687,7 +7772,7 @@ function installPitcher(side, pid, inning, lead) {
  * (2) 回頭の継投判断: 球数/失点で降板、セーブ機会は役割（7=setup7/8=setup8/9+=closer）へ。
  *     好投中の先発は7-8回を任せ、9回は完封継続中のみ続投（完投・完封を残す）。
  */
-function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
+function halfStartPitching(fielding, oppScore, inning, statFor, cfg, mgrInterv) {
   const pen = cfg.tuning.pen;
   const lead = fielding.score - oppScore;
 
@@ -7726,7 +7811,15 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg) {
     change = due || saveSitu; // セーブ機会は回頭で適役へ繋ぐ（8回setup8→9回closer等）
   }
   if (!change) return;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  let next = chooseReliever(fielding, statFor, inning, lead, cfg);
+  // P1（§2・§0-3の間引き）: 回頭の継投検討が発火する場面（change=true）のみ介入可能点になる。
+  if (mgrInterv && mgrInterv.teamId === fielding.teamId) {
+    const situ = {
+      inning, half: null, outs: 0, bases: [false, false, false], scoreDiff: lead,
+      pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
+    };
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+  }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
@@ -7743,7 +7836,7 @@ function relieverMaxOutsFor(fielding, pid, pen) {
 
 /** イニング途中の降板判定（球数・失点）。回頭の交代は halfStartPitching が担う。
  *  bases/outs を継投判断（レバレッジ駆動・§8.3 D4）へ渡す＝走者を背負った火消しで最良救援を投入。 */
-function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs) {
+function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, outs, mgrInterv) {
   const pen = cfg.tuning.pen;
   const c = fielding.cur;
   if (c.pid == null) return;
@@ -7759,7 +7852,15 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, out
   if (!remove) return;
 
   const lead = fielding.score - oppScore;
-  const next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
+  let next = chooseReliever(fielding, statFor, inning, lead, cfg, { baseBits: baseBits(bases), outs });
+  // P1（§2・§0-3の間引き）: イニング途中の継投検討が発火する場面（remove=true）のみ介入可能点になる。
+  if (mgrInterv && mgrInterv.teamId === fielding.teamId) {
+    const situ = {
+      inning, half: null, outs, bases: bases.map((b) => !!b), scoreDiff: lead,
+      pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
+    };
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+  }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
   installPitcher(fielding, next, inning, lead);
@@ -9208,6 +9309,9 @@ function playScheduledGame(ctx, g, gi) {
     onEvent: pass.onEvent, // 観戦実況フック（フェーズC1・通常シムでは undefined＝無影響）
     onInjury,
     season: ctx.season ?? null, // R6: 直近故障の残債（指数減衰）の計算に使う
+    // P1: 人間采配の介入フック（§2）。ctx.managerIntervention 未設定（通常シム/AI戦）では
+    // undefined のまま＝simulateGame 側で mgrInterv=null となり従来と bit 同一。
+    managerIntervention: ctx.managerIntervention ?? undefined,
   });
 
   // 投手使用ログ→日次疲労、野手の連続出場・見直しタイマーを更新
@@ -12368,6 +12472,265 @@ function createMovesState(league, { enableMoves, masterSeed, season, farm }) {
 }
 
 
+// ===== src/game/wpaSummary.mjs =====
+// ============================================================================
+// P2: 試合後の「勝因/敗因カード」（thyroxin/research/fun_theory_research_20260720.md 提案P2）
+//
+//   WPA（勝率貢献度）は src/sim/context.mjs に実装済みだが、その2パス構造（pass1でRE/WE/LI表を
+//   大標本導出→pass2で同一試合を再走しΔWPAを選手の統計へ加算）は simulateSeason（一括シーズン
+//   シム・calibrate.mjs 用）でのみ結線されており、ゲームシェル（日次進行・src/game/）は結線して
+//   いない（=season_runtime.mjs の advanceRuntimeDay は opts.gameContext を渡さない）。
+//   ゲームシェルへ結線し直す（シーズン全体を2回走らせる/選手のシーズン集計へ実WPAを加算する）と
+//   ①日次進行の設計（day単位の逐次実行・save/loadのreplay）と根本的に相容れない
+//   ②鉄則「集計値は一切変更しない」に触れる（bStat.wpa等の実集計を書き換えることになる）。
+//
+//   そこで本モジュールは:
+//   - getWpaRefTables(): 実シーズンとは完全に独立の小規模「参照走行」（乱数系統も別根・
+//     実ゲームの決定論に一切不干渉）で RE/WE/LI 表を一度だけ導出し league 単位でキャッシュする
+//     （§B2 の pass1 と同じ導出ロジックをそのまま再利用＝指標を後付けで作らない・鉄則4）。
+//   - computeWpaHighlights(): 自チーム試合の観戦イベント列（simulateGame onEvent・box生成に
+//     使うのと同じもの・§17で当該試合限りの一時データ）を再生し、makeAccumulateContext の
+//     ΔWPA計算をプレー単位で使い捨てのダミー集計行に流す（実選手の統計行には一切触れない＝
+//     「集計値は一切変更しない」を厳守）。試合を通じて自チーム視点のWPAが最大/最小だった
+//     プレーを1件ずつ拾い、box.wpaTop/wpaBottom という小さな要約（{pid,inning,half,desc,wpa}）
+//     だけを返す。生イベント列自体は保存しない（§17）。
+// ============================================================================
+
+
+
+
+
+
+// league オブジェクト単位でキャッシュ（キャリア中は同一 league を使い回すので実質「1回だけ」）。
+const tablesCache = new WeakMap();
+
+/**
+ * P2専用の参照文脈表（RE24/WE/LI）を導出する（無ければ作ってキャッシュ）。
+ * 実際の試合スケジュール/シードとは完全に別系統（実ゲームの乱数消費・結果に一切影響しない）。
+ * 精度よりも応答性を優先し、通常シーズンより小さいリーグ内対戦数で参照走行する
+ * （階層平滑化 weSmoothK/weCoarseK/weDiffK が小標本でも破綻しない設計・context.mjs参照）。
+ * @param {{teams:Array, players:Array, masterSeed?:number}} league
+ * @param {Object} cfg
+ * @returns {?Object} deriveTables() の戻り値（{re,we,li,innMax,diffClip,keyN,avgSwing,re0}）
+ */
+function getWpaRefTables(league, cfg) {
+  const cached = tablesCache.get(league);
+  if (cached) return cached;
+  if (!league?.teams?.length) return null;
+  const refCfg = {
+    ...cfg,
+    league: { ...cfg.league, inLeagueGamesPerOpp: 4, interLeagueGamesPerOpp: 1 },
+  };
+  const seed = hashSeed(league.masterSeed ?? 1, 'wpaRefTables');
+  const { leagueDh, teamById, chartsByTeam } = buildTeamCharts(league, refCfg);
+  const schedule = buildSchedule(league.teams, makeRng(hashSeed(seed, 'schedule')), refCfg);
+  if (!schedule.length) return null;
+  const stats = makeSeasonStats(0);
+  const dgc = makeDeriveContext(refCfg);
+  const usageByTeam = new Map(league.teams.map((t) => [t.id, createUsageState(t, chartsByTeam.get(t.id), refCfg)]));
+  const parkByTeam = new Map(league.teams.map((t) => [t.id, t.park ?? NEUTRAL_PARK]));
+  const ctx = {
+    seed,
+    park: NEUTRAL_PARK,
+    parkByTeam,
+    cfg: refCfg,
+    leagueDh,
+    teamById,
+    chartsByTeam,
+    usageByTeam,
+    pass: { statFor: stats.statFor, getBat: stats.getBat, getPitch: stats.getPitch, gameContext: dgc },
+    dayScale: 1,
+    season: 0,
+  };
+  schedule.forEach((g, gi) => playScheduledGame(ctx, g, gi));
+  const tables = deriveTables(dgc, refCfg);
+  tablesCache.set(league, tables);
+  return tables;
+}
+
+/** basesPids（[1B,2B,3B]のplayerId配列）→ 塁状態ビット（1=1B,2=2B,4=3B）。game.mjs baseBits と同一規則。 */
+function bitsFromPids(pids) {
+  if (!pids) return 0;
+  return (pids[0] ? 1 : 0) | (pids[1] ? 2 : 0) | (pids[2] ? 4 : 0);
+}
+
+/** プレーの日本語1語描写（打者/走者視点）。ourBatting=自チームの得（勝因側の文脈で語るか）。 */
+function describePlay(cand, ourBatting) {
+  if (cand.kind === 'steal') return cand.result === 'SB' ? '盗塁成功' : '盗塁死';
+  if (cand.kind === 'bunt') {
+    if (cand.outcome === 'hit') return ourBatting ? '犠打安打' : '犠打安打を許す';
+    if (cand.outcome === 'success') return ourBatting ? '犠打成功' : '犠打を許す';
+    return ourBatting ? 'バント失敗' : 'バント処理で仕留める';
+  }
+  const runs = cand.runsOnPlay ?? 0;
+  if (cand.outcome === 'BB') return ourBatting ? '四球' : '四球を与える';
+  if (cand.outcome === 'HBP') return ourBatting ? '死球' : '死球を与える';
+  if (cand.result === 'HR') {
+    const hrName = runs >= 4 ? '満塁本塁打' : runs === 3 ? '3ラン本塁打' : runs === 2 ? '2ラン本塁打' : 'ソロ本塁打';
+    return ourBatting ? hrName : `${hrName}を被弾`;
+  }
+  if (cand.result === '1B' || cand.result === '2B' || cand.result === '3B') {
+    const baseName = cand.result === '1B' ? '安打' : cand.result === '2B' ? '二塁打' : '三塁打';
+    const name = runs > 0 ? (cand.result === '1B' ? '適時打' : `適時${baseName}`) : baseName;
+    return ourBatting ? name : `${name}を許す`;
+  }
+  if (cand.result === 'E') return ourBatting ? '相手失策で出塁' : '失策で出塁を許す';
+  if (cand.outcome === 'K') return ourBatting ? '三振' : '三振に仕留める';
+  if (cand.result === 'out') {
+    const dp = (cand.outsAfter - cand.outsBefore) >= 2;
+    if (dp) return ourBatting ? '併殺打' : '併殺打に仕留める';
+    if (cand.sacFly) return ourBatting ? '犠飛' : '犠飛に打ち取る';
+    const bt = cand.battedType;
+    const outName = bt === 'GB' ? 'ゴロアウト' : bt === 'LD' ? 'ライナーアウト' : bt === 'FB' ? 'フライアウト' : bt === 'PU' ? 'ポップアウト' : 'アウト';
+    return ourBatting ? outName : `${outName}に打ち取る`;
+  }
+  return ourBatting ? 'プレー' : '出塁を許す';
+}
+
+function summarize(cand, playerTeamId) {
+  const ourBatting = cand.batTeam === playerTeamId;
+  const pid = cand.kind === 'steal' ? cand.batterId : ourBatting ? cand.batterId : (cand.pitcherId ?? cand.batterId);
+  return {
+    pid,
+    inning: cand.inning,
+    half: cand.half, // 'top'|'bottom'（表示側で日本語「表/裏」に変換・schedule.mjs参照）
+    desc: describePlay(cand, ourBatting),
+    wpa: cand.teamWpa, // 自チーム視点（符号込み）
+  };
+}
+
+/**
+ * 自チーム試合の観戦イベント列（simulateGame onEvent の構造化列。§17: 一時データ）を再生し、
+ * 自チーム視点WPAが最大/最小だったプレーを1件ずつ拾う。
+ * 実選手の統計行（statFor由来のオブジェクト）には一切触れない＝使い捨てのダミー集計行で
+ * ΔWPAだけを読み出す（鉄則「集計値は一切変更しない」を厳守）。
+ * @param {Array} events buildBoxScore と同じ入力（1試合ぶんの onEvent 構造化イベント列）
+ * @param {?Object} tables getWpaRefTables() の戻り値
+ * @param {Object} cfg
+ * @param {string} playerTeamId 自チームID
+ * @returns {?{top:Object, bottom:Object}} 旧セーブ/表が無ければ null（呼び出し側は additive に無視）
+ */
+function computeWpaHighlights(events, tables, cfg, playerTeamId) {
+  if (!tables || !events || !events.length) return null;
+  const gc = makeAccumulateContext(tables, cfg);
+  gc.startGame();
+  let home = null;
+  let away = null;
+  const scores = { home: 0, away: 0 };
+  let pending = null; // 直前の 'atbat' が示す「この打席の状態前」
+  let curBases = [null, null, null];
+  let curOuts = 0;
+  let best = null; // 自チーム視点WPA最大
+  let worst = null; // 自チーム視点WPA最小
+
+  const sideOf = (teamId) => (teamId === home ? 'home' : 'away');
+
+  const evaluate = (info) => {
+    const dummyBat = { wpa: 0 };
+    const dummyPit = { wpa: 0 };
+    gc.onPlay({
+      kind: 'pa',
+      battingIsHome: info.battingIsHome,
+      inning: info.inning,
+      batSideStat: dummyBat,
+      pitStat: dummyPit,
+      pitcherCur: null,
+      firstBatterOfApp: false,
+      baseBefore: info.baseBefore,
+      outsBefore: info.outsBefore,
+      baseAfter: info.baseAfter,
+      outsAfter: info.outsAfter,
+      runsOnPlay: info.runsOnPlay,
+      batScoreBefore: info.batScoreBefore,
+      fldScore: info.fldScore,
+    });
+    const teamWpa = info.batTeam === playerTeamId ? dummyBat.wpa : -dummyBat.wpa;
+    const cand = { ...info, teamWpa };
+    if (!best || teamWpa > best.teamWpa) best = cand;
+    if (!worst || teamWpa < worst.teamWpa) worst = cand;
+  };
+
+  for (const e of events) {
+    if (e.type === 'start') {
+      home = e.home;
+      away = e.away;
+    } else if (e.type === 'atbat') {
+      curBases = e.basesPids ? e.basesPids.slice() : curBases;
+      curOuts = e.outs;
+      pending = {
+        inning: e.inning,
+        half: e.half,
+        battingIsHome: e.half === 'bottom',
+        batTeam: e.batTeam,
+        pitTeam: e.pitTeam,
+        batterId: e.batterId,
+        pitcherId: e.pitcherId,
+        baseBefore: bitsFromPids(curBases),
+        outsBefore: curOuts,
+      };
+    } else if (e.type === 'steal') {
+      const batSide = sideOf(e.batTeam);
+      const fldSide = batSide === 'home' ? 'away' : 'home';
+      evaluate({
+        kind: 'steal',
+        inning: e.inning,
+        half: e.half,
+        battingIsHome: e.half === 'bottom',
+        batTeam: e.batTeam,
+        pitTeam: fldSide === 'home' ? home : away,
+        baseBefore: bitsFromPids(curBases),
+        outsBefore: curOuts,
+        baseAfter: bitsFromPids(e.basesPids),
+        outsAfter: e.outsAfter,
+        runsOnPlay: 0,
+        batScoreBefore: scores[batSide],
+        fldScore: scores[fldSide],
+        result: e.success ? 'SB' : 'CS',
+        outcome: 'steal',
+        batterId: e.runnerId,
+        pitcherId: null,
+      });
+      curBases = e.basesPids ? e.basesPids.slice() : curBases;
+      curOuts = e.outsAfter;
+    } else if (e.type === 'pa' || e.type === 'bunt') {
+      if (!pending) continue; // 構造上必ず atbat が先行するが、安全弁として無視
+      const batSide = sideOf(pending.batTeam);
+      const fldSide = batSide === 'home' ? 'away' : 'home';
+      const batScoreAfter = e.batScore;
+      const runsOnPlay = e.type === 'pa' ? (e.runsOnPlay ?? 0) : batScoreAfter - scores[batSide];
+      evaluate({
+        kind: e.type,
+        inning: pending.inning,
+        half: pending.half,
+        battingIsHome: pending.battingIsHome,
+        batTeam: pending.batTeam,
+        pitTeam: pending.pitTeam,
+        baseBefore: pending.baseBefore,
+        outsBefore: pending.outsBefore,
+        baseAfter: bitsFromPids(e.basesPids),
+        outsAfter: e.outsAfter,
+        runsOnPlay,
+        batScoreBefore: scores[batSide],
+        fldScore: e.fldScore,
+        result: e.result ?? null,
+        outcome: e.outcome ?? null,
+        sacFly: e.sacFly === true,
+        battedType: e.battedType ?? null,
+        batterId: pending.batterId,
+        pitcherId: pending.pitcherId,
+      });
+      scores[batSide] = batScoreAfter;
+      curBases = e.basesPids ? e.basesPids.slice() : curBases;
+      curOuts = e.outsAfter;
+      pending = null;
+    }
+  }
+
+  if (!best || !worst) return null;
+  return { top: summarize(best, playerTeamId), bottom: summarize(worst, playerTeamId) };
+}
+
+
 // ===== src/game/season_runtime.mjs =====
 // ============================================================================
 // フェーズC1a: 1シーズンの「日次進行ランタイム」（ヘッドレス・UI非依存）
@@ -12381,6 +12744,8 @@ function createMovesState(league, { enableMoves, masterSeed, season, farm }) {
 //   セーブ/ロードは save.mjs が「開幕状態から cursor まで再走（replay）」で復元する
 //   （seed と cursor が RNG カーソルに相当する。usage/集計はこの再走で厳密に再現される）。
 // ============================================================================
+
+
 
 
 
@@ -12663,17 +13028,43 @@ function applyInterventionsForDay(rt, d) {
  * 1日（節）ぶんの試合をまとめて消化する。schedule は day 昇順・同一 day が連続するため、
  * cursor は必ず day 境界で止まる（save/load の cursor 再走が day 単位で正確になる）。
  * @param {Object} rt SeasonRuntime
- * @param {{collectPlayerEvents?:boolean}} opts collectPlayerEvents=自チーム試合の観戦実況イベントを返す
- * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean}}
+ * @param {{collectPlayerEvents?:boolean, interactive?:boolean, managerIntervention?:Object}} opts
+ *   collectPlayerEvents=自チーム試合の観戦実況イベントを返す。
+ *   interactive=true（P1・game/index.mjs の playInteractiveGame 専用）: 自チーム戦の
+ *     schedule index に到達したら **その試合を処理せずに** cursor をそこに残したまま中断し、
+ *     pendingPlayerGame:true を返す（呼び出し側が attemptPlayerGame でスクラッチ状態を使い
+ *     再試行可能な形で処理する＝一度の失敗〜再試行で real な統計を二重計上しないため）。
+ *   managerIntervention={teamId,log,onDecision}（P1）: log は全シーズンぶんを渡してよい
+ *     （day で内部フィルタする）。load の replay 等、絶対に一時停止しない用途（onDecision省略）で使う。
+ * @returns {{day:number, games:Array, playerGames:Array, playerEvents:?Array, seasonEnded:boolean, pendingPlayerGame?:boolean}}
  *   playerEvents は §17（生イベントは当該シーズンのみ・永続しない）に従い返却のみ・rt/save には積まない。
  */
 function advanceRuntimeDay(rt, opts = {}) {
   if (rt.finished) return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: false };
+  if (rt.cursor >= rt.schedule.length) {
+    // P1: interactive の自チーム最終戦を commit した直後は、この呼び出し時点で既に全日程を
+    //   消化済み（cursor が length に達している）が rt.finished はまだ立っていない。
+    //   通常経路（1回の呼び出しで最終日の試合処理→即finalize）と同じ結果になるよう、
+    //   day-prep（介入プロファイル/出場登録入替）を再実行せず finalize だけ行う
+    //   （finalizeRuntime が内部でファーム残日程の消化も行う）。
+    finalizeRuntime(rt);
+    return { day: pendingDay(rt), games: [], farmGames: [], rosterMoves: [], playerGames: [], playerEvents: null, seasonEnded: true };
+  }
   const d = pendingDay(rt);
-  applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
-  // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
-  // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
-  const rosterMoves = applyRosterMovesForDay(rt, d);
+  // P1: interactive モードは同じ day を複数回（試合の中断→再開のたび）再入場しうる。
+  //   day単位の準備（介入プロファイル反映/出場登録入替）は day ごとに一度だけでよい
+  //   （二重適用防止・IL復帰やロスター入替の再発火を避ける）。
+  let rosterMoves;
+  if (rt.dayPrepped === d) {
+    rosterMoves = rt.dayPreppedMoves;
+  } else {
+    applyInterventionsForDay(rt, d); // この day 以降に効く采配差し替えを反映（live/replay 共通）
+    // 出場登録の入替（F2-3）: その日の試合前に IL補充/復帰・成績入替を適用（2年目以降のみ。
+    // 1年目・sim層は rt.moves=null で完全不作動＝simulateSeason と bit 同一を維持・鉄則7）。
+    rosterMoves = applyRosterMovesForDay(rt, d);
+    rt.dayPrepped = d;
+    rt.dayPreppedMoves = rosterMoves;
+  }
   const pass = {
     statFor: rt.stats.statFor,
     getBat: rt.stats.getBat,
@@ -12681,6 +13072,9 @@ function advanceRuntimeDay(rt, opts = {}) {
     standings: rt.standings,
     runSplit: rt.runSplit,
   };
+  // P1: 人間采配の介入（§2）。opts.managerIntervention 未設定（通常/AI戦/旧経路）では
+  //   undefined のまま＝ctx.managerIntervention も undefined で simulateGame は従来どおり。
+  const mi = opts.managerIntervention;
   const ctx = {
     seed: rt.seed,
     park: rt.park,
@@ -12696,6 +13090,7 @@ function advanceRuntimeDay(rt, opts = {}) {
     // 故障ログ（R3・当季のみ・§17集計値）: オフに後遺/故障歴へ落とし、save に永続して
     //   load の replay（season を再シムしない）で同一の真値を再構築する（farmPromotionLog と同方式）。
     onInjury: (ev) => rt.injuryLog.push(ev),
+    managerIntervention: mi ? { teamId: mi.teamId, log: (mi.log ?? []).filter((e) => e.day === d), onDecision: mi.onDecision } : undefined,
   };
   const games = [];
   const playerGames = [];
@@ -12703,6 +13098,11 @@ function advanceRuntimeDay(rt, opts = {}) {
   while (rt.cursor < rt.schedule.length && rt.schedule[rt.cursor].day === d) {
     const g = rt.schedule[rt.cursor];
     const isPlayer = g.home === rt.playerTeamId || g.away === rt.playerTeamId;
+    if (isPlayer && opts.interactive) {
+      // P1: 自チーム戦は呼び出し側（playInteractiveGame）が attemptPlayerGame で個別に処理する。
+      //   cursor はこの試合の index のまま＝次回もここから再開する（決定論）。
+      return { day: d, games, farmGames: [], rosterMoves, playerGames, playerEvents, seasonEnded: false, pendingPlayerGame: true };
+    }
     // 観戦実況/ボックススコア: 自チーム試合は常時イベント収集（onEvent は乱数非消費＝
     // 観戦/ダイジェスト/スキップのどれでも試合結果は不変）。生イベントは box 集計を組んだら
     // 捨て、観戦用（opts.collectPlayerEvents）のときだけ返却する（§17: 生イベント非永続）。
@@ -12723,6 +13123,15 @@ function advanceRuntimeDay(rt, opts = {}) {
       // E4: 日程・結果タブの簡易ボックススコア（両軍打者/投手の当日ライン・集計行のみ）。
       // live も load の replay も同一イベント列から再構築される（決定論・save は集計値のみ）。
       rec.box = buildBoxScore(events);
+      // P2: 勝因/敗因カード（fun_theory_research_20260720.md 提案P2）。自チーム視点でWPAが
+      // 最大/最小だったプレーの要約2件だけを additive に付与（wpaSummary.mjs・§17: 生イベント
+      // 非永続＝events自体はここで使い終われば捨てる。実選手の統計行には一切触れない）。
+      const wpaTables = getWpaRefTables(rt.league, rt.cfg);
+      const wpaHi = computeWpaHighlights(events, wpaTables, rt.cfg, rt.playerTeamId);
+      if (wpaHi) {
+        rec.box.wpaTop = wpaHi.top;
+        rec.box.wpaBottom = wpaHi.bottom;
+      }
     }
     games.push(rec);
     if (isPlayer) {
@@ -12741,6 +13150,142 @@ function advanceRuntimeDay(rt, opts = {}) {
     seasonEnded = true;
   }
   return { day: d, games, farmGames, rosterMoves, playerGames, playerEvents, seasonEnded };
+}
+
+// ============================================================================
+// P1（試合中の人間采配・介入観戦）: 自チーム1試合ぶんを「中断→再試行可能」な形で処理する。
+//
+// simulateGame は再開不可能（介入ログを1件足して常に inning1 から再シミュレートする＝
+// thyroxin/specs/p1_interactive_manager_spec.md §0-3「決定論なので同じ経過を高速に辿り」）。
+// 実 statFor/standings/usageByTeam を直接使うと、一度中断した試行の「中断点より前」の
+// 打席が real な集計へ既に加算されてしまい、再試行で同じ打席がもう一度加算される
+// （二重計上）。よって毎回「シーズン開始からの累積値を種にしたスクラッチ状態」で試み、
+// 中断（InterventionPause）なら丸ごと破棄、完走したときだけ rt へコミットする
+// （H2 プレイヤー参加型ドラフトの cloneLeague→最終コミットと同型のパターン）。
+// ============================================================================
+
+/** 選手成績のスクラッチ集計器（clone-on-touch）。読みは real season stats（sourceStats）に
+ *  フォールバックし、書きは触れた選手だけスクラッチへ複製してから行う＝実データは無傷。 */
+function makeScratchStats(season, sourceStats) {
+  const stats = new Map();
+  const emptyBat = createBattingLine();
+  const emptyPitch = createPitchingLine();
+  const statFor = (pid, teamId) => {
+    let s = stats.get(pid);
+    if (!s) {
+      const src = sourceStats.get(pid);
+      // JSONクローン: playerSeason は save() が既に平坦なJSONへ落とす構造（プレーンネスト＋数値
+      // カウンタのみ）。structuredClone はビルド後smoke（vmコンテキスト）に存在しないため使わない。
+      s = src ? JSON.parse(JSON.stringify(src)) : createPlayerSeason(pid, season);
+      s.teamId = teamId;
+      stats.set(pid, s);
+    }
+    return s;
+  };
+  const getBat = (pid) => (stats.get(pid) ?? sourceStats.get(pid))?.batting ?? emptyBat;
+  const getPitch = (pid) => (stats.get(pid) ?? sourceStats.get(pid))?.pitching ?? emptyPitch;
+  return { stats, statFor, getBat, getPitch };
+}
+
+/** usage state（起用AIの当季蓄積）のうち試合中に変化しうる Map/オブジェクトだけを複製する。
+ *  charts/scoutEval/defEval/rangeEval は当季固定の読み取り専用データ＝参照共有で安全かつ軽量。
+ *  structuredClone はビルド後smoke（vmコンテキスト）に存在しないため使わない:
+ *  assign はプレーンネスト（JSONクローン）、lastSnap は Map<pid, フラットな観測カウント>。 */
+function cloneUsageStateForRetry(u) {
+  return {
+    ...u,
+    assign: JSON.parse(JSON.stringify(u.assign)),
+    lastSnap: u.lastSnap ? new Map([...u.lastSnap].map(([k, v]) => [k, { ...v }])) : null,
+    consecStarts: new Map(u.consecStarts),
+    startsByPid: new Map(u.startsByPid),
+    startsAtPos: new Map([...u.startsAtPos].map(([k, v]) => [k, new Map(v)])),
+    lastStartDay: new Map(u.lastStartDay),
+    startDaysByPid: new Map([...u.startDaysByPid].map(([k, v]) => [k, v.slice()])),
+    pitchedByDay: new Map([...u.pitchedByDay].map(([k, v]) => [k, new Map(v)])),
+    injuredUntil: new Map(u.injuredUntil),
+  };
+}
+
+/** 順位表の1行を複製（プレーンオブジェクト＋ネストil）。 */
+function cloneStandingsRow(row) {
+  return { ...row, il: { ...row.il } };
+}
+
+/**
+ * 自チーム1試合（schedule[gi]）を人間采配フック付きで試みる（P1）。
+ * @param {Object} rt SeasonRuntime（rt.cursor は必ず gi を指していること＝advanceRuntimeDay の
+ *   pendingPlayerGame 直後の呼び出し前提）
+ * @param {number} gi schedule内index（自チーム戦）
+ * @param {Array} log 当該 day ぶんの介入ログ（{seq,kind,choice}。呼び出し側で year/day を絞り込み済み）
+ * @param {?Function} onDecision ログに無い介入点に到達したときのコールバック（'PAUSE' で中断）。
+ *   省略時は常にAI判断（load の replay 用途＝絶対に中断しない）。
+ * @returns {{paused:true, decision:Object, events:Array} | {paused:false, record:Object, events:Array, commit:Function}}
+ *   commit() を呼ぶまで rt は一切変化しない（試合未確定）。
+ */
+function attemptPlayerGame(rt, gi, log, onDecision) {
+  const g = rt.schedule[gi];
+  const d = g.day;
+  const scratchStats = makeScratchStats(rt.season, rt.stats.stats);
+  const scratchUsage = new Map(rt.usageByTeam);
+  scratchUsage.set(g.home, cloneUsageStateForRetry(rt.usageByTeam.get(g.home)));
+  scratchUsage.set(g.away, cloneUsageStateForRetry(rt.usageByTeam.get(g.away)));
+  const scratchStandings = new Map(rt.standings);
+  scratchStandings.set(g.home, cloneStandingsRow(rt.standings.get(g.home)));
+  scratchStandings.set(g.away, cloneStandingsRow(rt.standings.get(g.away)));
+  const scratchRunSplit = { dh: { ...rt.runSplit.dh }, noDh: { ...rt.runSplit.noDh } };
+  const scratchInjuries = [];
+  const events = [];
+  const pass = {
+    statFor: scratchStats.statFor,
+    getBat: scratchStats.getBat,
+    getPitch: scratchStats.getPitch,
+    standings: scratchStandings,
+    runSplit: scratchRunSplit,
+    onEvent: (e) => events.push(e),
+  };
+  const ctx = {
+    seed: rt.seed,
+    park: rt.park,
+    parkByTeam: rt.parkByTeam,
+    cfg: rt.cfg,
+    leagueDh: rt.leagueDh,
+    teamById: rt.teamById,
+    chartsByTeam: rt.chartsByTeam,
+    usageByTeam: scratchUsage,
+    pass,
+    dayScale: rt.dayScale,
+    season: rt.season,
+    onInjury: (ev) => scratchInjuries.push(ev),
+    managerIntervention: { teamId: rt.playerTeamId, log, onDecision },
+  };
+  let res;
+  try {
+    res = playScheduledGame(ctx, g, gi);
+  } catch (e) {
+    if (e instanceof InterventionPause) return { paused: true, decision: e.point, events };
+    throw e;
+  }
+  const rec = { day: d, home: g.home, away: g.away, homeScore: res.homeScore, awayScore: res.awayScore, tie: res.tie, innings: res.innings };
+  rec.box = buildBoxScore(events);
+  const wpaTables = getWpaRefTables(rt.league, rt.cfg);
+  const wpaHi = computeWpaHighlights(events, wpaTables, rt.cfg, rt.playerTeamId);
+  if (wpaHi) {
+    rec.box.wpaTop = wpaHi.top;
+    rec.box.wpaBottom = wpaHi.bottom;
+  }
+  const commit = () => {
+    for (const [pid, s] of scratchStats.stats) rt.stats.stats.set(pid, s);
+    rt.usageByTeam.set(g.home, scratchUsage.get(g.home));
+    rt.usageByTeam.set(g.away, scratchUsage.get(g.away));
+    rt.standings.set(g.home, scratchStandings.get(g.home));
+    rt.standings.set(g.away, scratchStandings.get(g.away));
+    rt.runSplit.dh = scratchRunSplit.dh;
+    rt.runSplit.noDh = scratchRunSplit.noDh;
+    for (const ev of scratchInjuries) rt.injuryLog.push(ev);
+    rt.playerGameLog.push(rec);
+    rt.cursor = gi + 1;
+  };
+  return { paused: false, record: rec, events, commit };
 }
 
 /** レギュラーシーズン終了時の確定（順位表＋ポストシーズン）。simulateSeason と同一の座標/シード。 */
@@ -13911,11 +14456,70 @@ function milestones({ careerStats, playersById, cfg, year }) {
 //        ノーヒットノーラン・完全試合・サイクル安打・猛打賞を検出する（純関数）。
 //   streakOf(gameLog, teamId)   … 直近の連勝/連敗を数える。
 //   weeklyDigest({...})         … 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
+//   notableHeadline(n, pnameOf, tnameOf, personalityOf?) … 珍記録見出し。P6: personalityOf を渡すと
+//        対象選手（サイクル安打/猛打賞）の p.personality で文体が分岐する（phaseH_fun_spec P6）。
 //
 // 決定論: すべて入力（イベント列/試合ログ/順位表）の純関数。乱数非使用（onEvent は乱数非消費＝
 //   検出の有無は試合結果に一切影響しない＝既存50較正が不変）。生イベントは当該シーズンのみ（§17）。
+//   P6のテンプレ選択のみ独立座標のhashSeed（'newsvoice'）を使う＝乱数ストリーム非消費（表示文言のみ）。
 // ============================================================================
 
+
+
+// --- P6: 性格→文体（fun_theory_research P6・H3積み残し）----------------------------------
+//   各性格キー(PERSONALITIES・src/model/player.mjs)につき最低1バリアント。「(名前, 出来事の文言)
+//   → 見出し文」の関数を複数持たせ、選手id/性格/文脈キーのhashSeedで決定論的に選ぶ。
+//   personalityがnull/未知（旧セーブ等）の場合は `${name}が${achievement}` の従来文言にフォールバック
+//   （後方互換: personalityOf省略時の notableHeadline はこれまでと byte 同一のテキストを返す）。
+const PERSONALITY_VOICES = {
+  hardworking: [ // 練習熱心
+    (n, ach) => `${n}、地道な努力が実って${ach}`,
+    (n, ach) => `${n}、人一倍の練習量がついに結果に。${ach}`,
+  ],
+  streaky: [ // ムラっ気
+    (n, ach) => `${n}、ムラっ気が爆発して${ach}`,
+    (n, ach) => `${n}、波に乗ると止まらない。${ach}`,
+  ],
+  showboat: [ // お調子者
+    (n, ach) => `${n}がド派手に${ach}。「まあ僕なら当然です」`,
+    (n, ach) => `${n}、見せ場を演出して${ach}。スタンドも大盛り上がり`,
+  ],
+  reticent: [ // 寡黙
+    (n, ach) => `${n}は多くを語らず。バットが語った${ach}`,
+    (n, ach) => `${n}、口数少なく淡々と${ach}`,
+  ],
+  fighter: [ // 闘志
+    (n, ach) => `${n}、闘志むき出しで${ach}`,
+    (n, ach) => `${n}、気迫の一打で${ach}`,
+  ],
+  cool: [ // クール
+    (n, ach) => `${n}、顔色ひとつ変えず涼しい顔で${ach}`,
+    (n, ach) => `${n}、冷静沈着に${ach}`,
+  ],
+  myPace: [ // マイペース
+    (n, ach) => `${n}、マイペースにいつも通りの調子で${ach}`,
+    (n, ach) => `${n}、周りに流されず自分のリズムで${ach}`,
+  ],
+  leader: [ // リーダー
+    (n, ach) => `${n}がチームを鼓舞するように${ach}`,
+    (n, ach) => `${n}、後輩を引っ張るように${ach}`,
+  ],
+};
+
+/**
+ * 性格による文体分岐（P6）。personality が未知/null なら従来通り `${name}が${achievement}`。
+ * @param {string|null} personality PERSONALITIES のいずれか or null
+ * @param {string} name 表示名（pnameOf 済み）
+ * @param {string} achievement 出来事の文言（名前を含まない・例:「サイクル安打を達成」）
+ * @param {string} seedKey 決定論キー（通常は選手id）
+ * @param {string} kind 文脈キー（'cycle'|'multiHit'等・同一選手でも文脈で変える）
+ */
+function personalityFlavor(personality, name, achievement, seedKey, kind) {
+  const voices = PERSONALITY_VOICES[personality];
+  if (!voices || !voices.length) return `${name}が${achievement}`;
+  const r = makeRng(hashSeed('newsvoice', kind, seedKey, personality));
+  return voices[r.int(voices.length)](name, achievement);
+}
 
 const HIT_RESULTS = new Set(['1B', '2B', '3B', 'HR']);
 /** 出塁（安打＋四死球＋失策）。完全試合の判定に使う（走者を一人も出さない）。 */
@@ -13963,12 +14567,25 @@ function detectGameNotables(events) {
   return { start, end, notables: out };
 }
 
-/** 珍記録を日本語見出しへ（pnameOf: id→選手名, tnameOf: id→球団名）。 */
-function notableHeadline(n, pnameOf, tnameOf) {
+/**
+ * 珍記録を日本語見出しへ（pnameOf: id→選手名, tnameOf: id→球団名）。
+ * P6: personalityOf（id→PERSONALITIES|null。省略時は常にnull）を渡すと、対象選手（サイクル安打/
+ * 猛打賞の打者）の性格で文体が分岐する（fun_theory_research P6・H3積み残し）。personalityOf省略
+ * または未知の性格なら従来と同一の文言（後方互換・既存呼び出し元は無改修で動く）。
+ * @param {Function} [personalityOf] id → 'hardworking'|'streaky'|...|null（省略時は常にnull）
+ */
+function notableHeadline(n, pnameOf, tnameOf, personalityOf = () => null) {
   if (n.kind === 'perfectGame') return `完全試合達成！ ${tnameOf(n.teamId)} の投手陣が ${tnameOf(n.opponent)} を完璧に封じる`;
   if (n.kind === 'noHitter') return `ノーヒットノーラン！ ${tnameOf(n.teamId)} が ${tnameOf(n.opponent)} 相手に無安打`;
-  if (n.kind === 'cycle') return `サイクル安打！ ${pnameOf(n.batterId)} が単打・二塁打・三塁打・本塁打をすべて記録`;
-  if (n.kind === 'multiHit') return `${pnameOf(n.batterId)} が猛打賞（${n.hits}安打）の固め打ち`;
+  if (n.kind === 'cycle') {
+    const name = pnameOf(n.batterId);
+    const flavored = personalityFlavor(personalityOf(n.batterId), name, '単打・二塁打・三塁打・本塁打をすべて記録', n.batterId, 'cycle');
+    return `サイクル安打！ ${flavored}`;
+  }
+  if (n.kind === 'multiHit') {
+    const name = pnameOf(n.batterId);
+    return personalityFlavor(personalityOf(n.batterId), name, `猛打賞（${n.hits}安打）の固め打ち`, n.batterId, 'multiHit');
+  }
   return '';
 }
 
@@ -14078,6 +14695,12 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 //                                     同年同round指名の同期）を導出。
 //   rivalryGameHeadlines(state, names, limit) … 自チーム試合で「因縁」該当選手が活躍した回を検出し
 //                                     見出しテキストを生成（テンプレ選択は hashSeed 決定論）。
+//                                     P6: names.personalityOf を渡すと対象選手の性格タグを短い
+//                                     一言として追記する（後方互換・省略時は従来と同一テキスト）。
+//   draftClassHeadlines(state, names) … P5: 「今年の逸材」ドラフト前ニュース。market.mjs の
+//                                     draftPreviewHeadlines（世代内評判consensus上位・真値非参照）
+//                                     と draftScoutView（等級/伸びしろ/評判）を素材に、「今年の逸材」
+//                                     「世代No.1右腕」「大器の匂い」等のテンプレ見出しへ変換する。
 //   retirementRoadCandidates(state)   … 開幕時点で年齢閾値＋通算マイルストーンを満たす「今季が
 //                                     集大成」候補（引退判定そのものには一切触れない）。
 //   retirementRoadHeadlines(state, names) … 上記の見出しテキスト。
@@ -14086,6 +14709,10 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 //   retirementCeremonyText(ceremony, names) … セレモニーカード1件のテキスト整形。
 //   ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, names)
 //                                     … 自チーム所属だった功労者の引退を個別ニュース化。
+//   playerStoryOf(state, playerId, names)  … P7: 選手詳細「物語」欄。transactionLog/awardsHistory/
+//                                     careerStats/在籍情報だけから、出自（ドラフト経緯 or 生え抜き）・
+//                                     移籍歴・栄光（受賞/二つ名）・節目（通算マイルストーン）・因縁
+//                                     （同期指名）を時系列 [{year,text,kind}] へ合成する純関数。
 //
 // 設計原則（phaseH_fun_spec 全柱共通の鉄則・厳守）:
 //   - 表示層のみ: すべて (state, careerStats, transactionLog, ...) の純関数。真値(trueAbility)は
@@ -14094,6 +14721,7 @@ function weeklyDigest({ gameLog, standings, teamId, nameOf, recentN = 7 }) {
 //     を一切消費しない（独立座標＝durability/breakoutと同じ前例）。
 //   - transactionLog は additive save field（旧セーブは load 時に既定 [] で補完）。
 // ============================================================================
+
 
 
 
@@ -14398,8 +15026,17 @@ function appendTransactionLog(state, off, completedYear, offYearIndex) {
   }
   const picks = off.draftLog ? off.draftLog.picks : null;
   if (picks) {
+    // P7: 競合くじ情報（何球団が競合したか）を additive フィールド contenders として付す
+    //   （pick.contested のときだけ・draftLog.lotteries から該当prospectの競合球団数を引く）。
+    //   playerStoryOf の「{n}球団競合の末」表現の素。旧セーブ由来の行は未設定＝後方互換。
+    const lotteryByProspect = new Map((off.draftLog.lotteries ?? []).map((l) => [l.prospectId, l]));
     for (const pick of picks) {
-      rows.push({ year: completedYear, kind: 'draft', playerId: pick.prospectId, to: pick.teamId, round: pick.round });
+      const row = { year: completedYear, kind: 'draft', playerId: pick.prospectId, to: pick.teamId, round: pick.round };
+      if (pick.contested) {
+        const lot = lotteryByProspect.get(pick.prospectId);
+        if (lot) row.contenders = lot.contenders.length;
+      }
+      rows.push(row);
     }
   }
   if (!state.transactionLog) state.transactionLog = [];
@@ -14468,6 +15105,20 @@ const RIVALRY_TEMPLATES = {
   ],
 };
 
+// P6: 性格タグの短い一言（rivalryGameHeadlines への付記用）。全 PERSONALITIES に最低1バリアント。
+// 決定論: hashSeed('newsvoice','rivalrySuffix',...) の独立座標＝テンプレ本体の選択（'story'座標）や
+// 既存の乱数ストリームに一切干渉しない。personality が未知/null なら何も付記しない（後方互換）。
+const PERSONALITY_RIVALRY_SUFFIX = {
+  hardworking: ['地道な努力の成果'],
+  streaky: ['ムラっ気が爆発した一戦', '乗ってくると誰にも止められない'],
+  showboat: ['「見せ場は逃さない」が持論', 'スタンドを沸かせる立ち回り'],
+  reticent: ['本人は多くを語らず', '口数少なく、結果だけを残す'],
+  fighter: ['闘志を前面に', '気迫のプレー'],
+  cool: ['表情ひとつ変えず', '淡々とこなす'],
+  myPace: ['いつも通りのマイペース', '周囲に流されぬ独自のリズム'],
+  leader: ['チームを鼓舞する一打', '後輩たちを引っ張る存在感'],
+};
+
 function isNotableBatter(bt) {
   return bt.hr >= 2 || bt.h >= 3;
 }
@@ -14479,10 +15130,12 @@ function isNotablePitcher(pt) {
  * 自チーム試合（state.rt.playerGameLog）で「因縁」該当選手が活躍(notable)した場合の見出し
  * （直近の試合から新しい順・最大 limit 件）。決定論: テンプレ選択は
  * hashSeed(masterSeed,'story',year,day,playerId) の rng（表示文言のみ・結果に非干渉）。
- * @param {{pnameOf:Function, tnameOf:Function}} names
+ * P6: names.personalityOf（id→PERSONALITIES|null）を渡すと、対象選手の性格タグに応じた短い
+ * 一言を末尾に付記する（fun_theory_research P6・後方互換=省略時は従来と同一テキスト）。
+ * @param {{pnameOf:Function, tnameOf:Function, personalityOf?:Function}} names
  */
 function rivalryGameHeadlines(state, names = {}, limit = 5) {
-  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const { pnameOf = (id) => id, tnameOf = (id) => id, personalityOf = () => null } = names;
   const rt = state.rt;
   if (!rt || !rt.playerGameLog) return [];
   const out = [];
@@ -14494,12 +15147,12 @@ function rivalryGameHeadlines(state, names = {}, limit = 5) {
       for (const bt of b.batters[side] || []) {
         if (!isNotableBatter(bt)) continue;
         const hit = matchRivalry(state, bt.pid, oppTeamThisGame);
-        if (hit) out.push(buildRivalryHeadline(state, bt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf));
+        if (hit) out.push(buildRivalryHeadline(state, bt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf, personalityOf));
       }
       for (const pt of b.pitchers[side] || []) {
         if (!isNotablePitcher(pt)) continue;
         const hit = matchRivalry(state, pt.pid, oppTeamThisGame);
-        if (hit) out.push(buildRivalryHeadline(state, pt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf));
+        if (hit) out.push(buildRivalryHeadline(state, pt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf, personalityOf));
       }
     }
     if (out.length >= limit) break;
@@ -14507,11 +15160,124 @@ function rivalryGameHeadlines(state, names = {}, limit = 5) {
   return out.slice(0, limit);
 }
 
-function buildRivalryHeadline(state, playerId, day, oppTeamId, rivalry, pnameOf, tnameOf) {
+function buildRivalryHeadline(state, playerId, day, oppTeamId, rivalry, pnameOf, tnameOf, personalityOf = () => null) {
   const list = RIVALRY_TEMPLATES[rivalry.type] || RIVALRY_TEMPLATES.faOld;
   const r = makeRng(hashSeed(state.masterSeed, 'story', state.year, day, playerId));
   const tpl = list[r.int(list.length)];
-  return { text: tpl(pnameOf(playerId), tnameOf(oppTeamId)), cls: 'good', playerId, oppTeamId, day, type: rivalry.type };
+  let text = tpl(pnameOf(playerId), tnameOf(oppTeamId));
+  // P6: 性格タグの短い一言を付記（独立座標のhashSeed＝テンプレ本体の選択に非干渉・後方互換）。
+  const personality = personalityOf(playerId);
+  const suffixes = PERSONALITY_RIVALRY_SUFFIX[personality];
+  if (suffixes && suffixes.length) {
+    const sr = makeRng(hashSeed('newsvoice', 'rivalrySuffix', playerId, personality));
+    text += `（${suffixes[sr.int(suffixes.length)]}）`;
+  }
+  return { text, cls: 'good', playerId, oppTeamId, day, type: rivalry.type };
+}
+
+// ============================================================================
+// P5: 「今年の逸材」ドラフトクラス見出し（fun_theory_research_20260720 P5・phaseH_fun_spec 積み残し）
+// ============================================================================
+
+// テンプレ選択は hashSeed(masterSeed,'draftclass',yearIndex,kind,prospectId) の独立座標のみ＝
+// プール生成(generatePool)・ドラフト解決(runDraft)の乱数ストリームには一切干渉しない。
+const DRAFTCLASS_TOP_TEMPLATES = [
+  (n, role) => `今年の逸材、${n}（${role}）にドラフト戦線の視線集中`,
+  (n, role) => `世代最高評価は${n}（${role}）― スカウト陣の目玉`,
+  (n, role) => `${n}（${role}）、今年の指名候補生の頂点に立つ`,
+];
+const DRAFTCLASS_PITCHER_TOP_TEMPLATES = [
+  (n, arm) => `世代No.1${arm}との呼び声、${n}に球団関係者が熱視線`,
+  (n, arm) => `${n}、今年一番の${arm}との評判`,
+];
+const DRAFTCLASS_FIELDER_TOP_TEMPLATES = [
+  (n, pos) => `世代No.1の${pos}候補、${n}にドラフト上位球団が注目`,
+  (n, pos) => `${n}、今年の${pos}候補では随一の評価`,
+];
+const DRAFTCLASS_UPSIDE_TEMPLATES = [
+  (n, role) => `${n}（${role}）に「大器」の呼び声。伸びしろ十分の逸材`,
+  (n, role) => `${n}、完成度よりポテンシャル型 ― 大器の匂いを漂わせる`,
+  (n, role) => `${n}に大化けの期待。${role}としての伸びしろは世代屈指`,
+];
+const DRAFTCLASS_HIDDEN_TEMPLATES = [
+  (n) => `隠し玉との噂も。${n}の評価、球団間で見立てが割れる`,
+  (n) => `${n}に「隠し玉」の声 ― 一部球団だけが高く評価`,
+];
+
+/** draftClassHeadlines 内のテンプレ選択（決定論・独立座標）。 */
+function pickDraftClassTpl(masterSeed, yearIndex, kind, prospectId, list) {
+  const r = makeRng(hashSeed(masterSeed, 'draftclass', yearIndex, kind, prospectId));
+  return list[r.int(list.length)];
+}
+
+/**
+ * P5:「今年の逸材」ドラフト前ニュース。draftPreviewHeadlines（market.mjs・世代内評判consensus
+ * 上位・真値非参照）の顔ぶれを draftScoutView（同・スカウトノイズ込みの等級/伸びしろ/評判）で
+ * 肉付けし、テンプレ見出しへ変換する。真値(trueAbility)は一切参照しない（三層構造）。
+ * state.awaitingDraft.pool（H2・プレイヤー参加型ドラフトの中断ペイロード）が無ければ空配列。
+ * 呼び出し側は通常 round===1（プール確定直後・まだ誰も指名されていない状態）でのみ呼ぶ想定
+ * （draftPreviewHeadlines と同じ前提。draft.mjs の既存「今年の目玉」節と同条件）。
+ * @param {Object} state GameState（awaitingDraft/masterSeed/yearIndex/playerTeamId が必要）
+ * @param {{pnameOf?:Function, posLabelOf?:Function}} names pnameOf: prospectId→表示名
+ *   （既定は識別子そのまま・呼び出し側が pool から名前を引いて渡す）。posLabelOf: 守備位置コード
+ *   →表示ラベル（既定は識別子そのまま＝本アプリの他画面と同じくコード表示）。
+ * @returns {Array<{text:string, cls:string, prospectId:string, kind:string}>}
+ */
+function draftClassHeadlines(state, names = {}) {
+  const aw = state.awaitingDraft;
+  if (!aw || !aw.pool || !aw.pool.length) return [];
+  const { pnameOf = (id) => id, posLabelOf = (pos) => pos } = names;
+  const preview = draftPreviewHeadlines(state); // consensus上位（真値非参照・追加の乱数消費なし）
+  if (!preview.length) return [];
+  const findP = (id) => aw.pool.find((p) => p.id === id);
+  const roleLabelOf = (p) => (p.role === 'pitcher' ? '投手' : posLabelOf(p.primaryPos));
+  const out = [];
+  const max = state.cfg.tuning.storylines.draftClassMax ?? 6;
+
+  // 総合トップ（世代内評判1位）＝「今年の逸材」。
+  const topP = findP(preview[0].prospectId);
+  if (topP) {
+    const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'top', topP.id, DRAFTCLASS_TOP_TEMPLATES);
+    out.push({ text: tpl(pnameOf(topP.id), roleLabelOf(topP)), cls: 'good', prospectId: topP.id, kind: 'top' });
+  }
+
+  // ロール別トップ（プレビュー内で最上位の投手/野手それぞれ1名・総合トップと重複しない場合のみ）。
+  let pitcherDone = false;
+  let fielderDone = false;
+  for (const h of preview) {
+    if (pitcherDone && fielderDone) break;
+    const p = findP(h.prospectId);
+    if (!p || p.id === topP?.id) continue;
+    if (p.role === 'pitcher' && !pitcherDone) {
+      pitcherDone = true;
+      const arm = `世代No.1${p.throws === 'L' ? '左腕' : '右腕'}`;
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'pitcherTop', p.id, DRAFTCLASS_PITCHER_TOP_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), arm), cls: 'info', prospectId: p.id, kind: 'pitcherTop' });
+    } else if (p.role === 'fielder' && !fielderDone) {
+      fielderDone = true;
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'fielderTop', p.id, DRAFTCLASS_FIELDER_TOP_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), posLabelOf(p.primaryPos)), cls: 'info', prospectId: p.id, kind: 'fielderTop' });
+    }
+  }
+
+  // 「大器」「隠し玉」評判（プレビュー内・自球団スカウトレポート＝draftScoutView 由来）。
+  const used = new Set(out.map((o) => o.prospectId));
+  for (const h of preview) {
+    if (out.length >= max) break;
+    const p = findP(h.prospectId);
+    if (!p || used.has(p.id)) continue;
+    const sv = draftScoutView(state, p, aw.pool);
+    if (sv.upside === '大器') {
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'upside', p.id, DRAFTCLASS_UPSIDE_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), roleLabelOf(p)), cls: 'info', prospectId: p.id, kind: 'upside' });
+      used.add(p.id);
+    } else if (sv.hype === '隠し玉') {
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'hidden', p.id, DRAFTCLASS_HIDDEN_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id)), cls: 'info', prospectId: p.id, kind: 'hidden' });
+      used.add(p.id);
+    }
+  }
+  return out.slice(0, max);
 }
 
 // ============================================================================
@@ -14571,6 +15337,284 @@ function ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, 
   return ceremonies
     .filter((c) => finalTeam.get(c.playerId) === myTeamId)
     .map((c) => ({ text: `【引退】${retirementCeremonyText(c, names)}`, cls: 'info', playerId: c.playerId }));
+}
+
+// ============================================================================
+// P7: 選手詳細の「物語」欄（fun_theory_research_20260720 P7・愛着/世代物語）
+//
+//   playerStoryOf(state, playerId, names) … 既存データ（transactionLog/awardsHistory/careerStats/
+//     在籍情報）だけから、その選手の歩みを時系列の出来事配列へ合成する純関数。保存データは増やさず
+//     （§17）、モーダルを開くたび毎回導出する。エンジン（sim/）・trueAbility には一切触れない。
+//   シグネチャ注記: 他の *Headlines 系関数（titleRaceHeadlines 等）と同じ規約で第3引数に
+//     names={pnameOf,tnameOf,posLabelOf}（省略時は識別子そのまま）を取る＝テキスト整形をUI側の
+//     名前解決に委ねる（本ファイルは表示名テーブルを持たない）。
+// ============================================================================
+
+/** state.league.players / farm / retiredPlayers を統合した playerId→選手レコードのマップ。
+ *  game/index.mjs の allPlayersById と同じ発想だが、循環import（index.mjs→storylines.mjs）を
+ *  避けるためここでも同じ3ソースから独立に構築する。 */
+function localPlayersById(state) {
+  const m = new Map((state.league?.players ?? []).map((p) => [p.id, p]));
+  for (const d of state.league?.farm ?? []) if (!m.has(d.id)) m.set(d.id, d);
+  for (const r of state.retiredPlayers ?? []) if (!m.has(r.id)) m.set(r.id, r);
+  return m;
+}
+
+/** その選手の careerStats のうち最古/最新の1行（season最小/最大）。無ければ null。 */
+function firstCareerRow(state, playerId) {
+  let best = null;
+  for (const s of state.careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!best || s.season < best.season) best = s;
+  }
+  return best;
+}
+function lastCareerRow(state, playerId) {
+  let best = null;
+  for (const s of state.careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!best || s.season > best.season) best = s;
+  }
+  return best;
+}
+
+/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁→節目/栄光）。 */
+const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'milestone', 'award', 'nickname'];
+
+/** kind→日本語カテゴリ名（UI側の見出し/アイコン分けに使える。栄光=award/nickname を束ねる）。 */
+const STORY_KIND_LABELS = {
+  origin: '出自', transfer: '移籍歴', award: '栄光', nickname: '栄光', milestone: '節目', rivalry: '因縁',
+};
+
+/**
+ * P7: 選手の「物語」— その選手の歩みを時系列の出来事配列へ合成する（表示層のみ・純関数）。
+ * 既存データだけから毎回導出する（保存フィールドを増やさない＝§17）。trueAbility は一切参照しない。
+ *
+ *   出自   : transactionLog の draft 行（競合くじ情報 contenders があれば「n球団競合の末」を追記）。
+ *            ログに無い選手（初期世界生成/ログ開始前からの在籍）は最も古い在籍先を「生え抜き」として
+ *            フォールバック表示する（年不明＝year:null・タイムライン先頭に置く）。
+ *   移籍歴 : transactionLog のトレード/FA/戦力外拾い上げ（戦力外→復活は市場非効率の宝として素直に
+ *            事実を書くだけで十分ドラマになる＝誇張しない）。
+ *   栄光   : playerAwardHistory（MVP/新人王/タイトル/ベストナイン/守備の栄誉賞）＋ nicknameFor
+ *            （二つ名そのものには「獲得年」が無いため、直近の在籍年＝物語上「現在はこう呼ばれる」の
+ *            位置に1件だけ置く。「未知数」＝サンプル不足はノイズなので出さない）。
+ *   節目   : careerBatting/careerPitching の通算値が awards.mjs の milestones() 閾値
+ *            （安打/本塁打/勝利/セーブ/奪三振）を跨いだ年を検出（在籍全年を走査・閾値は流用のみで
+ *            変更しない）。
+ *   因縁   : rivalriesOf の draftmate（同年同round指名の同期）のみを採用する。trade/faOld/pickupOld
+ *            は移籍歴セクションと内容が重複する（transactionLogの同じ行が出処）ため、ここでは
+ *            二重掲載を避けて省く。
+ *
+ * @param {Object} state GameState（transactionLog/awardsHistory/careerStats/teamHistory/league/
+ *   retiredPlayers が必要。合成フィクスチャでも可＝欠けたフィールドは空扱い）
+ * @param {string} playerId
+ * @param {{pnameOf?:Function, tnameOf?:Function, posLabelOf?:Function}} names 表示名解決（省略時は
+ *   識別子そのまま。他の *Headlines 系関数と同じ規約）
+ * @returns {Array<{year:number|null, text:string, kind:string}>} 年昇順（同年は出自→移籍/因縁→
+ *   節目/栄光の順・さらに同点はテキスト昇順で決定論的に確定）
+ */
+function playerStoryOf(state, playerId, names = {}) {
+  const { tnameOf = (id) => id, pnameOf = (id) => id, posLabelOf = (pos) => pos } = names;
+  const cfg = state.cfg;
+  const log = state.transactionLog || [];
+  const careerStats = state.careerStats || [];
+  const events = [];
+
+  const playersById = localPlayersById(state);
+  const rec = playersById.get(playerId) || null;
+
+  // --- 出自: ドラフト指名 or 生え抜きフォールバック ---
+  const myLogRows = log.filter((r) => r.playerId === playerId).sort((a, b) => a.year - b.year || idAsc(a.kind, b.kind));
+  const draftRow = myLogRows.find((r) => r.kind === 'draft');
+  if (draftRow) {
+    const team = tnameOf(draftRow.to);
+    const n = draftRow.contenders;
+    const prefix = n && n >= 2 ? `${n}球団競合の末、` : '';
+    events.push({ year: draftRow.year, text: `${prefix}ドラフト${draftRow.round}位で${team}に入団`, kind: 'origin' });
+  } else {
+    const earliestMove = myLogRows.find((r) => r.kind === 'trade' || r.kind === 'fa' || r.kind === 'pickup');
+    if (earliestMove) {
+      // ログ開始前からの在籍＝その最初の移籍の「元の所属」を生え抜き扱い（起源の年は不明）。
+      events.push({ year: null, text: `${tnameOf(earliestMove.from)}の生え抜き`, kind: 'origin' });
+    } else {
+      const fc = firstCareerRow(state, playerId);
+      const teamId = fc ? fc.teamId : (rec ? rec.teamId : null);
+      if (teamId != null) events.push({ year: fc ? fc.season : null, text: `${tnameOf(teamId)}の生え抜き`, kind: 'origin' });
+    }
+  }
+
+  // --- 移籍歴: トレード/FA/戦力外拾い上げ ---
+  for (const row of myLogRows) {
+    if (row.kind === 'trade') {
+      events.push({ year: row.year, text: `${tnameOf(row.from)}から${tnameOf(row.to)}へトレード`, kind: 'transfer' });
+    } else if (row.kind === 'fa') {
+      events.push({ year: row.year, text: `FAで${tnameOf(row.from)}から${tnameOf(row.to)}へ移籍`, kind: 'transfer' });
+    } else if (row.kind === 'pickup') {
+      events.push({ year: row.year, text: `${tnameOf(row.from)}を戦力外、${tnameOf(row.to)}が拾い上げ`, kind: 'transfer' });
+    }
+  }
+
+  // --- 栄光: 受賞履歴 ＋ 二つ名 ---
+  const hist = playerAwardHistory(playerId, {
+    careerStats, teamHistory: state.teamHistory || [], playersById, cfg, awardsHistory: state.awardsHistory || [],
+  });
+  for (const a of hist) {
+    events.push({ year: a.year, text: `${a.label}${a.pos ? `（${posLabelOf(a.pos)}）` : ''}を獲得`, kind: 'award' });
+  }
+  if (rec) {
+    const nick = nicknameFor(rec, careerStats, cfg);
+    if (nick !== '未知数') {
+      const lc = lastCareerRow(state, playerId);
+      events.push({ year: lc ? lc.season : state.year, text: `「${nick}」の異名で呼ばれるように`, kind: 'nickname' });
+    }
+  }
+
+  // --- 節目: 通算マイルストーン到達（awards.mjs の閾値をそのまま流用） ---
+  const years = [...new Set(careerStats.filter((s) => s.playerId === playerId).map((s) => s.season))].sort((a, b) => a - b);
+  for (const y of years) {
+    for (const m of milestones({ careerStats, playersById, cfg, year: y })) {
+      if (m.playerId !== playerId) continue;
+      events.push({ year: y, text: `通算${m.threshold}${m.unit}達成`, kind: 'milestone' });
+    }
+  }
+
+  // --- 因縁: 同年同round指名の同期のみ（トレード/FA/戦力外はtransactionLogの同一行＝移籍歴と重複するため省く） ---
+  for (const r of rivalriesOf(state, playerId)) {
+    if (r.type !== 'draftmate') continue;
+    events.push({ year: r.year, text: `${pnameOf(r.otherPlayerId)}とは同期指名（${r.round}位）の間柄（${tnameOf(r.matchTeamId)}）`, kind: 'rivalry' });
+  }
+
+  const yearKey = (y) => (y == null ? -Infinity : y);
+  events.sort((a, b) =>
+    yearKey(a.year) - yearKey(b.year) ||
+    STORY_KIND_ORDER.indexOf(a.kind) - STORY_KIND_ORDER.indexOf(b.kind) ||
+    idAsc(a.text, b.text));
+  return events;
+}
+
+// ============================================================================
+// P4: 戦力外・FAの感情演出（fun_theory_research_20260720 P4・やきゅつく「経営の痛み」）。
+//   表示のみ・数値は一切変えない（研究レポート表のとおり「引き止めの選択」はスコープ外＝
+//   marketInterventions/transactions.mjs の判定結果をそのまま使い、文言だけを差し替える）。
+//
+//   veteranFarewellHeadlines(state, off, completedYear, myTeamId, names) … オフの戦力外
+//     （off.pickups の from===myTeamId）のうち「功労者」（在籍が長い or 通算成績が大きい）だけを
+//     感情演出つき見出しへ（事務的な「戦力外→流出」の1行の差し替え素材）。
+//   departedPlayerFollowUpHeadlines(state, myTeamId, names) … 前年に自チームから出た選手
+//     （FA/トレード/戦力外拾い上げ＝transactionLog）が当季の観測成績で活躍している場合の
+//     後日談ニュース（rivalryGameHeadlines「古巣戦で活躍」とは別枠＝対戦有無を問わない）。
+//
+// 決定論: テンプレ選択は hashSeed(masterSeed,'farewell'|'followup', ...) の独立座標のみ
+//   （既存の生成/進行ストリーム・rivalryGameHeadlinesの'story'座標いずれとも非干渉）。
+//   真値(trueAbility)は一切参照しない（careerStats/transactionLog/当季観測のみ＝三層構造）。
+// ============================================================================
+
+const VETERAN_TENURE_MIN = 5; // 「功労者」とみなす最低在籍年数（在籍先チームでの通算出場シーズン数）
+const VETERAN_HITS_MIN = 800; // または通算安打（野手）
+const VETERAN_WINS_MIN = 80; // または通算勝利（投手）
+
+/** playerId の careerStats のうち teamId===teamId のシーズン数（在籍年数の近似・§17集計値のみ）。 */
+function tenureYearsWith(state, playerId, teamId) {
+  const seasons = new Set();
+  for (const s of state.careerStats) {
+    if (s.playerId === playerId && s.teamId === teamId) seasons.add(s.season);
+  }
+  return seasons.size;
+}
+
+const VETERAN_FAREWELL_TEMPLATES = [
+  (n, yrs, line) => `在籍${yrs}年・${line}の${n}に戦力外通告 ― 球団史を支えた男に別れ`,
+  (n, yrs, line) => `${n}（在籍${yrs}年・${line}）、まさかの戦力外 ― 功労者に非情の決断`,
+  (n, yrs, line) => `長年チームを支えた${n}（${line}）に戦力外通告。在籍${yrs}年の重みを胸に`,
+];
+
+/**
+ * オフの戦力外（off.pickups の from===myTeamId）のうち「功労者」だけを感情演出つき見出しへ変換する。
+ * 判定基準（関数内定数・研究レポートの目安どおり）: 在籍${VETERAN_TENURE_MIN}年以上、または
+ * 通算安打${VETERAN_HITS_MIN}（野手）/通算勝利${VETERAN_WINS_MIN}（投手）以上。
+ * @param {Object} state GameState（careerStats/masterSeed が必要）
+ * @param {Object} off advanceYear の返す off 要約（off.pickups が必要）
+ * @param {number} completedYear 完了年（テンプレ選択の決定論座標に使う）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function}} names pnameOf: playerId→表示名（省略時は識別子そのまま）
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+function veteranFarewellHeadlines(state, off, completedYear, myTeamId, names = {}) {
+  const { pnameOf = (id) => id } = names;
+  const out = [];
+  for (const pu of off.pickups ?? []) {
+    if (pu.from !== myTeamId) continue;
+    const tenure = tenureYearsWith(state, pu.playerId, myTeamId);
+    const isPitcher = pu.role === 'pitcher';
+    const agg = isPitcher ? careerPitching(state.careerStats, pu.playerId) : careerBatting(state.careerStats, pu.playerId);
+    const merit = tenure >= VETERAN_TENURE_MIN || (isPitcher ? agg.w >= VETERAN_WINS_MIN : agg.h >= VETERAN_HITS_MIN);
+    if (!merit) continue;
+    const line = isPitcher ? `通算${agg.w}勝${agg.l}敗${agg.sv}S` : `通算${agg.h}安打${agg.hr}本塁打`;
+    const r = makeRng(hashSeed(state.masterSeed, 'farewell', completedYear, pu.playerId));
+    const tpl = VETERAN_FAREWELL_TEMPLATES[r.int(VETERAN_FAREWELL_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(pu.playerId), tenure, line), cls: 'bad', playerId: pu.playerId });
+  }
+  return out;
+}
+
+const FOLLOWUP_MIN_PA = 200; // 後日談「活躍」判定の最低打席（過小サンプル除外）
+const FOLLOWUP_MIN_IP = 60; // 同・最低投球回
+const FOLLOWUP_WOBA_MARGIN = 0.03; // 代替wOBA(cfg.tuning.market.release)からこれ以上高ければ「活躍」
+const FOLLOWUP_FIP_MARGIN = 0.3; // 代替FIPからこれ以上低ければ「活躍」
+
+const FOLLOWUP_TEMPLATES = [
+  (n, t) => `${n}、${t}を出て早くも躍動 ― 新天地で結果を残す`,
+  (n, t) => `古巣${t}を離れた${n}、覚醒の兆し`,
+  (n, t) => `${n}、${t}退団から一転。「あの時手放した男」が輝きを放つ`,
+];
+
+/** transactionLog の1行から「myTeamId を離れた選手」を導出する（rivalriesOf と同じ from/to 規約）。 */
+function departureFrom(row, myTeamId) {
+  if ((row.kind === 'fa' || row.kind === 'pickup') && row.from === myTeamId) return row.playerId;
+  if (row.kind === 'trade') {
+    if (row.from === myTeamId) return row.playerId;
+    if (row.to === myTeamId) return row.playerId2;
+  }
+  return null;
+}
+
+/**
+ * 前年に自チームから出た選手（FA/トレード/戦力外拾い上げ）が当季（観測成績）で活躍している場合の
+ * 後日談ニュース（純関数・シーズン中の定期ダイジェスト用）。「活躍」判定は当季の観測（rt.stats）
+ * だけを見る（trueAbility非参照）＝代替水準（cfg.tuning.market.release）を一定以上上回るかどうか。
+ * @param {Object} state GameState（state.rt/transactionLog/masterSeed/year が必要）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function, tnameOf?:Function}} names
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+function departedPlayerFollowUpHeadlines(state, myTeamId, names = {}) {
+  const rt = state.rt;
+  if (!rt) return [];
+  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const cfg = state.cfg;
+  const rel = cfg.tuning.market.release;
+  const log = (state.transactionLog || []).filter((r) => r.year === state.year - 1);
+  const out = [];
+  const seen = new Set();
+  for (const row of log) {
+    const departed = departureFrom(row, myTeamId);
+    if (!departed || seen.has(departed)) continue;
+    const s = rt.stats.stats.get(departed);
+    if (!s) continue;
+    let active = false;
+    if (s.pitching && s.pitching.outs > 0) {
+      const ip = s.pitching.outs / 3;
+      if (ip >= FOLLOWUP_MIN_IP) active = simpleFip(s.pitching, ip) <= rel.replacementFip - FOLLOWUP_FIP_MARGIN;
+    } else if (s.batting && s.batting.pa >= FOLLOWUP_MIN_PA) {
+      active = observedWoba(s.batting, cfg) >= rel.replacementWoba + FOLLOWUP_WOBA_MARGIN;
+    }
+    if (!active) continue;
+    seen.add(departed);
+    const r = makeRng(hashSeed(state.masterSeed, 'followup', state.year, departed));
+    const tpl = FOLLOWUP_TEMPLATES[r.int(FOLLOWUP_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(departed), tnameOf(myTeamId)), cls: 'info', playerId: departed });
+  }
+  return out;
 }
 
 
@@ -14708,6 +15752,227 @@ function pickTransferOffer(standings, currentTeamId) {
 }
 
 
+// ===== src/game/goals.mjs =====
+// ============================================================================
+// P3: 週次目標（短期目標の階層・fun_theory_research_20260720.md P3提案）。
+//
+//   generateWeeklyGoal(state, week)         … 決定論生成。週の文脈（自チームの週内日程/直近の
+//     連敗/月境界）と整合するテンプレ集合から hashSeed 独立座標で1件選ぶ（H5-B「窓状態と整合」
+//     と同じ思想＝理不尽な目標を構造的に出さない。例: 連敗していないのに「連敗を止めろ」は出さない）。
+//   evaluateWeeklyGoal(state, goal, week)   … 週末に playerGameLog から純関数で達成判定。
+//   recordCompletedWeeklyGoals(state)       … 週境界を跨いだ未評価週を state.weeklyGoalLog へ
+//     確定する（game/index.mjs の advanceDay から cfg.game.weeklyGoals ゲート内でのみ呼ばれる）。
+//   weeklyGoalTrustBonus(state)             … シーズン末のオーナー信任評価（owner.mjs trustDelta
+//     の合流点）へ加算する達成率ボーナス（cfg.game.weeklyGoalTrustBonusMax・tuning非使用）。
+//
+// 設計原則（CLAUDE.md 鉄則・タスク仕様の厳守事項）:
+//   - フラグゲート: cfg.game.weeklyGoals（既定false・GAME_DEFAULT「headless既定OFF・UIのみON」
+//     第6例目）。本ファイル自体はフラグを見ない（呼び出し側=game/index.mjsがゲートする）純関数群。
+//   - 決定論: テンプレ選択は hashSeed(masterSeed,'weeklygoal',year,week) の独立座標のみ。
+//     既存の生成/進行ストリームを一切消費しない（storylines.mjs H1-2と同じ前例）。
+//   - 週の境界: cfg.game.daysPerWeek（advanceTo('weekEnd')と同じ0始まりday境界）。
+//   - 三層構造: rt.schedule/rt.playerGameLog（観測可能な公開情報）のみを参照。trueAbility非参照。
+//   - tuning非改変: 閾値はすべて本ファイル内のモジュール定数（news.mjs/storylines.mjsの前例と同じ
+//     作法）。cfg.game 配下に置くのはフラグと信任ボーナス上限の小定数のみ（タスク仕様指定）。
+// ============================================================================
+
+
+
+const STREAK_MIN = 2; // 「連敗を止めろ」目標を出す最低連敗数（未満は理不尽な目標として出さない）
+
+/** 自チーム視点の勝敗（'W'|'L'|'T'）。 */
+function outcomeOf(rec, teamId) {
+  if (rec.tie) return 'T';
+  const isHome = rec.home === teamId;
+  const my = isHome ? rec.homeScore : rec.awayScore;
+  const opp = isHome ? rec.awayScore : rec.homeScore;
+  return my > opp ? 'W' : 'L';
+}
+
+/** week（0始まり）の日範囲 [start, end)。 */
+function weekRange(state, week) {
+  const span = state.cfg.game.daysPerWeek;
+  const start = week * span;
+  return { start, end: start + span };
+}
+
+/** その週の自チーム試合日程（rt.schedule から・未消化ぶんも含めて先読みできる）。 */
+function weekSchedule(state, week) {
+  const rt = state.rt;
+  if (!rt) return [];
+  const { start, end } = weekRange(state, week);
+  const teamId = state.playerTeamId;
+  return rt.schedule.filter((g) => g.day >= start && g.day < end && (g.home === teamId || g.away === teamId));
+}
+
+/** その週に実際に消化済みの自チーム試合（playerGameLog から）。 */
+function weekPlayedGames(state, week) {
+  const { start, end } = weekRange(state, week);
+  return state.rt.playerGameLog.filter((g) => g.day >= start && g.day < end);
+}
+
+/** week開始（その週の最初の日）より前の時点での連敗数。 */
+function losingStreakBefore(state, week) {
+  const { start } = weekRange(state, week);
+  const teamId = state.playerTeamId;
+  const log = state.rt.playerGameLog;
+  let len = 0;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const g = log[i];
+    if (g.day >= start) continue; // この週より前の試合だけを見る
+    if (outcomeOf(g, teamId) === 'L') len++;
+    else break;
+  }
+  return len;
+}
+
+/** その週の対戦相手のうち最頻対戦（「カード」候補）。2試合以上あるときだけ返す（同数は teamId 昇順）。 */
+function weekCardOpponent(state, week) {
+  const games = weekSchedule(state, week);
+  const teamId = state.playerTeamId;
+  const counts = new Map();
+  for (const g of games) {
+    const opp = g.home === teamId ? g.away : g.home;
+    counts.set(opp, (counts.get(opp) ?? 0) + 1);
+  }
+  let best = null;
+  for (const [opp, n] of counts) {
+    if (n < 2) continue;
+    if (!best || n > best.n || (n === best.n && opp < best.opp)) best = { opp, n };
+  }
+  return best;
+}
+
+/** week が属する「月」の最終週か（この週の終わりが月境界に到達/交差する）。 */
+function isMonthClosingWeek(state, week) {
+  const cfg = state.cfg;
+  const { start, end } = weekRange(state, week);
+  const monthSpan = cfg.game.daysPerMonth;
+  const monthEnd = (Math.floor(start / monthSpan) + 1) * monthSpan;
+  return end >= monthEnd;
+}
+
+/** 今月初日から今週末までの自チーム消化試合（月間ペース目標の評価対象）。 */
+function monthToDateGames(state, week) {
+  const cfg = state.cfg;
+  const { start, end } = weekRange(state, week);
+  const monthStart = Math.floor(start / cfg.game.daysPerMonth) * cfg.game.daysPerMonth;
+  return state.rt.playerGameLog.filter((g) => g.day >= monthStart && g.day < end);
+}
+
+function winLossOf(games, teamId) {
+  let w = 0;
+  let l = 0;
+  for (const g of games) {
+    const r = outcomeOf(g, teamId);
+    if (r === 'W') w++;
+    else if (r === 'L') l++;
+  }
+  return { w, l };
+}
+
+/**
+ * 週次目標の決定論生成（週の文脈と整合するテンプレ集合から1件・hashSeed独立座標のみ）。
+ * @param {Object} state GameState（state.rt/state.cfg/state.playerTeamId/state.masterSeed/state.year が必要）
+ * @param {number} week 0始まりの週index（day = week*cfg.game.daysPerWeek 〜 +daysPerWeek-1）
+ * @returns {{type:string, label:string, param?:Object}|null} その週に自チーム試合が1つも無ければ null
+ */
+function generateWeeklyGoal(state, week) {
+  if (!state.rt || !state.playerTeamId) return null;
+  if (!weekSchedule(state, week).length) return null; // 自チーム試合の無い週は目標を出さない
+
+  const pool = [{ type: 'weekWinning', label: '今週の対戦で勝ち越せ' }];
+
+  const card = weekCardOpponent(state, week);
+  if (card) {
+    pool.push({ type: 'cardWinning', label: `今カード（${card.n}連戦）で勝ち越せ`, param: { opp: card.opp, games: card.n } });
+  }
+
+  const streak = losingStreakBefore(state, week);
+  if (streak >= STREAK_MIN) {
+    pool.push({ type: 'stopStreak', label: `連敗を${streak}で止めろ`, param: { streak } });
+  }
+
+  if (isMonthClosingWeek(state, week)) {
+    pool.push({ type: 'monthPace', label: '今月を勝率.500以上で終えろ' });
+  }
+
+  const rng = makeRng(hashSeed(state.masterSeed, 'weeklygoal', state.year, week));
+  return pool[rng.int(pool.length)];
+}
+
+/**
+ * 週次目標の達成判定（週末・純関数）。playerGameLog（自チームの試合のみ）と rt.schedule から判定する。
+ * @param {Object} state
+ * @param {{type:string, param?:Object}} goal generateWeeklyGoal の返値
+ * @param {number} week
+ * @returns {{achieved:boolean, actual:string}}
+ */
+function evaluateWeeklyGoal(state, goal, week) {
+  const teamId = state.playerTeamId;
+  const games = weekPlayedGames(state, week);
+  if (goal.type === 'cardWinning') {
+    const cardGames = games.filter((g) => g.home === goal.param.opp || g.away === goal.param.opp);
+    const { w, l } = winLossOf(cardGames, teamId);
+    return { achieved: w > l, actual: `${w}勝${l}敗` };
+  }
+  if (goal.type === 'stopStreak') {
+    const won = games.some((g) => outcomeOf(g, teamId) === 'W');
+    return { achieved: won, actual: won ? '週内で勝利し連敗を止めた' : '週内で勝利できず' };
+  }
+  if (goal.type === 'monthPace') {
+    const { w, l } = winLossOf(monthToDateGames(state, week), teamId);
+    const pct = w + l > 0 ? w / (w + l) : 0;
+    return { achieved: pct >= 0.5, actual: `${w}勝${l}敗（勝率${pct.toFixed(3)}）` };
+  }
+  // 既定: 'weekWinning'
+  const { w, l } = winLossOf(games, teamId);
+  return { achieved: w > l, actual: `${w}勝${l}敗` };
+}
+
+/**
+ * 週境界を跨いだら未評価の週を state.weeklyGoalLog へ確定する（game/index.mjs の advanceDay から
+ * `if (state.cfg.game.weeklyGoals)` のゲート内でのみ呼ばれる想定＝本関数自体はフラグを見ない）。
+ * シーズン終了（rt.finished）時は消化済みの最終（端数）週も確定する。決定論: 追加の乱数消費は
+ * generateWeeklyGoal 内の hashSeed 独立座標のみ（既存ストリーム非干渉）。
+ * @param {Object} state
+ */
+function recordCompletedWeeklyGoals(state) {
+  if (!state.playerTeamId || !state.rt) return;
+  if (!state.weeklyGoalLog) state.weeklyGoalLog = [];
+  const rt = state.rt;
+  const span = state.cfg.game.daysPerWeek;
+  const pending = pendingDay(rt);
+  let week = 0;
+  while (state.weeklyGoalLog.some((e) => e.year === state.year && e.week === week)) week++;
+  while (rt.finished ? week * span < pending : (week + 1) * span <= pending) {
+    const goal = generateWeeklyGoal(state, week);
+    if (goal) {
+      const result = evaluateWeeklyGoal(state, goal, week);
+      state.weeklyGoalLog.push({
+        year: state.year, week, type: goal.type, label: goal.label, achieved: result.achieved,
+      });
+    }
+    week++;
+  }
+}
+
+/**
+ * シーズン末のオーナー信任評価へ加算する週次目標達成率ボーナス（owner.mjs trustDelta の合流点で
+ * additive に加算する想定）。cfg.game.weeklyGoals=false、または完了年ぶんの記録が無ければ 0。
+ * tuning には触れず cfg.game.weeklyGoalTrustBonusMax（小定数）だけを使う。
+ * @param {Object} state
+ * @returns {number} 0 〜 cfg.game.weeklyGoalTrustBonusMax の整数
+ */
+function weeklyGoalTrustBonus(state) {
+  if (!state.cfg.game.weeklyGoals) return 0;
+  const rows = (state.weeklyGoalLog ?? []).filter((e) => e.year === state.year);
+  if (!rows.length) return 0;
+  const rate = rows.filter((e) => e.achieved).length / rows.length;
+  return Math.round(rate * (state.cfg.game.weeklyGoalTrustBonusMax ?? 0));
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -14751,6 +16016,9 @@ function pickTransferOffer(standings, currentTeamId) {
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 
  // H5-B
+// P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
+//   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
+
 
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -15270,6 +16538,14 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     pleaUsed: false,
     ownerPending: null,
     lastOwnerReport: null,
+    // P1（p1_interactive_manager_spec）: 試合中の人間采配（代打/継投）の介入ログ。additive。
+    //   [{year, day, seq, kind:'ph'|'relief', choice:{pick:playerId|null}}]（自チーム戦のみ）。
+    //   「おまかせ」はログに積まない＝ログ空の試合は完全従来挙動（bit同一・§0-4）。
+    gameInterventions: [],
+    // P3（fun_theory_research_20260720 P3）: 週次目標の達成ログ（additive save field・§17集計値
+    //   のみ）。[{year,week,type,label,achieved}]。cfg.game.weeklyGoals=false のときは常に空
+    //   （advanceDay がフラグゲート内でしか書き込まない）。
+    weeklyGoalLog: [],
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -15282,14 +16558,17 @@ function newGame(masterSeed, playerTeamId, options = {}) {
   if (burnIn > 0) {
     const savedInteractive = cfg.game.interactiveDraft;
     const savedFiring = cfg.game.allowFiring; // H5-B: 前史に人間は居ない＝解任も無効で回す
+    const savedWeeklyGoals = cfg.game.weeklyGoals; // P3: 前史に人間は居ない＝週次目標も無効化
     cfg.game.interactiveDraft = false;
     cfg.game.allowFiring = false;
+    cfg.game.weeklyGoals = false;
     for (let y = 0; y < burnIn; y++) {
       while (!state.rt.finished) advanceDay(state);
       advanceYear(state);
     }
     cfg.game.interactiveDraft = savedInteractive;
     cfg.game.allowFiring = savedFiring;
+    cfg.game.weeklyGoals = savedWeeklyGoals;
     // H5-B: プレイヤー着任はここから＝前史で溜まった信任・評価履歴をリセットし、着任年の目標を
     //   現行 yearIndex で再生成する（startYear は前史最終 advanceYear 内で既に走っているため明示的に）。
     state.ownerTrust = cfg.tuning.ownerGoals.trustStart;
@@ -15479,6 +16758,9 @@ function recordSeasonHistory(state) {
  */
 function advanceDay(state, opts = {}) {
   const step = advanceRuntimeDay(state.rt, opts);
+  // P3: 週次目標（フラグゲート内のみ・OFF時は状態も乱数も一切変えない）。load の replay は
+  //   advanceRuntimeDay を直接呼ぶ（本関数を経由しない）ため、二重記録の心配はない。
+  if (state.cfg.game.weeklyGoals) recordCompletedWeeklyGoals(state);
   if (step.seasonEnded) recordSeasonHistory(state);
   return step;
 }
@@ -15511,6 +16793,73 @@ function advanceTo(state, until, opts = {}) {
     return steps;
   }
   throw new Error(`advanceTo: 未知の until '${until}'`);
+}
+
+/**
+ * ★P1（試合中の人間采配・介入観戦）: `advanceTo(state,'nextPlayerGame')` の対話版。
+ * 自チーム戦の日まで通常どおり日を消化し（自チーム戦の無い日は従来と完全同一の全自動）、
+ * 自チーム戦の schedule index に到達したら attemptPlayerGame（season_runtime.mjs）で
+ * 「スクラッチ状態で試行→完走したときだけコミット」する（§3・H2プレイヤー参加型ドラフトの
+ * cloneLeague→最終コミットと同型）。
+ *
+ * ログに無い介入点（choosePinchHitter/chooseReliever が非null判断をした場面）に到達すると
+ * 試合を中断して `{paused:true, decision}` を返す（state は一切書き換えない＝試合未確定）。
+ * 呼び出し側（UI）は `submitGameDecision` でログへ1件追記してから本関数を **再び呼び直す**
+ * （決定論なので同じ経過を高速に辿り、次の未ログ介入点 or 試合終了まで進む）。
+ * 途中で観戦をやめた場合（「以後おまかせ」）は `opts.auto:true` で呼び直す。ログに無い介入点は
+ * 一切中断せず常にAI判断（choosePinchHitter/chooseReliever の aiPick）で完走する（§3・§4）。
+ * `opts.auto` を一度も使わない（常に false）まま最後まで進めた試合は、介入ログが最終的に空なら
+ * 全自動と bit 同一になる（§0-4・§5テスト1の前提）。
+ * @param {Object} state GameState（state.rt が組まれていること）
+ * @param {{auto?:boolean}} [opts] auto=true: ログに無い介入点で中断せず常にAI判断で進める
+ *   （「以後おまかせ」・全おまかせテスト用）。既定 false（通常の介入観戦＝未ログ点で必ず中断）。
+ * @returns {{seasonEnded:true} | {paused:true, decision:Object, events:Array} |
+ *   {record:Object, events:Array, seasonEnded:boolean}}
+ */
+function playInteractiveGame(state, opts = {}) {
+  const rt = state.rt;
+  if (!rt || rt.finished) return { seasonEnded: true };
+  let day;
+  do {
+    day = advanceDay(state, { collectPlayerEvents: true, interactive: true });
+    if (rt.finished) return { seasonEnded: true };
+  } while (!day.pendingPlayerGame);
+
+  const gi = rt.cursor;
+  const g = rt.schedule[gi];
+  const log = state.gameInterventions.filter((e) => e.year === state.year && e.day === g.day);
+  const onDecision = opts.auto ? undefined : () => 'PAUSE';
+  const attempt = attemptPlayerGame(rt, gi, log, onDecision);
+  if (attempt.paused) {
+    // year/day は submitGameDecision がそのままログへ積める形に補って返す（§1データモデル）。
+    return { paused: true, decision: { year: state.year, day: g.day, ...attempt.decision }, events: attempt.events };
+  }
+  attempt.commit();
+  // 残りの同日試合（あれば）＋日締め処理（farm/順位確定/年送り準備）を従来経路で消化する。
+  // ★注意: advanceDay は「現在の pendingDay ぶんだけ」処理して返る（day境界で必ず止まる）ため、
+  //   自チーム戦がその日最後の試合だった（cursor が翌日 or 全日程消化末尾へ進んだ）場合は
+  //   ここで advanceDay を呼ばない＝翌日（＝次の自チーム戦かもしれない）を勝手に進めない。
+  let seasonEnded = false;
+  if (rt.cursor >= rt.schedule.length || rt.schedule[rt.cursor].day === g.day) {
+    const rest = advanceDay(state, {});
+    seasonEnded = !!rest.seasonEnded;
+  }
+  return { record: attempt.record, events: attempt.events, seasonEnded };
+}
+
+/**
+ * ★P1: 試合中の人間采配の決定を1件追記する（H2 submitDraftPick と同型の「ログ追記のみ」API）。
+ * 即座には何もシミュレートしない＝呼び出し側が playInteractiveGame を再度呼んで続きを進める。
+ * @param {Object} state GameState
+ * @param {{year:number, day:number, seq:number, kind:'ph'|'relief', choice:{pick:?string}}} decision
+ *   year/day/seq/kind は直前に受け取った `decision`（playInteractiveGame の一時停止点）をそのまま渡す。
+ */
+function submitGameDecision(state, decision) {
+  const { year, day, seq, kind, choice } = decision;
+  if (year == null || day == null || seq == null || !kind) {
+    throw new Error('submitGameDecision: year/day/seq/kind が必要');
+  }
+  state.gameInterventions.push({ year, day, seq, kind, choice: choice ?? { pick: null } });
 }
 
 /**
@@ -15563,7 +16912,12 @@ function evaluateOwnerYear(state) {
     careerStats: state.careerStats, year: state.year, cfg: state.cfg,
   });
   const before = state.ownerTrust;
-  state.ownerTrust = clamp(state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg), 0, 100);
+  // P3: 週次目標達成率ボーナス（cfg.game.weeklyGoals=false なら常に0＝既存挙動と bit 同一）を
+  //   trustDelta と同じ合流点で additive に加算する。
+  state.ownerTrust = clamp(
+    state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg) + weeklyGoalTrustBonus(state),
+    0, 100,
+  );
   state.lastOwnerReport = { year: state.year, results, trustBefore: before, trustAfter: state.ownerTrust };
   if (state.cfg.game.allowFiring && state.ownerTrust < og.fireBelow) {
     const toTeam = pickTransferOffer(standings, state.playerTeamId);
@@ -15692,8 +17046,10 @@ function save(state) {
     teamHistory: state.teamHistory,
     interventions: state.interventions,
     marketInterventions: state.marketInterventions, // 市場操作ログ（オフシーズンの replay に必要）
+    gameInterventions: state.gameInterventions, // P1: 試合中の人間采配ログ（additive・replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
     trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
+    weeklyGoalLog: state.weeklyGoalLog, // P3: 週次目標の達成ログ（additive・直接永続＝replay対象外）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -15817,8 +17173,10 @@ function load(blob, options = {}) {
     awardsHistory: data.awardsHistory ?? [], // R5: 確定した年度別受賞
     interventions: data.interventions ?? [],
     marketInterventions: data.marketInterventions ?? [], // 市場操作ログ（過去オフの replay に使う）
+    gameInterventions: data.gameInterventions ?? [], // P1: 試合中の人間采配ログ（旧セーブは [] 補完）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
     trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
+    weeklyGoalLog: data.weeklyGoalLog ?? [], // P3: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -15846,7 +17204,12 @@ function load(blob, options = {}) {
   if (ss) {
     // 保存時 cursor まで日次 replay（advanceDay ではなく advanceRuntimeDay ＝ 履歴の二重記録を避ける。
     // 完了済みシーズンの careerStats/teamHistory は blob から復元済み）。
-    while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt);
+    // P1: 当季ぶんの人間采配ログを replay にも通す（onDecision省略＝ログに無い介入点は常にAI判断
+    //   ＝絶対に中断しない。save は必ず「試合が確定した」cursor でしか行われないため、当該試合の
+    //   ログは既に完結しており、この replay が新たな一時停止を生むことは無い＝§0-3）。
+    const replayLog = state.gameInterventions.filter((e) => e.year === state.year);
+    const miOpt = replayLog.length ? { managerIntervention: { teamId: state.playerTeamId, log: replayLog } } : {};
+    while (state.rt.cursor < ss.cursor) advanceRuntimeDay(state.rt, miOpt);
     verifyStandings(state.rt, ss.standings);
     // 二軍の復元検証（F2-2）: replay が再構築した farm の進行位置/順位が保存スナップショットと
     // 一致するか（一軍と同じ決定論の門番。farm 不成立構成では両方 null で素通り）。
@@ -15900,6 +17263,10 @@ function allPlayersById(state) {
 // H4: 育成方針・キャンプの意味論APIを再エクスポート（UI/テストが './game/index.mjs' 経由で使う。
 //   setTrainingPolicy/clearTrainingPolicy は本ファイルで直接 export 済み）。
 
+// P3: 週次目標の表示API（UI/テストが './game/index.mjs' 経由で使う。状態を書き換える
+//   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
+//   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
+
 </script>
 <script>
 // ===== src/ui/draft.mjs =====
@@ -15921,6 +17288,7 @@ function allPlayersById(state) {
 //     （stove.mjs/team.mjs と同じ流儀。ui.mjs のヘルパーは u=draftDeps() 経由で受け取る）。
 // ============================================================================
 
+// P5: draftClassHeadlines は u（draftDeps()）経由で受け取る（分割モジュールの既存流儀通り）。
 
 const GRADE_ORDER = { S: 0, A: 1, B: 2, C: 3, D: 4 };
 
@@ -15962,6 +17330,18 @@ function renderDraftRoomScreen(u) {
   if (aw.contested) {
     content.append(el('div', { class: 'newsrow bad', style: 'margin:6px 0' },
       '前回指名した選手は競合くじで外れました。別の候補を再指名してください。'));
+  }
+
+  // ドラフト前ニュース「今年の逸材」（P5: draftClassHeadlines・fun_theory_research P5）。
+  //   draftPreviewHeadlines（世代内評判consensus上位）と同じ前提＝round1（プール確定直後）でのみ表示。
+  if (aw.round === 1) {
+    const pnameOf = (id) => { const pr = aw.pool.find((p) => p.id === id); return pr ? pr.name : id; };
+    const classHeads = u.draftClassHeadlines(gs, { pnameOf, posLabelOf: u.posJP });
+    if (classHeads.length) {
+      content.append(el('h3', { class: 'leaguename' }, `📰 今年の逸材`));
+      content.append(el('div', { class: 'newsfeed' }, classHeads.map((h) =>
+        el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+    }
   }
 
   // ドラフト前ニュース「今年の目玉」（H2: draftPreviewHeadlines・世代内評判consensus上位）。
@@ -16072,6 +17452,19 @@ function schedDateLabel(day) {
 /** 投球回表示（アウト数→「6.1」形式）。 */
 function schedIp(outs) {
   return `${Math.floor(outs / 3)}.${outs % 3}`;
+}
+
+const SCHED_HALF_JP = { top: '表', bottom: '裏' };
+const schedWpaVal = (v) => (v > 0 ? '+' : '') + (v ?? 0).toFixed(2);
+
+/**
+ * P2: 勝因/敗因カード（1行ぶんの表示パーツ）。box.wpaTop/wpaBottom（wpaSummary.mjs が
+ * additive に付与する要約 {pid,inning,half,desc,wpa}）から組む純関数。旧セーブ等で
+ * box.wpaTop/wpaBottom が無い試合は呼び出し側で丸ごとスキップする（additive・鉄則の後方互換）。
+ */
+function schedWpaParts(item, u) {
+  const { playerLink } = u;
+  return [`${item.inning}回${SCHED_HALF_JP[item.half] ?? ''} `, playerLink(item.pid), `の${item.desc}（WPA ${schedWpaVal(item.wpa)}）`];
 }
 
 /** 自チーム視点の勝敗（'w'|'l'|'t'）。 */
@@ -16197,6 +17590,13 @@ function schedOpenBox(rec, u) {
   if (!b) {
     box.append(el('div', { class: 'muted' }, 'この試合のボックススコアは記録されていません（旧セーブの試合）。'));
   } else {
+    // P2: 勝因/敗因カード（冒頭表示）。旧セーブの box には wpaTop/wpaBottom が無いので additive にスキップ。
+    if (b.wpaTop && b.wpaBottom) {
+      box.append(el('div', { class: 'newsfeed', style: 'margin-bottom:8px' }, [
+        el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(b.wpaTop, u)]),
+        el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(b.wpaBottom, u)]),
+      ]));
+    }
     box.append(schedLineScore(rec, b, u));
     for (const side of ['away', 'home']) {
       const teamId = side === 'home' ? rec.home : rec.away;
@@ -16918,10 +18318,17 @@ function renderOffseasonDigestScreen(off, u) {
       'トレード不成立: 放出 ', link(iv.aPlayer), ' ⇔ 獲得 ', link(iv.bPlayer), '（対象選手の移籍・引退により無効）']));
   }
   // 戦力外/拾い上げ（自チーム関与）。H5-A: reason='budget' は予算超過による強制戦力外。
+  // P4: 在籍が長い/通算成績が大きい「功労者」の戦力外は感情演出つき見出しへ差し替える（数値は不変）。
+  const farewells = new Map(veteranFarewellHeadlines(gs, off, prevYear, my, { pnameOf: u.pname }).map((h) => [h.playerId, h.text]));
   for (const pu of off.pickups ?? []) {
     const why = pu.reason === 'budget' ? '（予算超過による戦力外）' : '（戦力外）';
     if (pu.to === my) moves.push(el('div', { class: 'newsrow good' }, ['拾い上げ: ', link(pu.playerId), `（${u.tname(pu.from)}が${pu.reason === 'budget' ? '予算超過で放出' : '戦力外'}）を獲得`]));
-    else if (pu.from === my) moves.push(el('div', { class: 'newsrow bad' }, ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
+    else if (pu.from === my) {
+      const farewell = farewells.get(pu.playerId);
+      moves.push(el('div', { class: 'newsrow bad' }, farewell
+        ? `🙏 ${farewell}（${u.tname(pu.to)}へ）`
+        : ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
+    }
   }
   // 自チームの引退（引退者に teamId は無い→完了年の careerStats から最終所属を引く）
   // H1-3: 功労者（通算PA/IP/受賞数が閾値超）は「引退セレモニー」の文面で個別ニュース化する。
@@ -18219,8 +19626,9 @@ function watchFeedTab(root, v, u, w) {
   if (v.ended) {
     const { notables } = detectGameNotables(w.events);
     const notableLines = [];
+    const personalityOf = (id) => u.state.byId.get(id)?.personality ?? null; // P6: 性格→文体の接続
     for (const n of notables) {
-      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id));
+      const head = notableHeadline(n, (id) => pname(id), (id) => tname(id), personalityOf);
       if (head) notableLines.push({ cls: 'newsrow good notable' + (w.justAdvanced ? ' fx' : ''), text: `🎉 ${head}` });
     }
     lines = [...notableLines, ...lines];
@@ -19256,6 +20664,18 @@ function renderModalCareer(box, p, isPitcher) {
   const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
   const nick = nicknameFor(p, gs.careerStats, gs.cfg);
   box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // P7: 「物語」節（fun_theory_research_20260720 P7）— 出自/移籍歴/栄光/節目/因縁を1画面の
+  //   タイムラインへ。transactionLog/awardsHistory/careerStats/在籍情報だけから毎回導出する純関数
+  //   （trueAbility 非参照・保存フィールド追加なし＝§17）。既存の受賞履歴と同じ awardlist/awardrow
+  //   スタイルを流用（タイムライン風の年+テキスト縦リスト）。
+  const story = playerStoryOf(gs, p.id, storyNames());
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '物語'));
+  box.append(story.length
+    ? el('div', { class: 'awardlist' }, story.map((ev) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardyear' }, ev.year != null ? `${ev.year}` : '？'),
+      el('span', { class: 'awardbadge' }, `【${STORY_KIND_LABELS[ev.kind] ?? ''}】${ev.text}`),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ物語は記録されていません。'));
   // 年度別成績表（当年は rt からも見えるが、careerStats は完了年ぶん＝確定値）。
   //   WAR は「その年のリーグ全体」から導いた定数で評価する（単一選手からの導出は歪むため）。
   const lcCache = new Map();
@@ -19674,7 +21094,11 @@ const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 
 /** H1: storylines.mjs の見出し関数へ渡す名前解決束（pname/tname/leagueNameOfの共通ラップ）。 */
 function storyNames() {
-  return { pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid) };
+  return {
+    pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid),
+    posLabelOf: posJP, // P5: draftClassHeadlines の守備位置表示（他画面と同じくコード表示）
+    personalityOf: (id) => state.byId.get(id)?.personality ?? null, // P6: 性格→文体の接続
+  };
 }
 
 // 球団アクセントカラー（UI表示専用）は generate.mjs の TEAM_NAMES とペアで定義され、
@@ -19815,7 +21239,11 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, ...(ov.game ?? {}) },
+    game: {
+      interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true,
+      weeklyGoals: true, // P3: 週次目標は実プレイのみON（headless既定OFF・第6例目）
+      ...(ov.game ?? {}),
+    },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -20015,6 +21443,23 @@ function renderHubHome(c) {
     ]));
   }
 
+  // P3（fun_theory_research P3）: 今週の目標（週次・カード単位の小目標）。cfg.game.weeklyGoals=true
+  //   （実プレイのみ）かつシーズン進行中のみ。generateWeeklyGoal は純関数＝毎回その場で導出する
+  //   （状態には持たない）。直近1件の判定結果（達成/失敗）があれば即時フィードバックとして併記する。
+  if (gs.cfg.game.weeklyGoals && !rt.finished) {
+    const week = Math.floor((pendingDayOf(rt) - 1) / gs.cfg.game.daysPerWeek);
+    const goal = generateWeeklyGoal(gs, week);
+    const lastLogged = (gs.weeklyGoalLog ?? []).filter((e) => e.year === gs.year).slice(-1)[0];
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, `🎯 今週の目標（第${week + 1}週）`),
+      goal ? el('div', {}, goal.label) : el('div', { class: 'muted' }, '今週は自チームの試合がありません。'),
+      lastLogged
+        ? el('div', { class: 'muted', style: 'margin-top:4px' },
+          `前週の目標「${lastLogged.label}」→ ${lastLogged.achieved ? '✅達成' : '❌未達'}`)
+        : '',
+    ]));
+  }
+
   // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
   renderNewsFeed(c);
 
@@ -20133,6 +21578,12 @@ function renderNewsTab(c) {
   if (rivalryHeads.length) {
     c.append(el('h3', { class: 'leaguename' }, '🔥 因縁の一戦'));
     c.append(el('div', { class: 'newsfeed' }, rivalryHeads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.text))));
+  }
+  // P4: 去った選手の後日談（前年に自チームを出た選手が当季で活躍している場合・fun_theory_research P4）。
+  const followUps = departedPlayerFollowUpHeadlines(gs, gs.playerTeamId, storyNames());
+  if (followUps.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🕊 去った選手たちの今'));
+    c.append(el('div', { class: 'newsfeed' }, followUps.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
@@ -20477,11 +21928,12 @@ function showNextGameChoices() {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '次の自チーム試合'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
-  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ'));
+  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示'));
   box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
     el('button', { class: 'primary', onclick: () => { overlay.remove(); playNextPlayerGame('watch'); } }, '観戦'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('digest'); } }, 'ダイジェスト'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('skip'); } }, 'スキップ'),
+    el('button', { onclick: () => { overlay.remove(); startInteractiveGame(); } }, '⚡介入観戦'),
   ]));
   overlay.append(box);
   document.getElementById('app').append(overlay);
@@ -20518,6 +21970,134 @@ function indexOfFirstAtbat(events) {
   return i < 0 ? events.length : i + 1;
 }
 
+// --- P1: 試合中の人間采配（介入観戦） -----------------------------------------
+// thyroxin/specs/p1_interactive_manager_spec.md。playInteractiveGame は決定論の再シミュレートで
+// 動くため（介入ログ+1件で最初からやり直す＝H2プレイヤー参加型ドラフトと同型）、UI 側は
+// 「一時停止→モーダルで選択→submitGameDecision→再度 playInteractiveGame」を繰り返すだけでよい。
+// 中断中は state を一切書き換えないため、autoSave はここでは呼ばない（§0-3: シム途中状態は
+// シリアライズしない。保存は試合が確定した時だけ行う）。
+
+function startInteractiveGame() {
+  game.watch = null;
+  driveInteractiveGame(false);
+}
+
+/**
+ * playInteractiveGame を1回進める。paused ならモーダルで人間の指示を仰ぎ、完走したら通常の
+ * 観戦画面（既存 watch.mjs・pitch単位で振り返れる）へ渡す。
+ * @param {boolean} auto 「以後おまかせ」後の呼び出し=true（ログに無い介入点は以後すべてAI判断）
+ */
+function driveInteractiveGame(auto) {
+  const gs = game.gs;
+  const prevEvents = game.watch ? game.watch.events : null;
+  const prevIdx = game.watch ? game.watch.idx : 0;
+  const result = playInteractiveGame(gs, { auto });
+  if (result.paused) {
+    const events = result.events || [];
+    game.watch = {
+      rec: null, // 試合はまだ未確定（決着後にrenderSeasonResult等へ渡すrecordが無い）
+      events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, events) : events.length,
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: false,
+    };
+    renderWatch();
+    showManagerDecisionModal(result.decision);
+    return;
+  }
+  autoSave(); // 試合が確定した時だけ保存（§0-3）
+  if (gs.rt.finished && !result.record) { renderSeasonResult(); return; }
+  if (result.record) {
+    game.watch = {
+      rec: result.record,
+      events: result.events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, result.events) : indexOfFirstAtbat(result.events),
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: true,
+    };
+    renderWatch();
+  } else {
+    renderHub();
+  }
+}
+
+/** 前回停止点までに消化した打席開始(atbat)数を数え、新イベント列で同じ数だけ進んだ位置まで
+ *  早送りする（§4「前回の停止点付近まで自動早送り」。決定論的リプレイなので、直前までに
+ *  解決済みの介入点のプレフィックスは新イベント列でも一致する）。 */
+function watchIdxCarryOver(oldEvents, oldIdx, newEvents) {
+  if (!oldEvents || !oldEvents.length) return indexOfFirstAtbat(newEvents);
+  let count = 0;
+  for (let i = 0; i < oldIdx && i < oldEvents.length; i++) if (oldEvents[i].type === 'atbat') count++;
+  let seen = 0;
+  for (let i = 0; i < newEvents.length; i++) {
+    if (newEvents[i].type === 'atbat') {
+      seen++;
+      if (seen > count) return i + 1;
+    }
+  }
+  return newEvents.length;
+}
+
+/** 走者表記「走者一二塁」（無ければ「走者なし」）。 */
+function baseOccupancyLabel(bases) {
+  const labels = ['一', '二', '三'];
+  const occ = labels.filter((_, i) => bases && bases[i]);
+  return occ.length ? '走者' + occ.join('') : '走者なし';
+}
+
+/**
+ * P1: 采配モーダル（代打/継投の意思決定）。§4。
+ * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
+ * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ */
+function showManagerDecisionModal(decision) {
+  const gs = game.gs;
+  const { situ, candidates, kind } = decision;
+  const submit = (pick) => {
+    submitGameDecision(gs, { year: decision.year, day: decision.day, seq: decision.seq, kind, choice: { pick } });
+    overlay.remove();
+    driveInteractiveGame(false);
+  };
+  const half = situ.half === 'bottom' ? '裏' : '表';
+  const overlay = el('div', { class: 'overlay mgrdecision' }); // クリックでは閉じない（決定は取り消し不可・キー操作不要）
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' }, `${situ.inning}回${half} ${situ.outs}死 ${baseOccupancyLabel(situ.bases)}　監督、指示を`),
+  ]));
+  if (kind === 'ph') {
+    const batter = state.byId.get(situ.batterId);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
+  } else {
+    const pit = state.byId.get(situ.pitcherId);
+    box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
+  }
+  box.append(el('div', { class: 'row' }, [
+    el('button', { class: 'link', onclick: () => { overlay.remove(); driveInteractiveGame(true); } }, '以後おまかせ'),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
+}
+
 // G2: 週/月の進行を日次分割で実行（runToSeasonEnd と同じチャンク進行パターン・決定論は advanceDay の逐次で不変）。
 // until: 'weekEnd' | 'monthEnd'。advanceTo（src/game/index.mjs）と同じ境界計算で停止条件を span 単位に再現する
 // （エンジン非改変＝計算式そのものを advanceTo からコピーしているだけで、エンジンのロジックには触れない）。
@@ -20530,7 +22110,8 @@ function runAdvanceWithProgress(until) {
   // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
   // digestTitle は heading とは独立に持つ（文字列のreplace合成だと「1週間を結果」のように助詞が崩れるため）。
   const digestTitle = until === 'weekEnd' ? '1週間の結果' : '月末までの結果';
-  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
+  // P3: 週次目標ログの開始時点の長さ（進行完了後の差分＝この操作で新たに確定した週の結果）。
+  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId), goalLogStart: (gs.weeklyGoalLog ?? []).length };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -20608,6 +22189,22 @@ function showAdvanceDigest(gs, snap) {
   box.append(el('div', {}, `期間戦績: ${w}勝${l}敗${t}分`));
   if (snap.rank.rank && after.rank) {
     box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
+  }
+  // P2: 直近試合の勝因/敗因カード（旧セーブ等で box.wpaTop/wpaBottom が無ければ additive にスキップ）。
+  const lastBox = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1].box : null;
+  if (lastBox?.wpaTop && lastBox?.wpaBottom) {
+    box.append(el('h3', { class: 'leaguename' }, '⚔ 直近試合の勝因/敗因'));
+    box.append(el('div', { class: 'newsfeed' }, [
+      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
+      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
+    ]));
+  }
+  // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。
+  const newGoalResults = (gs.weeklyGoalLog ?? []).slice(snap.goalLogStart ?? 0);
+  if (newGoalResults.length) {
+    box.append(el('h3', { class: 'leaguename' }, '🎯 週次目標'));
+    box.append(el('div', { class: 'newsfeed' }, newGoalResults.map((g) =>
+      el('div', { class: 'newsrow ' + (g.achieved ? 'good' : 'bad') }, `${g.label} → ${g.achieved ? '✅達成' : '❌未達'}`))));
   }
   box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
   box.append(el('div', { class: 'newsfeed' }, heads.length
@@ -20772,6 +22369,7 @@ function draftDeps() {
   return {
     el, game, tname, posJP, autoSave,
     PERSONALITY_LABELS, // H3-1: スカウトレポートの性格タグ表示
+    draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
     renderHub: () => renderHub(),
     onDraftComplete: (off) => finishOffseasonUI(off),
   };

@@ -23,6 +23,7 @@ import { teamEvalProfile, evaluateProspect } from '../game/market.mjs';
 import {
   bidFA, proposeTrade, retirementCeremonyText, ownTeamRetirementHeadlines,
   setTrainingPolicy, clearTrainingPolicy, TRAINING_LABELS, // H4: 育成方針・キャンプ
+  veteranFarewellHeadlines, // P4: 戦力外・FAの感情演出（fun_theory_research P4）
 } from '../game/index.mjs';
 import { observedValueOf } from '../game/transactions.mjs';
 import { salaryOf, salaryFromValue } from '../game/finance.mjs'; // H5-A: 年俸予算（実弾化）
@@ -613,10 +614,17 @@ export function renderOffseasonDigestScreen(off, u) {
       'トレード不成立: 放出 ', link(iv.aPlayer), ' ⇔ 獲得 ', link(iv.bPlayer), '（対象選手の移籍・引退により無効）']));
   }
   // 戦力外/拾い上げ（自チーム関与）。H5-A: reason='budget' は予算超過による強制戦力外。
+  // P4: 在籍が長い/通算成績が大きい「功労者」の戦力外は感情演出つき見出しへ差し替える（数値は不変）。
+  const farewells = new Map(veteranFarewellHeadlines(gs, off, prevYear, my, { pnameOf: u.pname }).map((h) => [h.playerId, h.text]));
   for (const pu of off.pickups ?? []) {
     const why = pu.reason === 'budget' ? '（予算超過による戦力外）' : '（戦力外）';
     if (pu.to === my) moves.push(el('div', { class: 'newsrow good' }, ['拾い上げ: ', link(pu.playerId), `（${u.tname(pu.from)}が${pu.reason === 'budget' ? '予算超過で放出' : '戦力外'}）を獲得`]));
-    else if (pu.from === my) moves.push(el('div', { class: 'newsrow bad' }, ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
+    else if (pu.from === my) {
+      const farewell = farewells.get(pu.playerId);
+      moves.push(el('div', { class: 'newsrow bad' }, farewell
+        ? `🙏 ${farewell}（${u.tname(pu.to)}へ）`
+        : ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
+    }
   }
   // 自チームの引退（引退者に teamId は無い→完了年の careerStats から最終所属を引く）
   // H1-3: 功労者（通算PA/IP/受賞数が閾値超）は「引退セレモニー」の文面で個別ニュース化する。

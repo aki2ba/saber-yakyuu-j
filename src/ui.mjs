@@ -19,6 +19,7 @@ import {
 import {
   newGame, advanceDay, advanceTo, advanceYear, save, load, allPlayersById,
   setManagerProfile, clearManagerProfile,
+  playInteractiveGame, submitGameDecision, // P1: 試合中の人間采配（介入観戦）
   // C4 演出: 表彰/記録/二つ名/ニュース（バンドルではグローバル・開発時Node解決用に import）。
   computeSeasonAwards, playerAwardHistory, nicknameFor, evalSeason,
   leagueRecords, teamRecords, championCounts, milestones, careerBatting, careerPitching,
@@ -27,10 +28,16 @@ import {
   rosterMoveHeadline, // F2-4: 昇降格ニュース（フォールバック文面）
   // H1: ストーリーライン（連続ニュース・ライバル・引退ロード・phaseH_fun_spec H1）。
   weeklyStorylineDigest, rivalryGameHeadlines, rivalriesOf, retirementRoadCandidates,
+  draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
+  playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
   // H3-2: 評判ラベル「メディア評」（phaseH_fun_spec H3・観測集計のみから導出）。
   mediaReputation,
   // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。
   resolveOwnerDecision,
+  // P3: 週次目標（短期目標の階層・fun_theory_research P3）。
+  generateWeeklyGoal,
+  // P4: 戦力外・FAの感情演出（fun_theory_research P4）。
+  departedPlayerFollowUpHeadlines,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -40,7 +47,7 @@ import { renderWatchScreen } from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
 import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
-import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel } from './ui/schedule.mjs';
+import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel, schedWpaParts } from './ui/schedule.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
 import { renderDraftRoomScreen } from './ui/draft.mjs';
 
@@ -841,6 +848,18 @@ function renderModalCareer(box, p, isPitcher) {
   const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
   const nick = nicknameFor(p, gs.careerStats, gs.cfg);
   box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // P7: 「物語」節（fun_theory_research_20260720 P7）— 出自/移籍歴/栄光/節目/因縁を1画面の
+  //   タイムラインへ。transactionLog/awardsHistory/careerStats/在籍情報だけから毎回導出する純関数
+  //   （trueAbility 非参照・保存フィールド追加なし＝§17）。既存の受賞履歴と同じ awardlist/awardrow
+  //   スタイルを流用（タイムライン風の年+テキスト縦リスト）。
+  const story = playerStoryOf(gs, p.id, storyNames());
+  box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '物語'));
+  box.append(story.length
+    ? el('div', { class: 'awardlist' }, story.map((ev) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardyear' }, ev.year != null ? `${ev.year}` : '？'),
+      el('span', { class: 'awardbadge' }, `【${STORY_KIND_LABELS[ev.kind] ?? ''}】${ev.text}`),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ物語は記録されていません。'));
   // 年度別成績表（当年は rt からも見えるが、careerStats は完了年ぶん＝確定値）。
   //   WAR は「その年のリーグ全体」から導いた定数で評価する（単一選手からの導出は歪むため）。
   const lcCache = new Map();
@@ -1259,7 +1278,11 @@ const posJP = (p) => (p === 'DH' ? 'DH' : p === 'P' ? '投' : p);
 
 /** H1: storylines.mjs の見出し関数へ渡す名前解決束（pname/tname/leagueNameOfの共通ラップ）。 */
 function storyNames() {
-  return { pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid) };
+  return {
+    pnameOf: pname, tnameOf: tname, leagueNameOf: (lid) => leagueNameOf(game.gs.cfg, lid),
+    posLabelOf: posJP, // P5: draftClassHeadlines の守備位置表示（他画面と同じくコード表示）
+    personalityOf: (id) => state.byId.get(id)?.personality ?? null, // P6: 性格→文体の接続
+  };
 }
 
 // 球団アクセントカラー（UI表示専用）は generate.mjs の TEAM_NAMES とペアで定義され、
@@ -1400,7 +1423,11 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, ...(ov.game ?? {}) },
+    game: {
+      interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true,
+      weeklyGoals: true, // P3: 週次目標は実プレイのみON（headless既定OFF・第6例目）
+      ...(ov.game ?? {}),
+    },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -1600,6 +1627,23 @@ function renderHubHome(c) {
     ]));
   }
 
+  // P3（fun_theory_research P3）: 今週の目標（週次・カード単位の小目標）。cfg.game.weeklyGoals=true
+  //   （実プレイのみ）かつシーズン進行中のみ。generateWeeklyGoal は純関数＝毎回その場で導出する
+  //   （状態には持たない）。直近1件の判定結果（達成/失敗）があれば即時フィードバックとして併記する。
+  if (gs.cfg.game.weeklyGoals && !rt.finished) {
+    const week = Math.floor((pendingDayOf(rt) - 1) / gs.cfg.game.daysPerWeek);
+    const goal = generateWeeklyGoal(gs, week);
+    const lastLogged = (gs.weeklyGoalLog ?? []).filter((e) => e.year === gs.year).slice(-1)[0];
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, `🎯 今週の目標（第${week + 1}週）`),
+      goal ? el('div', {}, goal.label) : el('div', { class: 'muted' }, '今週は自チームの試合がありません。'),
+      lastLogged
+        ? el('div', { class: 'muted', style: 'margin-top:4px' },
+          `前週の目標「${lastLogged.label}」→ ${lastLogged.achieved ? '✅達成' : '❌未達'}`)
+        : '',
+    ]));
+  }
+
   // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
   renderNewsFeed(c);
 
@@ -1718,6 +1762,12 @@ function renderNewsTab(c) {
   if (rivalryHeads.length) {
     c.append(el('h3', { class: 'leaguename' }, '🔥 因縁の一戦'));
     c.append(el('div', { class: 'newsfeed' }, rivalryHeads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.text))));
+  }
+  // P4: 去った選手の後日談（前年に自チームを出た選手が当季で活躍している場合・fun_theory_research P4）。
+  const followUps = departedPlayerFollowUpHeadlines(gs, gs.playerTeamId, storyNames());
+  if (followUps.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🕊 去った選手たちの今'));
+    c.append(el('div', { class: 'newsfeed' }, followUps.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
@@ -2062,11 +2112,12 @@ function showNextGameChoices() {
   const overlay = el('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const box = el('div', { class: 'modal' });
   box.append(el('div', { class: 'modalhead' }, [el('span', { class: 'pname' }, '次の自チーム試合'), el('button', { class: 'link', onclick: () => overlay.remove() }, '✕')]));
-  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ'));
+  box.append(el('p', { class: 'muted' }, '観戦=1プレーずつ実況 / ダイジェスト=一括表示 / スキップ=結果のみ / ⚡介入観戦=代打・継投を自分で指示'));
   box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, [
     el('button', { class: 'primary', onclick: () => { overlay.remove(); playNextPlayerGame('watch'); } }, '観戦'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('digest'); } }, 'ダイジェスト'),
     el('button', { onclick: () => { overlay.remove(); playNextPlayerGame('skip'); } }, 'スキップ'),
+    el('button', { onclick: () => { overlay.remove(); startInteractiveGame(); } }, '⚡介入観戦'),
   ]));
   overlay.append(box);
   document.getElementById('app').append(overlay);
@@ -2103,6 +2154,134 @@ function indexOfFirstAtbat(events) {
   return i < 0 ? events.length : i + 1;
 }
 
+// --- P1: 試合中の人間采配（介入観戦） -----------------------------------------
+// thyroxin/specs/p1_interactive_manager_spec.md。playInteractiveGame は決定論の再シミュレートで
+// 動くため（介入ログ+1件で最初からやり直す＝H2プレイヤー参加型ドラフトと同型）、UI 側は
+// 「一時停止→モーダルで選択→submitGameDecision→再度 playInteractiveGame」を繰り返すだけでよい。
+// 中断中は state を一切書き換えないため、autoSave はここでは呼ばない（§0-3: シム途中状態は
+// シリアライズしない。保存は試合が確定した時だけ行う）。
+
+function startInteractiveGame() {
+  game.watch = null;
+  driveInteractiveGame(false);
+}
+
+/**
+ * playInteractiveGame を1回進める。paused ならモーダルで人間の指示を仰ぎ、完走したら通常の
+ * 観戦画面（既存 watch.mjs・pitch単位で振り返れる）へ渡す。
+ * @param {boolean} auto 「以後おまかせ」後の呼び出し=true（ログに無い介入点は以後すべてAI判断）
+ */
+function driveInteractiveGame(auto) {
+  const gs = game.gs;
+  const prevEvents = game.watch ? game.watch.events : null;
+  const prevIdx = game.watch ? game.watch.idx : 0;
+  const result = playInteractiveGame(gs, { auto });
+  if (result.paused) {
+    const events = result.events || [];
+    game.watch = {
+      rec: null, // 試合はまだ未確定（決着後にrenderSeasonResult等へ渡すrecordが無い）
+      events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, events) : events.length,
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: false,
+    };
+    renderWatch();
+    showManagerDecisionModal(result.decision);
+    return;
+  }
+  autoSave(); // 試合が確定した時だけ保存（§0-3）
+  if (gs.rt.finished && !result.record) { renderSeasonResult(); return; }
+  if (result.record) {
+    game.watch = {
+      rec: result.record,
+      events: result.events,
+      idx: prevEvents ? watchIdxCarryOver(prevEvents, prevIdx, result.events) : indexOfFirstAtbat(result.events),
+      progressive: true,
+      unit: 'pitch',
+      auto: false,
+      showBench: false,
+      justAdvanced: true,
+    };
+    renderWatch();
+  } else {
+    renderHub();
+  }
+}
+
+/** 前回停止点までに消化した打席開始(atbat)数を数え、新イベント列で同じ数だけ進んだ位置まで
+ *  早送りする（§4「前回の停止点付近まで自動早送り」。決定論的リプレイなので、直前までに
+ *  解決済みの介入点のプレフィックスは新イベント列でも一致する）。 */
+function watchIdxCarryOver(oldEvents, oldIdx, newEvents) {
+  if (!oldEvents || !oldEvents.length) return indexOfFirstAtbat(newEvents);
+  let count = 0;
+  for (let i = 0; i < oldIdx && i < oldEvents.length; i++) if (oldEvents[i].type === 'atbat') count++;
+  let seen = 0;
+  for (let i = 0; i < newEvents.length; i++) {
+    if (newEvents[i].type === 'atbat') {
+      seen++;
+      if (seen > count) return i + 1;
+    }
+  }
+  return newEvents.length;
+}
+
+/** 走者表記「走者一二塁」（無ければ「走者なし」）。 */
+function baseOccupancyLabel(bases) {
+  const labels = ['一', '二', '三'];
+  const occ = labels.filter((_, i) => bases && bases[i]);
+  return occ.length ? '走者' + occ.join('') : '走者なし';
+}
+
+/**
+ * P1: 采配モーダル（代打/継投の意思決定）。§4。
+ * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
+ * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ */
+function showManagerDecisionModal(decision) {
+  const gs = game.gs;
+  const { situ, candidates, kind } = decision;
+  const submit = (pick) => {
+    submitGameDecision(gs, { year: decision.year, day: decision.day, seq: decision.seq, kind, choice: { pick } });
+    overlay.remove();
+    driveInteractiveGame(false);
+  };
+  const half = situ.half === 'bottom' ? '裏' : '表';
+  const overlay = el('div', { class: 'overlay mgrdecision' }); // クリックでは閉じない（決定は取り消し不可・キー操作不要）
+  const box = el('div', { class: 'modal' });
+  box.append(el('div', { class: 'modalhead' }, [
+    el('span', { class: 'pname' }, `${situ.inning}回${half} ${situ.outs}死 ${baseOccupancyLabel(situ.bases)}　監督、指示を`),
+  ]));
+  if (kind === 'ph') {
+    const batter = state.byId.get(situ.batterId);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
+  } else {
+    const pit = state.byId.get(situ.pitcherId);
+    box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
+    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
+      const p = state.byId.get(pid);
+      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
+      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
+    })));
+    box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
+  }
+  box.append(el('div', { class: 'row' }, [
+    el('button', { class: 'link', onclick: () => { overlay.remove(); driveInteractiveGame(true); } }, '以後おまかせ'),
+  ]));
+  overlay.append(box);
+  document.getElementById('app').append(overlay);
+}
+
 // G2: 週/月の進行を日次分割で実行（runToSeasonEnd と同じチャンク進行パターン・決定論は advanceDay の逐次で不変）。
 // until: 'weekEnd' | 'monthEnd'。advanceTo（src/game/index.mjs）と同じ境界計算で停止条件を span 単位に再現する
 // （エンジン非改変＝計算式そのものを advanceTo からコピーしているだけで、エンジンのロジックには触れない）。
@@ -2115,7 +2294,8 @@ function runAdvanceWithProgress(until) {
   // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
   // digestTitle は heading とは独立に持つ（文字列のreplace合成だと「1週間を結果」のように助詞が崩れるため）。
   const digestTitle = until === 'weekEnd' ? '1週間の結果' : '月末までの結果';
-  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
+  // P3: 週次目標ログの開始時点の長さ（進行完了後の差分＝この操作で新たに確定した週の結果）。
+  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId), goalLogStart: (gs.weeklyGoalLog ?? []).length };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -2193,6 +2373,22 @@ function showAdvanceDigest(gs, snap) {
   box.append(el('div', {}, `期間戦績: ${w}勝${l}敗${t}分`));
   if (snap.rank.rank && after.rank) {
     box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
+  }
+  // P2: 直近試合の勝因/敗因カード（旧セーブ等で box.wpaTop/wpaBottom が無ければ additive にスキップ）。
+  const lastBox = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1].box : null;
+  if (lastBox?.wpaTop && lastBox?.wpaBottom) {
+    box.append(el('h3', { class: 'leaguename' }, '⚔ 直近試合の勝因/敗因'));
+    box.append(el('div', { class: 'newsfeed' }, [
+      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
+      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
+    ]));
+  }
+  // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。
+  const newGoalResults = (gs.weeklyGoalLog ?? []).slice(snap.goalLogStart ?? 0);
+  if (newGoalResults.length) {
+    box.append(el('h3', { class: 'leaguename' }, '🎯 週次目標'));
+    box.append(el('div', { class: 'newsfeed' }, newGoalResults.map((g) =>
+      el('div', { class: 'newsrow ' + (g.achieved ? 'good' : 'bad') }, `${g.label} → ${g.achieved ? '✅達成' : '❌未達'}`))));
   }
   box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
   box.append(el('div', { class: 'newsfeed' }, heads.length
@@ -2357,6 +2553,7 @@ function draftDeps() {
   return {
     el, game, tname, posJP, autoSave,
     PERSONALITY_LABELS, // H3-1: スカウトレポートの性格タグ表示
+    draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
     renderHub: () => renderHub(),
     onDraftComplete: (off) => finishOffseasonUI(off),
   };

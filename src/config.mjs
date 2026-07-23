@@ -1577,6 +1577,7 @@ export const TUNING_DEFAULT = {
     recordPaceThreshold: 1.05, // シーズン記録の105%超ペースで「記録ペース」ニュース
     recordPaceMinProgress: 0.5, // 消化50%未満はペース判定の対象外（序盤のノイズ除外）
     digestMaxItems: 6, // 「今週の見どころ」節に載せる最大件数
+    draftClassMax: 6, // P5「今年の逸材」ドラフトクラス見出しの最大件数（draftClassHeadlines）
     retirementRoad: {
       ageThreshold: 37, // これ以上＋通算マイルストーン持ちを「引退ロード候補」ニュースの対象に
       batterMilestones: { hits: 500, homeRuns: 100 }, // いずれか到達で候補（awards.milestonesより低い早期到達バー）
@@ -1626,6 +1627,22 @@ export const GAME_DEFAULT = {
   //   OFF時は編成時(trueAbility)アーキタイプの打順を守備位置に固定する旧挙動＝baselineとbit同一。
   //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す（＝プレイヤーの試合では現代的な打順になる）。
   dynamicLineup: false,
+  // P1（p1_interactive_manager_spec）: 試合中の人間采配（介入観戦・代打/継投）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup と同じ「headless既定OFF・UIのみON」第5例目。
+  //   テスト/較正/realism/前史/AI球団は従来と byte 同一）。ui.mjs の uiConfig() だけが
+  //   オーバーライドで true を渡す。true でも介入ログが空のまま完走した試合は全自動と bit 同一
+  //   （介入は既存の choosePinchHitter/chooseReliever 呼び出し地点への人間差し替えフックのみ・
+  //   判断ロジックの新設はしない）。
+  interactiveManager: false,
+  // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup/interactiveManager と同じ「headless既定OFF・
+  //   UIのみON」第6例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す。true でも効果は表示＋シーズン末の
+  //   信任へ小さく加算するだけ（エンジン/tuning非干渉。生成・判定は game/goals.mjs）。
+  weeklyGoals: false,
+  // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
+  //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
+  weeklyGoalTrustBonusMax: 5,
 };
 
 /**

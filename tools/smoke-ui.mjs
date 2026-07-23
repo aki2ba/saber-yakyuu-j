@@ -603,6 +603,35 @@ loadBtn._onclick();
 assert.ok(hasClass('header'), 'ロード後にハブが描画される（決定論継続）');
 assert.equal(daySig(), beforeSave, 'ロードでセーブ時点の日付/成績に戻る');
 
+// ============================================================================
+// P1（p1_interactive_manager_spec）: 試合中の人間采配（介入観戦）。
+//   「⚡介入観戦」ボタンで開始→采配モーダルが出たら先頭候補（無ければ「そのまま/続投」）を
+//   選択→試合が完走してリザルト（観戦画面）に到達、例外なし。モーダルが一度も出ない試合も
+//   正常（介入点が無い試合はありうる＝§6）ので、モーダル有無どちらでも通るアサーションにする。
+// ============================================================================
+btnByText('次の試合へ')._onclick();
+assert.ok(btnByText('⚡介入観戦'), '進行選択に「⚡介入観戦」ボタンがある');
+btnByText('⚡介入観戦')._onclick();
+let p1Pauses = 0;
+let p1Guard = 0;
+while (hasClass('mgrdecision')) {
+  assert.ok(p1Guard++ < 80, 'P1: 采配モーダルのループが収束しない');
+  p1Pauses++;
+  assert.ok(
+    walk(appDiv).some((n) => textOf(n).includes('監督、指示を')),
+    'P1: 采配モーダルのヘッダー「{inning}回{表/裏} {アウト}死 走者…　監督、指示を」が出る',
+  );
+  const candidate = allClass('mgrcandidate')[0];
+  const fallback = btnByText('そのまま打たせる') || btnByText('続投');
+  assert.ok(candidate || fallback, 'P1: 采配モーダルに候補ボタンか「そのまま/続投」がある');
+  (candidate || fallback)._onclick();
+}
+assert.ok(!hasClass('mgrdecision'), 'P1: 全介入点を解決すると采配モーダルが消える');
+assert.ok(hasClass('scorebar'), 'P1: 試合完走後は通常の観戦画面（スコアバー）へ渡る');
+if (btnByText('ホームへ戻る')) btnByText('ホームへ戻る')._onclick();
+assert.ok(hasClass('header'), 'P1: 観戦後にハブへ戻れる');
+console.log(`UI smoke OK (P1介入観戦): 次の試合へ→⚡介入観戦→采配モーダル${p1Pauses}回（先頭候補/そのまま・続投を選択）→試合完走→観戦画面→ホームへ、例外なし`);
+
 // G7) 進行（月末まで）→ シーズン終了まで（チャンク進行・プログレス）→ リザルト（日本一）
 btnByText('月末まで')._onclick(); // G2: 日次分割＋setTimeoutチャンク進行（同期フリーズ解消）
 flushTimers(); // 月末までの日次チャンクを全消化

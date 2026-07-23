@@ -16,6 +16,12 @@
 //                                     同年同round指名の同期）を導出。
 //   rivalryGameHeadlines(state, names, limit) … 自チーム試合で「因縁」該当選手が活躍した回を検出し
 //                                     見出しテキストを生成（テンプレ選択は hashSeed 決定論）。
+//                                     P6: names.personalityOf を渡すと対象選手の性格タグを短い
+//                                     一言として追記する（後方互換・省略時は従来と同一テキスト）。
+//   draftClassHeadlines(state, names) … P5: 「今年の逸材」ドラフト前ニュース。market.mjs の
+//                                     draftPreviewHeadlines（世代内評判consensus上位・真値非参照）
+//                                     と draftScoutView（等級/伸びしろ/評判）を素材に、「今年の逸材」
+//                                     「世代No.1右腕」「大器の匂い」等のテンプレ見出しへ変換する。
 //   retirementRoadCandidates(state)   … 開幕時点で年齢閾値＋通算マイルストーンを満たす「今季が
 //                                     集大成」候補（引退判定そのものには一切触れない）。
 //   retirementRoadHeadlines(state, names) … 上記の見出しテキスト。
@@ -24,6 +30,10 @@
 //   retirementCeremonyText(ceremony, names) … セレモニーカード1件のテキスト整形。
 //   ownTeamRetirementHeadlines(state, ceremonies, myTeamId, completedYear, names)
 //                                     … 自チーム所属だった功労者の引退を個別ニュース化。
+//   playerStoryOf(state, playerId, names)  … P7: 選手詳細「物語」欄。transactionLog/awardsHistory/
+//                                     careerStats/在籍情報だけから、出自（ドラフト経緯 or 生え抜き）・
+//                                     移籍歴・栄光（受賞/二つ名）・節目（通算マイルストーン）・因縁
+//                                     （同期指名）を時系列 [{year,text,kind}] へ合成する純関数。
 //
 // 設計原則（phaseH_fun_spec 全柱共通の鉄則・厳守）:
 //   - 表示層のみ: すべて (state, careerStats, transactionLog, ...) の純関数。真値(trueAbility)は
@@ -35,7 +45,8 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { qualifiedPA, qualifiedIP } from '../config.mjs';
 import { observedWoba } from '../sim/manager.mjs';
-import { leagueRecords, careerBatting, careerPitching, nicknameFor, playerAwardHistory } from './awards.mjs';
+import { leagueRecords, careerBatting, careerPitching, nicknameFor, playerAwardHistory, milestones } from './awards.mjs';
+import { draftPreviewHeadlines, draftScoutView } from './market.mjs';
 
 const idAsc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -336,8 +347,17 @@ export function appendTransactionLog(state, off, completedYear, offYearIndex) {
   }
   const picks = off.draftLog ? off.draftLog.picks : null;
   if (picks) {
+    // P7: 競合くじ情報（何球団が競合したか）を additive フィールド contenders として付す
+    //   （pick.contested のときだけ・draftLog.lotteries から該当prospectの競合球団数を引く）。
+    //   playerStoryOf の「{n}球団競合の末」表現の素。旧セーブ由来の行は未設定＝後方互換。
+    const lotteryByProspect = new Map((off.draftLog.lotteries ?? []).map((l) => [l.prospectId, l]));
     for (const pick of picks) {
-      rows.push({ year: completedYear, kind: 'draft', playerId: pick.prospectId, to: pick.teamId, round: pick.round });
+      const row = { year: completedYear, kind: 'draft', playerId: pick.prospectId, to: pick.teamId, round: pick.round };
+      if (pick.contested) {
+        const lot = lotteryByProspect.get(pick.prospectId);
+        if (lot) row.contenders = lot.contenders.length;
+      }
+      rows.push(row);
     }
   }
   if (!state.transactionLog) state.transactionLog = [];
@@ -406,6 +426,20 @@ const RIVALRY_TEMPLATES = {
   ],
 };
 
+// P6: 性格タグの短い一言（rivalryGameHeadlines への付記用）。全 PERSONALITIES に最低1バリアント。
+// 決定論: hashSeed('newsvoice','rivalrySuffix',...) の独立座標＝テンプレ本体の選択（'story'座標）や
+// 既存の乱数ストリームに一切干渉しない。personality が未知/null なら何も付記しない（後方互換）。
+const PERSONALITY_RIVALRY_SUFFIX = {
+  hardworking: ['地道な努力の成果'],
+  streaky: ['ムラっ気が爆発した一戦', '乗ってくると誰にも止められない'],
+  showboat: ['「見せ場は逃さない」が持論', 'スタンドを沸かせる立ち回り'],
+  reticent: ['本人は多くを語らず', '口数少なく、結果だけを残す'],
+  fighter: ['闘志を前面に', '気迫のプレー'],
+  cool: ['表情ひとつ変えず', '淡々とこなす'],
+  myPace: ['いつも通りのマイペース', '周囲に流されぬ独自のリズム'],
+  leader: ['チームを鼓舞する一打', '後輩たちを引っ張る存在感'],
+};
+
 function isNotableBatter(bt) {
   return bt.hr >= 2 || bt.h >= 3;
 }
@@ -417,10 +451,12 @@ function isNotablePitcher(pt) {
  * 自チーム試合（state.rt.playerGameLog）で「因縁」該当選手が活躍(notable)した場合の見出し
  * （直近の試合から新しい順・最大 limit 件）。決定論: テンプレ選択は
  * hashSeed(masterSeed,'story',year,day,playerId) の rng（表示文言のみ・結果に非干渉）。
- * @param {{pnameOf:Function, tnameOf:Function}} names
+ * P6: names.personalityOf（id→PERSONALITIES|null）を渡すと、対象選手の性格タグに応じた短い
+ * 一言を末尾に付記する（fun_theory_research P6・後方互換=省略時は従来と同一テキスト）。
+ * @param {{pnameOf:Function, tnameOf:Function, personalityOf?:Function}} names
  */
 export function rivalryGameHeadlines(state, names = {}, limit = 5) {
-  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const { pnameOf = (id) => id, tnameOf = (id) => id, personalityOf = () => null } = names;
   const rt = state.rt;
   if (!rt || !rt.playerGameLog) return [];
   const out = [];
@@ -432,12 +468,12 @@ export function rivalryGameHeadlines(state, names = {}, limit = 5) {
       for (const bt of b.batters[side] || []) {
         if (!isNotableBatter(bt)) continue;
         const hit = matchRivalry(state, bt.pid, oppTeamThisGame);
-        if (hit) out.push(buildRivalryHeadline(state, bt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf));
+        if (hit) out.push(buildRivalryHeadline(state, bt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf, personalityOf));
       }
       for (const pt of b.pitchers[side] || []) {
         if (!isNotablePitcher(pt)) continue;
         const hit = matchRivalry(state, pt.pid, oppTeamThisGame);
-        if (hit) out.push(buildRivalryHeadline(state, pt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf));
+        if (hit) out.push(buildRivalryHeadline(state, pt.pid, rec.day, oppTeamThisGame, hit, pnameOf, tnameOf, personalityOf));
       }
     }
     if (out.length >= limit) break;
@@ -445,11 +481,124 @@ export function rivalryGameHeadlines(state, names = {}, limit = 5) {
   return out.slice(0, limit);
 }
 
-function buildRivalryHeadline(state, playerId, day, oppTeamId, rivalry, pnameOf, tnameOf) {
+function buildRivalryHeadline(state, playerId, day, oppTeamId, rivalry, pnameOf, tnameOf, personalityOf = () => null) {
   const list = RIVALRY_TEMPLATES[rivalry.type] || RIVALRY_TEMPLATES.faOld;
   const r = makeRng(hashSeed(state.masterSeed, 'story', state.year, day, playerId));
   const tpl = list[r.int(list.length)];
-  return { text: tpl(pnameOf(playerId), tnameOf(oppTeamId)), cls: 'good', playerId, oppTeamId, day, type: rivalry.type };
+  let text = tpl(pnameOf(playerId), tnameOf(oppTeamId));
+  // P6: 性格タグの短い一言を付記（独立座標のhashSeed＝テンプレ本体の選択に非干渉・後方互換）。
+  const personality = personalityOf(playerId);
+  const suffixes = PERSONALITY_RIVALRY_SUFFIX[personality];
+  if (suffixes && suffixes.length) {
+    const sr = makeRng(hashSeed('newsvoice', 'rivalrySuffix', playerId, personality));
+    text += `（${suffixes[sr.int(suffixes.length)]}）`;
+  }
+  return { text, cls: 'good', playerId, oppTeamId, day, type: rivalry.type };
+}
+
+// ============================================================================
+// P5: 「今年の逸材」ドラフトクラス見出し（fun_theory_research_20260720 P5・phaseH_fun_spec 積み残し）
+// ============================================================================
+
+// テンプレ選択は hashSeed(masterSeed,'draftclass',yearIndex,kind,prospectId) の独立座標のみ＝
+// プール生成(generatePool)・ドラフト解決(runDraft)の乱数ストリームには一切干渉しない。
+const DRAFTCLASS_TOP_TEMPLATES = [
+  (n, role) => `今年の逸材、${n}（${role}）にドラフト戦線の視線集中`,
+  (n, role) => `世代最高評価は${n}（${role}）― スカウト陣の目玉`,
+  (n, role) => `${n}（${role}）、今年の指名候補生の頂点に立つ`,
+];
+const DRAFTCLASS_PITCHER_TOP_TEMPLATES = [
+  (n, arm) => `世代No.1${arm}との呼び声、${n}に球団関係者が熱視線`,
+  (n, arm) => `${n}、今年一番の${arm}との評判`,
+];
+const DRAFTCLASS_FIELDER_TOP_TEMPLATES = [
+  (n, pos) => `世代No.1の${pos}候補、${n}にドラフト上位球団が注目`,
+  (n, pos) => `${n}、今年の${pos}候補では随一の評価`,
+];
+const DRAFTCLASS_UPSIDE_TEMPLATES = [
+  (n, role) => `${n}（${role}）に「大器」の呼び声。伸びしろ十分の逸材`,
+  (n, role) => `${n}、完成度よりポテンシャル型 ― 大器の匂いを漂わせる`,
+  (n, role) => `${n}に大化けの期待。${role}としての伸びしろは世代屈指`,
+];
+const DRAFTCLASS_HIDDEN_TEMPLATES = [
+  (n) => `隠し玉との噂も。${n}の評価、球団間で見立てが割れる`,
+  (n) => `${n}に「隠し玉」の声 ― 一部球団だけが高く評価`,
+];
+
+/** draftClassHeadlines 内のテンプレ選択（決定論・独立座標）。 */
+function pickDraftClassTpl(masterSeed, yearIndex, kind, prospectId, list) {
+  const r = makeRng(hashSeed(masterSeed, 'draftclass', yearIndex, kind, prospectId));
+  return list[r.int(list.length)];
+}
+
+/**
+ * P5:「今年の逸材」ドラフト前ニュース。draftPreviewHeadlines（market.mjs・世代内評判consensus
+ * 上位・真値非参照）の顔ぶれを draftScoutView（同・スカウトノイズ込みの等級/伸びしろ/評判）で
+ * 肉付けし、テンプレ見出しへ変換する。真値(trueAbility)は一切参照しない（三層構造）。
+ * state.awaitingDraft.pool（H2・プレイヤー参加型ドラフトの中断ペイロード）が無ければ空配列。
+ * 呼び出し側は通常 round===1（プール確定直後・まだ誰も指名されていない状態）でのみ呼ぶ想定
+ * （draftPreviewHeadlines と同じ前提。draft.mjs の既存「今年の目玉」節と同条件）。
+ * @param {Object} state GameState（awaitingDraft/masterSeed/yearIndex/playerTeamId が必要）
+ * @param {{pnameOf?:Function, posLabelOf?:Function}} names pnameOf: prospectId→表示名
+ *   （既定は識別子そのまま・呼び出し側が pool から名前を引いて渡す）。posLabelOf: 守備位置コード
+ *   →表示ラベル（既定は識別子そのまま＝本アプリの他画面と同じくコード表示）。
+ * @returns {Array<{text:string, cls:string, prospectId:string, kind:string}>}
+ */
+export function draftClassHeadlines(state, names = {}) {
+  const aw = state.awaitingDraft;
+  if (!aw || !aw.pool || !aw.pool.length) return [];
+  const { pnameOf = (id) => id, posLabelOf = (pos) => pos } = names;
+  const preview = draftPreviewHeadlines(state); // consensus上位（真値非参照・追加の乱数消費なし）
+  if (!preview.length) return [];
+  const findP = (id) => aw.pool.find((p) => p.id === id);
+  const roleLabelOf = (p) => (p.role === 'pitcher' ? '投手' : posLabelOf(p.primaryPos));
+  const out = [];
+  const max = state.cfg.tuning.storylines.draftClassMax ?? 6;
+
+  // 総合トップ（世代内評判1位）＝「今年の逸材」。
+  const topP = findP(preview[0].prospectId);
+  if (topP) {
+    const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'top', topP.id, DRAFTCLASS_TOP_TEMPLATES);
+    out.push({ text: tpl(pnameOf(topP.id), roleLabelOf(topP)), cls: 'good', prospectId: topP.id, kind: 'top' });
+  }
+
+  // ロール別トップ（プレビュー内で最上位の投手/野手それぞれ1名・総合トップと重複しない場合のみ）。
+  let pitcherDone = false;
+  let fielderDone = false;
+  for (const h of preview) {
+    if (pitcherDone && fielderDone) break;
+    const p = findP(h.prospectId);
+    if (!p || p.id === topP?.id) continue;
+    if (p.role === 'pitcher' && !pitcherDone) {
+      pitcherDone = true;
+      const arm = `世代No.1${p.throws === 'L' ? '左腕' : '右腕'}`;
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'pitcherTop', p.id, DRAFTCLASS_PITCHER_TOP_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), arm), cls: 'info', prospectId: p.id, kind: 'pitcherTop' });
+    } else if (p.role === 'fielder' && !fielderDone) {
+      fielderDone = true;
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'fielderTop', p.id, DRAFTCLASS_FIELDER_TOP_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), posLabelOf(p.primaryPos)), cls: 'info', prospectId: p.id, kind: 'fielderTop' });
+    }
+  }
+
+  // 「大器」「隠し玉」評判（プレビュー内・自球団スカウトレポート＝draftScoutView 由来）。
+  const used = new Set(out.map((o) => o.prospectId));
+  for (const h of preview) {
+    if (out.length >= max) break;
+    const p = findP(h.prospectId);
+    if (!p || used.has(p.id)) continue;
+    const sv = draftScoutView(state, p, aw.pool);
+    if (sv.upside === '大器') {
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'upside', p.id, DRAFTCLASS_UPSIDE_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id), roleLabelOf(p)), cls: 'info', prospectId: p.id, kind: 'upside' });
+      used.add(p.id);
+    } else if (sv.hype === '隠し玉') {
+      const tpl = pickDraftClassTpl(state.masterSeed, state.yearIndex, 'hidden', p.id, DRAFTCLASS_HIDDEN_TEMPLATES);
+      out.push({ text: tpl(pnameOf(p.id)), cls: 'info', prospectId: p.id, kind: 'hidden' });
+      used.add(p.id);
+    }
+  }
+  return out.slice(0, max);
 }
 
 // ============================================================================
@@ -509,4 +658,282 @@ export function ownTeamRetirementHeadlines(state, ceremonies, myTeamId, complete
   return ceremonies
     .filter((c) => finalTeam.get(c.playerId) === myTeamId)
     .map((c) => ({ text: `【引退】${retirementCeremonyText(c, names)}`, cls: 'info', playerId: c.playerId }));
+}
+
+// ============================================================================
+// P7: 選手詳細の「物語」欄（fun_theory_research_20260720 P7・愛着/世代物語）
+//
+//   playerStoryOf(state, playerId, names) … 既存データ（transactionLog/awardsHistory/careerStats/
+//     在籍情報）だけから、その選手の歩みを時系列の出来事配列へ合成する純関数。保存データは増やさず
+//     （§17）、モーダルを開くたび毎回導出する。エンジン（sim/）・trueAbility には一切触れない。
+//   シグネチャ注記: 他の *Headlines 系関数（titleRaceHeadlines 等）と同じ規約で第3引数に
+//     names={pnameOf,tnameOf,posLabelOf}（省略時は識別子そのまま）を取る＝テキスト整形をUI側の
+//     名前解決に委ねる（本ファイルは表示名テーブルを持たない）。
+// ============================================================================
+
+/** state.league.players / farm / retiredPlayers を統合した playerId→選手レコードのマップ。
+ *  game/index.mjs の allPlayersById と同じ発想だが、循環import（index.mjs→storylines.mjs）を
+ *  避けるためここでも同じ3ソースから独立に構築する。 */
+function localPlayersById(state) {
+  const m = new Map((state.league?.players ?? []).map((p) => [p.id, p]));
+  for (const d of state.league?.farm ?? []) if (!m.has(d.id)) m.set(d.id, d);
+  for (const r of state.retiredPlayers ?? []) if (!m.has(r.id)) m.set(r.id, r);
+  return m;
+}
+
+/** その選手の careerStats のうち最古/最新の1行（season最小/最大）。無ければ null。 */
+function firstCareerRow(state, playerId) {
+  let best = null;
+  for (const s of state.careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!best || s.season < best.season) best = s;
+  }
+  return best;
+}
+function lastCareerRow(state, playerId) {
+  let best = null;
+  for (const s of state.careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!best || s.season > best.season) best = s;
+  }
+  return best;
+}
+
+/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁→節目/栄光）。 */
+const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'milestone', 'award', 'nickname'];
+
+/** kind→日本語カテゴリ名（UI側の見出し/アイコン分けに使える。栄光=award/nickname を束ねる）。 */
+export const STORY_KIND_LABELS = {
+  origin: '出自', transfer: '移籍歴', award: '栄光', nickname: '栄光', milestone: '節目', rivalry: '因縁',
+};
+
+/**
+ * P7: 選手の「物語」— その選手の歩みを時系列の出来事配列へ合成する（表示層のみ・純関数）。
+ * 既存データだけから毎回導出する（保存フィールドを増やさない＝§17）。trueAbility は一切参照しない。
+ *
+ *   出自   : transactionLog の draft 行（競合くじ情報 contenders があれば「n球団競合の末」を追記）。
+ *            ログに無い選手（初期世界生成/ログ開始前からの在籍）は最も古い在籍先を「生え抜き」として
+ *            フォールバック表示する（年不明＝year:null・タイムライン先頭に置く）。
+ *   移籍歴 : transactionLog のトレード/FA/戦力外拾い上げ（戦力外→復活は市場非効率の宝として素直に
+ *            事実を書くだけで十分ドラマになる＝誇張しない）。
+ *   栄光   : playerAwardHistory（MVP/新人王/タイトル/ベストナイン/守備の栄誉賞）＋ nicknameFor
+ *            （二つ名そのものには「獲得年」が無いため、直近の在籍年＝物語上「現在はこう呼ばれる」の
+ *            位置に1件だけ置く。「未知数」＝サンプル不足はノイズなので出さない）。
+ *   節目   : careerBatting/careerPitching の通算値が awards.mjs の milestones() 閾値
+ *            （安打/本塁打/勝利/セーブ/奪三振）を跨いだ年を検出（在籍全年を走査・閾値は流用のみで
+ *            変更しない）。
+ *   因縁   : rivalriesOf の draftmate（同年同round指名の同期）のみを採用する。trade/faOld/pickupOld
+ *            は移籍歴セクションと内容が重複する（transactionLogの同じ行が出処）ため、ここでは
+ *            二重掲載を避けて省く。
+ *
+ * @param {Object} state GameState（transactionLog/awardsHistory/careerStats/teamHistory/league/
+ *   retiredPlayers が必要。合成フィクスチャでも可＝欠けたフィールドは空扱い）
+ * @param {string} playerId
+ * @param {{pnameOf?:Function, tnameOf?:Function, posLabelOf?:Function}} names 表示名解決（省略時は
+ *   識別子そのまま。他の *Headlines 系関数と同じ規約）
+ * @returns {Array<{year:number|null, text:string, kind:string}>} 年昇順（同年は出自→移籍/因縁→
+ *   節目/栄光の順・さらに同点はテキスト昇順で決定論的に確定）
+ */
+export function playerStoryOf(state, playerId, names = {}) {
+  const { tnameOf = (id) => id, pnameOf = (id) => id, posLabelOf = (pos) => pos } = names;
+  const cfg = state.cfg;
+  const log = state.transactionLog || [];
+  const careerStats = state.careerStats || [];
+  const events = [];
+
+  const playersById = localPlayersById(state);
+  const rec = playersById.get(playerId) || null;
+
+  // --- 出自: ドラフト指名 or 生え抜きフォールバック ---
+  const myLogRows = log.filter((r) => r.playerId === playerId).sort((a, b) => a.year - b.year || idAsc(a.kind, b.kind));
+  const draftRow = myLogRows.find((r) => r.kind === 'draft');
+  if (draftRow) {
+    const team = tnameOf(draftRow.to);
+    const n = draftRow.contenders;
+    const prefix = n && n >= 2 ? `${n}球団競合の末、` : '';
+    events.push({ year: draftRow.year, text: `${prefix}ドラフト${draftRow.round}位で${team}に入団`, kind: 'origin' });
+  } else {
+    const earliestMove = myLogRows.find((r) => r.kind === 'trade' || r.kind === 'fa' || r.kind === 'pickup');
+    if (earliestMove) {
+      // ログ開始前からの在籍＝その最初の移籍の「元の所属」を生え抜き扱い（起源の年は不明）。
+      events.push({ year: null, text: `${tnameOf(earliestMove.from)}の生え抜き`, kind: 'origin' });
+    } else {
+      const fc = firstCareerRow(state, playerId);
+      const teamId = fc ? fc.teamId : (rec ? rec.teamId : null);
+      if (teamId != null) events.push({ year: fc ? fc.season : null, text: `${tnameOf(teamId)}の生え抜き`, kind: 'origin' });
+    }
+  }
+
+  // --- 移籍歴: トレード/FA/戦力外拾い上げ ---
+  for (const row of myLogRows) {
+    if (row.kind === 'trade') {
+      events.push({ year: row.year, text: `${tnameOf(row.from)}から${tnameOf(row.to)}へトレード`, kind: 'transfer' });
+    } else if (row.kind === 'fa') {
+      events.push({ year: row.year, text: `FAで${tnameOf(row.from)}から${tnameOf(row.to)}へ移籍`, kind: 'transfer' });
+    } else if (row.kind === 'pickup') {
+      events.push({ year: row.year, text: `${tnameOf(row.from)}を戦力外、${tnameOf(row.to)}が拾い上げ`, kind: 'transfer' });
+    }
+  }
+
+  // --- 栄光: 受賞履歴 ＋ 二つ名 ---
+  const hist = playerAwardHistory(playerId, {
+    careerStats, teamHistory: state.teamHistory || [], playersById, cfg, awardsHistory: state.awardsHistory || [],
+  });
+  for (const a of hist) {
+    events.push({ year: a.year, text: `${a.label}${a.pos ? `（${posLabelOf(a.pos)}）` : ''}を獲得`, kind: 'award' });
+  }
+  if (rec) {
+    const nick = nicknameFor(rec, careerStats, cfg);
+    if (nick !== '未知数') {
+      const lc = lastCareerRow(state, playerId);
+      events.push({ year: lc ? lc.season : state.year, text: `「${nick}」の異名で呼ばれるように`, kind: 'nickname' });
+    }
+  }
+
+  // --- 節目: 通算マイルストーン到達（awards.mjs の閾値をそのまま流用） ---
+  const years = [...new Set(careerStats.filter((s) => s.playerId === playerId).map((s) => s.season))].sort((a, b) => a - b);
+  for (const y of years) {
+    for (const m of milestones({ careerStats, playersById, cfg, year: y })) {
+      if (m.playerId !== playerId) continue;
+      events.push({ year: y, text: `通算${m.threshold}${m.unit}達成`, kind: 'milestone' });
+    }
+  }
+
+  // --- 因縁: 同年同round指名の同期のみ（トレード/FA/戦力外はtransactionLogの同一行＝移籍歴と重複するため省く） ---
+  for (const r of rivalriesOf(state, playerId)) {
+    if (r.type !== 'draftmate') continue;
+    events.push({ year: r.year, text: `${pnameOf(r.otherPlayerId)}とは同期指名（${r.round}位）の間柄（${tnameOf(r.matchTeamId)}）`, kind: 'rivalry' });
+  }
+
+  const yearKey = (y) => (y == null ? -Infinity : y);
+  events.sort((a, b) =>
+    yearKey(a.year) - yearKey(b.year) ||
+    STORY_KIND_ORDER.indexOf(a.kind) - STORY_KIND_ORDER.indexOf(b.kind) ||
+    idAsc(a.text, b.text));
+  return events;
+}
+
+// ============================================================================
+// P4: 戦力外・FAの感情演出（fun_theory_research_20260720 P4・やきゅつく「経営の痛み」）。
+//   表示のみ・数値は一切変えない（研究レポート表のとおり「引き止めの選択」はスコープ外＝
+//   marketInterventions/transactions.mjs の判定結果をそのまま使い、文言だけを差し替える）。
+//
+//   veteranFarewellHeadlines(state, off, completedYear, myTeamId, names) … オフの戦力外
+//     （off.pickups の from===myTeamId）のうち「功労者」（在籍が長い or 通算成績が大きい）だけを
+//     感情演出つき見出しへ（事務的な「戦力外→流出」の1行の差し替え素材）。
+//   departedPlayerFollowUpHeadlines(state, myTeamId, names) … 前年に自チームから出た選手
+//     （FA/トレード/戦力外拾い上げ＝transactionLog）が当季の観測成績で活躍している場合の
+//     後日談ニュース（rivalryGameHeadlines「古巣戦で活躍」とは別枠＝対戦有無を問わない）。
+//
+// 決定論: テンプレ選択は hashSeed(masterSeed,'farewell'|'followup', ...) の独立座標のみ
+//   （既存の生成/進行ストリーム・rivalryGameHeadlinesの'story'座標いずれとも非干渉）。
+//   真値(trueAbility)は一切参照しない（careerStats/transactionLog/当季観測のみ＝三層構造）。
+// ============================================================================
+
+const VETERAN_TENURE_MIN = 5; // 「功労者」とみなす最低在籍年数（在籍先チームでの通算出場シーズン数）
+const VETERAN_HITS_MIN = 800; // または通算安打（野手）
+const VETERAN_WINS_MIN = 80; // または通算勝利（投手）
+
+/** playerId の careerStats のうち teamId===teamId のシーズン数（在籍年数の近似・§17集計値のみ）。 */
+function tenureYearsWith(state, playerId, teamId) {
+  const seasons = new Set();
+  for (const s of state.careerStats) {
+    if (s.playerId === playerId && s.teamId === teamId) seasons.add(s.season);
+  }
+  return seasons.size;
+}
+
+const VETERAN_FAREWELL_TEMPLATES = [
+  (n, yrs, line) => `在籍${yrs}年・${line}の${n}に戦力外通告 ― 球団史を支えた男に別れ`,
+  (n, yrs, line) => `${n}（在籍${yrs}年・${line}）、まさかの戦力外 ― 功労者に非情の決断`,
+  (n, yrs, line) => `長年チームを支えた${n}（${line}）に戦力外通告。在籍${yrs}年の重みを胸に`,
+];
+
+/**
+ * オフの戦力外（off.pickups の from===myTeamId）のうち「功労者」だけを感情演出つき見出しへ変換する。
+ * 判定基準（関数内定数・研究レポートの目安どおり）: 在籍${VETERAN_TENURE_MIN}年以上、または
+ * 通算安打${VETERAN_HITS_MIN}（野手）/通算勝利${VETERAN_WINS_MIN}（投手）以上。
+ * @param {Object} state GameState（careerStats/masterSeed が必要）
+ * @param {Object} off advanceYear の返す off 要約（off.pickups が必要）
+ * @param {number} completedYear 完了年（テンプレ選択の決定論座標に使う）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function}} names pnameOf: playerId→表示名（省略時は識別子そのまま）
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+export function veteranFarewellHeadlines(state, off, completedYear, myTeamId, names = {}) {
+  const { pnameOf = (id) => id } = names;
+  const out = [];
+  for (const pu of off.pickups ?? []) {
+    if (pu.from !== myTeamId) continue;
+    const tenure = tenureYearsWith(state, pu.playerId, myTeamId);
+    const isPitcher = pu.role === 'pitcher';
+    const agg = isPitcher ? careerPitching(state.careerStats, pu.playerId) : careerBatting(state.careerStats, pu.playerId);
+    const merit = tenure >= VETERAN_TENURE_MIN || (isPitcher ? agg.w >= VETERAN_WINS_MIN : agg.h >= VETERAN_HITS_MIN);
+    if (!merit) continue;
+    const line = isPitcher ? `通算${agg.w}勝${agg.l}敗${agg.sv}S` : `通算${agg.h}安打${agg.hr}本塁打`;
+    const r = makeRng(hashSeed(state.masterSeed, 'farewell', completedYear, pu.playerId));
+    const tpl = VETERAN_FAREWELL_TEMPLATES[r.int(VETERAN_FAREWELL_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(pu.playerId), tenure, line), cls: 'bad', playerId: pu.playerId });
+  }
+  return out;
+}
+
+const FOLLOWUP_MIN_PA = 200; // 後日談「活躍」判定の最低打席（過小サンプル除外）
+const FOLLOWUP_MIN_IP = 60; // 同・最低投球回
+const FOLLOWUP_WOBA_MARGIN = 0.03; // 代替wOBA(cfg.tuning.market.release)からこれ以上高ければ「活躍」
+const FOLLOWUP_FIP_MARGIN = 0.3; // 代替FIPからこれ以上低ければ「活躍」
+
+const FOLLOWUP_TEMPLATES = [
+  (n, t) => `${n}、${t}を出て早くも躍動 ― 新天地で結果を残す`,
+  (n, t) => `古巣${t}を離れた${n}、覚醒の兆し`,
+  (n, t) => `${n}、${t}退団から一転。「あの時手放した男」が輝きを放つ`,
+];
+
+/** transactionLog の1行から「myTeamId を離れた選手」を導出する（rivalriesOf と同じ from/to 規約）。 */
+function departureFrom(row, myTeamId) {
+  if ((row.kind === 'fa' || row.kind === 'pickup') && row.from === myTeamId) return row.playerId;
+  if (row.kind === 'trade') {
+    if (row.from === myTeamId) return row.playerId;
+    if (row.to === myTeamId) return row.playerId2;
+  }
+  return null;
+}
+
+/**
+ * 前年に自チームから出た選手（FA/トレード/戦力外拾い上げ）が当季（観測成績）で活躍している場合の
+ * 後日談ニュース（純関数・シーズン中の定期ダイジェスト用）。「活躍」判定は当季の観測（rt.stats）
+ * だけを見る（trueAbility非参照）＝代替水準（cfg.tuning.market.release）を一定以上上回るかどうか。
+ * @param {Object} state GameState（state.rt/transactionLog/masterSeed/year が必要）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function, tnameOf?:Function}} names
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+export function departedPlayerFollowUpHeadlines(state, myTeamId, names = {}) {
+  const rt = state.rt;
+  if (!rt) return [];
+  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const cfg = state.cfg;
+  const rel = cfg.tuning.market.release;
+  const log = (state.transactionLog || []).filter((r) => r.year === state.year - 1);
+  const out = [];
+  const seen = new Set();
+  for (const row of log) {
+    const departed = departureFrom(row, myTeamId);
+    if (!departed || seen.has(departed)) continue;
+    const s = rt.stats.stats.get(departed);
+    if (!s) continue;
+    let active = false;
+    if (s.pitching && s.pitching.outs > 0) {
+      const ip = s.pitching.outs / 3;
+      if (ip >= FOLLOWUP_MIN_IP) active = simpleFip(s.pitching, ip) <= rel.replacementFip - FOLLOWUP_FIP_MARGIN;
+    } else if (s.batting && s.batting.pa >= FOLLOWUP_MIN_PA) {
+      active = observedWoba(s.batting, cfg) >= rel.replacementWoba + FOLLOWUP_WOBA_MARGIN;
+    }
+    if (!active) continue;
+    seen.add(departed);
+    const r = makeRng(hashSeed(state.masterSeed, 'followup', state.year, departed));
+    const tpl = FOLLOWUP_TEMPLATES[r.int(FOLLOWUP_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(departed), tnameOf(myTeamId)), cls: 'info', playerId: departed });
+  }
+  return out;
 }

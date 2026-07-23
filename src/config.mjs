@@ -1286,6 +1286,11 @@ export const TUNING_DEFAULT = {
       //   市場は高く買う）。多くの球団が過大評価(>1)し、稀に正しく評価(≈1)する球団が
       //   救援に金をかけず安く勝つ（レイズ型）の土台になる。
       wRelieverMean: 1.3, wRelieverSd: 0.35, wRelieverMin: 0.4, wRelieverMax: 2.4,
+      // Wave D（gm_analytics_spec.md）: 球団の「セイバー理解度」(0..1)。teamEvalProfile が
+      //   独立シード hashSeed(masterSeed,'evalprofile',teamId,'saber') で引く（既存 r の連番draw
+      //   には絶対に足さない＝足すと全球団の評価プロファイルが世界ごと引き直しになるため）。
+      //   高いほどトレード時の主観価値に regressedValueOf（回帰調整済み評価）を強く反映する。
+      saberSavvyMean: 0.5, saberSavvySd: 0.25, saberSavvyMin: 0, saberSavvyMax: 1,
     },
     // 評価成分のスケール（守備/出塁/位置価値の rating 換算）。
     eval: {
@@ -1402,6 +1407,47 @@ export const TUNING_DEFAULT = {
       threshold: -3.0, // 戦力外スコアがこれ未満で戦力外候補
       minAge: 26, // これ未満は戦力外にしない（若手は観測が薄くても切らず育てる）
       maxCutsPerTeam: 2, // 各球団が毎オフ出す戦力外候補の上限（worst score から）
+    },
+    // ------------------------------------------------------------------------
+    // Wave D（gm_analytics_spec.md §Wave D）: トレードAI受諾のセイバー視点。
+    //   src/game/transactions.mjs regressedValueOf/subjectiveTradeValue が消費。
+    //   saberSavvy 自体の分布は tuning.market.profile（既存プロファイルノブと同じ置き場・上記）。
+    // ------------------------------------------------------------------------
+    saber: {
+      // 野手: BABIP乖離の平均回帰補正（定説: インプレー打球の結果=BABIPはリーグ平均へ回帰する）。
+      //   当季BABIPがリーグ平均±babipDevThresholdを超えて乖離していれば、乖離の
+      //   babipRegressFactor（=半分）ぶんをリーグ平均側へ戻す（超過分だけを戻す訳ではなく、
+      //   乖離全体の半分を戻す＝定説の「回帰」を素直に表現する簡易実装）。
+      babipDevThreshold: 0.030,
+      babipRegressFactor: 0.5,
+      leagueBabip: 0.308, // 回帰の基準（calibrate babip目標帯[.298,.318]の中央値）
+      // 野手: 少PA縮約（regression to the mean・簡易ベイズ）。PA/(PA+paRegressConstant) で
+      //   リーグ平均wOBA(tuning.mgr.wobaPrior)へ縮約する。mgr.wobaPriorPA(=60)は「観戦AIの
+      //   その場の采配判断用」の弱い縮約であり、市場評価用にはより強い縮約定数を新設する。
+      paRegressConstant: 300,
+      // 投手: FIP(DIPS準拠)を維持しつつ、K-BB%由来の推定ERA（kwERA式=既存 tuning.metrics.kwERA
+      //   を流用）を fipWeight:kbbWeight（既定7:3）で合成する（K-BB%はFIPよりHR/FB変動に強い
+      //   先行指標という定説＝「K-BB%が良いのにFIPが悪い」場合を将来重視で補正する）。
+      fipWeight: 0.7,
+      kbbWeight: 0.3,
+      leagueFip: 3.8, // 少IP縮約の基準（calibrate fip目標帯[3.6,4.0]の中央値）
+      ipRegressConstant: 70, // 少IP縮約の定数（IP/(IP+これ)でleagueFipへ縮約）
+      // 年齢割引（老化の定説・ageBiasとは独立の客観項）: 30歳超は1歳ごとに残存価値を逓減する。
+      ageDiscountStartAge: 30,
+      ageDiscountPerYear: 0.04, // 1歳あたりの逓減率
+      ageDiscountFloor: 0.5, // 逓減の下限（0に潰さない）
+      // トレードAIの主観価値合成（transactions.mjs subjectiveTradeValue）:
+      //   regressedValueOf/observedValueOf は runs 単位、evaluateProspect は rating 単位で
+      //   スケールが違う（直接の線形加重blendはスケール崩壊する）ため、両者の差分
+      //   (regressed−naive)を runToRatingScale で rating 相当へ変換し、savvy に応じて
+      //   評価の「従来評価（rating）」へ加算する（savvy=0で従来評価と完全一致・savvy=1で
+      //   フル反映。(1−savvy)×従来+savvy×regressed の趣旨をスケール整合させた実装）。
+      runToRatingScale: 0.5,
+      savvyDeltaCap: 15, // 上の加算量の上限（rating点・暴走防止）
+      // ポジション需要項: 受け手の弱点位置(gmBoard.positionStrengthMap の weak)を埋める選手は
+      //   主観価値を(1+posNeedBonus)倍、飽和位置(saturated)の選手は(1−posSurplusPenalty)倍。
+      posNeedBonus: 0.12,
+      posSurplusPenalty: 0.12,
     },
   },
 

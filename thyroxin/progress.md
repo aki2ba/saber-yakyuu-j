@@ -2,6 +2,30 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-23 (Wave D: トレードAI受諾のセイバー視点 — GM分析仕様・完＝鉄則5の完成形)
+
+**実装**（gm_analytics_spec.md Wave D・オフシーズンAIのみ・表示層非接触）:
+- `saberSavvy`（球団のセイバー理解度0..1）を teamEvalProfile へ追加。**独立シード**
+  hashSeed(masterSeed,'evalprofile',teamId,'saber')＝既存プロファイル（wBat等）は bit 不変
+  （テストで固定・引き直し禁止の教訓を明文化）
+- `regressedValueOf`（transactions.mjs・純関数）: BABIP乖離の平均回帰（乖離の半分戻し・単打換算）
+  ×少PA縮約（PA/(PA+300)簡易ベイズ）×投手はFIP:kwERA(K-BB%)=7:3合成＋少IP縮約×30歳超の年齢割引。
+  各補正に定説コメント明記。ノブは tuning.market.saber 新設
+- `subjectiveTradeValue`: 従来評価(rating単位)＋saberSavvy×(regressed−naive)差分のrating換算
+  （単位不整合を差分方式で解決・キャップ付・savvy=0で従来とbit一致）×ポジション需要項
+  （gmBoard.positionStrengthMap再利用: 受け手の弱点=割増/飽和=割引）
+- runTrades: 人間提案の受諾判定とAI間トレード双方を subjectiveTradeValue へ置換（同じ物差し）。
+  obs/standings は offseasonStage1 から供給＝live/load-replay 同一経路
+- **帰結**: セイバー度の低い球団は表層で買い、回帰で売る＝プレイヤーがGMボード/アナリストの目で
+  見つけた市場非効率を実トレードで突ける（鉄則5「市場の非効率を仕込む」の完成形）
+
+**ゲート**: npm test 656 PASS（+19: game_wd_saber_trade.test.mjs・e3/multiyear既存のまま通過）・
+build・smoke 13フロー・verify identity・**calibrate 62/62完全不変**・**realism GATE 45/0不変**
+＝オフ処理のみの変更で1年目シム非干渉を実証。
+
+**これで面白さ第4弾（データ語り＋GM分析）完了**: R1/R7/R8アナリストコラム→Wave Bフォーム判定→
+Wave C GMボード→Wave D トレードAIセイバー視点。データが「読み物」から「意思決定の道具」になった。
+
 ## 2026-07-23 (Wave C: GMボード — 弱点/飽和マップ・有望若手ウォッチ・トレードの窓)
 
 **実装**（gm_analytics_spec.md Wave C・表示層のみ・純関数・観測のみ）:

@@ -216,7 +216,10 @@ function offseasonStage1(league, cfg, {
   // FA → トレード（引退後の生存者を同型1:1スワップ・構成恒常・ドラフト枠に非干渉）。
   //   H5-A: obs を渡す（提示salary=当季観測貢献量→salaryFromValue の実弾化判定に使う）。
   const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, obs });
-  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, windowByTeam });
+  // Wave D（gm_analytics_spec.md）: obs/standings を渡す＝トレードAIの受諾判定にセイバー視点
+  //   （saberSavvy×regressedValueOf＋ポジション需要項）を反映する。live/load-replay とも
+  //   このstage1（純関数：state.league/careerStats/marketInterventions由来）を通るため同一。
+  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, windowByTeam, obs, standings });
   rebuildTeamRosters(league);
   // 時代トレンド（D3・§11.3）: 翌年（debut年）の世代の波・球速の経年上昇＝computeEra(yearIndex+1)。
   //   ＋王朝均衡: 完了年順位から弱球団の新人再分配 boost（戦力の平均回帰＝振り子）。

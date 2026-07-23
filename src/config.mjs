@@ -1286,6 +1286,11 @@ export const TUNING_DEFAULT = {
       //   市場は高く買う）。多くの球団が過大評価(>1)し、稀に正しく評価(≈1)する球団が
       //   救援に金をかけず安く勝つ（レイズ型）の土台になる。
       wRelieverMean: 1.3, wRelieverSd: 0.35, wRelieverMin: 0.4, wRelieverMax: 2.4,
+      // Wave D（gm_analytics_spec.md）: 球団の「セイバー理解度」(0..1)。teamEvalProfile が
+      //   独立シード hashSeed(masterSeed,'evalprofile',teamId,'saber') で引く（既存 r の連番draw
+      //   には絶対に足さない＝足すと全球団の評価プロファイルが世界ごと引き直しになるため）。
+      //   高いほどトレード時の主観価値に regressedValueOf（回帰調整済み評価）を強く反映する。
+      saberSavvyMean: 0.5, saberSavvySd: 0.25, saberSavvyMin: 0, saberSavvyMax: 1,
     },
     // 評価成分のスケール（守備/出塁/位置価値の rating 換算）。
     eval: {
@@ -1402,6 +1407,47 @@ export const TUNING_DEFAULT = {
       threshold: -3.0, // 戦力外スコアがこれ未満で戦力外候補
       minAge: 26, // これ未満は戦力外にしない（若手は観測が薄くても切らず育てる）
       maxCutsPerTeam: 2, // 各球団が毎オフ出す戦力外候補の上限（worst score から）
+    },
+    // ------------------------------------------------------------------------
+    // Wave D（gm_analytics_spec.md §Wave D）: トレードAI受諾のセイバー視点。
+    //   src/game/transactions.mjs regressedValueOf/subjectiveTradeValue が消費。
+    //   saberSavvy 自体の分布は tuning.market.profile（既存プロファイルノブと同じ置き場・上記）。
+    // ------------------------------------------------------------------------
+    saber: {
+      // 野手: BABIP乖離の平均回帰補正（定説: インプレー打球の結果=BABIPはリーグ平均へ回帰する）。
+      //   当季BABIPがリーグ平均±babipDevThresholdを超えて乖離していれば、乖離の
+      //   babipRegressFactor（=半分）ぶんをリーグ平均側へ戻す（超過分だけを戻す訳ではなく、
+      //   乖離全体の半分を戻す＝定説の「回帰」を素直に表現する簡易実装）。
+      babipDevThreshold: 0.030,
+      babipRegressFactor: 0.5,
+      leagueBabip: 0.308, // 回帰の基準（calibrate babip目標帯[.298,.318]の中央値）
+      // 野手: 少PA縮約（regression to the mean・簡易ベイズ）。PA/(PA+paRegressConstant) で
+      //   リーグ平均wOBA(tuning.mgr.wobaPrior)へ縮約する。mgr.wobaPriorPA(=60)は「観戦AIの
+      //   その場の采配判断用」の弱い縮約であり、市場評価用にはより強い縮約定数を新設する。
+      paRegressConstant: 300,
+      // 投手: FIP(DIPS準拠)を維持しつつ、K-BB%由来の推定ERA（kwERA式=既存 tuning.metrics.kwERA
+      //   を流用）を fipWeight:kbbWeight（既定7:3）で合成する（K-BB%はFIPよりHR/FB変動に強い
+      //   先行指標という定説＝「K-BB%が良いのにFIPが悪い」場合を将来重視で補正する）。
+      fipWeight: 0.7,
+      kbbWeight: 0.3,
+      leagueFip: 3.8, // 少IP縮約の基準（calibrate fip目標帯[3.6,4.0]の中央値）
+      ipRegressConstant: 70, // 少IP縮約の定数（IP/(IP+これ)でleagueFipへ縮約）
+      // 年齢割引（老化の定説・ageBiasとは独立の客観項）: 30歳超は1歳ごとに残存価値を逓減する。
+      ageDiscountStartAge: 30,
+      ageDiscountPerYear: 0.04, // 1歳あたりの逓減率
+      ageDiscountFloor: 0.5, // 逓減の下限（0に潰さない）
+      // トレードAIの主観価値合成（transactions.mjs subjectiveTradeValue）:
+      //   regressedValueOf/observedValueOf は runs 単位、evaluateProspect は rating 単位で
+      //   スケールが違う（直接の線形加重blendはスケール崩壊する）ため、両者の差分
+      //   (regressed−naive)を runToRatingScale で rating 相当へ変換し、savvy に応じて
+      //   評価の「従来評価（rating）」へ加算する（savvy=0で従来評価と完全一致・savvy=1で
+      //   フル反映。(1−savvy)×従来+savvy×regressed の趣旨をスケール整合させた実装）。
+      runToRatingScale: 0.5,
+      savvyDeltaCap: 15, // 上の加算量の上限（rating点・暴走防止）
+      // ポジション需要項: 受け手の弱点位置(gmBoard.positionStrengthMap の weak)を埋める選手は
+      //   主観価値を(1+posNeedBonus)倍、飽和位置(saturated)の選手は(1−posSurplusPenalty)倍。
+      posNeedBonus: 0.12,
+      posSurplusPenalty: 0.12,
     },
   },
 
@@ -1594,6 +1640,61 @@ export const TUNING_DEFAULT = {
       milestoneReach: { hits: 5, homeRuns: 3, wins: 2, saves: 2, strikeouts: 5 },
       pennantMaxGb: 1.5, // 首位攻防戦: 自チームとの直接のゲーム差がこれ以内の相手とのカード初戦
       pennantMinGamesPlayed: 5, // 開幕直後（全球団横並び）の誤発火防止ガード（news.mjs rankAndGbと同型）
+    },
+    // R1+R7+R8（thyroxin/research…データストーリーテリング調査）:「アナリストコラム」
+    //   （game/analystColumn.mjs が消費）。観測成績(rt.stats)のみの純関数・表示層のみ・エンジン非干渉。
+    analyst: {
+      maxItems: 4, // ニュースタブ「🔬 アナリストの目」節に載せる週次の最大件数
+      extremeMinPool: 5, // 極端値（リーグ1位/最下位）を語るのに必要な最低母集団（規定到達者数）
+      divergenceXwobaMin: 0.025, // xwOBA−wOBA 乖離の下限（打者・意外性型/出来すぎ警報の判定）
+      divergenceEraSieraMin: 0.75, // ERA−SIERA 乖離の下限（投手・意外性型/出来すぎ警報の判定）
+      comparisonMaxCareerYear: 3, // 「若手」とみなす最大プロ年数（比較型: 殿堂の同年目ペースとの対比）
+      comparisonMinProgress: 0.3, // シーズン消化率がこれ未満はペース比較の対象外（序盤ノイズ除外）
+      comparisonPaceRatio: 0.85, // 若手ペースが殿堂の同年目実績のこの比率以上なら「同水準」
+      gameHighlightLookback: 5, // R7: 直近何試合まで遡って「その日の一番」を探すか
+      gameHighlightMinOuts: 15, // R7好投判定: 最低アウト数（5回=15アウト）
+      gameHighlightMinKbb: 5, // R7好投判定: 最低 奪三振−与四球
+      gameHighlightMinHr: 2, // R7快音判定: 1試合の最低本塁打数
+      wpaHiddenWrcMax: 100, // R8: 「打撃成績が地味」とみなす wRC+ の上限（リーグ平均=100未満）
+      wpaHiddenMinWpa: 0.3, // R8: 隠れWPAリーダーとして拾う最低WPA
+    },
+    // Wave B（thyroxin/specs/gm_analytics_spec.md・GM分析仕様）: フォーム判定（好調▲/不調▼）。
+    //   game/form.mjs が消費。自チーム選手のみ playerGameLog の窓（box集計）から算出する純関数。
+    //   表示層のみ・エンジン非干渉・真値/能力値レーティング非参照（観測statlineのみ）。
+    form: {
+      batWindowGames: 10, // 野手: 窓＝直近何試合（自チームの playerGameLog 末尾から）
+      batMinWindowPA: 20, // 窓の最低打席（未満はサンプル不足でtier=null。box近似のPA=ab+bb）
+      wobaGapHot: 0.040, // 窓wOBA近似がシーズンwOBAをこれ以上上回れば好調候補
+      wobaGapCold: 0.040, // 同・下回れば不調候補（対称の下限）
+      babipHotGuard: 0.400, // 窓BABIPがこれ超なら「出来すぎ」警報（平均回帰の定説・好調時に付記）
+      babipColdGuard: 0.230, // 窓BABIPがこれ未満なら「不運が過ぎる」警報（同定説・不調時に付記）
+      babipMinBip: 10, // BABIP警報を付けるための最低インプレー打球数（ab-so-hr、ゼロ割/極小サンプル回避）
+      pitLookbackApps: 3, // 投手: 窓＝直近何登板（自チームの playerGameLog を遡って登板を3件拾う）
+      pitLookbackMaxGames: 40, // 3登板を探して遡る試合数の上限（先発ローテ間隔を跨いでも見つからない場合の安全弁）
+      pitMinWindowOuts: 18, // 窓の最低アウト数（6回=18未満はサンプル不足でtier=null）
+      kbbGapHot: 0.08, // 窓K-BB%がシーズンK-BB%をこれ以上上回れば好調候補（DIPS理論・投手の先行指標）
+      kbbGapCold: 0.08, // 同・下回れば不調候補
+      eraGapHot: 1.5, // 窓の目安防御率(失点/9)がシーズンERAよりこれ以上低ければ好調候補
+      eraGapCold: 1.5, // 同・高ければ不調候補
+    },
+    // Wave C（thyroxin/specs/gm_analytics_spec.md・GM分析仕様）: GMボード（弱点・飽和・有望若手・
+    //   トレード相手サジェスト）。game/gmBoard.mjs が消費。観測statline/farmStatsのみの純関数・
+    //   表示層のみ・エンジン非干渉・真値/能力値レーティング非参照。
+    gmBoard: {
+      minSeasonProgress: 0.2, // 消化率がこれ未満は弱点/飽和判定を出さない（序盤の少試合ノイズ除外）
+      minPositionPopulation: 6, // 百分位化に使う母集団（球団の「レギュラー」値の数）の最低数
+      weakPctlMax: 0.2, // 弱点=百分位がこれ以下（下位20%）
+      satMinPctl: 0.6, // 飽和判定: 控えの百分位がこれ以上（上位40%＝観測上位の控え）
+      satMinPaFrac: 0.3, // 飽和判定（野手）: 控えの打席が「規定打席」のこの割合以上
+      satMinIpFrac: 0.3, // 飽和判定（投手）: 控えの投球回が「規定投球回」のこの割合以上
+      prospectMaxAge: 25, // 有望若手とみなす年齢上限
+      prospectMinPA: 20, // 有望若手判定（野手）に必要な最低打席（一軍/二軍とも・小サンプルは語らない）
+      prospectMinIP: 15, // 有望若手判定（投手）に必要な最低投球回
+      prospectMinPctl: 0.6, // 「観測百分位が高い」の下限（これ未満は有望と語らない）
+      prospectThinPaFrac: 0.5, // 一軍在籍で「出場機会が細い」とみなす打席（規定打席のこの割合未満）
+      prospectThinIpFrac: 0.5, // 同・投球回（規定投球回のこの割合未満）
+      prospectMaxItems: 20, // 狙い目リストの最大件数
+      tradeSuggestMax: 5, // トレードの窓サジェストの最大件数
     },
   },
 };

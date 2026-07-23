@@ -6,6 +6,8 @@
 //   runReleaseAndPickup(league,cfg,ctx)… 戦力外→拾い上げ（少なく歪んだ観測で切られ、査定の違う球団が拾う）
 //   runContractRenewal(league,cfg,ctx) … 契約更改（年俸=観測連動・34歳以降の長期はリスク＝フレーバー）
 //   observedValueOf(p, obs, cfg)       … 当該シーズンの "実観測" 貢献量（放出判定の入力・出場機会依存）
+//   regressedValueOf(p, obs, cfg)      … Wave D: observedValueOf の回帰調整版（BABIP平均回帰/少PA縮約/年齢割引）
+//   subjectiveTradeValue(...)          … Wave D: トレードAIの主観価値（saberSavvy×regressed＋ポジション需要項）
 //
 // 設計原則（phaseC_spec・厳守）:
 //   - エンジンを壊さない: すべてオフシーズン遷移（2年目以降）でのみ呼ばれる。1年目レギュラー
@@ -22,6 +24,8 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { evaluateProspect, waiverOrder } from './market.mjs';
 import { observedWoba } from '../sim/manager.mjs';
+import { rawRunValuePerPA, LINEAR_WEIGHTS } from '../sim/leagueConstants.mjs';
+import { positionStrengthMap } from './gmBoard.mjs';
 import { salaryOf, salaryFromValue, sumSalary } from './finance.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
@@ -96,6 +100,153 @@ export function observedValueOf(p, obs, cfg) {
   const pa = b.pa || 0;
   if (pa <= 0) return null;
   return (observedWoba(b, cfg) - rel.replacementWoba) * pa;
+}
+
+// ============================================================================
+// Wave D（gm_analytics_spec.md §Wave D）: トレードAI受諾のセイバー視点。
+//   regressedValueOf … observedValueOf の回帰調整版（純関数・trueAbility非参照）。
+//   posNeedMultiplier/subjectiveTradeValue … トレードAIの主観価値合成（saberSavvy×回帰＋需要項）。
+// ============================================================================
+
+/**
+ * observedValueOf の回帰調整版（Wave D §2・純関数・trueAbility非参照）。当季の"生"観測から
+ * 「平均回帰込みの、より真の実力に近い」貢献量を出す。observedValueOf 同様 obs に行が無い/
+ * 出場が無ければ null（新人・当年未出場は対象外）。
+ *   野手: ①BABIP乖離の平均回帰補正（定説: インプレー打球の結果=BABIPはリーグ平均へ回帰する。
+ *     当季BABIPがリーグ平均±devThreshold超で乖離していれば乖離の半分をリーグ平均側へ戻す＝
+ *     戻し分を単打換算でwOBAへ反映）②少PA縮約（PA/(PA+定数)でリーグ平均wOBAへ縮約＝簡易ベイズ）
+ *     した「回帰調整wOBA」で価値換算。
+ *   投手: FIP（DIPS準拠）を維持しつつ、K-BB%由来の推定ERA（kwERA式=既存 tuning.metrics.kwERA を
+ *     流用・K-BB%はFIPよりHR/FB変動に強い先行指標という定説）を fipWeight:kbbWeight で合成し、
+ *     少IP縮約（IP/(IP+定数)でリーグ平均FIPへ縮約）した上で価値換算。
+ *   年齢割引: 30歳超は1歳ごとに残存価値を逓減（老化の定説・ageBiasとは独立の客観項）。
+ * @returns {number|null}
+ */
+export function regressedValueOf(p, obs, cfg) {
+  const line = obs.get(p.id);
+  if (!line) return null;
+  const rel = cfg.tuning.market.release;
+  const sk = cfg.tuning.market.saber;
+  const mgr = cfg.tuning.mgr;
+  let value;
+  if (p.role === 'pitcher') {
+    const pt = line.pitching || {};
+    const ip = (pt.outs || 0) / 3;
+    if (ip <= 0) return null;
+    const fip = (13 * (pt.hr || 0) + 3 * ((pt.bb || 0) - (pt.ibb || 0) + (pt.hbp || 0)) - 2 * (pt.so || 0)) / ip;
+    const bf = pt.bf || 0;
+    const kbbPct = bf > 0 ? (pt.so || 0) / bf - (pt.bb || 0) / bf : 0;
+    const kw = cfg.tuning.metrics.kwERA;
+    const kwImplied = kw.c0 - kw.k * kbbPct; // K-BB%由来のFIP相当（kwERA式の流用）
+    const blended = sk.fipWeight * fip + sk.kbbWeight * kwImplied; // 例7:3でFIP:K-BB%換算
+    const shrunk = (blended * ip + sk.leagueFip * sk.ipRegressConstant) / (ip + sk.ipRegressConstant); // 少IP縮約
+    value = ((rel.replacementFip - shrunk) * ip) / 9;
+  } else {
+    const b = line.batting || {};
+    const pa = b.pa || 0;
+    if (pa <= 0) return null;
+    const bip = (b.ab || 0) - (b.so || 0) - (b.hr || 0) + (b.sf || 0); // インプレー打球数
+    let b1adj = b.b1 || 0;
+    if (bip > 0) {
+      const babip = ((b.h || 0) - (b.hr || 0)) / bip;
+      const dev = babip - sk.leagueBabip;
+      if (Math.abs(dev) > sk.babipDevThreshold) {
+        // 定説どおり乖離の半分をリーグ平均側へ戻す（戻し分は単打の増減として扱う＝内訳が
+        // 無い以上「でっち上げない」で最も単純な近似）。
+        const hitsDelta = -dev * sk.babipRegressFactor * bip;
+        b1adj = Math.max(0, b1adj + hitsDelta);
+      }
+    }
+    const rawWoba = rawRunValuePerPA({ ...b, b1: b1adj }, LINEAR_WEIGHTS) * mgr.wobaScale;
+    // 少PA縮約（簡易ベイズ）: mgr.wobaPriorPA(=60)は観戦AIのその場判断用の弱い縮約であり、
+    //   市場評価にはより強い縮約定数(paRegressConstant)を使う。
+    const shrunkWoba = (rawWoba * pa + mgr.wobaPrior * sk.paRegressConstant) / (pa + sk.paRegressConstant);
+    value = (shrunkWoba - rel.replacementWoba) * pa;
+  }
+  const ageMult = p.age > sk.ageDiscountStartAge
+    ? Math.max(sk.ageDiscountFloor, 1 - sk.ageDiscountPerYear * (p.age - sk.ageDiscountStartAge))
+    : 1;
+  return value * ageMult;
+}
+
+/**
+ * ポジション需要項の乗数（Wave D §3・純関数）。gmBoard.positionStrengthMap の1セル（cell）を
+ * 受け取り、弱点(weak)なら(1+posNeedBonus)倍・飽和(saturated)なら(1−posSurplusPenalty)倍・
+ * どちらでもない/セル不明なら1（中立）を返す。
+ * @param {?{weak:boolean, saturated:boolean}} cell
+ */
+export function posNeedMultiplier(cell, cfg) {
+  const sk = cfg.tuning.market.saber;
+  if (!cell) return 1;
+  if (cell.weak) return 1 + sk.posNeedBonus;
+  if (cell.saturated) return 1 - sk.posSurplusPenalty;
+  return 1;
+}
+
+/**
+ * teamId×league×obs×standings から gmBoard.positionStrengthMap を1回だけ構築し、
+ * `${teamId}:${pos}` → cell のルックアップ表にする（runTrades が1回だけ呼ぶ・null許容の
+ * 早期リターンで obs/standings 未提供の旧呼び出しは無効化＝既存挙動と bit 同一）。
+ * gmBoard.positionStrengthMap(state) が要求する形へ league/obs/standings を仮の
+ * state（{cfg, league, rt:{stats:{stats:obs}, standings:Map}}）として組み立てる。
+ * @returns {?Map<string,Object>}
+ */
+function buildPosNeedMap(league, cfg, obs, standings) {
+  if (!obs || !obs.size || !standings || !standings.length) return null;
+  const state = { cfg, league, rt: { stats: { stats: obs }, standings: new Map(standings.map((s) => [s.teamId, s])) } };
+  const { cells } = positionStrengthMap(state);
+  const m = new Map();
+  for (const c of cells) m.set(`${c.teamId}:${c.pos}`, c);
+  return m;
+}
+
+/** posNeedMap から選手pの「受け手teamIdでの位置セル」を引く（投手はobsの当季役割でSP/RP判定）。 */
+function lookupPosCell(posNeedMap, teamId, p, obs) {
+  if (!posNeedMap) return null;
+  let pos;
+  if (p.role === 'pitcher') {
+    const line = obs ? obs.get(p.id) : null;
+    const pt = line && line.pitching;
+    if (!pt || !(pt.outs > 0) || !(pt.g > 0)) return null;
+    pos = pt.gs * 2 >= pt.g ? 'SP' : 'RP';
+  } else {
+    pos = p.primaryPos;
+  }
+  return posNeedMap.get(`${teamId}:${pos}`) ?? null;
+}
+
+/**
+ * トレードAIの主観価値（Wave D §3）: `(1−saberSavvy)×従来評価 + saberSavvy×regressed評価`
+ * ＋ポジション需要項。評価関数を直接ブレンドすると evaluateProspect（rating単位）と
+ * regressedValueOf/observedValueOf（runs単位）でスケールが崩壊するため、regressed と
+ * naive(observedValueOf) の**差分**を runToRatingScale で rating 相当へ変換し、savvy に応じて
+ * 従来評価へ加算する（savvy=0で従来評価と完全一致・savvy=1でフル反映＝スケール整合させた
+ * 上記式の等価な実装。savvyDeltaCapで暴走を防ぐ）。obs が無い/当季観測が無い選手は
+ * 従来評価のみ（回帰の入力自体が無い＝新人等）。
+ * 最後にポジション需要項（受け手teamIdの弱点/飽和）を乗じる。
+ * @param {Map<string,Object>} profiles teamId→teamEvalProfile()
+ * @param {string} teamId 評価する側（受け手）の球団id
+ * @param {Object} p 評価対象の選手
+ * @param {?Map<string,Object>} obs playerId→当季観測statline（省略時は従来評価のみ）
+ * @param {?Map<string,Object>} posNeedMap buildPosNeedMap() の結果（省略時はポジション補正なし）
+ */
+export function subjectiveTradeValue(profiles, teamId, p, cfg, { masterSeed, yearIndex, obs = null, posNeedMap = null } = {}) {
+  const profile = profiles.get(teamId);
+  const trad = evaluateProspect(profile, p, cfg, { masterSeed, yearIndex, teamId });
+  const savvy = profile?.saberSavvy ?? 0;
+  let v = trad;
+  if (savvy > 0 && obs) {
+    const reg = regressedValueOf(p, obs, cfg);
+    const naive = observedValueOf(p, obs, cfg);
+    if (reg != null && naive != null) {
+      const sk = cfg.tuning.market.saber;
+      const rawDelta = (reg - naive) * sk.runToRatingScale;
+      const delta = Math.max(-sk.savvyDeltaCap, Math.min(sk.savvyDeltaCap, rawDelta));
+      v = trad + savvy * delta;
+    }
+  }
+  const cell = lookupPosCell(posNeedMap, teamId, p, obs);
+  return v * posNeedMultiplier(cell, cfg);
 }
 
 /**
@@ -261,13 +412,21 @@ function windowPremium(teamId, incoming, windowByTeam, cfg) {
  * 一方的な財布勝負を防ぐ）。p.contract 未設定の選手は economy.defaultSalary が使われる＝
  * 契約未更改の旧テスト/序盤は全員同額で判定が実質無効化（既存挙動に近い）。
  * @param {Map<string,string>|null} windowByTeam teamId→'contending'|'neutral'|'rebuilding'（決定3・§決定4で使用）
+ * @param {Map<string,Object>} [obs] Wave D: playerId→当季観測statline（受諾判定の主観価値=
+ *   subjectiveTradeValue の回帰/需要項入力。省略時は従来の evaluateProspect のみ＝既存挙動と bit 同一）
+ * @param {Array} [standings] Wave D: 当季順位表（positionStrengthMap のポジション需要項の入力）
  * @returns {Array} 成立したトレードの記録
  */
-export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions, windowByTeam = null }) {
+export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions, windowByTeam = null, obs = null, standings = null }) {
   const tc = cfg.tuning.market.trade;
   const salaryOk = (a, b) => Math.abs(salaryOf(a, cfg) - salaryOf(b, cfg)) <= tc.salaryDiffMax;
   const order = teamIds(league);
   const rosters = activeByTeam(league);
+  // Wave D: 受諾判定の主観価値（AI球団の評価地点）だけをここで subjectiveTradeValue に置換する。
+  //   protectSet/候補選定（下の cand.set のソート）は「自分の中で誰が最も惜しくないか」という
+  //   従来どおりの自己評価に留める（spec範囲=受諾判定/AI間トレードの評価関数のみ）。
+  const posNeedMap = buildPosNeedMap(league, cfg, obs, standings);
+  const subjective = (teamId, p) => subjectiveTradeValue(profiles, teamId, p, cfg, { masterSeed, yearIndex, obs, posNeedMap });
   const protects = new Map();
   for (const tid of order) {
     protects.set(tid, protectSet(tid, rosters.get(tid), profiles, cfg, tc.protectCount, masterSeed, yearIndex));
@@ -296,10 +455,12 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
     if (a.teamId !== iv.aTeam || b.teamId !== iv.bTeam) continue;
     if (typeKey(a) !== typeKey(b)) continue; // 同型のみ（構成恒常）
     // AI 相手（bTeam）の受諾判定: 受け取る a を、放出する b より margin 超で高評価なら受諾。
+    //   Wave D: 主観価値=subjectiveTradeValue（(1-saberSavvy)×従来評価+saberSavvy×regressed評価
+    //   相当＋ポジション需要項）。
     const aiTeam = iv.bTeam;
     const gain =
-      assess(profiles, aiTeam, a, cfg, masterSeed, yearIndex) + windowPremium(aiTeam, a, windowByTeam, cfg) -
-      assess(profiles, aiTeam, b, cfg, masterSeed, yearIndex);
+      subjective(aiTeam, a) + windowPremium(aiTeam, a, windowByTeam, cfg) -
+      subjective(aiTeam, b);
     if (gain > tc.margin && salaryOk(a, b)) swap(a, b, 'player');
     else trades.push({ aPlayer: a.id, aTeam: iv.aTeam, bPlayer: b.id, bTeam: iv.bTeam, via: 'player', rejected: true });
   }
@@ -326,12 +487,14 @@ export function runTrades(league, cfg, { profiles, masterSeed, yearIndex, interv
         const Xa = cand.get(A);
         const Xb = cand.get(B);
         if (!Xa || !Xb || moved.has(Xa.id) || moved.has(Xb.id)) continue;
+        // Wave D: 双方とも主観価値（subjectiveTradeValue）で評価する（同じ物差しでないと
+        //   双方winのtwin-winロジックが崩れるため、受け取り側/放出側とも置換する）。
         const aGain =
-          assess(profiles, A, Xb, cfg, masterSeed, yearIndex) + windowPremium(A, Xb, windowByTeam, cfg) -
-          assess(profiles, A, Xa, cfg, masterSeed, yearIndex);
+          subjective(A, Xb) + windowPremium(A, Xb, windowByTeam, cfg) -
+          subjective(A, Xa);
         const bGain =
-          assess(profiles, B, Xa, cfg, masterSeed, yearIndex) + windowPremium(B, Xa, windowByTeam, cfg) -
-          assess(profiles, B, Xb, cfg, masterSeed, yearIndex);
+          subjective(B, Xa) + windowPremium(B, Xa, windowByTeam, cfg) -
+          subjective(B, Xb);
         if (aGain > tc.margin && bGain > tc.margin && salaryOk(Xa, Xb)) {
           swap(Xa, Xb, 'ai');
           if (trades.filter((t) => !t.rejected).length >= tc.maxPerYear) break outer;

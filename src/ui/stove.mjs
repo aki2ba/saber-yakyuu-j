@@ -36,6 +36,18 @@ const stoveView = {
   campPick: null, // H4: 秋季キャンプで方針編集中の自チーム選手の playerId
 };
 
+/**
+ * Wave C（gm_analytics_spec.md）: GMボードの「トレードの窓」サジェストから、既存ストーブ画面の
+ * トレードタブへ導線する（stoveView.tab='trade'・放出候補を playerId で事前選択）。
+ * @param {Object} u stoveDeps()（ui.mjs 経由・renderStoveScreen と同じ deps 束）
+ * @param {?string} playerId 事前選択する自チームの放出候補（無ければ選択なしでトレードタブへ）
+ */
+export function stoveGotoTrade(u, playerId = null) {
+  stoveView.tab = 'trade';
+  if (playerId) stoveView.pick = playerId;
+  renderStoveScreen(u);
+}
+
 // --- 純関数ヘルパー（介入ログ以外に何も書かない） ------------------------------
 
 /** 当年（現 yearIndex）の市場介入ログ。 */

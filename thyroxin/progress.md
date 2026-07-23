@@ -2,6 +2,88 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-23 (Wave D: トレードAI受諾のセイバー視点 — GM分析仕様・完＝鉄則5の完成形)
+
+**実装**（gm_analytics_spec.md Wave D・オフシーズンAIのみ・表示層非接触）:
+- `saberSavvy`（球団のセイバー理解度0..1）を teamEvalProfile へ追加。**独立シード**
+  hashSeed(masterSeed,'evalprofile',teamId,'saber')＝既存プロファイル（wBat等）は bit 不変
+  （テストで固定・引き直し禁止の教訓を明文化）
+- `regressedValueOf`（transactions.mjs・純関数）: BABIP乖離の平均回帰（乖離の半分戻し・単打換算）
+  ×少PA縮約（PA/(PA+300)簡易ベイズ）×投手はFIP:kwERA(K-BB%)=7:3合成＋少IP縮約×30歳超の年齢割引。
+  各補正に定説コメント明記。ノブは tuning.market.saber 新設
+- `subjectiveTradeValue`: 従来評価(rating単位)＋saberSavvy×(regressed−naive)差分のrating換算
+  （単位不整合を差分方式で解決・キャップ付・savvy=0で従来とbit一致）×ポジション需要項
+  （gmBoard.positionStrengthMap再利用: 受け手の弱点=割増/飽和=割引）
+- runTrades: 人間提案の受諾判定とAI間トレード双方を subjectiveTradeValue へ置換（同じ物差し）。
+  obs/standings は offseasonStage1 から供給＝live/load-replay 同一経路
+- **帰結**: セイバー度の低い球団は表層で買い、回帰で売る＝プレイヤーがGMボード/アナリストの目で
+  見つけた市場非効率を実トレードで突ける（鉄則5「市場の非効率を仕込む」の完成形）
+
+**ゲート**: npm test 656 PASS（+19: game_wd_saber_trade.test.mjs・e3/multiyear既存のまま通過）・
+build・smoke 13フロー・verify identity・**calibrate 62/62完全不変**・**realism GATE 45/0不変**
+＝オフ処理のみの変更で1年目シム非干渉を実証。
+
+**これで面白さ第4弾（データ語り＋GM分析）完了**: R1/R7/R8アナリストコラム→Wave Bフォーム判定→
+Wave C GMボード→Wave D トレードAIセイバー視点。データが「読み物」から「意思決定の道具」になった。
+
+## 2026-07-23 (Wave C: GMボード — 弱点/飽和マップ・有望若手ウォッチ・トレードの窓)
+
+**実装**（gm_analytics_spec.md Wave C・表示層のみ・純関数・観測のみ）:
+- `src/game/gmBoard.mjs`: `positionStrengthMap`（12球団×守備8位置+先発/救援2枠。レギュラー=
+  当季観測positionOuts最多・観測wOBA/K-BB%/FIPのリーグ内百分位。弱点=下位20%/飽和=同水準以上の
+  控えが渋滞）・`prospectWatch`（年齢≤25×観測百分位高×出場機会薄=「塞がれた有望株」・二軍farmStats
+  も対象・断定なし文言）・`tradeTargetSuggestions`（自分の飽和×相手の弱点のマッチング）
+- UI: チームタブに「GM」サブタブ（位置別ヒート表=既存heatトークン・自チーム行先頭固定・狙い目
+  リスト→選手モーダル・「トレード画面へ」導線=stoveGotoTrade）
+- レビュー修正: GM導線がストーブ画面のタブ状態（stoveView.tab）を持ち越し、後続smokeの
+  「ストーブを開くとFA宣言見込み」前提を壊した→smoke側でFA市場タブへ戻すリセット追加
+
+**ゲート**: npm test 637 PASS（+19: game_wc_gmboard.test.mjs）・build(56モジュール)・smoke 13
+フロー・verify identity・calibrate 62/62 全PASS。
+
+**次**: Wave D=トレードAI受諾のセイバー視点（saberSavvy独立シード・回帰調整評価・ポジション需要項）。
+
+## 2026-07-23 (Wave B: フォーム判定（好調▲/不調▼） — GM分析仕様の第1弾)
+
+**実装**（gm_analytics_spec.md Wave B・表示層のみ・純関数・保存なし）:
+- `src/game/form.mjs`: `playerFormOf`（自チーム選手のみ・playerGameLog窓）＋`teamFormMap`（一覧用
+  軽量バルク）。打者=直近10試合の窓wOBA近似±.040 vs シーズン＋**窓BABIP警報**（>.400=出来すぎ/
+  <.230=不運すぎ・平均回帰の定説を文言に明記）。投手=直近3登板の窓K-BB%±8pt（DIPS先行指標）＋
+  目安防御率±1.5。最低サンプルゲート（窓20打席/18アウト未満はtier=null=語らない）
+- UI: チームタブ一軍一覧に▲/▼バッジ（ホバーで理由先頭）・選手モーダル基本タブにフォーム節
+  （理由全行）。ノブは tuning.storylines.form
+- 一軍二軍入替の判断材料として「見かけの好調（BABIP出来すぎ）に注意」まで表示＝表層×セイバー併用
+
+**ゲート**: npm test 618 PASS（+17: game_wb_form.test.mjs）・build(55モジュール)・smoke 13フロー・
+verify identity・calibrate 62/62 全PASS。
+
+**次**: Wave C=GMボード（弱点/飽和マップ・有望若手ウォッチ・トレード相手サジェスト）→
+Wave D=トレードAIのセイバー視点（saberSavvy）。
+
+## 2026-07-23 (R1+R7+R8: 「アナリストの目」コラム — データ語り調査WaveA・セイバー定説準拠)
+
+**きっかけ**: ユーザー指示「赤味噌/野球研究所/MLB系のデータ語りを参考に」＋追加指示「適当な
+ことを言わずセイバーの常識的な知識で語る」。調査 data_storytelling_research_20260723 のR1/R7/R8。
+
+**実装**: `src/game/analystColumn.mjs` 新設（純関数・表示層のみ・ニュースタブ「🔬 アナリストの目」）:
+- 極端値型: Barrel%/O-Swing%/Z-Contact%/CSW%/K-BB%/SwStr% のリーグ1位/最下位（表層スタッツ以外
+  から選ぶセイバー系の型・規定到達者のみ・最低母集団ゲート）
+- 意外性型: xwOBA−wOBA乖離（打球の質は本物/出来すぎ警報）・ERA−SIERA乖離（内容は良い/反動注意）
+- 比較型: 若手のペース×殿堂の同年目実績（事実の併記のみ・将来の断定なし）
+- R7 試合ハイライト: 直近試合boxのK-BB好投/複数HR（descriptive・**K%表記の用語correctness修正**
+  =「奪三振率」はK/9を指すため誤用を避けた）
+- R8 隠れWPAリーダー: wRC+100未満×WPA上位（月境界週のみ。**WPAは結果の記録でありクラッチ能力の
+  証明ではない**という定説の枠内の文言）
+- **全テンプレに根拠定説をコード内コメントで明記**（O-Swing早期安定=Carleton再現性研究/DIPS/
+  平均回帰/Statcast xwOBA）→レビューで全数検証済み。ノブは tuning.storylines.analyst
+- レビュー修正2件: K%用語・smoke追加コードのモーダル閉じボタン誤り（✕/閉じる両対応）
+
+**ゲート**: npm test 601 PASS（+18: game_r1_analyst.test.mjs）・build(54モジュール)・smoke 13
+フロー・verify identity・calibrate 62/62 全PASS。
+
+**次**: GM分析（thyroxin/specs/gm_analytics_spec.md）Wave B=フォーム判定→C=GMボード→
+D=トレードAIのセイバー視点。
+
 ## 2026-07-23 (Q3+Q9: 特別デー＋介入観戦「山場だけ」モード — 調査第2弾Wave3・完)
 
 **実装**:

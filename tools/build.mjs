@@ -329,6 +329,18 @@ const html = `<!DOCTYPE html>
   .colgroup.active { border-color:var(--clay); color:var(--clay); font-weight:700; }
   /* F2-4: 二軍サブタブの育成契約バッジ・二軍順位の折りたたみ */
   .devbadge { margin-left:5px; font-size:10px; color:var(--clay-ink); background:var(--clay); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
+  /* Wave B（gm_analytics_spec.md）: チーム一覧のフォーム判定バッジ（好調▲/不調▼・ホバーで根拠） */
+  .formbadge { margin-left:5px; font-weight:700; cursor:default; }
+  .formbadge.good { color:var(--pos); }
+  .formbadge.bad { color:var(--neg); }
+  /* Wave B: 選手モーダル基本タブのフォーム判定節（reasons全行） */
+  .formnote { font-size:12px; margin-top:2px; padding:4px 8px; border-radius:4px; background:var(--inset); }
+  .formnote.good { color:var(--pos); }
+  .formnote.bad { color:var(--neg); }
+  /* Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 自チーム行の強調・飽和マーク・ヒート表セル */
+  tr.gmminerow td { font-weight:700; background:var(--inset); }
+  .gmsatmark { margin-right:3px; color:var(--clay); }
+  td.gmcell { text-align:center; }
   .farmstandings { margin-top:14px; }
   .plink { color:var(--hit); cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
   .plink:hover { color:var(--clay); }

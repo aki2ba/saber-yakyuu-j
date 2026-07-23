@@ -79,6 +79,14 @@ export function teamEvalProfile(masterSeed, teamId, cfg) {
     noiseSd: Math.max(pc.noiseSdMin, r.normal(pc.noiseSdMean, pc.noiseSdSd)),
     // R7（決定5）: 救援過大評価の重み（多くが>1＝過大評価。稀に≈1の球団が救援に金をかけず勝つ）。
     wReliever: clamp(r.normal(pc.wRelieverMean, pc.wRelieverSd), pc.wRelieverMin, pc.wRelieverMax),
+    // Wave D（gm_analytics_spec.md）: セイバー理解度(0..1)。★必ず独立シード座標
+    // hashSeed(masterSeed,'evalprofile',teamId,'saber') で引く（上の r へ draw を足すと、
+    // 既存の全ドローの並びがずれて全球団のプロファイルが世界ごと引き直しになる＝禁止）。
+    saberSavvy: clamp(
+      makeRng(hashSeed(masterSeed, 'evalprofile', teamId, 'saber')).normal(pc.saberSavvyMean, pc.saberSavvySd),
+      pc.saberSavvyMin,
+      pc.saberSavvyMax,
+    ),
   };
 }
 

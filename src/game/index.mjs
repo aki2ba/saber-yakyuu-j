@@ -54,6 +54,10 @@ import { recordCompletedWeeklyGoals, weeklyGoalTrustBonus } from './goals.mjs';
 import { coachProgressReports, coachReportPhase } from './coachReports.mjs';
 // Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
 import { hallOfFamers, nicknameAlbum, recordAlbum } from './gallery.mjs';
+import { analystColumnOf } from './analystColumn.mjs'; // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）
+import { playerFormOf, teamFormMap } from './form.mjs'; // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）
+// Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）。
+import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, GB_POSITIONS, gbPosLabel } from './gmBoard.mjs';
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -212,7 +216,10 @@ function offseasonStage1(league, cfg, {
   // FA → トレード（引退後の生存者を同型1:1スワップ・構成恒常・ドラフト枠に非干渉）。
   //   H5-A: obs を渡す（提示salary=当季観測貢献量→salaryFromValue の実弾化判定に使う）。
   const fa = runFA(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, obs });
-  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, windowByTeam });
+  // Wave D（gm_analytics_spec.md）: obs/standings を渡す＝トレードAIの受諾判定にセイバー視点
+  //   （saberSavvy×regressedValueOf＋ポジション需要項）を反映する。live/load-replay とも
+  //   このstage1（純関数：state.league/careerStats/marketInterventions由来）を通るため同一。
+  const trades = runTrades(league, cfg, { profiles, masterSeed, yearIndex, interventions: ivs, windowByTeam, obs, standings });
   rebuildTeamRosters(league);
   // 時代トレンド（D3・§11.3）: 翌年（debut年）の世代の波・球速の経年上昇＝computeEra(yearIndex+1)。
   //   ＋王朝均衡: 完了年順位から弱球団の新人再分配 boost（戦力の平均回帰＝振り子）。
@@ -1336,3 +1343,9 @@ export { hallOfFamers, nicknameAlbum, recordAlbum };
 export { ownerPressConference };
 // Q1: 起用信頼度（前季観測から導出する純関数）の表示API（UI/テストが './game/index.mjs' 経由で使う）。
 export { usageStabilityOf, trustLabelOf, TRUST_LABELS_JP } from './trust.mjs';
+// R1+R7+R8: 「アナリストコラム」表示API（UI/テストが './game/index.mjs' 経由で使う）。
+export { analystColumnOf };
+// Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）表示API。
+export { playerFormOf, teamFormMap };
+// Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）表示API。
+export { positionStrengthMap, prospectWatch, tradeTargetSuggestions, GB_POSITIONS, gbPosLabel };

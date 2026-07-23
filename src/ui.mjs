@@ -48,6 +48,10 @@ import {
   usageStabilityOf, trustLabelOf, TRUST_LABELS_JP,
   // Q3: 「記憶に残る一日」特別デー（同 Q3）。
   specialDaysOf,
+  // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）。
+  analystColumnOf,
+  // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）。
+  playerFormOf,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -55,7 +59,9 @@ import { renderTeamTab } from './ui/team.mjs';
 // フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
 import { renderWatchScreen } from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
-import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
+// Wave C（gm_analytics_spec.md）: stoveGotoTrade はGMボードの「トレードの窓」サジェストから
+// 既存トレードタブへ導線するためのヘルパー（team.mjs へ teamTabDeps() 経由で渡す）。
+import { renderStoveScreen, renderOffseasonDigestScreen, stoveGotoTrade } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
 import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel, schedWpaParts } from './ui/schedule.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
@@ -710,6 +716,9 @@ function renderModalBasic(box, p, s, isPitcher) {
   }
   // F2-4: 今季の二軍成績（現役・キャリアモード）。二軍集計 rt.farm.stats から観測値のみ表示。
   renderCurrentFarmLine(box, p, isPitcher);
+  // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）。自チーム選手のみ・
+  // tier=nullは非表示（他球団=窓データ無し／サンプル不足＝憶測を書かない）。
+  renderPlayerFormSection(box, p);
   // 三層構造の禁則（phaseC_spec 禁則・§1）: キャリアモードでは trueAbility（layer1・隠し値）を
   // 直接出さない。プレイヤーが見るのは観測成績＋スカウト評価＝「コーチの見立て」（scoutSeed 由来の
   // 決定論ノイズを乗せた粗い等級・layer3）。分析ダッシュボード（クイックシミュレート＝game.gs 無し）は
@@ -721,6 +730,22 @@ function renderModalBasic(box, p, s, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '能力（真の実力）'));
     box.append(abilityBars(p.trueAbility, p.role));
   }
+}
+
+/**
+ * Wave B（thyroxin/specs/gm_analytics_spec.md）: 基本タブの「フォーム判定」節（キャリアモードのみ）。
+ * 自チーム選手のみ playerFormOf を呼ぶ（他球団は窓データが無くtier=null＝常に非表示）。
+ * サンプル不足（tier=null）のときも何も出さない（憶測を書かない）。
+ */
+function renderPlayerFormSection(box, p) {
+  const gs = game.gs;
+  if (!gs || p.teamId !== gs.playerTeamId) return;
+  const { tier, reasons } = playerFormOf(gs, p.id);
+  if (!tier || tier === 'normal' || !reasons.length) return;
+  const label = tier === 'hot' ? '▲ 好調の兆候' : '▼ 不調の兆候';
+  box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `フォーム判定 — ${label}`));
+  box.append(el('div', { class: tier === 'hot' ? 'formnote good' : 'formnote bad' },
+    reasons.map((r) => el('div', {}, r.text))));
 }
 
 /**
@@ -1587,6 +1612,9 @@ function teamTabDeps() {
     rerender: () => renderHub('team'),
     renderManagerPanel, // G4b: 采配パネルをチームタブの采配サブタブへ移設（呼び出し側で rerender を差し替える）
     gotoNews: () => renderHub('news'), // G4b: 離脱者サマリ「→ニュース」導線
+    // Wave C（gm_analytics_spec.md）: GMボードの「トレードの窓」サジェストから既存ストーブ
+    //   トレードタブへ導線する（stove.mjs stoveGotoTrade・playerId省略可）。
+    gotoTrade: (playerId) => stoveGotoTrade(stoveDeps(), playerId),
   };
 }
 
@@ -1807,6 +1835,14 @@ function renderNewsTab(c) {
     c.append(el('h3', { class: 'leaguename' }, '📋 コーチ報告'));
     c.append(el('div', { class: 'newsfeed' }, coachReports.map((r) =>
       el('div', { class: 'newsrow ' + (r.cls || 'info') }, [playerLink(r.playerId), ' ', r.text]))));
+  }
+  // R1+R7+R8: 「アナリストの目」（極端値/意外性/比較型の週次コラム＋試合ハイライト＋隠れWPAリーダー）。
+  //   選手名はテンプレ文中に埋め込み済み（storylines.mjs 系の見出しと同じ規約・plink化はしない）。
+  const analystCols = analystColumnOf(gs, storyNames());
+  if (analystCols.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🔬 アナリストの目'));
+    c.append(el('div', { class: 'newsfeed' }, analystCols.map((h) =>
+      el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る

@@ -2,6 +2,78 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-23 (Q3+Q9: 特別デー＋介入観戦「山場だけ」モード — 調査第2弾Wave3・完)
+
+**実装**:
+- Q3 `specialDaysOf(state, names)`（storylines.mjs）: 自チーム未消化日程から「記憶に残る一日」を
+  検出する純関数。4種=節目リーチ（通算マイルストーンまで残り僅か・あと5安打等）/同期対決
+  （rivalriesOf該当選手が相手に居るカード初戦）/首位攻防戦（ゲーム差1.5以内・開幕直後ガード付）/
+  球団創設記念日（hashSeed('anniversary',teamId)の年非依存座標・年1回）。日程表に⭐バッジ＋
+  ラベル、次の試合導線にも表示。閾値は tuning.storylines.specialDays（表示専用・draftClassMax
+  と同じ置き場の慣行）
+- Q9 介入観戦「山場だけ」モード: `opts.managerIntervention.minLI`（additive・既定0=従来）。
+  resolveIntervention で「ログ照合→LI判定→onDecision」の順＝ログ済み決定は低LIでも尊重・
+  seq採番不変＝ログ互換。LIは既存 `leverageProxy`（継投レバレッジ駆動）を純粋再利用（新規計算の
+  発明なし・乱数非消費・シム結果に非干渉）。観戦選択肢に「⚡山場のみ介入」（cfg.game.clutchModeMinLI=1.5）。
+  継投モーダルに投手心情コメント💬（当季観測の傾向を文章化・hashSeed独立座標）
+
+**ゲート**: npm test 583 PASS（+17: Q3/Q9新規2ファイル）・build・smoke 13フロー（⭐バッジ＋
+山場モード完走を追加）・verify identity・calibrate 62/62・realism GATE 45/0 全PASS。
+
+**これで調査第2弾（baseball_game_mechanics_research_20260723）のQ1/Q2/Q3/Q4/Q8/Q9/Q10/Q11
+の8本実装完了。** 未着手はQ5（客員コーチ・鉄則リスク中）/Q6（リーダー進言）/Q7（似ている選手）/
+Q12（球団間ライバル世代継承）の4本＝次の自走候補。
+
+## 2026-07-23 (Q1: 起用信頼度 — 調査第2弾Wave2・本命の双方向ループ)
+
+**きっかけ**: 調査第2弾の核心の発見「personalityは一方通行」への正面回答（栄冠ナイン信頼度の翻案）。
+
+**実装**:
+- `src/game/trust.mjs` 新設: `usageStabilityOf(seasonRow, teamGames)` — 前季の観測statlineのみから
+  起用の安定度0..1を導出する純関数（野手=規定打席比×先発定着度(1−代打比率)、投手=役割期待
+  登板数比×役割相応イニング消化フィット。全球団対称＝playerGameLog不使用）。`trustLabelOf` 3段階
+- 効果: `cfg.game.usageTrust` 既定false（第7例目）。ONのとき applyAging の drift SD倍率に
+  `1 − 安定度×usageTrustDriftSpan(0.15)` を乗算（streakyDriftMult と完全同型の挿入点・
+  ゼロ平均SDの縮小＝期待値保存で較正平均帯不変・乱数非消費）
+- UI: 選手モーダルに「コーチの見立て：起用信頼度は安定/普通/不安定」（前季観測から毎回導出・保存なし）
+- offseasonStage1 の obs Map 構築を applyAging より前へ移動（純粋な順序変更・内容不変）
+
+**ゲート**: npm test 566 PASS（+11: game_q1_trust.test.mjs）・build(53モジュール)・smoke 12フロー・
+verify identity・calibrate 62/62 全PASS（フラグ既定OFF＝bit同一をテストで固定）。
+
+**次**: Wave3=Q3「記憶に残る一日」特別デー＋Q9介入観戦「山場だけ」モード。
+
+## 2026-07-23 (Q2/Q4/Q8/Q10/Q11: 野球育成ゲーム調査第2弾のWave1 — 表示層5本)
+
+**きっかけ**: PR#4マージ後、ユーザー指示「さらに面白い野球育成ゲームを調べてもっと面白く」。
+第2弾調査（baseball_game_mechanics_research_20260723.md・栄冠ナイン/パワプロ/プロスピ/
+The Show/OOTP深掘り/ダビスタ）で提案Q1〜Q12を導出。核心の発見=「personalityは一方通行で、
+プレイヤーの起用判断に選手が応答するループが無い」。Wave1として表示層のみの5本を実装
+（Sonnet委任・レビュー/ゲート/コミットはオーケストレータ）。
+
+**実装（すべて表示層・純関数・保存フィールド増なし・シムbyte不変）**:
+- Q2 `coachReports.mjs` 新設: H4育成方針の「コーチ経過報告」。シーズン1/3・2/3の週に、方針軸に
+  対応する観測トレンド（打率/HRペース・目安防御率/K9・コンバート先出場比率・出場機会）の前半後半
+  比較を文章化（OOTP Dev Lab翻案・真値/coachOverallScore非参照＝層2観測のみ・サンプル不足は沈黙）
+- Q4/Q8 `gallery.mjs` 新設: 殿堂（引退済×通算2000安打/200HR/150勝/150S/1500K/受賞5のいずれか）
+  ＋二つ名アルバム＋記録アルバム。記録タブに「🏛殿堂」「📖アルバム」節
+- Q10 owner.mjs: 開幕直後1週間だけニュースフィード先頭に「🎤オーナー年頭会見」（既存H5-B目標＋
+  信任帯の会見調テンプレ・乱数不使用）
+- Q11 storylines.mjs: 物語欄に「師弟」行（同一球団5年以上共存×年齢差8歳以上×通算規模が大きい
+  ベテラン→「◯◯の背中を見て育った」・1方向のみ）
+
+**レビューで発見・修正（新しい教訓）**: バンドル（build.mjs）は全エンジンモジュール＋UIを同一
+スコープへconcatするため、**トップレベル宣言名は全モジュール横断で一意必須**。新モジュールの
+`idAsc`（storylines と衝突）→`idAscGal`/`idAscCr`、`fmt3`（ui.mjs と衝突）→`fmtAvgCr` にリネーム。
+Node ESM のテストでは検出できず smoke だけが落ちる＝**smoke はバンドル固有バグの唯一の門番**
+（pipefail 徹底の価値を再確認）。
+
+**ゲート**: npm test 555 PASS（+36: Q2/Q4+Q8/Q10/Q11の新規4ファイル）・build(52モジュール)・
+smoke 12フロー・verify identity・calibrate 62/62 全PASS。
+
+**次**: Wave2=Q1「信頼度」（起用の安定→成績分散の縮小・既存personality効果と同型の期待値保存
+設計・本命の双方向ループ）→Wave3=Q3特別デー＋Q9介入観戦「山場だけ」モード。
+
 ## 2026-07-22 (P3+P4: 週次目標＋戦力外/FAの感情演出 — fun_theory_research 残提案の完遂)
 
 **きっかけ**: P2/P5/P6/P7/P1完了後の残り2提案。P3=フロー理論「明確な目標」＋FM「あと1試合」、

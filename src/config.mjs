@@ -1586,6 +1586,15 @@ export const TUNING_DEFAULT = {
       ceremonyMinIP: 600, // 同・通算投球回の下限（投手）
       ceremonyMinAwards: 1, // 通算受賞件数がこれ以上ならPA/IPが薄くても功労者扱い
     },
+    // Q3（thyroxin/research…20260723 Q3・「記憶に残る一日」特別デー）: game/storylines.mjs の
+    //   specialDaysOf が消費。低頻度（月1-2回程度）を狙った閾値＝表示層のみ・エンジン非干渉。
+    specialDays: {
+      // 節目リーチ: 現在の通算値からこの本数/勝数以内で次のマイルストーン（awards.milestones）に
+      //   届く選手がいれば、自チームの次の未消化試合を「節目リーチ」の特別デーにする。
+      milestoneReach: { hits: 5, homeRuns: 3, wins: 2, saves: 2, strikeouts: 5 },
+      pennantMaxGb: 1.5, // 首位攻防戦: 自チームとの直接のゲーム差がこれ以内の相手とのカード初戦
+      pennantMinGamesPlayed: 5, // 開幕直後（全球団横並び）の誤発火防止ガード（news.mjs rankAndGbと同型）
+    },
   },
 };
 
@@ -1643,6 +1652,21 @@ export const GAME_DEFAULT = {
   // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
   //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
   weeklyGoalTrustBonusMax: 5,
+  // Q1（thyroxin/research…20260723 Q1・信頼度）: 起用の安定→年次ドリフトSD縮小の双方向ループ。
+  //   既定は false（interactiveDraft/allowFiring/dynamicLineup/interactiveManager/weeklyGoals と
+  //   同じ「headless既定OFF・UIのみON」第7例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけが true を渡す。真値trueAbility非参照＝前季の観測statlineのみを
+  //   aging.mjs の applyAging に渡して使う（三層構造の層2から層1へのフィードバック）。
+  usageTrust: false,
+  // Q1: usageTrust=true 時、aging.mjs の drift SD 倍率 = 1.0 − usageStabilityOf(...) × この値。
+  //   streakyDriftMult(=1.25 相当の分散押し上げ)と同程度の桁に抑える小定数（tuningには置かない
+  //   ＝Q1指示どおり cfg.tuning 非汚染。安定度1.0で倍率は 1.0−0.15=0.85、安定度0で1.0＝無効果）。
+  usageTrustDriftSpan: 0.15,
+  // Q9（thyroxin/research…20260723 Q9・介入観戦「山場だけ」モード）: 観戦開始オーバーレイの
+  //   「⚡山場のみ介入」ボタンが opts.managerIntervention.minLI に渡す既定値。UIからのみ使用＝
+  //   cfg.tuning非汚染（較正非干渉）。sim/manager.mjs の leverageProxy（既存の継投レバレッジ代理）
+  //   をそのまま再利用した局面LIと比較する（pen.highLevThreshold=1.6と同程度の帯）。
+  clutchModeMinLI: 1.5,
 };
 
 /**

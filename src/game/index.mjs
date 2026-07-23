@@ -46,10 +46,14 @@ import { appendTransactionLog, retirementCeremonies } from './storylines.mjs';
 // H4: 育成方針・キャンプ（phaseH_fun_spec H4）。方針の意味論(parsePolicy)・AI自動方針・
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 import { parsePolicy, coachOverallScore, TRAINING_LABELS, TRAINING_KINDS } from './training.mjs';
-import { generateOwnerGoals, evaluateOwnerGoals, trustDelta, pickTransferOffer } from './owner.mjs'; // H5-B
+import { generateOwnerGoals, evaluateOwnerGoals, trustDelta, pickTransferOffer, ownerPressConference } from './owner.mjs'; // H5-B/Q10
 // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
 //   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
 import { recordCompletedWeeklyGoals, weeklyGoalTrustBonus } from './goals.mjs';
+// Q2（thyroxin/research…20260723 Q2）: 育成方針の「コーチ経過報告」。表示層のみ・純関数。
+import { coachProgressReports, coachReportPhase } from './coachReports.mjs';
+// Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
+import { hallOfFamers, nicknameAlbum, recordAlbum } from './gallery.mjs';
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -161,12 +165,21 @@ function offseasonStage1(league, cfg, {
   const campBefore = new Map();
   for (const p of league.players) if (specialIds.has(p.id)) campBefore.set(p.id, coachOverallScore(p, cfg));
 
+  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
+  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
+  //   Q1: applyAging（下）の usageStats にもこれを渡す＝「前季の観測から起用信頼度を導出」の入力
+  //   （obs構築をapplyAgingより先に動かしただけ・obs自体の中身/後続処理での使い方は従来と不変）。
+  const obs = new Map();
+  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, {
     seed: offseasonSeed(masterSeed, yearIndex), yearIndex, playerTeamId, profiles, policies: trainIvs,
+    // Q1: usageTrust=false（既定）なら applyAging 側で無視される（フラグゲート）。
+    usageStats: obs, teamGames: cfg.league.gamesPerSeason,
   });
 
   // H4: 特別指導枠選手の「キャンプ後」観測値との差（前後差＋方針）。結果は乱数次第＝お祈り。
@@ -179,10 +192,6 @@ function offseasonStage1(league, cfg, {
     };
   });
 
-  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
-  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
-  const obs = new Map();
-  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
   // 当年の二軍観測 statline（F2-3: 育成→支配下の昇格判定を二軍実成績ベースへ強化・§12.1）。
   //   careerFarmStats も blob に永続される＝live と load-replay で同一部分集合（決定論）。
   const farmObs = new Map();
@@ -842,8 +851,12 @@ export function advanceTo(state, until, opts = {}) {
  * `opts.auto` を一度も使わない（常に false）まま最後まで進めた試合は、介入ログが最終的に空なら
  * 全自動と bit 同一になる（§0-4・§5テスト1の前提）。
  * @param {Object} state GameState（state.rt が組まれていること）
- * @param {{auto?:boolean}} [opts] auto=true: ログに無い介入点で中断せず常にAI判断で進める
- *   （「以後おまかせ」・全おまかせテスト用）。既定 false（通常の介入観戦＝未ログ点で必ず中断）。
+ * @param {{auto?:boolean, managerIntervention?:{minLI?:number}}} [opts] auto=true: ログに無い
+ *   介入点で中断せず常にAI判断で進める（「以後おまかせ」・全おまかせテスト用）。既定 false
+ *   （通常の介入観戦＝未ログ点で必ず中断）。managerIntervention.minLI（Q9・省略時0）:
+ *   「山場のみ介入」モード。局面のレバレッジ代理値がこれ未満の介入点は onDecision を呼ばず
+ *   AI判断を採用する（attemptPlayerGame→sim/game.mjs resolveInterventionへそのまま転送。
+ *   teamId/log は本関数が従来どおり自前で組む＝呼び出し側は minLI だけを気にすればよい）。
  * @returns {{seasonEnded:true} | {paused:true, decision:Object, events:Array} |
  *   {record:Object, events:Array, seasonEnded:boolean}}
  */
@@ -860,7 +873,8 @@ export function playInteractiveGame(state, opts = {}) {
   const g = rt.schedule[gi];
   const log = state.gameInterventions.filter((e) => e.year === state.year && e.day === g.day);
   const onDecision = opts.auto ? undefined : () => 'PAUSE';
-  const attempt = attemptPlayerGame(rt, gi, log, onDecision);
+  const minLI = opts.managerIntervention?.minLI ?? 0;
+  const attempt = attemptPlayerGame(rt, gi, log, onDecision, minLI);
   if (attempt.paused) {
     // year/day は submitGameDecision がそのままログへ積める形に補って返す（§1データモデル）。
     return { paused: true, decision: { year: state.year, day: g.day, ...attempt.decision }, events: attempt.events };
@@ -1300,6 +1314,7 @@ export {
   draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
   playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
   veteranFarewellHeadlines, departedPlayerFollowUpHeadlines, // P4: 戦力外・FAの感情演出（fun_theory_research P4）
+  specialDaysOf, // Q3: 「記憶に残る一日」特別デー（thyroxin/research…20260723 Q3）
 } from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
@@ -1313,3 +1328,11 @@ export { TRAINING_LABELS, TRAINING_KINDS, parsePolicy, coachOverallScore };
 //   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
 //   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
 export { generateWeeklyGoal, evaluateWeeklyGoal } from './goals.mjs';
+// Q2: 育成方針の「コーチ経過報告」表示API（UI/テストが './game/index.mjs' 経由で使う）。
+export { coachProgressReports, coachReportPhase };
+// Q4/Q8: 殿堂/球団史ギャラリー・二つ名/記録のアルバム表示API。
+export { hallOfFamers, nicknameAlbum, recordAlbum };
+// Q10: 開幕前「オーナー会見」演出の表示API（既存H5-B ownerGoals/ownerTrustの見せ方を変えるだけ）。
+export { ownerPressConference };
+// Q1: 起用信頼度（前季観測から導出する純関数）の表示API（UI/テストが './game/index.mjs' 経由で使う）。
+export { usageStabilityOf, trustLabelOf, TRUST_LABELS_JP } from './trust.mjs';

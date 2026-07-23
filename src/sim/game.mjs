@@ -31,6 +31,7 @@ import {
   chooseInjuryReplacement,
   chooseReliever,
   starterPitchLimit,
+  leverageProxy, // Q9: 介入観戦「山場だけ」モードのLIフィルタが再利用する既存レバレッジ代理
 } from './manager.mjs';
 import { exposureProb, rollInjurySeverity } from './injury.mjs';
 
@@ -52,20 +53,38 @@ export class InterventionPause extends Error {
 }
 
 /**
+ * Q9（介入観戦「山場だけ」モード）: situ（inning/scoreDiff/bases/outs）からレバレッジ代理値を
+ * 算出する。新規計算式は発明せず、sim/manager.mjs の leverageProxy（継投のレバレッジ駆動選択で
+ * 既に使われている「終盤×点差×走者数」の決定表）をそのまま再利用する（表示・フィルタ専用＝
+ * 乱数を消費せず、返り値をシム結果へ一切フィードバックしない）。
+ * situ.scoreDiff の符号（攻撃側/守備側どちらの視点か）は leverageProxy 内部で Math.abs を取るため
+ * 無関係（ph/reliefどちらの呼び出し地点でも同じ式で比較できる）。
+ */
+function situLeverage(situ, cfg) {
+  const pen = cfg.tuning.pen;
+  const bits = (situ.bases[0] ? 1 : 0) | (situ.bases[1] ? 2 : 0) | (situ.bases[2] ? 4 : 0);
+  return leverageProxy(situ.inning, situ.scoreDiff, bits, situ.outs, pen);
+}
+
+/**
  * 介入点を解決する（代打/継投で共通・§2）。
  * - ログに該当 seq があれば choice.pick を採用（null=見送り/続投。候補外の無効pidはAI判断へ
  *   フォールバック＝決定論を壊さず黙って続行）。
+ * - Q9: mgrInterv.minLI が設定されており、situ のレバレッジ代理値がそれ未満なら onDecision を
+ *   呼ばず常にAI判断(aiPick)を採用する（「山場だけ」モード）。seq は必ず1つ進める＝ログの座標系
+ *   （seq採番）は minLI の有無に関わらず不変＝既存ログとの互換性を壊さない。
  * - ログに無ければ onDecision へ問い合わせる。'PAUSE' を返せば InterventionPause を投げて中断。
  *   onDecision 省略時（or 'PAUSE'/選択オブジェクト以外を返した時）は常にAI判断(aiPick)を採用
  *   （load の replay・「以後おまかせ」後の完走・全おまかせテストが同じ経路で一切中断しない）。
- * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function}} mgrInterv
+ * @param {{teamId:string, seq:number, logByKey:Map, onDecision:?Function, minLI?:number}} mgrInterv
  * @param {'ph'|'relief'} kind
  * @param {Object} situ UI表示用の局面要約（乱数非依存・純粋な読み取り値）
  * @param {?string} aiPick 従来ロジック（choosePinchHitter/chooseReliever）が選んだ行動
  * @param {Array<string>} candidates 選択可能な playerId 一覧（表示用・妥当性検証用）
+ * @param {Object} cfg （Q9のLI算出にのみ使う。乱数非依存の純粋な読み取り）
  * @returns {?string} 実際に採用する行動（null=見送り/続投）
  */
-function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
+function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates, cfg) {
   const seq = ++mgrInterv.seq;
   const logged = mgrInterv.logByKey.get(seq);
   if (logged && logged.kind === kind) {
@@ -73,6 +92,7 @@ function resolveIntervention(mgrInterv, kind, situ, aiPick, candidates) {
     if (pid === null) return null;
     return candidates.includes(pid) ? pid : aiPick; // 無効choice=AI判断へフォールバック（§2）
   }
+  if (mgrInterv.minLI > 0 && situLeverage(situ, cfg) < mgrInterv.minLI) return aiPick; // Q9: 山場以外はAIおまかせ
   if (!mgrInterv.onDecision) return aiPick;
   const decision = mgrInterv.onDecision({ seq, kind, situ, candidates: candidates.slice() });
   if (decision === 'PAUSE') throw new InterventionPause({ seq, kind, situ, candidates: candidates.slice() });
@@ -562,7 +582,11 @@ export function simulateGame(homeInit, awayInit, cfg, rng, statFor, park, onBatt
   // 従来ロジックのみ（choosePinchHitter/chooseReliever の aiPick がそのまま採用される＝bit同一）。
   const mi = opts.managerIntervention ?? null;
   const mgrInterv = mi
-    ? { teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0, logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])) }
+    ? {
+        teamId: mi.teamId, onDecision: mi.onDecision ?? null, seq: 0,
+        logByKey: new Map((mi.log ?? []).map((e) => [e.seq, e])),
+        minLI: mi.minLI ?? 0, // Q9: 「山場だけ」モード（0=常に問う＝従来どおり）
+      }
     : null;
   // 観戦実況フック（フェーズC1・§16）: 存在するときのみ各プレー確定点で「構造化イベント」を発火する。
   // gc（文脈指標）と同じく乱数は一切消費しない＝onEvent の有無で試合結果は不変（決定論・較正50指標が不変）。
@@ -1275,7 +1299,7 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, bat
       batterId,
       onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
     };
-    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench);
+    pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench, cfg);
   }
   if (!pick) return;
   batting.retired.add(batterId); // 退いた打者は再出場不可
@@ -1552,7 +1576,7 @@ function halfStartPitching(fielding, oppScore, inning, statFor, cfg, mgrInterv) 
       inning, half: null, outs: 0, bases: [false, false, false], scoreDiff: lead,
       pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
     };
-    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding), cfg);
   }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);
@@ -1593,7 +1617,7 @@ function maybeChangePitcher(fielding, statFor, oppScore, inning, cfg, bases, out
       inning, half: null, outs, bases: bases.map((b) => !!b), scoreDiff: lead,
       pitcherId: c.pid, pitches: Math.round(c.pitches), runs: c.runs,
     };
-    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding));
+    next = resolveIntervention(mgrInterv, 'relief', situ, next, availableRelievers(fielding), cfg);
   }
   if (!next || next === c.pid) return;
   flushPitcher(fielding, oppScore);

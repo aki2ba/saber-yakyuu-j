@@ -19,6 +19,7 @@
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp } from '../model/util.mjs';
 import { teamWindowState } from './market.mjs';
+import { pendingDay } from './season_runtime.mjs';
 
 /** 完了年 standings から自リーグ内順位(1起点)と勝率を返す。無ければ null。 */
 export function ownerLeagueRankOf(standings, teamId) {
@@ -128,4 +129,37 @@ export function pickTransferOffer(standings, currentTeamId) {
   const cands = (standings ?? []).filter((s) => s.teamId !== currentTeamId)
     .sort((a, b) => wp(a) - wp(b) || (a.teamId < b.teamId ? -1 : 1));
   return cands.length ? cands[0].teamId : null;
+}
+
+// ============================================================================
+// Q10: 開幕前「オーナー会見」演出（thyroxin/research/baseball_game_mechanics_research_20260723 Q10・
+//   OOTP press conference 翻案）。既存 state.ownerGoals（H5-B）を「今季の球団方針」として会見調の
+//   文章へ変換するだけ（新規判定/新規保存フィールド無し・表示層のみ）。
+// ============================================================================
+
+/** 信任状況の会見テンプレ（trust帯ごとに1つ・分岐のみで乱数不使用＝決定論）。 */
+function ownerTrustLine(trust) {
+  if (trust >= 70) return 'これまでの実績には満足している。今季も期待している。';
+  if (trust >= 40) return '現状は及第点だが、更なる結果を求めたい。';
+  return '正直、フロントの評価は厳しい状況にある。今季は結果で応えてほしい。';
+}
+
+/**
+ * Q10: 開幕直後（yearIndex>=1・オーナー目標が生成済み・開幕からcfg.game.daysPerWeek日以内）のみ、
+ * 「今季の球団方針」会見カードを1回分返す（純関数・新規保存フィールド無し＝毎回窓状態から判定）。
+ * @param {Object} state GameState（playerTeamId/yearIndex/ownerGoals/ownerTrust/rt/cfg が必要）
+ * @returns {{trust:number, lines:string[]}|null} 窓外/対象外は null
+ */
+export function ownerPressConference(state) {
+  if (!state.playerTeamId || state.yearIndex < 1) return null;
+  const og = state.ownerGoals;
+  if (!og || og.yearIndex !== state.yearIndex || !og.goals.length) return null;
+  const rt = state.rt;
+  if (!rt) return null;
+  if (pendingDay(rt) >= state.cfg.game.daysPerWeek) return null; // 開幕から daysPerWeek 日以内のみ
+  const lines = [
+    ownerTrustLine(state.ownerTrust),
+    ...og.goals.map((g) => `${g.priority === 'high' ? '最優先事項として' : '今季の目標のひとつとして'}「${g.label}」を掲げる。`),
+  ];
+  return { trust: state.ownerTrust, lines };
 }

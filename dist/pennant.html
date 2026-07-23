@@ -2807,6 +2807,15 @@ const GAME_DEFAULT = {
   //   （介入は既存の choosePinchHitter/chooseReliever 呼び出し地点への人間差し替えフックのみ・
   //   判断ロジックの新設はしない）。
   interactiveManager: false,
+  // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup/interactiveManager と同じ「headless既定OFF・
+  //   UIのみON」第6例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す。true でも効果は表示＋シーズン末の
+  //   信任へ小さく加算するだけ（エンジン/tuning非干渉。生成・判定は game/goals.mjs）。
+  weeklyGoals: false,
+  // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
+  //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
+  weeklyGoalTrustBonusMax: 5,
 };
 
 /**
@@ -15483,6 +15492,131 @@ function playerStoryOf(state, playerId, names = {}) {
   return events;
 }
 
+// ============================================================================
+// P4: 戦力外・FAの感情演出（fun_theory_research_20260720 P4・やきゅつく「経営の痛み」）。
+//   表示のみ・数値は一切変えない（研究レポート表のとおり「引き止めの選択」はスコープ外＝
+//   marketInterventions/transactions.mjs の判定結果をそのまま使い、文言だけを差し替える）。
+//
+//   veteranFarewellHeadlines(state, off, completedYear, myTeamId, names) … オフの戦力外
+//     （off.pickups の from===myTeamId）のうち「功労者」（在籍が長い or 通算成績が大きい）だけを
+//     感情演出つき見出しへ（事務的な「戦力外→流出」の1行の差し替え素材）。
+//   departedPlayerFollowUpHeadlines(state, myTeamId, names) … 前年に自チームから出た選手
+//     （FA/トレード/戦力外拾い上げ＝transactionLog）が当季の観測成績で活躍している場合の
+//     後日談ニュース（rivalryGameHeadlines「古巣戦で活躍」とは別枠＝対戦有無を問わない）。
+//
+// 決定論: テンプレ選択は hashSeed(masterSeed,'farewell'|'followup', ...) の独立座標のみ
+//   （既存の生成/進行ストリーム・rivalryGameHeadlinesの'story'座標いずれとも非干渉）。
+//   真値(trueAbility)は一切参照しない（careerStats/transactionLog/当季観測のみ＝三層構造）。
+// ============================================================================
+
+const VETERAN_TENURE_MIN = 5; // 「功労者」とみなす最低在籍年数（在籍先チームでの通算出場シーズン数）
+const VETERAN_HITS_MIN = 800; // または通算安打（野手）
+const VETERAN_WINS_MIN = 80; // または通算勝利（投手）
+
+/** playerId の careerStats のうち teamId===teamId のシーズン数（在籍年数の近似・§17集計値のみ）。 */
+function tenureYearsWith(state, playerId, teamId) {
+  const seasons = new Set();
+  for (const s of state.careerStats) {
+    if (s.playerId === playerId && s.teamId === teamId) seasons.add(s.season);
+  }
+  return seasons.size;
+}
+
+const VETERAN_FAREWELL_TEMPLATES = [
+  (n, yrs, line) => `在籍${yrs}年・${line}の${n}に戦力外通告 ― 球団史を支えた男に別れ`,
+  (n, yrs, line) => `${n}（在籍${yrs}年・${line}）、まさかの戦力外 ― 功労者に非情の決断`,
+  (n, yrs, line) => `長年チームを支えた${n}（${line}）に戦力外通告。在籍${yrs}年の重みを胸に`,
+];
+
+/**
+ * オフの戦力外（off.pickups の from===myTeamId）のうち「功労者」だけを感情演出つき見出しへ変換する。
+ * 判定基準（関数内定数・研究レポートの目安どおり）: 在籍${VETERAN_TENURE_MIN}年以上、または
+ * 通算安打${VETERAN_HITS_MIN}（野手）/通算勝利${VETERAN_WINS_MIN}（投手）以上。
+ * @param {Object} state GameState（careerStats/masterSeed が必要）
+ * @param {Object} off advanceYear の返す off 要約（off.pickups が必要）
+ * @param {number} completedYear 完了年（テンプレ選択の決定論座標に使う）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function}} names pnameOf: playerId→表示名（省略時は識別子そのまま）
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+function veteranFarewellHeadlines(state, off, completedYear, myTeamId, names = {}) {
+  const { pnameOf = (id) => id } = names;
+  const out = [];
+  for (const pu of off.pickups ?? []) {
+    if (pu.from !== myTeamId) continue;
+    const tenure = tenureYearsWith(state, pu.playerId, myTeamId);
+    const isPitcher = pu.role === 'pitcher';
+    const agg = isPitcher ? careerPitching(state.careerStats, pu.playerId) : careerBatting(state.careerStats, pu.playerId);
+    const merit = tenure >= VETERAN_TENURE_MIN || (isPitcher ? agg.w >= VETERAN_WINS_MIN : agg.h >= VETERAN_HITS_MIN);
+    if (!merit) continue;
+    const line = isPitcher ? `通算${agg.w}勝${agg.l}敗${agg.sv}S` : `通算${agg.h}安打${agg.hr}本塁打`;
+    const r = makeRng(hashSeed(state.masterSeed, 'farewell', completedYear, pu.playerId));
+    const tpl = VETERAN_FAREWELL_TEMPLATES[r.int(VETERAN_FAREWELL_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(pu.playerId), tenure, line), cls: 'bad', playerId: pu.playerId });
+  }
+  return out;
+}
+
+const FOLLOWUP_MIN_PA = 200; // 後日談「活躍」判定の最低打席（過小サンプル除外）
+const FOLLOWUP_MIN_IP = 60; // 同・最低投球回
+const FOLLOWUP_WOBA_MARGIN = 0.03; // 代替wOBA(cfg.tuning.market.release)からこれ以上高ければ「活躍」
+const FOLLOWUP_FIP_MARGIN = 0.3; // 代替FIPからこれ以上低ければ「活躍」
+
+const FOLLOWUP_TEMPLATES = [
+  (n, t) => `${n}、${t}を出て早くも躍動 ― 新天地で結果を残す`,
+  (n, t) => `古巣${t}を離れた${n}、覚醒の兆し`,
+  (n, t) => `${n}、${t}退団から一転。「あの時手放した男」が輝きを放つ`,
+];
+
+/** transactionLog の1行から「myTeamId を離れた選手」を導出する（rivalriesOf と同じ from/to 規約）。 */
+function departureFrom(row, myTeamId) {
+  if ((row.kind === 'fa' || row.kind === 'pickup') && row.from === myTeamId) return row.playerId;
+  if (row.kind === 'trade') {
+    if (row.from === myTeamId) return row.playerId;
+    if (row.to === myTeamId) return row.playerId2;
+  }
+  return null;
+}
+
+/**
+ * 前年に自チームから出た選手（FA/トレード/戦力外拾い上げ）が当季（観測成績）で活躍している場合の
+ * 後日談ニュース（純関数・シーズン中の定期ダイジェスト用）。「活躍」判定は当季の観測（rt.stats）
+ * だけを見る（trueAbility非参照）＝代替水準（cfg.tuning.market.release）を一定以上上回るかどうか。
+ * @param {Object} state GameState（state.rt/transactionLog/masterSeed/year が必要）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function, tnameOf?:Function}} names
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+function departedPlayerFollowUpHeadlines(state, myTeamId, names = {}) {
+  const rt = state.rt;
+  if (!rt) return [];
+  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const cfg = state.cfg;
+  const rel = cfg.tuning.market.release;
+  const log = (state.transactionLog || []).filter((r) => r.year === state.year - 1);
+  const out = [];
+  const seen = new Set();
+  for (const row of log) {
+    const departed = departureFrom(row, myTeamId);
+    if (!departed || seen.has(departed)) continue;
+    const s = rt.stats.stats.get(departed);
+    if (!s) continue;
+    let active = false;
+    if (s.pitching && s.pitching.outs > 0) {
+      const ip = s.pitching.outs / 3;
+      if (ip >= FOLLOWUP_MIN_IP) active = simpleFip(s.pitching, ip) <= rel.replacementFip - FOLLOWUP_FIP_MARGIN;
+    } else if (s.batting && s.batting.pa >= FOLLOWUP_MIN_PA) {
+      active = observedWoba(s.batting, cfg) >= rel.replacementWoba + FOLLOWUP_WOBA_MARGIN;
+    }
+    if (!active) continue;
+    seen.add(departed);
+    const r = makeRng(hashSeed(state.masterSeed, 'followup', state.year, departed));
+    const tpl = FOLLOWUP_TEMPLATES[r.int(FOLLOWUP_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(departed), tnameOf(myTeamId)), cls: 'info', playerId: departed });
+  }
+  return out;
+}
+
 
 // ===== src/game/owner.mjs =====
 // ============================================================================
@@ -15618,6 +15752,227 @@ function pickTransferOffer(standings, currentTeamId) {
 }
 
 
+// ===== src/game/goals.mjs =====
+// ============================================================================
+// P3: 週次目標（短期目標の階層・fun_theory_research_20260720.md P3提案）。
+//
+//   generateWeeklyGoal(state, week)         … 決定論生成。週の文脈（自チームの週内日程/直近の
+//     連敗/月境界）と整合するテンプレ集合から hashSeed 独立座標で1件選ぶ（H5-B「窓状態と整合」
+//     と同じ思想＝理不尽な目標を構造的に出さない。例: 連敗していないのに「連敗を止めろ」は出さない）。
+//   evaluateWeeklyGoal(state, goal, week)   … 週末に playerGameLog から純関数で達成判定。
+//   recordCompletedWeeklyGoals(state)       … 週境界を跨いだ未評価週を state.weeklyGoalLog へ
+//     確定する（game/index.mjs の advanceDay から cfg.game.weeklyGoals ゲート内でのみ呼ばれる）。
+//   weeklyGoalTrustBonus(state)             … シーズン末のオーナー信任評価（owner.mjs trustDelta
+//     の合流点）へ加算する達成率ボーナス（cfg.game.weeklyGoalTrustBonusMax・tuning非使用）。
+//
+// 設計原則（CLAUDE.md 鉄則・タスク仕様の厳守事項）:
+//   - フラグゲート: cfg.game.weeklyGoals（既定false・GAME_DEFAULT「headless既定OFF・UIのみON」
+//     第6例目）。本ファイル自体はフラグを見ない（呼び出し側=game/index.mjsがゲートする）純関数群。
+//   - 決定論: テンプレ選択は hashSeed(masterSeed,'weeklygoal',year,week) の独立座標のみ。
+//     既存の生成/進行ストリームを一切消費しない（storylines.mjs H1-2と同じ前例）。
+//   - 週の境界: cfg.game.daysPerWeek（advanceTo('weekEnd')と同じ0始まりday境界）。
+//   - 三層構造: rt.schedule/rt.playerGameLog（観測可能な公開情報）のみを参照。trueAbility非参照。
+//   - tuning非改変: 閾値はすべて本ファイル内のモジュール定数（news.mjs/storylines.mjsの前例と同じ
+//     作法）。cfg.game 配下に置くのはフラグと信任ボーナス上限の小定数のみ（タスク仕様指定）。
+// ============================================================================
+
+
+
+const STREAK_MIN = 2; // 「連敗を止めろ」目標を出す最低連敗数（未満は理不尽な目標として出さない）
+
+/** 自チーム視点の勝敗（'W'|'L'|'T'）。 */
+function outcomeOf(rec, teamId) {
+  if (rec.tie) return 'T';
+  const isHome = rec.home === teamId;
+  const my = isHome ? rec.homeScore : rec.awayScore;
+  const opp = isHome ? rec.awayScore : rec.homeScore;
+  return my > opp ? 'W' : 'L';
+}
+
+/** week（0始まり）の日範囲 [start, end)。 */
+function weekRange(state, week) {
+  const span = state.cfg.game.daysPerWeek;
+  const start = week * span;
+  return { start, end: start + span };
+}
+
+/** その週の自チーム試合日程（rt.schedule から・未消化ぶんも含めて先読みできる）。 */
+function weekSchedule(state, week) {
+  const rt = state.rt;
+  if (!rt) return [];
+  const { start, end } = weekRange(state, week);
+  const teamId = state.playerTeamId;
+  return rt.schedule.filter((g) => g.day >= start && g.day < end && (g.home === teamId || g.away === teamId));
+}
+
+/** その週に実際に消化済みの自チーム試合（playerGameLog から）。 */
+function weekPlayedGames(state, week) {
+  const { start, end } = weekRange(state, week);
+  return state.rt.playerGameLog.filter((g) => g.day >= start && g.day < end);
+}
+
+/** week開始（その週の最初の日）より前の時点での連敗数。 */
+function losingStreakBefore(state, week) {
+  const { start } = weekRange(state, week);
+  const teamId = state.playerTeamId;
+  const log = state.rt.playerGameLog;
+  let len = 0;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const g = log[i];
+    if (g.day >= start) continue; // この週より前の試合だけを見る
+    if (outcomeOf(g, teamId) === 'L') len++;
+    else break;
+  }
+  return len;
+}
+
+/** その週の対戦相手のうち最頻対戦（「カード」候補）。2試合以上あるときだけ返す（同数は teamId 昇順）。 */
+function weekCardOpponent(state, week) {
+  const games = weekSchedule(state, week);
+  const teamId = state.playerTeamId;
+  const counts = new Map();
+  for (const g of games) {
+    const opp = g.home === teamId ? g.away : g.home;
+    counts.set(opp, (counts.get(opp) ?? 0) + 1);
+  }
+  let best = null;
+  for (const [opp, n] of counts) {
+    if (n < 2) continue;
+    if (!best || n > best.n || (n === best.n && opp < best.opp)) best = { opp, n };
+  }
+  return best;
+}
+
+/** week が属する「月」の最終週か（この週の終わりが月境界に到達/交差する）。 */
+function isMonthClosingWeek(state, week) {
+  const cfg = state.cfg;
+  const { start, end } = weekRange(state, week);
+  const monthSpan = cfg.game.daysPerMonth;
+  const monthEnd = (Math.floor(start / monthSpan) + 1) * monthSpan;
+  return end >= monthEnd;
+}
+
+/** 今月初日から今週末までの自チーム消化試合（月間ペース目標の評価対象）。 */
+function monthToDateGames(state, week) {
+  const cfg = state.cfg;
+  const { start, end } = weekRange(state, week);
+  const monthStart = Math.floor(start / cfg.game.daysPerMonth) * cfg.game.daysPerMonth;
+  return state.rt.playerGameLog.filter((g) => g.day >= monthStart && g.day < end);
+}
+
+function winLossOf(games, teamId) {
+  let w = 0;
+  let l = 0;
+  for (const g of games) {
+    const r = outcomeOf(g, teamId);
+    if (r === 'W') w++;
+    else if (r === 'L') l++;
+  }
+  return { w, l };
+}
+
+/**
+ * 週次目標の決定論生成（週の文脈と整合するテンプレ集合から1件・hashSeed独立座標のみ）。
+ * @param {Object} state GameState（state.rt/state.cfg/state.playerTeamId/state.masterSeed/state.year が必要）
+ * @param {number} week 0始まりの週index（day = week*cfg.game.daysPerWeek 〜 +daysPerWeek-1）
+ * @returns {{type:string, label:string, param?:Object}|null} その週に自チーム試合が1つも無ければ null
+ */
+function generateWeeklyGoal(state, week) {
+  if (!state.rt || !state.playerTeamId) return null;
+  if (!weekSchedule(state, week).length) return null; // 自チーム試合の無い週は目標を出さない
+
+  const pool = [{ type: 'weekWinning', label: '今週の対戦で勝ち越せ' }];
+
+  const card = weekCardOpponent(state, week);
+  if (card) {
+    pool.push({ type: 'cardWinning', label: `今カード（${card.n}連戦）で勝ち越せ`, param: { opp: card.opp, games: card.n } });
+  }
+
+  const streak = losingStreakBefore(state, week);
+  if (streak >= STREAK_MIN) {
+    pool.push({ type: 'stopStreak', label: `連敗を${streak}で止めろ`, param: { streak } });
+  }
+
+  if (isMonthClosingWeek(state, week)) {
+    pool.push({ type: 'monthPace', label: '今月を勝率.500以上で終えろ' });
+  }
+
+  const rng = makeRng(hashSeed(state.masterSeed, 'weeklygoal', state.year, week));
+  return pool[rng.int(pool.length)];
+}
+
+/**
+ * 週次目標の達成判定（週末・純関数）。playerGameLog（自チームの試合のみ）と rt.schedule から判定する。
+ * @param {Object} state
+ * @param {{type:string, param?:Object}} goal generateWeeklyGoal の返値
+ * @param {number} week
+ * @returns {{achieved:boolean, actual:string}}
+ */
+function evaluateWeeklyGoal(state, goal, week) {
+  const teamId = state.playerTeamId;
+  const games = weekPlayedGames(state, week);
+  if (goal.type === 'cardWinning') {
+    const cardGames = games.filter((g) => g.home === goal.param.opp || g.away === goal.param.opp);
+    const { w, l } = winLossOf(cardGames, teamId);
+    return { achieved: w > l, actual: `${w}勝${l}敗` };
+  }
+  if (goal.type === 'stopStreak') {
+    const won = games.some((g) => outcomeOf(g, teamId) === 'W');
+    return { achieved: won, actual: won ? '週内で勝利し連敗を止めた' : '週内で勝利できず' };
+  }
+  if (goal.type === 'monthPace') {
+    const { w, l } = winLossOf(monthToDateGames(state, week), teamId);
+    const pct = w + l > 0 ? w / (w + l) : 0;
+    return { achieved: pct >= 0.5, actual: `${w}勝${l}敗（勝率${pct.toFixed(3)}）` };
+  }
+  // 既定: 'weekWinning'
+  const { w, l } = winLossOf(games, teamId);
+  return { achieved: w > l, actual: `${w}勝${l}敗` };
+}
+
+/**
+ * 週境界を跨いだら未評価の週を state.weeklyGoalLog へ確定する（game/index.mjs の advanceDay から
+ * `if (state.cfg.game.weeklyGoals)` のゲート内でのみ呼ばれる想定＝本関数自体はフラグを見ない）。
+ * シーズン終了（rt.finished）時は消化済みの最終（端数）週も確定する。決定論: 追加の乱数消費は
+ * generateWeeklyGoal 内の hashSeed 独立座標のみ（既存ストリーム非干渉）。
+ * @param {Object} state
+ */
+function recordCompletedWeeklyGoals(state) {
+  if (!state.playerTeamId || !state.rt) return;
+  if (!state.weeklyGoalLog) state.weeklyGoalLog = [];
+  const rt = state.rt;
+  const span = state.cfg.game.daysPerWeek;
+  const pending = pendingDay(rt);
+  let week = 0;
+  while (state.weeklyGoalLog.some((e) => e.year === state.year && e.week === week)) week++;
+  while (rt.finished ? week * span < pending : (week + 1) * span <= pending) {
+    const goal = generateWeeklyGoal(state, week);
+    if (goal) {
+      const result = evaluateWeeklyGoal(state, goal, week);
+      state.weeklyGoalLog.push({
+        year: state.year, week, type: goal.type, label: goal.label, achieved: result.achieved,
+      });
+    }
+    week++;
+  }
+}
+
+/**
+ * シーズン末のオーナー信任評価へ加算する週次目標達成率ボーナス（owner.mjs trustDelta の合流点で
+ * additive に加算する想定）。cfg.game.weeklyGoals=false、または完了年ぶんの記録が無ければ 0。
+ * tuning には触れず cfg.game.weeklyGoalTrustBonusMax（小定数）だけを使う。
+ * @param {Object} state
+ * @returns {number} 0 〜 cfg.game.weeklyGoalTrustBonusMax の整数
+ */
+function weeklyGoalTrustBonus(state) {
+  if (!state.cfg.game.weeklyGoals) return 0;
+  const rows = (state.weeklyGoalLog ?? []).filter((e) => e.year === state.year);
+  if (!rows.length) return 0;
+  const rate = rows.filter((e) => e.achieved).length / rows.length;
+  return Math.round(rate * (state.cfg.game.weeklyGoalTrustBonusMax ?? 0));
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -15661,6 +16016,9 @@ function pickTransferOffer(standings, currentTeamId) {
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 
  // H5-B
+// P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
+//   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
+
 
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -16184,6 +16542,10 @@ function newGame(masterSeed, playerTeamId, options = {}) {
     //   [{year, day, seq, kind:'ph'|'relief', choice:{pick:playerId|null}}]（自チーム戦のみ）。
     //   「おまかせ」はログに積まない＝ログ空の試合は完全従来挙動（bit同一・§0-4）。
     gameInterventions: [],
+    // P3（fun_theory_research_20260720 P3）: 週次目標の達成ログ（additive save field・§17集計値
+    //   のみ）。[{year,week,type,label,achieved}]。cfg.game.weeklyGoals=false のときは常に空
+    //   （advanceDay がフラグゲート内でしか書き込まない）。
+    weeklyGoalLog: [],
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -16196,14 +16558,17 @@ function newGame(masterSeed, playerTeamId, options = {}) {
   if (burnIn > 0) {
     const savedInteractive = cfg.game.interactiveDraft;
     const savedFiring = cfg.game.allowFiring; // H5-B: 前史に人間は居ない＝解任も無効で回す
+    const savedWeeklyGoals = cfg.game.weeklyGoals; // P3: 前史に人間は居ない＝週次目標も無効化
     cfg.game.interactiveDraft = false;
     cfg.game.allowFiring = false;
+    cfg.game.weeklyGoals = false;
     for (let y = 0; y < burnIn; y++) {
       while (!state.rt.finished) advanceDay(state);
       advanceYear(state);
     }
     cfg.game.interactiveDraft = savedInteractive;
     cfg.game.allowFiring = savedFiring;
+    cfg.game.weeklyGoals = savedWeeklyGoals;
     // H5-B: プレイヤー着任はここから＝前史で溜まった信任・評価履歴をリセットし、着任年の目標を
     //   現行 yearIndex で再生成する（startYear は前史最終 advanceYear 内で既に走っているため明示的に）。
     state.ownerTrust = cfg.tuning.ownerGoals.trustStart;
@@ -16393,6 +16758,9 @@ function recordSeasonHistory(state) {
  */
 function advanceDay(state, opts = {}) {
   const step = advanceRuntimeDay(state.rt, opts);
+  // P3: 週次目標（フラグゲート内のみ・OFF時は状態も乱数も一切変えない）。load の replay は
+  //   advanceRuntimeDay を直接呼ぶ（本関数を経由しない）ため、二重記録の心配はない。
+  if (state.cfg.game.weeklyGoals) recordCompletedWeeklyGoals(state);
   if (step.seasonEnded) recordSeasonHistory(state);
   return step;
 }
@@ -16544,7 +16912,12 @@ function evaluateOwnerYear(state) {
     careerStats: state.careerStats, year: state.year, cfg: state.cfg,
   });
   const before = state.ownerTrust;
-  state.ownerTrust = clamp(state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg), 0, 100);
+  // P3: 週次目標達成率ボーナス（cfg.game.weeklyGoals=false なら常に0＝既存挙動と bit 同一）を
+  //   trustDelta と同じ合流点で additive に加算する。
+  state.ownerTrust = clamp(
+    state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg) + weeklyGoalTrustBonus(state),
+    0, 100,
+  );
   state.lastOwnerReport = { year: state.year, results, trustBefore: before, trustAfter: state.ownerTrust };
   if (state.cfg.game.allowFiring && state.ownerTrust < og.fireBelow) {
     const toTeam = pickTransferOffer(standings, state.playerTeamId);
@@ -16676,6 +17049,7 @@ function save(state) {
     gameInterventions: state.gameInterventions, // P1: 試合中の人間采配ログ（additive・replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
     trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
+    weeklyGoalLog: state.weeklyGoalLog, // P3: 週次目標の達成ログ（additive・直接永続＝replay対象外）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -16802,6 +17176,7 @@ function load(blob, options = {}) {
     gameInterventions: data.gameInterventions ?? [], // P1: 試合中の人間采配ログ（旧セーブは [] 補完）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
     trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
+    weeklyGoalLog: data.weeklyGoalLog ?? [], // P3: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -16887,6 +17262,10 @@ function allPlayersById(state) {
 
 // H4: 育成方針・キャンプの意味論APIを再エクスポート（UI/テストが './game/index.mjs' 経由で使う。
 //   setTrainingPolicy/clearTrainingPolicy は本ファイルで直接 export 済み）。
+
+// P3: 週次目標の表示API（UI/テストが './game/index.mjs' 経由で使う。状態を書き換える
+//   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
+//   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
 
 </script>
 <script>
@@ -17939,10 +18318,17 @@ function renderOffseasonDigestScreen(off, u) {
       'トレード不成立: 放出 ', link(iv.aPlayer), ' ⇔ 獲得 ', link(iv.bPlayer), '（対象選手の移籍・引退により無効）']));
   }
   // 戦力外/拾い上げ（自チーム関与）。H5-A: reason='budget' は予算超過による強制戦力外。
+  // P4: 在籍が長い/通算成績が大きい「功労者」の戦力外は感情演出つき見出しへ差し替える（数値は不変）。
+  const farewells = new Map(veteranFarewellHeadlines(gs, off, prevYear, my, { pnameOf: u.pname }).map((h) => [h.playerId, h.text]));
   for (const pu of off.pickups ?? []) {
     const why = pu.reason === 'budget' ? '（予算超過による戦力外）' : '（戦力外）';
     if (pu.to === my) moves.push(el('div', { class: 'newsrow good' }, ['拾い上げ: ', link(pu.playerId), `（${u.tname(pu.from)}が${pu.reason === 'budget' ? '予算超過で放出' : '戦力外'}）を獲得`]));
-    else if (pu.from === my) moves.push(el('div', { class: 'newsrow bad' }, ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
+    else if (pu.from === my) {
+      const farewell = farewells.get(pu.playerId);
+      moves.push(el('div', { class: 'newsrow bad' }, farewell
+        ? `🙏 ${farewell}（${u.tname(pu.to)}へ）`
+        : ['戦力外→流出: ', link(pu.playerId), ` が ${u.tname(pu.to)} に拾われる${why}`]));
+    }
   }
   // 自チームの引退（引退者に teamId は無い→完了年の careerStats から最終所属を引く）
   // H1-3: 功労者（通算PA/IP/受賞数が閾値超）は「引退セレモニー」の文面で個別ニュース化する。
@@ -20853,7 +21239,11 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true, ...(ov.game ?? {}) },
+    game: {
+      interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true,
+      weeklyGoals: true, // P3: 週次目標は実プレイのみON（headless既定OFF・第6例目）
+      ...(ov.game ?? {}),
+    },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -21053,6 +21443,23 @@ function renderHubHome(c) {
     ]));
   }
 
+  // P3（fun_theory_research P3）: 今週の目標（週次・カード単位の小目標）。cfg.game.weeklyGoals=true
+  //   （実プレイのみ）かつシーズン進行中のみ。generateWeeklyGoal は純関数＝毎回その場で導出する
+  //   （状態には持たない）。直近1件の判定結果（達成/失敗）があれば即時フィードバックとして併記する。
+  if (gs.cfg.game.weeklyGoals && !rt.finished) {
+    const week = Math.floor((pendingDayOf(rt) - 1) / gs.cfg.game.daysPerWeek);
+    const goal = generateWeeklyGoal(gs, week);
+    const lastLogged = (gs.weeklyGoalLog ?? []).filter((e) => e.year === gs.year).slice(-1)[0];
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, `🎯 今週の目標（第${week + 1}週）`),
+      goal ? el('div', {}, goal.label) : el('div', { class: 'muted' }, '今週は自チームの試合がありません。'),
+      lastLogged
+        ? el('div', { class: 'muted', style: 'margin-top:4px' },
+          `前週の目標「${lastLogged.label}」→ ${lastLogged.achieved ? '✅達成' : '❌未達'}`)
+        : '',
+    ]));
+  }
+
   // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
   renderNewsFeed(c);
 
@@ -21171,6 +21578,12 @@ function renderNewsTab(c) {
   if (rivalryHeads.length) {
     c.append(el('h3', { class: 'leaguename' }, '🔥 因縁の一戦'));
     c.append(el('div', { class: 'newsfeed' }, rivalryHeads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.text))));
+  }
+  // P4: 去った選手の後日談（前年に自チームを出た選手が当季で活躍している場合・fun_theory_research P4）。
+  const followUps = departedPlayerFollowUpHeadlines(gs, gs.playerTeamId, storyNames());
+  if (followUps.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🕊 去った選手たちの今'));
+    c.append(el('div', { class: 'newsfeed' }, followUps.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
@@ -21697,7 +22110,8 @@ function runAdvanceWithProgress(until) {
   // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
   // digestTitle は heading とは独立に持つ（文字列のreplace合成だと「1週間を結果」のように助詞が崩れるため）。
   const digestTitle = until === 'weekEnd' ? '1週間の結果' : '月末までの結果';
-  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
+  // P3: 週次目標ログの開始時点の長さ（進行完了後の差分＝この操作で新たに確定した週の結果）。
+  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId), goalLogStart: (gs.weeklyGoalLog ?? []).length };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -21784,6 +22198,13 @@ function showAdvanceDigest(gs, snap) {
       el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
       el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
     ]));
+  }
+  // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。
+  const newGoalResults = (gs.weeklyGoalLog ?? []).slice(snap.goalLogStart ?? 0);
+  if (newGoalResults.length) {
+    box.append(el('h3', { class: 'leaguename' }, '🎯 週次目標'));
+    box.append(el('div', { class: 'newsfeed' }, newGoalResults.map((g) =>
+      el('div', { class: 'newsrow ' + (g.achieved ? 'good' : 'bad') }, `${g.label} → ${g.achieved ? '✅達成' : '❌未達'}`))));
   }
   box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
   box.append(el('div', { class: 'newsfeed' }, heads.length

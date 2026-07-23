@@ -2,6 +2,33 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-22 (P3+P4: 週次目標＋戦力外/FAの感情演出 — fun_theory_research 残提案の完遂)
+
+**きっかけ**: P2/P5/P6/P7/P1完了後の残り2提案。P3=フロー理論「明確な目標」＋FM「あと1試合」、
+P4=やきゅつく「経営の痛み」・愛着。実装Sonnet委任・レビュー/ゲート/コミットはオーケストレータ。
+
+**実装**:
+- P3 `src/game/goals.mjs` 新設: `generateWeeklyGoal`（hashSeed('weeklygoal')独立座標・週の文脈と
+  整合するテンプレのみ＝連敗していないのに「連敗を止めろ」を出さない=H5-B「窓状態と整合」流儀）・
+  `evaluateWeeklyGoal`（週末にplayerGameLogから純関数判定）・`recordCompletedWeeklyGoals`
+  （advanceDayのフラグゲート内のみ）・`weeklyGoalTrustBonus`（シーズン末信任へ達成率×最大+5を
+  trustDelta合流点でadditive加算）。新フラグ `cfg.game.weeklyGoals` 既定false（headless既定OFF・
+  UIのみONの第6例目・前史burn-inでも明示無効化）。`state.weeklyGoalLog` additive save field。
+  ファン関心(fanInterest)には触れない（予算経由でAI市場へ波及するため信任のみ）。
+  UI: ハブに「🎯今週の目標」カード（前週の達成/未達を即時フィードバック）・進行ダイジェストに
+  新確定週の結果一覧。
+- P4 storylines.mjs: `veteranFarewellHeadlines`（戦力外のうち在籍5年以上 or 通算800安打/80勝の
+  功労者だけ「在籍N年・通算成績」付きの感情見出しへ差し替え・オフダイジェスト）・
+  `departedPlayerFollowUpHeadlines`（前年流出選手が当季観測成績で代替水準を明確に上回れば
+  「去った選手たちの今」後日談・ニュースタブ）。表示のみ・数値不変・真値非参照。
+  「引き止めの選択」は研究レポート表のとおりスコープ外。
+
+**ゲート**: npm test 519 PASS（+26: P3テスト18/P4テスト8）・build(50モジュール)・smoke 12フロー・
+verify identity・calibrate 62/62 全PASS（pipefail付きでexit code確認＝P1の教訓反映）。
+realismはsim非接触のため対象外。
+
+**これで fun_theory_research の提案P1〜P7全弾実装完了。**
+
 ## 2026-07-22 (P1: 試合中の人間采配「介入観戦」 — fun_theory_research 実装本丸・鉄則9の完成形)
 
 **きっかけ**: 承認済み実装順の最終弾＝面白さ研究の本丸（自律性×即時フィードバック×失敗の自己帰属）。

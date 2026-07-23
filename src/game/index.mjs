@@ -47,6 +47,9 @@ import { appendTransactionLog, retirementCeremonies } from './storylines.mjs';
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 import { parsePolicy, coachOverallScore, TRAINING_LABELS, TRAINING_KINDS } from './training.mjs';
 import { generateOwnerGoals, evaluateOwnerGoals, trustDelta, pickTransferOffer } from './owner.mjs'; // H5-B
+// P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
+//   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
+import { recordCompletedWeeklyGoals, weeklyGoalTrustBonus } from './goals.mjs';
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -570,6 +573,10 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
     //   [{year, day, seq, kind:'ph'|'relief', choice:{pick:playerId|null}}]（自チーム戦のみ）。
     //   「おまかせ」はログに積まない＝ログ空の試合は完全従来挙動（bit同一・§0-4）。
     gameInterventions: [],
+    // P3（fun_theory_research_20260720 P3）: 週次目標の達成ログ（additive save field・§17集計値
+    //   のみ）。[{year,week,type,label,achieved}]。cfg.game.weeklyGoals=false のときは常に空
+    //   （advanceDay がフラグゲート内でしか書き込まない）。
+    weeklyGoalLog: [],
     rt: null, // 現行シーズンの日次ランタイム
   };
   captureBaseManager(state); // rt 構築・介入適用の前に「素の監督」を控える
@@ -582,14 +589,17 @@ export function newGame(masterSeed, playerTeamId, options = {}) {
   if (burnIn > 0) {
     const savedInteractive = cfg.game.interactiveDraft;
     const savedFiring = cfg.game.allowFiring; // H5-B: 前史に人間は居ない＝解任も無効で回す
+    const savedWeeklyGoals = cfg.game.weeklyGoals; // P3: 前史に人間は居ない＝週次目標も無効化
     cfg.game.interactiveDraft = false;
     cfg.game.allowFiring = false;
+    cfg.game.weeklyGoals = false;
     for (let y = 0; y < burnIn; y++) {
       while (!state.rt.finished) advanceDay(state);
       advanceYear(state);
     }
     cfg.game.interactiveDraft = savedInteractive;
     cfg.game.allowFiring = savedFiring;
+    cfg.game.weeklyGoals = savedWeeklyGoals;
     // H5-B: プレイヤー着任はここから＝前史で溜まった信任・評価履歴をリセットし、着任年の目標を
     //   現行 yearIndex で再生成する（startYear は前史最終 advanceYear 内で既に走っているため明示的に）。
     state.ownerTrust = cfg.tuning.ownerGoals.trustStart;
@@ -779,6 +789,9 @@ function recordSeasonHistory(state) {
  */
 export function advanceDay(state, opts = {}) {
   const step = advanceRuntimeDay(state.rt, opts);
+  // P3: 週次目標（フラグゲート内のみ・OFF時は状態も乱数も一切変えない）。load の replay は
+  //   advanceRuntimeDay を直接呼ぶ（本関数を経由しない）ため、二重記録の心配はない。
+  if (state.cfg.game.weeklyGoals) recordCompletedWeeklyGoals(state);
   if (step.seasonEnded) recordSeasonHistory(state);
   return step;
 }
@@ -930,7 +943,12 @@ function evaluateOwnerYear(state) {
     careerStats: state.careerStats, year: state.year, cfg: state.cfg,
   });
   const before = state.ownerTrust;
-  state.ownerTrust = clamp(state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg), 0, 100);
+  // P3: 週次目標達成率ボーナス（cfg.game.weeklyGoals=false なら常に0＝既存挙動と bit 同一）を
+  //   trustDelta と同じ合流点で additive に加算する。
+  state.ownerTrust = clamp(
+    state.ownerTrust + trustDelta(results, standings, state.playerTeamId, state.cfg) + weeklyGoalTrustBonus(state),
+    0, 100,
+  );
   state.lastOwnerReport = { year: state.year, results, trustBefore: before, trustAfter: state.ownerTrust };
   if (state.cfg.game.allowFiring && state.ownerTrust < og.fireBelow) {
     const toTeam = pickTransferOffer(standings, state.playerTeamId);
@@ -1062,6 +1080,7 @@ export function save(state) {
     gameInterventions: state.gameInterventions, // P1: 試合中の人間采配ログ（additive・replay に必要）
     transactionLog: state.transactionLog, // H1-2: 因縁ライバル追跡用のコンパクト取引ログ（additive）
     trainingPolicies: state.trainingPolicies, // H4: 育成方針の人間介入ログ（オフシーズンの replay に必要）
+    weeklyGoalLog: state.weeklyGoalLog, // P3: 週次目標の達成ログ（additive・直接永続＝replay対象外）
     // ★R5: 開幕時点のリーグ（真値/ロスター）そのものを保存する。旧 v3 は「過去オフを再計算して
     //   復元」していたが、前史30年ではその入力（30年ぶん全選手の成績）が save に必要になり破綻する。
     leagueSnapshot: seasonStartLeague(state),
@@ -1188,6 +1207,7 @@ export function load(blob, options = {}) {
     gameInterventions: data.gameInterventions ?? [], // P1: 試合中の人間采配ログ（旧セーブは [] 補完）
     transactionLog: data.transactionLog ?? [], // H1-2: 旧セーブは [] 補完（additive save field）
     trainingPolicies: data.trainingPolicies ?? [], // H4: 旧セーブは [] 補完（additive save field）
+    weeklyGoalLog: data.weeklyGoalLog ?? [], // P3: 旧セーブは [] 補完（additive save field）
     farmPromotionLog: data.farmPromotionLog ?? [], // 育成→支配下季節中昇格ログ（§req_20260708）
     injuryLog: data.injuryLog ?? [], // R3: 試合中に発生した故障のログ（過去年オフの replay 入力）
     pendingInjuries: data.pendingInjuries ?? [], // R3: 当年開幕ILの残り離脱 day 数（blob から復元）
@@ -1279,6 +1299,7 @@ export {
   retirementCeremonies, retirementCeremonyText, ownTeamRetirementHeadlines,
   draftClassHeadlines, // P5: 「今年の逸材」ドラフト前ニュース（fun_theory_research P5）
   playerStoryOf, STORY_KIND_LABELS, // P7: 選手詳細の「物語」欄（fun_theory_research P7）
+  veteranFarewellHeadlines, departedPlayerFollowUpHeadlines, // P4: 戦力外・FAの感情演出（fun_theory_research P4）
 } from './storylines.mjs';
 // 時代トレンド（D3・§11.3）: era 計算を UI/テストが index 経由で使えるよう再エクスポート。
 export { computeEra, eraSeasonConfig, teamBalanceBoost } from './era.mjs';
@@ -1288,3 +1309,7 @@ export { draftScoutView, draftPreviewHeadlines };
 // H4: 育成方針・キャンプの意味論APIを再エクスポート（UI/テストが './game/index.mjs' 経由で使う。
 //   setTrainingPolicy/clearTrainingPolicy は本ファイルで直接 export 済み）。
 export { TRAINING_LABELS, TRAINING_KINDS, parsePolicy, coachOverallScore };
+// P3: 週次目標の表示API（UI/テストが './game/index.mjs' 経由で使う。状態を書き換える
+//   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
+//   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
+export { generateWeeklyGoal, evaluateWeeklyGoal } from './goals.mjs';

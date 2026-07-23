@@ -1634,6 +1634,15 @@ export const GAME_DEFAULT = {
   //   （介入は既存の choosePinchHitter/chooseReliever 呼び出し地点への人間差し替えフックのみ・
   //   判断ロジックの新設はしない）。
   interactiveManager: false,
+  // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。既定は false
+  //   （interactiveDraft/allowFiring/dynamicLineup/interactiveManager と同じ「headless既定OFF・
+  //   UIのみON」第6例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけがオーバーライドで true を渡す。true でも効果は表示＋シーズン末の
+  //   信任へ小さく加算するだけ（エンジン/tuning非干渉。生成・判定は game/goals.mjs）。
+  weeklyGoals: false,
+  // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
+  //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
+  weeklyGoalTrustBonusMax: 5,
 };
 
 /**

@@ -34,6 +34,10 @@ import {
   mediaReputation,
   // H5-B: オーナー目標・信任・解任（phaseH_fun_spec H5-B）。
   resolveOwnerDecision,
+  // P3: 週次目標（短期目標の階層・fun_theory_research P3）。
+  generateWeeklyGoal,
+  // P4: 戦力外・FAの感情演出（fun_theory_research P4）。
+  departedPlayerFollowUpHeadlines,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -1419,7 +1423,11 @@ function uiConfig() {
   const ov = globalThis.SABER_CFG_OVERRIDES ?? {};
   return createConfig({
     ...ov,
-    game: { interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true, ...(ov.game ?? {}) },
+    game: {
+      interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true,
+      weeklyGoals: true, // P3: 週次目標は実プレイのみON（headless既定OFF・第6例目）
+      ...(ov.game ?? {}),
+    },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）
     tuning: { economy: { fan: { budgetFloorMult: 0.75, budgetSpanMult: 0.5 } }, ...(ov.tuning ?? {}) },
   });
@@ -1619,6 +1627,23 @@ function renderHubHome(c) {
     ]));
   }
 
+  // P3（fun_theory_research P3）: 今週の目標（週次・カード単位の小目標）。cfg.game.weeklyGoals=true
+  //   （実プレイのみ）かつシーズン進行中のみ。generateWeeklyGoal は純関数＝毎回その場で導出する
+  //   （状態には持たない）。直近1件の判定結果（達成/失敗）があれば即時フィードバックとして併記する。
+  if (gs.cfg.game.weeklyGoals && !rt.finished) {
+    const week = Math.floor((pendingDayOf(rt) - 1) / gs.cfg.game.daysPerWeek);
+    const goal = generateWeeklyGoal(gs, week);
+    const lastLogged = (gs.weeklyGoalLog ?? []).filter((e) => e.year === gs.year).slice(-1)[0];
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, `🎯 今週の目標（第${week + 1}週）`),
+      goal ? el('div', {}, goal.label) : el('div', { class: 'muted' }, '今週は自チームの試合がありません。'),
+      lastLogged
+        ? el('div', { class: 'muted', style: 'margin-top:4px' },
+          `前週の目標「${lastLogged.label}」→ ${lastLogged.achieved ? '✅達成' : '❌未達'}`)
+        : '',
+    ]));
+  }
+
   // ニュースフィード（C4・§54）: 自チームの直近成績から見出しをテンプレ生成（実データ差し込み）。
   renderNewsFeed(c);
 
@@ -1737,6 +1762,12 @@ function renderNewsTab(c) {
   if (rivalryHeads.length) {
     c.append(el('h3', { class: 'leaguename' }, '🔥 因縁の一戦'));
     c.append(el('div', { class: 'newsfeed' }, rivalryHeads.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'good') }, h.text))));
+  }
+  // P4: 去った選手の後日談（前年に自チームを出た選手が当季で活躍している場合・fun_theory_research P4）。
+  const followUps = departedPlayerFollowUpHeadlines(gs, gs.playerTeamId, storyNames());
+  if (followUps.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🕊 去った選手たちの今'));
+    c.append(el('div', { class: 'newsfeed' }, followUps.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
@@ -2263,7 +2294,8 @@ function runAdvanceWithProgress(until) {
   // G6: 進行後の差分ダイジェスト用スナップショット（開始時点の日付・自リーグ順位を控える）。
   // digestTitle は heading とは独立に持つ（文字列のreplace合成だと「1週間を結果」のように助詞が崩れるため）。
   const digestTitle = until === 'weekEnd' ? '1週間の結果' : '月末までの結果';
-  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId) };
+  // P3: 週次目標ログの開始時点の長さ（進行完了後の差分＝この操作で新たに確定した週の結果）。
+  const digestSnap = { startDay, digestTitle, rank: leagueRankOf(gs.rt, gs.playerTeamId), goalLogStart: (gs.weeklyGoalLog ?? []).length };
   const overlay = el('div', { class: 'overlay' });
   const barFill = el('div', { class: 'pbfill', style: 'width:0%' });
   const barText = el('div', { class: 'muted' }, '0%');
@@ -2350,6 +2382,13 @@ function showAdvanceDigest(gs, snap) {
       el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
       el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
     ]));
+  }
+  // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。
+  const newGoalResults = (gs.weeklyGoalLog ?? []).slice(snap.goalLogStart ?? 0);
+  if (newGoalResults.length) {
+    box.append(el('h3', { class: 'leaguename' }, '🎯 週次目標'));
+    box.append(el('div', { class: 'newsfeed' }, newGoalResults.map((g) =>
+      el('div', { class: 'newsrow ' + (g.achieved ? 'good' : 'bad') }, `${g.label} → ${g.achieved ? '✅達成' : '❌未達'}`))));
   }
   box.append(el('h3', { class: 'leaguename' }, '📰 見出し'));
   box.append(el('div', { class: 'newsfeed' }, heads.length

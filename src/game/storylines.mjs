@@ -812,3 +812,128 @@ export function playerStoryOf(state, playerId, names = {}) {
     idAsc(a.text, b.text));
   return events;
 }
+
+// ============================================================================
+// P4: 戦力外・FAの感情演出（fun_theory_research_20260720 P4・やきゅつく「経営の痛み」）。
+//   表示のみ・数値は一切変えない（研究レポート表のとおり「引き止めの選択」はスコープ外＝
+//   marketInterventions/transactions.mjs の判定結果をそのまま使い、文言だけを差し替える）。
+//
+//   veteranFarewellHeadlines(state, off, completedYear, myTeamId, names) … オフの戦力外
+//     （off.pickups の from===myTeamId）のうち「功労者」（在籍が長い or 通算成績が大きい）だけを
+//     感情演出つき見出しへ（事務的な「戦力外→流出」の1行の差し替え素材）。
+//   departedPlayerFollowUpHeadlines(state, myTeamId, names) … 前年に自チームから出た選手
+//     （FA/トレード/戦力外拾い上げ＝transactionLog）が当季の観測成績で活躍している場合の
+//     後日談ニュース（rivalryGameHeadlines「古巣戦で活躍」とは別枠＝対戦有無を問わない）。
+//
+// 決定論: テンプレ選択は hashSeed(masterSeed,'farewell'|'followup', ...) の独立座標のみ
+//   （既存の生成/進行ストリーム・rivalryGameHeadlinesの'story'座標いずれとも非干渉）。
+//   真値(trueAbility)は一切参照しない（careerStats/transactionLog/当季観測のみ＝三層構造）。
+// ============================================================================
+
+const VETERAN_TENURE_MIN = 5; // 「功労者」とみなす最低在籍年数（在籍先チームでの通算出場シーズン数）
+const VETERAN_HITS_MIN = 800; // または通算安打（野手）
+const VETERAN_WINS_MIN = 80; // または通算勝利（投手）
+
+/** playerId の careerStats のうち teamId===teamId のシーズン数（在籍年数の近似・§17集計値のみ）。 */
+function tenureYearsWith(state, playerId, teamId) {
+  const seasons = new Set();
+  for (const s of state.careerStats) {
+    if (s.playerId === playerId && s.teamId === teamId) seasons.add(s.season);
+  }
+  return seasons.size;
+}
+
+const VETERAN_FAREWELL_TEMPLATES = [
+  (n, yrs, line) => `在籍${yrs}年・${line}の${n}に戦力外通告 ― 球団史を支えた男に別れ`,
+  (n, yrs, line) => `${n}（在籍${yrs}年・${line}）、まさかの戦力外 ― 功労者に非情の決断`,
+  (n, yrs, line) => `長年チームを支えた${n}（${line}）に戦力外通告。在籍${yrs}年の重みを胸に`,
+];
+
+/**
+ * オフの戦力外（off.pickups の from===myTeamId）のうち「功労者」だけを感情演出つき見出しへ変換する。
+ * 判定基準（関数内定数・研究レポートの目安どおり）: 在籍${VETERAN_TENURE_MIN}年以上、または
+ * 通算安打${VETERAN_HITS_MIN}（野手）/通算勝利${VETERAN_WINS_MIN}（投手）以上。
+ * @param {Object} state GameState（careerStats/masterSeed が必要）
+ * @param {Object} off advanceYear の返す off 要約（off.pickups が必要）
+ * @param {number} completedYear 完了年（テンプレ選択の決定論座標に使う）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function}} names pnameOf: playerId→表示名（省略時は識別子そのまま）
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+export function veteranFarewellHeadlines(state, off, completedYear, myTeamId, names = {}) {
+  const { pnameOf = (id) => id } = names;
+  const out = [];
+  for (const pu of off.pickups ?? []) {
+    if (pu.from !== myTeamId) continue;
+    const tenure = tenureYearsWith(state, pu.playerId, myTeamId);
+    const isPitcher = pu.role === 'pitcher';
+    const agg = isPitcher ? careerPitching(state.careerStats, pu.playerId) : careerBatting(state.careerStats, pu.playerId);
+    const merit = tenure >= VETERAN_TENURE_MIN || (isPitcher ? agg.w >= VETERAN_WINS_MIN : agg.h >= VETERAN_HITS_MIN);
+    if (!merit) continue;
+    const line = isPitcher ? `通算${agg.w}勝${agg.l}敗${agg.sv}S` : `通算${agg.h}安打${agg.hr}本塁打`;
+    const r = makeRng(hashSeed(state.masterSeed, 'farewell', completedYear, pu.playerId));
+    const tpl = VETERAN_FAREWELL_TEMPLATES[r.int(VETERAN_FAREWELL_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(pu.playerId), tenure, line), cls: 'bad', playerId: pu.playerId });
+  }
+  return out;
+}
+
+const FOLLOWUP_MIN_PA = 200; // 後日談「活躍」判定の最低打席（過小サンプル除外）
+const FOLLOWUP_MIN_IP = 60; // 同・最低投球回
+const FOLLOWUP_WOBA_MARGIN = 0.03; // 代替wOBA(cfg.tuning.market.release)からこれ以上高ければ「活躍」
+const FOLLOWUP_FIP_MARGIN = 0.3; // 代替FIPからこれ以上低ければ「活躍」
+
+const FOLLOWUP_TEMPLATES = [
+  (n, t) => `${n}、${t}を出て早くも躍動 ― 新天地で結果を残す`,
+  (n, t) => `古巣${t}を離れた${n}、覚醒の兆し`,
+  (n, t) => `${n}、${t}退団から一転。「あの時手放した男」が輝きを放つ`,
+];
+
+/** transactionLog の1行から「myTeamId を離れた選手」を導出する（rivalriesOf と同じ from/to 規約）。 */
+function departureFrom(row, myTeamId) {
+  if ((row.kind === 'fa' || row.kind === 'pickup') && row.from === myTeamId) return row.playerId;
+  if (row.kind === 'trade') {
+    if (row.from === myTeamId) return row.playerId;
+    if (row.to === myTeamId) return row.playerId2;
+  }
+  return null;
+}
+
+/**
+ * 前年に自チームから出た選手（FA/トレード/戦力外拾い上げ）が当季（観測成績）で活躍している場合の
+ * 後日談ニュース（純関数・シーズン中の定期ダイジェスト用）。「活躍」判定は当季の観測（rt.stats）
+ * だけを見る（trueAbility非参照）＝代替水準（cfg.tuning.market.release）を一定以上上回るかどうか。
+ * @param {Object} state GameState（state.rt/transactionLog/masterSeed/year が必要）
+ * @param {string} myTeamId
+ * @param {{pnameOf?:Function, tnameOf?:Function}} names
+ * @returns {Array<{text:string, cls:string, playerId:string}>}
+ */
+export function departedPlayerFollowUpHeadlines(state, myTeamId, names = {}) {
+  const rt = state.rt;
+  if (!rt) return [];
+  const { pnameOf = (id) => id, tnameOf = (id) => id } = names;
+  const cfg = state.cfg;
+  const rel = cfg.tuning.market.release;
+  const log = (state.transactionLog || []).filter((r) => r.year === state.year - 1);
+  const out = [];
+  const seen = new Set();
+  for (const row of log) {
+    const departed = departureFrom(row, myTeamId);
+    if (!departed || seen.has(departed)) continue;
+    const s = rt.stats.stats.get(departed);
+    if (!s) continue;
+    let active = false;
+    if (s.pitching && s.pitching.outs > 0) {
+      const ip = s.pitching.outs / 3;
+      if (ip >= FOLLOWUP_MIN_IP) active = simpleFip(s.pitching, ip) <= rel.replacementFip - FOLLOWUP_FIP_MARGIN;
+    } else if (s.batting && s.batting.pa >= FOLLOWUP_MIN_PA) {
+      active = observedWoba(s.batting, cfg) >= rel.replacementWoba + FOLLOWUP_WOBA_MARGIN;
+    }
+    if (!active) continue;
+    seen.add(departed);
+    const r = makeRng(hashSeed(state.masterSeed, 'followup', state.year, departed));
+    const tpl = FOLLOWUP_TEMPLATES[r.int(FOLLOWUP_TEMPLATES.length)];
+    out.push({ text: tpl(pnameOf(departed), tnameOf(myTeamId)), cls: 'info', playerId: departed });
+  }
+  return out;
+}

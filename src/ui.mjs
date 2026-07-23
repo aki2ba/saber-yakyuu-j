@@ -48,6 +48,8 @@ import {
   usageStabilityOf, trustLabelOf, TRUST_LABELS_JP,
   // Q3: 「記憶に残る一日」特別デー（同 Q3）。
   specialDaysOf,
+  // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）。
+  analystColumnOf,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -1807,6 +1809,14 @@ function renderNewsTab(c) {
     c.append(el('h3', { class: 'leaguename' }, '📋 コーチ報告'));
     c.append(el('div', { class: 'newsfeed' }, coachReports.map((r) =>
       el('div', { class: 'newsrow ' + (r.cls || 'info') }, [playerLink(r.playerId), ' ', r.text]))));
+  }
+  // R1+R7+R8: 「アナリストの目」（極端値/意外性/比較型の週次コラム＋試合ハイライト＋隠れWPAリーダー）。
+  //   選手名はテンプレ文中に埋め込み済み（storylines.mjs 系の見出しと同じ規約・plink化はしない）。
+  const analystCols = analystColumnOf(gs, storyNames());
+  if (analystCols.length) {
+    c.append(el('h3', { class: 'leaguename' }, '🔬 アナリストの目'));
+    c.append(el('div', { class: 'newsfeed' }, analystCols.map((h) =>
+      el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る

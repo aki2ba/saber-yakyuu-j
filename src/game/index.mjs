@@ -54,6 +54,7 @@ import { recordCompletedWeeklyGoals, weeklyGoalTrustBonus } from './goals.mjs';
 import { coachProgressReports, coachReportPhase } from './coachReports.mjs';
 // Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
 import { hallOfFamers, nicknameAlbum, recordAlbum } from './gallery.mjs';
+import { analystColumnOf } from './analystColumn.mjs'; // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -1336,3 +1337,5 @@ export { hallOfFamers, nicknameAlbum, recordAlbum };
 export { ownerPressConference };
 // Q1: 起用信頼度（前季観測から導出する純関数）の表示API（UI/テストが './game/index.mjs' 経由で使う）。
 export { usageStabilityOf, trustLabelOf, TRUST_LABELS_JP } from './trust.mjs';
+// R1+R7+R8: 「アナリストコラム」表示API（UI/テストが './game/index.mjs' 経由で使う）。
+export { analystColumnOf };

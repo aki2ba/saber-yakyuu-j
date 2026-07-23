@@ -1031,6 +1031,21 @@ btnByText('ニュース')._onclick();
   mvLink._onclick();
   assert.ok(allClass('overlay').length >= 1, '昇降格ニュースのリンクから選手モーダルが開く');
 }
+// R1+R7+R8: 「🔬 アナリストの目」節（analystColumnOf）。シーズン消化がある2年目中盤のフローでのみ
+//   検証する（開幕直後はネタ0で節非表示が正常＝ここでは節が出ても出なくても通る形にし、出た場合だけ
+//   見出し直下のnewsfeedに1行以上あるという構造を検証する）。
+// 直前のフローで開いた選手モーダル（✕で閉じる）or ダイジェスト（閉じる）どちらでも対応。
+if (hasClass('overlay')) (btnByText('✕') ?? btnByText('閉じる'))._onclick();
+btnByText('ニュース')._onclick();
+{
+  const newsHeads3 = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  const analystIdx = newsHeads3.findIndex((t) => t.includes('アナリストの目'));
+  if (analystIdx >= 0) {
+    const feeds3 = allClass('newsfeed');
+    const rows = walk(feeds3[analystIdx]).filter((n) => (n.className || '').includes('newsrow'));
+    assert.ok(rows.length >= 1, `アナリストの目セクションが出た場合は1行以上のnewsrowを持つ (got ${rows.length})`);
+  }
+}
 // F2e) 2年目シーズン中の二軍成績: 二軍サブタブに実観測の率＋選手詳細の基本タブに「今季二軍成績」
 btnByText('チーム')._onclick(); // 二軍サブタブ維持
 {

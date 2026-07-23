@@ -1595,6 +1595,23 @@ export const TUNING_DEFAULT = {
       pennantMaxGb: 1.5, // 首位攻防戦: 自チームとの直接のゲーム差がこれ以内の相手とのカード初戦
       pennantMinGamesPlayed: 5, // 開幕直後（全球団横並び）の誤発火防止ガード（news.mjs rankAndGbと同型）
     },
+    // R1+R7+R8（thyroxin/research…データストーリーテリング調査）:「アナリストコラム」
+    //   （game/analystColumn.mjs が消費）。観測成績(rt.stats)のみの純関数・表示層のみ・エンジン非干渉。
+    analyst: {
+      maxItems: 4, // ニュースタブ「🔬 アナリストの目」節に載せる週次の最大件数
+      extremeMinPool: 5, // 極端値（リーグ1位/最下位）を語るのに必要な最低母集団（規定到達者数）
+      divergenceXwobaMin: 0.025, // xwOBA−wOBA 乖離の下限（打者・意外性型/出来すぎ警報の判定）
+      divergenceEraSieraMin: 0.75, // ERA−SIERA 乖離の下限（投手・意外性型/出来すぎ警報の判定）
+      comparisonMaxCareerYear: 3, // 「若手」とみなす最大プロ年数（比較型: 殿堂の同年目ペースとの対比）
+      comparisonMinProgress: 0.3, // シーズン消化率がこれ未満はペース比較の対象外（序盤ノイズ除外）
+      comparisonPaceRatio: 0.85, // 若手ペースが殿堂の同年目実績のこの比率以上なら「同水準」
+      gameHighlightLookback: 5, // R7: 直近何試合まで遡って「その日の一番」を探すか
+      gameHighlightMinOuts: 15, // R7好投判定: 最低アウト数（5回=15アウト）
+      gameHighlightMinKbb: 5, // R7好投判定: 最低 奪三振−与四球
+      gameHighlightMinHr: 2, // R7快音判定: 1試合の最低本塁打数
+      wpaHiddenWrcMax: 100, // R8: 「打撃成績が地味」とみなす wRC+ の上限（リーグ平均=100未満）
+      wpaHiddenMinWpa: 0.3, // R8: 隠れWPAリーダーとして拾う最低WPA
+    },
   },
 };
 

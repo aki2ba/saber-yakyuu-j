@@ -872,6 +872,49 @@ subtabs.find((n) => textOf(n).includes('二軍'))._onclick();
   assert.ok(badges.length >= 5, `育成選手に「育成」バッジ (got ${badges.length})`);
   assert.ok(badges.every((n) => textOf(n) === '育成'), 'バッジの文言は「育成」');
 }
+
+// E1c) Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 位置別戦力ヒート表・狙い目の他球団若手・
+//   トレードの窓サジェスト。既存の一軍/二軍/采配ボタン文言は変更しない＝末尾に追加された新タブ。
+assert.ok(subtabs.some((n) => textOf(n) === 'GM'), 'チームタブに「GM」サブタブが追加されている');
+subtabs.find((n) => textOf(n) === 'GM')._onclick();
+{
+  // 位置別戦力ヒート表: 見出しに守備位置(3B等)と投手2枠(先発/救援)の列が並ぶ（1年目終了済＝
+  //   母集団12球団分のデータがあるはずだが、weak/saturated の有無はseed依存のため件数は問わない）。
+  const gmThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
+  for (const col of ['球団', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', '先発', '救援']) {
+    assert.ok(gmThs.includes(col), `GM位置別戦力表に${col}列 (${gmThs.join(',')})`);
+  }
+  assert.ok(walk(appDiv).some((n) => (n.className || '').includes('gmminerow')), '自チームの行が先頭に固定表示される（.gmminerow）');
+  // 節見出しは空でも出る（成立する形のアサーション）。
+  const gmHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(gmHeads.some((t) => t.startsWith('狙い目の他球団若手')), 'GMサブタブに「狙い目の他球団若手」節見出し');
+  assert.ok(gmHeads.some((t) => t.startsWith('トレードの窓')), 'GMサブタブに「トレードの窓」節見出し');
+  // 狙い目リストに項目があれば行クリックでモーダルが開くこと（0件のseedでも節見出しは既に検証済み）。
+  const prospectRow = walk(appDiv).find((n) => n.tag === 'div' && (n.className || '').includes('awardrow') && (n.className || '').includes('clickable'));
+  if (prospectRow) {
+    prospectRow._onclick();
+    assert.ok(allClass('overlay').pop(), 'GM「狙い目の他球団若手」の行クリックで選手モーダルが開く');
+    allClass('overlay').pop().remove();
+  }
+  // トレードの窓サジェストがあれば「トレード画面へ」ボタンで既存ストーブのトレードタブへ導線する。
+  const gotoTradeBtn = btnByText('トレード画面へ');
+  if (gotoTradeBtn) {
+    gotoTradeBtn._onclick();
+    assert.ok(textOf(hasClass('header')).includes('ストーブリーグ'), 'GM「トレードの窓」→トレード画面へでストーブリーグ画面に遷移');
+    assert.ok(btnByText('リザルトへ戻る'), 'ストーブリーグ画面のヘッダ操作が描画される');
+    // stoveView.tab はUIローカルに持続するため、導線検証後は既定のFA市場タブへ戻しておく
+    // （後続E3bの「ストーブを開くとFA宣言見込みが出る」前提を壊さない）。
+    btnByText('FA市場')._onclick();
+    // ストーブ画面には共通ナビ（チーム等）が無いため、既存の戻り導線（リザルトへ戻る→成績を見る）で
+    // 通常のハブへ復帰する（このスモークは状態を変更しない=年送り等は行わない）。
+    btnByText('リザルトへ戻る')._onclick();
+    btnByText('成績を見る')._onclick();
+    btnByText('チーム')._onclick();
+  }
+}
+// GMサブタブの検証を終えたら「二軍」サブタブへ戻す（後続E1dが「二軍サブタブ選択のまま」を前提とするため）。
+subtabs.find((n) => textOf(n).includes('二軍'))._onclick();
+
 // F2b) 順位タブ: 二軍リーグ順位の折りたたみ（F2-4）
 btnByText('順位')._onclick();
 {

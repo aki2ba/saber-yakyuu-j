@@ -337,6 +337,10 @@ const html = `<!DOCTYPE html>
   .formnote { font-size:12px; margin-top:2px; padding:4px 8px; border-radius:4px; background:var(--inset); }
   .formnote.good { color:var(--pos); }
   .formnote.bad { color:var(--neg); }
+  /* Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 自チーム行の強調・飽和マーク・ヒート表セル */
+  tr.gmminerow td { font-weight:700; background:var(--inset); }
+  .gmsatmark { margin-right:3px; color:var(--clay); }
+  td.gmcell { text-align:center; }
   .farmstandings { margin-top:14px; }
   .plink { color:var(--hit); cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
   .plink:hover { color:var(--clay); }

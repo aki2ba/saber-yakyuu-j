@@ -1631,6 +1631,25 @@ export const TUNING_DEFAULT = {
       eraGapHot: 1.5, // 窓の目安防御率(失点/9)がシーズンERAよりこれ以上低ければ好調候補
       eraGapCold: 1.5, // 同・高ければ不調候補
     },
+    // Wave C（thyroxin/specs/gm_analytics_spec.md・GM分析仕様）: GMボード（弱点・飽和・有望若手・
+    //   トレード相手サジェスト）。game/gmBoard.mjs が消費。観測statline/farmStatsのみの純関数・
+    //   表示層のみ・エンジン非干渉・真値/能力値レーティング非参照。
+    gmBoard: {
+      minSeasonProgress: 0.2, // 消化率がこれ未満は弱点/飽和判定を出さない（序盤の少試合ノイズ除外）
+      minPositionPopulation: 6, // 百分位化に使う母集団（球団の「レギュラー」値の数）の最低数
+      weakPctlMax: 0.2, // 弱点=百分位がこれ以下（下位20%）
+      satMinPctl: 0.6, // 飽和判定: 控えの百分位がこれ以上（上位40%＝観測上位の控え）
+      satMinPaFrac: 0.3, // 飽和判定（野手）: 控えの打席が「規定打席」のこの割合以上
+      satMinIpFrac: 0.3, // 飽和判定（投手）: 控えの投球回が「規定投球回」のこの割合以上
+      prospectMaxAge: 25, // 有望若手とみなす年齢上限
+      prospectMinPA: 20, // 有望若手判定（野手）に必要な最低打席（一軍/二軍とも・小サンプルは語らない）
+      prospectMinIP: 15, // 有望若手判定（投手）に必要な最低投球回
+      prospectMinPctl: 0.6, // 「観測百分位が高い」の下限（これ未満は有望と語らない）
+      prospectThinPaFrac: 0.5, // 一軍在籍で「出場機会が細い」とみなす打席（規定打席のこの割合未満）
+      prospectThinIpFrac: 0.5, // 同・投球回（規定投球回のこの割合未満）
+      prospectMaxItems: 20, // 狙い目リストの最大件数
+      tradeSuggestMax: 5, // トレードの窓サジェストの最大件数
+    },
   },
 };
 

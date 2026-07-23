@@ -2,6 +2,23 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-23 (Wave C: GMボード — 弱点/飽和マップ・有望若手ウォッチ・トレードの窓)
+
+**実装**（gm_analytics_spec.md Wave C・表示層のみ・純関数・観測のみ）:
+- `src/game/gmBoard.mjs`: `positionStrengthMap`（12球団×守備8位置+先発/救援2枠。レギュラー=
+  当季観測positionOuts最多・観測wOBA/K-BB%/FIPのリーグ内百分位。弱点=下位20%/飽和=同水準以上の
+  控えが渋滞）・`prospectWatch`（年齢≤25×観測百分位高×出場機会薄=「塞がれた有望株」・二軍farmStats
+  も対象・断定なし文言）・`tradeTargetSuggestions`（自分の飽和×相手の弱点のマッチング）
+- UI: チームタブに「GM」サブタブ（位置別ヒート表=既存heatトークン・自チーム行先頭固定・狙い目
+  リスト→選手モーダル・「トレード画面へ」導線=stoveGotoTrade）
+- レビュー修正: GM導線がストーブ画面のタブ状態（stoveView.tab）を持ち越し、後続smokeの
+  「ストーブを開くとFA宣言見込み」前提を壊した→smoke側でFA市場タブへ戻すリセット追加
+
+**ゲート**: npm test 637 PASS（+19: game_wc_gmboard.test.mjs）・build(56モジュール)・smoke 13
+フロー・verify identity・calibrate 62/62 全PASS。
+
+**次**: Wave D=トレードAI受諾のセイバー視点（saberSavvy独立シード・回帰調整評価・ポジション需要項）。
+
 ## 2026-07-23 (Wave B: フォーム判定（好調▲/不調▼） — GM分析仕様の第1弾)
 
 **実装**（gm_analytics_spec.md Wave B・表示層のみ・純関数・保存なし）:

@@ -56,6 +56,8 @@ import { coachProgressReports, coachReportPhase } from './coachReports.mjs';
 import { hallOfFamers, nicknameAlbum, recordAlbum } from './gallery.mjs';
 import { analystColumnOf } from './analystColumn.mjs'; // R1+R7+R8: 「アナリストコラム」（thyroxin/research…データストーリーテリング調査）
 import { playerFormOf, teamFormMap } from './form.mjs'; // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）
+// Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）。
+import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, GB_POSITIONS, gbPosLabel } from './gmBoard.mjs';
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -1342,3 +1344,5 @@ export { usageStabilityOf, trustLabelOf, TRUST_LABELS_JP } from './trust.mjs';
 export { analystColumnOf };
 // Wave B（thyroxin/specs/gm_analytics_spec.md）: フォーム判定（好調▲/不調▼）表示API。
 export { playerFormOf, teamFormMap };
+// Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）表示API。
+export { positionStrengthMap, prospectWatch, tradeTargetSuggestions, GB_POSITIONS, gbPosLabel };

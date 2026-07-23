@@ -22,6 +22,9 @@ import { coachOverallScore } from '../game/training.mjs';
 //   teamFormMap で全選手ぶんの tier を軽量に取り、hot/cold の選手だけ playerFormOf で reasons を
 //   取り直す（ホバー表示用・該当者は少数なので軽い）。
 import { playerFormOf, teamFormMap } from '../game/form.mjs';
+// Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）。
+//   すべて純関数・観測statline/farmStatsのみ（真値非参照）。表示はチームタブの「GM」サブタブ。
+import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, GB_POSITIONS, gbPosLabel } from '../game/gmBoard.mjs';
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -97,16 +100,22 @@ export function renderTeamTab(c, u) {
     : teamPlayers.filter((p) => !reg || !reg.has(p.id)).concat((gs.league.farm ?? []).filter((p) => p.teamId === myId));
   const sub = teamTabView.sub;
   const nMinor = farmRoster.filter((p) => p.rosterStatus === 'minor').length;
-  // サブタブ: 一軍(出場登録) / 二軍(支配下残+育成) / 采配(G4b: ホームの采配パネルを移設)
+  // サブタブ: 一軍(出場登録) / 二軍(支配下残+育成) / 采配(G4b: ホームの采配パネルを移設) /
+  //   GM(Wave C: 弱点・飽和・有望若手・トレードサジェスト。既存ボタンの文言は変更しない＝末尾に追加)
   c.append(el('div', { class: 'subtabs' }, [
     el('button', { class: 'subtab' + (sub === 'active' ? ' active' : ''), onclick: () => { teamTabView.sub = 'active'; u.rerender(); } }, `一軍・出場登録（${actives.length}人）`),
     el('button', { class: 'subtab' + (sub === 'farm' ? ' active' : ''), onclick: () => { teamTabView.sub = 'farm'; u.rerender(); } }, `二軍・支配下＋育成（${farmRoster.length}人）`),
     el('button', { class: 'subtab' + (sub === 'manager' ? ' active' : ''), onclick: () => { teamTabView.sub = 'manager'; u.rerender(); } }, '采配'),
+    el('button', { class: 'subtab' + (sub === 'gm' ? ' active' : ''), onclick: () => { teamTabView.sub = 'gm'; u.rerender(); } }, 'GM'),
   ]));
   if (sub === 'manager') {
     // G4b: renderManagerPanel は再描画コールバック引数化済み。u.rerender（チームタブ再描画）を渡すことで
     //   方針変更後もチームタブ（采配サブタブ）に留まる（引数なし版=renderHub()直呼びだとホームへ強制遷移する回帰を避ける）。
     c.append(u.renderManagerPanel(() => u.rerender()));
+    return;
+  }
+  if (sub === 'gm') {
+    renderGmSubtab(c, u);
     return;
   }
   const players = sub === 'active' ? actives : farmRoster;
@@ -327,4 +336,107 @@ function teamRosterTable(data, cols, sort, u) {
   };
   render();
   return wrap;
+}
+
+// ============================================================================
+// Wave C（thyroxin/specs/gm_analytics_spec.md）: 「GM」サブタブ — 位置別戦力ヒート表・
+//   狙い目の他球団若手・トレードの窓サジェスト。表示はすべて game/gmBoard.mjs の純関数から。
+// ============================================================================
+
+/** ヒート帯（0..6・null=無色）。ui.mjs statHeatBand と同じカット点（FanGraphs流の赤=良/青=悪）。
+ *  gmBoard.mjs の pctl はすでに「高いほど良い」方向へ揃えてある（RP=FIP等の反転済み）ので
+ *  ここでの方向反転は不要。 */
+function gmHeatBand(pctl) {
+  if (pctl == null) return null;
+  if (pctl >= 0.9) return 6;
+  if (pctl >= 0.75) return 5;
+  if (pctl >= 0.6) return 4;
+  if (pctl > 0.4) return 3;
+  if (pctl > 0.25) return 2;
+  if (pctl > 0.1) return 1;
+  return 0;
+}
+
+/** 位置別戦力ヒート表の1セル（既存 heat トークン=table.stat td.heatN を流用）。★=飽和マーク。 */
+function gmHeatCell(u, cell) {
+  const { el } = u;
+  if (!cell || cell.value == null) return el('td', { class: 'gmcell muted' }, '-');
+  const band = gmHeatBand(cell.pctl);
+  const cls = 'gmcell' + (band != null && band !== 3 ? ` heat${band}` : '');
+  const pctTxt = cell.pctl != null ? `${Math.round(cell.pctl * 100)}%` : '-';
+  const titleParts = [`百分位${pctTxt}`];
+  if (cell.weak) titleParts.push('弱点（下位20%）');
+  if (cell.saturated) titleParts.push('飽和（同水準以上の控えが同ポジションに在籍）');
+  return el('td', { class: cls, title: titleParts.join('・') }, [
+    cell.saturated ? el('span', { class: 'gmsatmark', title: '飽和' }, '★') : '',
+    pctTxt,
+  ]);
+}
+
+/** 位置別戦力ヒート表（12球団×守備8位置+投手2枠）。自チームの行を先頭に固定する。 */
+function renderGmPositionTable(c, u, psm, myId) {
+  const { el, game } = u;
+  const teams = (game.gs.league.teams ?? []).slice().sort((a, b) => {
+    if (a.id === myId) return -1;
+    if (b.id === myId) return 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  const cellByKey = new Map(psm.cells.map((cc) => [`${cc.teamId}|${cc.pos}`, cc]));
+  const head = el('tr', {}, [el('th', { class: 'left' }, '球団'), ...GB_POSITIONS.map((pos) => el('th', {}, gbPosLabel(pos)))]);
+  const rows = teams.map((t) => {
+    const mine = t.id === myId;
+    return el('tr', { class: mine ? 'gmminerow' : '' }, [
+      el('td', { class: 'left' }, mine ? `${t.name}（あなた）` : t.name),
+      ...GB_POSITIONS.map((pos) => gmHeatCell(u, cellByKey.get(`${t.id}|${pos}`))),
+    ]);
+  });
+  c.append(el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [el('thead', {}, head), el('tbody', {}, rows)])]));
+}
+
+/** 「狙い目の他球団若手」節（prospectWatch・行クリックで選手モーダル）。 */
+function renderGmProspectList(c, u, list) {
+  const { el, game } = u;
+  c.append(el('h3', { class: 'leaguename' }, `狙い目の他球団若手（${list.length}人）`));
+  if (!list.length) {
+    c.append(el('div', { class: 'muted' }, '現時点で該当する選手はいません（条件: 25歳以下・観測百分位が高い・出場機会が薄い）。'));
+    return;
+  }
+  const tname = (teamId) => (game.gs.league.teams ?? []).find((t) => t.id === teamId)?.name ?? teamId;
+  c.append(el('div', { class: 'awardlist' }, list.map((p) => el('div', {
+    class: 'awardrow clickable', onclick: () => u.openModal(p.playerId),
+  }, [
+    el('span', {}, [u.playerLink(p.playerId), ` （${tname(p.teamId)}・${p.age}歳・${p.pos}・${p.source === 'farm' ? '二軍' : '一軍'}）`]),
+    el('span', { class: 'muted' }, `　${p.text}`),
+  ]))));
+}
+
+/** 「トレードの窓」節（tradeTargetSuggestions・既存ストーブ画面のトレードタブへの導線ボタン）。 */
+function renderGmTradeSuggestions(c, u, list) {
+  const { el } = u;
+  c.append(el('h3', { class: 'leaguename' }, `トレードの窓（${list.length}件）`));
+  if (!list.length) {
+    c.append(el('div', { class: 'muted' }, '現時点で自球団の飽和位置と他球団の弱点位置が一致するマッチはありません。'));
+    return;
+  }
+  c.append(el('div', { class: 'awardlist' }, list.map((s) => el('div', { class: 'awardrow' }, [
+    el('span', {}, s.text),
+    el('button', { onclick: () => u.gotoTrade(s.myBackupId) }, 'トレード画面へ'),
+  ]))));
+}
+
+/**
+ * 「GM」サブタブ本体（Wave C）。gmBoard.mjs の3純関数の結果をそのまま表示する（保存なし・
+ * 毎回その場で導出）。 c=コンテンツ要素・u=teamTabDeps()。
+ */
+function renderGmSubtab(c, u) {
+  const { el, game } = u;
+  const gs = game.gs;
+  const myId = gs.playerTeamId;
+  c.append(el('div', { class: 'muted', style: 'margin:4px 0' },
+    '観測成績（wOBA/K-BB%/FIP）のリーグ内百分位に基づく位置別戦力表。自チームの行を先頭に固定。'
+    + '弱点=下位20%（青系ヒート）・★=飽和（同水準以上の控えが同ポジションに在籍）。能力値そのものではなく観測結果です。'));
+  const psm = positionStrengthMap(gs);
+  renderGmPositionTable(c, u, psm, myId);
+  renderGmProspectList(c, u, prospectWatch(gs));
+  renderGmTradeSuggestions(c, u, tradeTargetSuggestions(gs));
 }

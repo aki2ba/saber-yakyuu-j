@@ -59,7 +59,9 @@ import { renderTeamTab } from './ui/team.mjs';
 // フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
 import { renderWatchScreen } from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
-import { renderStoveScreen, renderOffseasonDigestScreen } from './ui/stove.mjs';
+// Wave C（gm_analytics_spec.md）: stoveGotoTrade はGMボードの「トレードの窓」サジェストから
+// 既存トレードタブへ導線するためのヘルパー（team.mjs へ teamTabDeps() 経由で渡す）。
+import { renderStoveScreen, renderOffseasonDigestScreen, stoveGotoTrade } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
 import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel, schedWpaParts } from './ui/schedule.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
@@ -1610,6 +1612,9 @@ function teamTabDeps() {
     rerender: () => renderHub('team'),
     renderManagerPanel, // G4b: 采配パネルをチームタブの采配サブタブへ移設（呼び出し側で rerender を差し替える）
     gotoNews: () => renderHub('news'), // G4b: 離脱者サマリ「→ニュース」導線
+    // Wave C（gm_analytics_spec.md）: GMボードの「トレードの窓」サジェストから既存ストーブ
+    //   トレードタブへ導線する（stove.mjs stoveGotoTrade・playerId省略可）。
+    gotoTrade: (playerId) => stoveGotoTrade(stoveDeps(), playerId),
   };
 }
 

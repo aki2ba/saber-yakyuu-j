@@ -838,6 +838,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           scoreDiff: batting.score - fielding.score,
           batterWoba,
           isPitcher: batterIsPitcher,
+          nextIsPitcher, // 采配妥当性（原則②）: 次打者が投手なら野手に送らせない（8番バント根絶）
         },
         cfg,
       );

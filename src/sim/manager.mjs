@@ -78,6 +78,12 @@ export function stealLogitAdjust(manager, situ, cfg) {
 /**
  * 犠打の試行確率。局面不成立（2死/三塁走者あり/走者なし）は0。
  * 投手打席はほぼ必ずバント。野手は接戦×非強打者（観測wOBA）×監督buntTend。
+ * 采配妥当性ゲート（原則②・ユーザー指摘 2026-07-23「一死二塁で投手の前の打者が送りバント」）:
+ *   - 一死×二塁単独: 野手には送らせない。成功しても二死三塁（RE24 ≈0.68→0.35）で犠飛も使えず
+ *     ほぼ常に得点期待の損＝実NPBでもまず見ない采配。無死二塁（→一死三塁・犠飛/内野ゴロで
+ *     生還可能）は従来どおり許可。投手打席は従来どおり（打たせても期待値が低く実NPBでも見る）。
+ *   - 次打者が投手: 野手には送らせない。得点圏を作っても次が投手では敬遠or凡退がオチで、
+ *     「投手の前の8番に送らせる」は実NPBで批判される典型的な悪手（送るなら9番=投手自身の打席）。
  */
 export function buntAttemptProb(situ, cfg) {
   const t = cfg.tuning.bunt;
@@ -87,6 +93,8 @@ export function buntAttemptProb(situ, cfg) {
     // 投手は野手より広い点差でバントするが、大差では打たせる（点差ゲートを先に評価）
     return Math.abs(situ.scoreDiff) > t.pitcherMaxScoreDiff ? 0 : t.pitcherAttempt;
   }
+  if (!situ.bases[0] && situ.bases[1] && situ.outs >= 1) return 0; // 一死×二塁単独（上記ゲート）
+  if (situ.nextIsPitcher) return 0; // 次打者が投手（上記ゲート）
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (situ.batterWoba >= t.weakBatterWoba) return 0; // 強打者にはバントさせない
   return expit(logit(t.attemptBase) + ratingDelta(situ.manager.buntTend, t.tendW));

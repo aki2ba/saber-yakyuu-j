@@ -1476,10 +1476,11 @@ const TUNING_DEFAULT = {
     twoStrikeSwingW: 0.20, // 2ストライクの保護スイング増（全帯・B1較正: 0.11→0.20。当てにいく→ファウル粘り）
     threeOhTakeW: 0.42, // 3-0での自重（スイング率減）
     // --- スイング時の空振り ---
-    whiffZoneBase: 0.181, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。0.9.1: →0.185。
+    whiffZoneBase: 0.1825, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。0.9.1: →0.185。
     //   帯再配分で空振りの多いchase swingが減った分をゾーン内で補い Contact%[75,81] を維持。
     //   F2-5: whiffPitchW引上げ(0.006→0.008)が選抜後の上澄みリーグでK%を押し上げるため基準3本を引下げて相殺。
-    //   苗字プール拡張較正（2026-07-20）: zoneBase引上げでContact%が0.811と帯上限を微超過→+0.002で相殺）
+    //   苗字プール拡張較正（2026-07-20）: zoneBase引上げでContact%が0.811と帯上限を微超過→+0.002で相殺。
+    //   采配妥当性ゲート較正（2026-07-23）: バント2ゲートの引き直しでContact%が0.810と帯上端を微超過→+0.0015で相殺）
     whiffBorderBase: 0.303, // ボーダー帯スイングの空振り基準（B1較正: 0.16→0.27。0.9.1: →0.32。F2-5: →0.303・同上）
     whiffOBase: 0.417, // ボール球スイング（chase）の空振り基準（B1較正: 0.26→0.38。0.9.1: →0.44。F2-5: →0.417・同上）
     whiffPitchW: 0.008, // 球種whiff(50中心)→空振り増（F2-5: 0.006→0.008。29人選抜でエースの相対K優位が
@@ -1860,7 +1861,9 @@ const TUNING_DEFAULT = {
     //   0.022 で UZR上位≈+15（FanGraphs のゴールドグラブ級）かつ |xwOBA−wOBA| ≤ 0.003 に収まる。
     //   R2再較正: 0.022→0.019。年齢構造の導入で守備素材(reaction/hands)の分散が広がり、
     //   |xwOBA−wOBA| が恒等の帯(0.003)を割ったぶんを個人差側で吸収する（UZR帯は余裕あり）。
-    smaxPerRating: 0.019,
+    //   采配妥当性ゲート導入（2026-07-23 バント2ゲート＝乱数列の引き直し）で 0.0033 と帯端を
+    //   1割超過→0.019→0.018（同じ機序の1ノッチ・UZR帯は依然余裕）。
+    smaxPerRating: 0.018,
     width: 1.05, // 到達ロジスティックの幅 m/s。小さいほど p が両極化する ※較正対象
     reactionS: 0.3, // 初動までの反応時間 s
     reachM: 1.7, // グラブ＋ダイブの到達半径 m
@@ -5898,6 +5901,12 @@ function stealLogitAdjust(manager, situ, cfg) {
 /**
  * 犠打の試行確率。局面不成立（2死/三塁走者あり/走者なし）は0。
  * 投手打席はほぼ必ずバント。野手は接戦×非強打者（観測wOBA）×監督buntTend。
+ * 采配妥当性ゲート（原則②・ユーザー指摘 2026-07-23「一死二塁で投手の前の打者が送りバント」）:
+ *   - 一死×二塁単独: 野手には送らせない。成功しても二死三塁（RE24 ≈0.68→0.35）で犠飛も使えず
+ *     ほぼ常に得点期待の損＝実NPBでもまず見ない采配。無死二塁（→一死三塁・犠飛/内野ゴロで
+ *     生還可能）は従来どおり許可。投手打席は従来どおり（打たせても期待値が低く実NPBでも見る）。
+ *   - 次打者が投手: 野手には送らせない。得点圏を作っても次が投手では敬遠or凡退がオチで、
+ *     「投手の前の8番に送らせる」は実NPBで批判される典型的な悪手（送るなら9番=投手自身の打席）。
  */
 function buntAttemptProb(situ, cfg) {
   const t = cfg.tuning.bunt;
@@ -5907,6 +5916,8 @@ function buntAttemptProb(situ, cfg) {
     // 投手は野手より広い点差でバントするが、大差では打たせる（点差ゲートを先に評価）
     return Math.abs(situ.scoreDiff) > t.pitcherMaxScoreDiff ? 0 : t.pitcherAttempt;
   }
+  if (!situ.bases[0] && situ.bases[1] && situ.outs >= 1) return 0; // 一死×二塁単独（上記ゲート）
+  if (situ.nextIsPitcher) return 0; // 次打者が投手（上記ゲート）
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (situ.batterWoba >= t.weakBatterWoba) return 0; // 強打者にはバントさせない
   return expit(logit(t.attemptBase) + ratingDelta(situ.manager.buntTend, t.tendW));
@@ -7243,6 +7254,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           scoreDiff: batting.score - fielding.score,
           batterWoba,
           isPitcher: batterIsPitcher,
+          nextIsPitcher, // 采配妥当性（原則②）: 次打者が投手なら野手に送らせない（8番バント根絶）
         },
         cfg,
       );

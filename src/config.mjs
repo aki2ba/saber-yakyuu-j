@@ -1643,6 +1643,16 @@ export const GAME_DEFAULT = {
   // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
   //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
   weeklyGoalTrustBonusMax: 5,
+  // Q1（thyroxin/research…20260723 Q1・信頼度）: 起用の安定→年次ドリフトSD縮小の双方向ループ。
+  //   既定は false（interactiveDraft/allowFiring/dynamicLineup/interactiveManager/weeklyGoals と
+  //   同じ「headless既定OFF・UIのみON」第7例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけが true を渡す。真値trueAbility非参照＝前季の観測statlineのみを
+  //   aging.mjs の applyAging に渡して使う（三層構造の層2から層1へのフィードバック）。
+  usageTrust: false,
+  // Q1: usageTrust=true 時、aging.mjs の drift SD 倍率 = 1.0 − usageStabilityOf(...) × この値。
+  //   streakyDriftMult(=1.25 相当の分散押し上げ)と同程度の桁に抑える小定数（tuningには置かない
+  //   ＝Q1指示どおり cfg.tuning 非汚染。安定度1.0で倍率は 1.0−0.15=0.85、安定度0で1.0＝無効果）。
+  usageTrustDriftSpan: 0.15,
 };
 
 /**

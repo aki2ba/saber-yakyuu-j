@@ -2,6 +2,25 @@
 
 > 就寝中の自律開発の進捗記録。新しいものを上に。各エントリ: 日時 / やったこと / 結果 / 次にやること。
 
+## 2026-07-23 (Q1: 起用信頼度 — 調査第2弾Wave2・本命の双方向ループ)
+
+**きっかけ**: 調査第2弾の核心の発見「personalityは一方通行」への正面回答（栄冠ナイン信頼度の翻案）。
+
+**実装**:
+- `src/game/trust.mjs` 新設: `usageStabilityOf(seasonRow, teamGames)` — 前季の観測statlineのみから
+  起用の安定度0..1を導出する純関数（野手=規定打席比×先発定着度(1−代打比率)、投手=役割期待
+  登板数比×役割相応イニング消化フィット。全球団対称＝playerGameLog不使用）。`trustLabelOf` 3段階
+- 効果: `cfg.game.usageTrust` 既定false（第7例目）。ONのとき applyAging の drift SD倍率に
+  `1 − 安定度×usageTrustDriftSpan(0.15)` を乗算（streakyDriftMult と完全同型の挿入点・
+  ゼロ平均SDの縮小＝期待値保存で較正平均帯不変・乱数非消費）
+- UI: 選手モーダルに「コーチの見立て：起用信頼度は安定/普通/不安定」（前季観測から毎回導出・保存なし）
+- offseasonStage1 の obs Map 構築を applyAging より前へ移動（純粋な順序変更・内容不変）
+
+**ゲート**: npm test 566 PASS（+11: game_q1_trust.test.mjs）・build(53モジュール)・smoke 12フロー・
+verify identity・calibrate 62/62 全PASS（フラグ既定OFF＝bit同一をテストで固定）。
+
+**次**: Wave3=Q3「記憶に残る一日」特別デー＋Q9介入観戦「山場だけ」モード。
+
 ## 2026-07-23 (Q2/Q4/Q8/Q10/Q11: 野球育成ゲーム調査第2弾のWave1 — 表示層5本)
 
 **きっかけ**: PR#4マージ後、ユーザー指示「さらに面白い野球育成ゲームを調べてもっと面白く」。

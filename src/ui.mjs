@@ -44,6 +44,8 @@ import {
   hallOfFamers, nicknameAlbum, recordAlbum,
   // Q10: 開幕前「オーナー会見」演出（同 Q10）。
   ownerPressConference,
+  // Q1: 起用信頼度（前季観測から導出・thyroxin/research…20260723 Q1）。
+  usageStabilityOf, trustLabelOf, TRUST_LABELS_JP,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -854,6 +856,15 @@ function renderModalCareer(box, p, isPitcher) {
   const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
   const nick = nicknameFor(p, gs.careerStats, gs.cfg);
   box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // Q1（信頼度・thyroxin/research…20260723 Q1）: 直近の完了シーズン観測から導出した「起用の安定度」を
+  //   コーチの見立てとして表示（層2＝観測ベースなので三層構造上そのまま表示してよい）。純関数呼び出しのみ・
+  //   保存フィールド追加なし（毎回導出）。完了シーズンがまだ無い新人等は非表示。
+  if (cs.length) {
+    const lastRow = cs[cs.length - 1];
+    const stability = usageStabilityOf(lastRow, gs.cfg.league.gamesPerSeason);
+    const trustJP = TRUST_LABELS_JP[trustLabelOf(stability)];
+    box.append(el('div', { class: 'muted', style: 'margin-top:4px' }, `コーチの見立て：起用信頼度は${trustJP}（${lastRow.season}年の起用実績から）`));
+  }
   // P7: 「物語」節（fun_theory_research_20260720 P7）— 出自/移籍歴/栄光/節目/因縁を1画面の
   //   タイムラインへ。transactionLog/awardsHistory/careerStats/在籍情報だけから毎回導出する純関数
   //   （trueAbility 非参照・保存フィールド追加なし＝§17）。既存の受賞履歴と同じ awardlist/awardrow
@@ -1432,6 +1443,7 @@ function uiConfig() {
     game: {
       interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true,
       weeklyGoals: true, // P3: 週次目標は実プレイのみON（headless既定OFF・第6例目）
+      usageTrust: true, // Q1: 起用信頼度は実プレイのみON（headless既定OFF・第7例目）
       ...(ov.game ?? {}),
     },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）

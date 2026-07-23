@@ -25,10 +25,20 @@
 //   を追加で渡すと、方針が付いた選手だけ curveDelta の「成長」summand に軸グループ単位の
 //   (1±δ) を掛ける（aging.profiles.grow 自体は一切書き換えない＝恒久シフト禁止・R7の教訓）。
 //   引数省略時は完全に無効（既存呼び出し元・テストは byte 同一の挙動を保つ）。
+//
+// Q1（thyroxin/research/baseball_game_mechanics_research_20260723.md Q1・信頼度）:
+//   cfg.game.usageTrust（既定false・GAME_DEFAULT第7例目）が true のとき、applyAging に
+//   { usageStats, teamGames } を渡すと、前季（完了シーズン）の観測statlineから導出した
+//   起用の安定度（trust.mjs の usageStabilityOf・純関数・乱数非消費）で年次ドリフトSD倍率が
+//   streakyDriftMult と完全同型の挿入点で縮む（安定した起用ほどドリフトが小さい＝
+//   「起用の安定が選手に返ってくる」）。driftはゼロ平均なのでSD倍率変更でも平均（curveDelta）は
+//   不変＝較正の平均帯は不変（streaky と同じ理屈）。usageStats/フラグ省略時は trustDriftMult=1
+//   （既存呼び出し元・テストは byte 同一の挙動を保つ）。
 // ============================================================================
 import { makeRng, hashSeed } from '../rng.mjs';
 import { clamp, clampRating } from '../model/util.mjs';
 import { isTargetAxis, parsePolicy, resolvePlayerTraining } from './training.mjs';
+import { usageStabilityOf } from './trust.mjs';
 
 // H4: 軸グループの列挙とその grow 総和(w)計算を agePlayer の実呼び出し順と一致させるための
 //   単一の key 配列（ここを変えたら agePlayer 側のループも必ず同じ配列を参照する＝二重管理禁止）。
@@ -42,17 +52,25 @@ const BASERUN_KEYS = ['steal', 'baserunIQ'];
  * 全選手にオフシーズンの加齢を適用する（in-place・決定論・順序非依存）。
  * @param {Array} players generateLeague().players（trueAbility/age を持つ選手配列）
  * @param {Object} cfg createConfig()（cfg.tuning.aging を参照）
- * @param {{seed:number, yearIndex:number, playerTeamId?:string, policies?:Array, profiles?:Map}} o
+ * @param {{seed:number, yearIndex:number, playerTeamId?:string, policies?:Array, profiles?:Map,
+ *   usageStats?:Map, teamGames?:number}} o
  *   seed=オフシーズン用階層シード / yearIndex=遷移元の年。
  *   H4: policies=当年ぶんに絞り込み済みの人間介入ログ（{playerId,policy,special}[]）、
  *       profiles=teamId→teamEvalProfile()（省略時はAI自動方針を出さない＝無効化）。
+ *   Q1: usageStats=playerId→前季(完了シーズン)の観測statline行（省略時はtrust効果無効）、
+ *       teamGames=前季のチーム試合数（usageStabilityOf の分母）。cfg.game.usageTrust が false
+ *       なら usageStats を渡していても無視する（フラグゲート）。
  * @returns {Array} players（同一参照。呼び出し側の league.players を直接更新する）
  */
-export function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, profiles } = {}) {
+export function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, profiles, usageStats, teamGames } = {}) {
   const aging = cfg.tuning.aging;
   const veloPerRating = cfg.tuning.maturity.veloPerRating;
   // H3-1（ムラっ気）: drift SD 倍率。personality が無い（旧経路・テスト直呼び）選手は 1（無効果）。
   const streakyMult = cfg.tuning.personality?.streakyDriftMult ?? 1;
+  // Q1（信頼度）: フラグOFF or usageStats省略なら trustSpan=0＝どの選手も trustDriftMult=1
+  //   （既存呼び出し元・テストと byte 同一。cfg.game 未設定の旧テスト呼び出しも ?. で安全）。
+  const usageTrustOn = !!(cfg.game?.usageTrust && usageStats && teamGames);
+  const usageTrustSpan = usageTrustOn ? (cfg.game.usageTrustDriftSpan ?? 0) : 0;
   // H4: 当年ぶんの人間介入ログを playerId→entry の Map へ（policies/profiles どちらも無ければ
   //   trainingCtx=null＝既存呼び出し元と完全に同じ経路を通る＝byte 同一）。
   const policyMap = new Map((policies ?? []).map((e) => [e.playerId, e]));
@@ -60,7 +78,12 @@ export function applyAging(players, cfg, { seed, yearIndex, playerTeamId, polici
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
-    const driftMult = p.personality === 'streaky' ? streakyMult : 1;
+    const streakyDriftMult = p.personality === 'streaky' ? streakyMult : 1;
+    // Q1: 安定度が高いほど 1.0 未満へ縮む（1.0−stability×span）。乱数は消費しない（決定論）。
+    const trustDriftMult = usageTrustSpan > 0
+      ? 1 - usageStabilityOf(usageStats.get(p.id), teamGames) * usageTrustSpan
+      : 1;
+    const driftMult = streakyDriftMult * trustDriftMult;
     agePlayer(p, prng, aging, veloPerRating, driftMult, trainingCtx);
   }
   return players;

@@ -165,12 +165,21 @@ function offseasonStage1(league, cfg, {
   const campBefore = new Map();
   for (const p of league.players) if (specialIds.has(p.id)) campBefore.set(p.id, coachOverallScore(p, cfg));
 
+  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
+  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
+  //   Q1: applyAging（下）の usageStats にもこれを渡す＝「前季の観測から起用信頼度を導出」の入力
+  //   （obs構築をapplyAgingより先に動かしただけ・obs自体の中身/後続処理での使い方は従来と不変）。
+  const obs = new Map();
+  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, {
     seed: offseasonSeed(masterSeed, yearIndex), yearIndex, playerTeamId, profiles, policies: trainIvs,
+    // Q1: usageTrust=false（既定）なら applyAging 側で無視される（フラグゲート）。
+    usageStats: obs, teamGames: cfg.league.gamesPerSeason,
   });
 
   // H4: 特別指導枠選手の「キャンプ後」観測値との差（前後差＋方針）。結果は乱数次第＝お祈り。
@@ -183,10 +192,6 @@ function offseasonStage1(league, cfg, {
     };
   });
 
-  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
-  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
-  const obs = new Map();
-  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
   // 当年の二軍観測 statline（F2-3: 育成→支配下の昇格判定を二軍実成績ベースへ強化・§12.1）。
   //   careerFarmStats も blob に永続される＝live と load-replay で同一部分集合（決定論）。
   const farmObs = new Map();
@@ -1323,3 +1328,5 @@ export { coachProgressReports, coachReportPhase };
 export { hallOfFamers, nicknameAlbum, recordAlbum };
 // Q10: 開幕前「オーナー会見」演出の表示API（既存H5-B ownerGoals/ownerTrustの見せ方を変えるだけ）。
 export { ownerPressConference };
+// Q1: 起用信頼度（前季観測から導出する純関数）の表示API（UI/テストが './game/index.mjs' 経由で使う）。
+export { usageStabilityOf, trustLabelOf, TRUST_LABELS_JP } from './trust.mjs';

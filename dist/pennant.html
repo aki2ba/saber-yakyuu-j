@@ -2816,6 +2816,16 @@ const GAME_DEFAULT = {
   // P3: シーズン末の信任評価へ加算する週次目標達成率ボーナスの最大値（達成率100%で+この値）。
   //   tuning.ownerGoals（high:+12/low:+6等）より十分小さく抑える＝週次はあくまで補助的な効果。
   weeklyGoalTrustBonusMax: 5,
+  // Q1（thyroxin/research…20260723 Q1・信頼度）: 起用の安定→年次ドリフトSD縮小の双方向ループ。
+  //   既定は false（interactiveDraft/allowFiring/dynamicLineup/interactiveManager/weeklyGoals と
+  //   同じ「headless既定OFF・UIのみON」第7例目。テスト/較正/realism/前史/AI球団は従来と byte 同一）。
+  //   ui.mjs の uiConfig() だけが true を渡す。真値trueAbility非参照＝前季の観測statlineのみを
+  //   aging.mjs の applyAging に渡して使う（三層構造の層2から層1へのフィードバック）。
+  usageTrust: false,
+  // Q1: usageTrust=true 時、aging.mjs の drift SD 倍率 = 1.0 − usageStabilityOf(...) × この値。
+  //   streakyDriftMult(=1.25 相当の分散押し上げ)と同程度の桁に抑える小定数（tuningには置かない
+  //   ＝Q1指示どおり cfg.tuning 非汚染。安定度1.0で倍率は 1.0−0.15=0.85、安定度0で1.0＝無効果）。
+  usageTrustDriftSpan: 0.15,
 };
 
 /**
@@ -10330,6 +10340,110 @@ function coachOverallScore(p, cfg) {
 }
 
 
+// ===== src/game/trust.mjs =====
+// ============================================================================
+// Q1（栄冠ナイン翻案・信頼度）: 起用の安定が選手に返ってくる双方向ループ
+//   （thyroxin/research/baseball_game_mechanics_research_20260723.md Q1）
+//
+//   usageStabilityOf(seasonRow, teamGames) … 完了シーズンの観測statlineから
+//     「起用の安定度」0..1を導出する純関数（三層構造の層2＝観測のみを見る）。
+//   trustLabelOf(stability) … UI表示用の3段階ラベル。
+//
+// 設計方針（Q1・オーケストレータ決定）:
+//   - 全球団に対称に適用できる観測データ（careerStats/playerSeason の
+//     games・PA・登板数・outs）のみを使う。playerGameLog は自チームしか
+//     持たないためリーグ対称性が崩れる＝使わない。
+//   - 野手: 「出場した打席のフルシーズン比（出場比率）」×
+//     「代打でなく先発起用された比率（役割の定着度）」の合成。
+//   - 投手: 「役割（先発/救援）に応じた期待登板数に対する実登板数の比率」×
+//     「その役割が想定するイニング消化（登板あたりouts）にどれだけ沿っているか」の合成。
+//   両者とも「出場量が0に近づけば安定度も0に近づく」よう乗算形にする
+//   （出場ゼロなのに役割定着度だけで高い値が出ないようにするため）。
+// ============================================================================
+
+
+
+// 投手側の役割期待値（§req_2三原則②近似・NPB慣行の代理値。tuningではなく本モジュール専用の
+//   ローカル定数＝cfg.tuningを一切汚さない指示に従う）。
+const ROTATION_SIZE = 6; // 6人ローテ想定（先発の期待登板数 = teamGames/ROTATION_SIZE）
+const RELIEVER_APP_SHARE = 0.5; // ワークホース救援の期待登板シェア（teamGames×この値）
+const STARTER_OUTS_PER_APP = 18; // 先発1登板の想定消化アウト（6回）
+const RELIEVER_OUTS_PER_APP = 3; // 救援1登板の想定消化アウト（1回）
+
+/**
+ * 野手の起用安定度（出場比率×先発定着度）。
+ * @param {Object} batting createBattingLine() 相当（pa/ph を参照）
+ * @param {number} teamGames その season のチーム試合数
+ * @returns {number} 0..1
+ */
+function batterStability(batting, teamGames) {
+  const pa = batting?.pa ?? 0;
+  if (pa <= 0 || teamGames <= 0) return 0;
+  const paRate = clamp(pa / qualifiedPA(teamGames), 0, 1); // フルシーズン規定打席に対する比率
+  const ph = batting?.ph ?? 0;
+  const starterRate = clamp(1 - ph / pa, 0, 1); // 代打起用の少なさ＝先発定着度
+  return clamp(paRate * (0.7 + 0.3 * starterRate), 0, 1);
+}
+
+/**
+ * 投手の起用安定度（役割期待に対する登板比率×役割相応のイニング消化）。
+ * @param {Object} pitching createPitchingLine() 相当（g/gs/outs を参照）
+ * @param {number} teamGames その season のチーム試合数
+ * @returns {number} 0..1
+ */
+function pitcherStability(pitching, teamGames) {
+  const g = pitching?.g ?? 0;
+  if (g <= 0 || teamGames <= 0) return 0;
+  const gs = pitching?.gs ?? 0;
+  const outs = pitching?.outs ?? 0;
+  const startShare = clamp(gs / g, 0, 1); // 先発/救援の混合比（先発ローテ⇔救援の連続量として扱う）
+  const expectedApps = startShare * (teamGames / ROTATION_SIZE) + (1 - startShare) * (teamGames * RELIEVER_APP_SHARE);
+  const appRate = expectedApps > 0 ? clamp(g / expectedApps, 0, 1) : 0; // 期待登板数に対する実登板比率
+  const expectedOutsPerApp = startShare * STARTER_OUTS_PER_APP + (1 - startShare) * RELIEVER_OUTS_PER_APP;
+  const actualOutsPerApp = outs / g;
+  // 役割相応のイニング消化にどれだけ沿っているか（0=乖離大 / 1=ぴったり）
+  const outsFit = expectedOutsPerApp > 0 ? clamp(1 - Math.abs(actualOutsPerApp - expectedOutsPerApp) / expectedOutsPerApp, 0, 1) : 0;
+  return clamp(appRate * (0.7 + 0.3 * outsFit), 0, 1);
+}
+
+/**
+ * 完了シーズンの観測statline（playerSeason・careerStats の1行）から「起用の安定度」を導出する。
+ * 乱数を消費しない純関数。全球団の全選手へ同一式で対称に適用できる（リーグ対称性・鉄則）。
+ * @param {Object|null|undefined} seasonRow createPlayerSeason() 相当（batting/pitching を参照）。
+ *   前季データが無い（新人等）場合は null/undefined 可＝0を返す。
+ * @param {number} teamGames その season のチーム試合数（規定打席/期待登板数の分母）
+ * @returns {number} 0（不安定・出場ほぼ無し）〜1（安定・フル出場/フル定着）
+ */
+function usageStabilityOf(seasonRow, teamGames) {
+  if (!seasonRow || !teamGames) return 0;
+  const pitchG = seasonRow.pitching?.g ?? 0;
+  if (pitchG > 0) return pitcherStability(seasonRow.pitching, teamGames);
+  return batterStability(seasonRow.batting, teamGames);
+}
+
+// UI表示用ラベル境界（3等分・cfg.tuning非依存＝表示専用の閾値）。
+const STABLE_MIN = 0.66;
+const VOLATILE_MAX = 0.33;
+
+/**
+ * usageStabilityOf の値を3段階の表示ラベルへ変換する（コーチの見立て口調でUIが使う）。
+ * @param {number} stability 0..1
+ * @returns {'stable'|'normal'|'volatile'}
+ */
+function trustLabelOf(stability) {
+  if (stability >= STABLE_MIN) return 'stable';
+  if (stability <= VOLATILE_MAX) return 'volatile';
+  return 'normal';
+}
+
+/** trustLabelOf の3ラベル→日本語表示（UI用）。 */
+const TRUST_LABELS_JP = {
+  stable: '安定',
+  normal: '普通',
+  volatile: '不安定',
+};
+
+
 // ===== src/game/aging.mjs =====
 // ============================================================================
 // フェーズC2a: 加齢・成長カーブ（§10.1-10.3 / §12.4）
@@ -10358,7 +10472,17 @@ function coachOverallScore(p, cfg) {
 //   を追加で渡すと、方針が付いた選手だけ curveDelta の「成長」summand に軸グループ単位の
 //   (1±δ) を掛ける（aging.profiles.grow 自体は一切書き換えない＝恒久シフト禁止・R7の教訓）。
 //   引数省略時は完全に無効（既存呼び出し元・テストは byte 同一の挙動を保つ）。
+//
+// Q1（thyroxin/research/baseball_game_mechanics_research_20260723.md Q1・信頼度）:
+//   cfg.game.usageTrust（既定false・GAME_DEFAULT第7例目）が true のとき、applyAging に
+//   { usageStats, teamGames } を渡すと、前季（完了シーズン）の観測statlineから導出した
+//   起用の安定度（trust.mjs の usageStabilityOf・純関数・乱数非消費）で年次ドリフトSD倍率が
+//   streakyDriftMult と完全同型の挿入点で縮む（安定した起用ほどドリフトが小さい＝
+//   「起用の安定が選手に返ってくる」）。driftはゼロ平均なのでSD倍率変更でも平均（curveDelta）は
+//   不変＝較正の平均帯は不変（streaky と同じ理屈）。usageStats/フラグ省略時は trustDriftMult=1
+//   （既存呼び出し元・テストは byte 同一の挙動を保つ）。
 // ============================================================================
+
 
 
 
@@ -10375,17 +10499,25 @@ const BASERUN_KEYS = ['steal', 'baserunIQ'];
  * 全選手にオフシーズンの加齢を適用する（in-place・決定論・順序非依存）。
  * @param {Array} players generateLeague().players（trueAbility/age を持つ選手配列）
  * @param {Object} cfg createConfig()（cfg.tuning.aging を参照）
- * @param {{seed:number, yearIndex:number, playerTeamId?:string, policies?:Array, profiles?:Map}} o
+ * @param {{seed:number, yearIndex:number, playerTeamId?:string, policies?:Array, profiles?:Map,
+ *   usageStats?:Map, teamGames?:number}} o
  *   seed=オフシーズン用階層シード / yearIndex=遷移元の年。
  *   H4: policies=当年ぶんに絞り込み済みの人間介入ログ（{playerId,policy,special}[]）、
  *       profiles=teamId→teamEvalProfile()（省略時はAI自動方針を出さない＝無効化）。
+ *   Q1: usageStats=playerId→前季(完了シーズン)の観測statline行（省略時はtrust効果無効）、
+ *       teamGames=前季のチーム試合数（usageStabilityOf の分母）。cfg.game.usageTrust が false
+ *       なら usageStats を渡していても無視する（フラグゲート）。
  * @returns {Array} players（同一参照。呼び出し側の league.players を直接更新する）
  */
-function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, profiles } = {}) {
+function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, profiles, usageStats, teamGames } = {}) {
   const aging = cfg.tuning.aging;
   const veloPerRating = cfg.tuning.maturity.veloPerRating;
   // H3-1（ムラっ気）: drift SD 倍率。personality が無い（旧経路・テスト直呼び）選手は 1（無効果）。
   const streakyMult = cfg.tuning.personality?.streakyDriftMult ?? 1;
+  // Q1（信頼度）: フラグOFF or usageStats省略なら trustSpan=0＝どの選手も trustDriftMult=1
+  //   （既存呼び出し元・テストと byte 同一。cfg.game 未設定の旧テスト呼び出しも ?. で安全）。
+  const usageTrustOn = !!(cfg.game?.usageTrust && usageStats && teamGames);
+  const usageTrustSpan = usageTrustOn ? (cfg.game.usageTrustDriftSpan ?? 0) : 0;
   // H4: 当年ぶんの人間介入ログを playerId→entry の Map へ（policies/profiles どちらも無ければ
   //   trainingCtx=null＝既存呼び出し元と完全に同じ経路を通る＝byte 同一）。
   const policyMap = new Map((policies ?? []).map((e) => [e.playerId, e]));
@@ -10393,7 +10525,12 @@ function applyAging(players, cfg, { seed, yearIndex, playerTeamId, policies, pro
   for (const p of players) {
     // 選手ごとの乱数は id 基準で派生 → 配列順・呼び出し順に依らず同一（決定論・順序非依存）。
     const prng = makeRng(hashSeed(seed, 'aging', p.id));
-    const driftMult = p.personality === 'streaky' ? streakyMult : 1;
+    const streakyDriftMult = p.personality === 'streaky' ? streakyMult : 1;
+    // Q1: 安定度が高いほど 1.0 未満へ縮む（1.0−stability×span）。乱数は消費しない（決定論）。
+    const trustDriftMult = usageTrustSpan > 0
+      ? 1 - usageStabilityOf(usageStats.get(p.id), teamGames) * usageTrustSpan
+      : 1;
+    const driftMult = streakyDriftMult * trustDriftMult;
     agePlayer(p, prng, aging, veloPerRating, driftMult, trainingCtx);
   }
   return players;
@@ -16641,12 +16778,21 @@ function offseasonStage1(league, cfg, {
   const campBefore = new Map();
   for (const p of league.players) if (specialIds.has(p.id)) campBefore.set(p.id, coachOverallScore(p, cfg));
 
+  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
+  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
+  //   Q1: applyAging（下）の usageStats にもこれを渡す＝「前季の観測から起用信頼度を導出」の入力
+  //   （obs構築をapplyAgingより先に動かしただけ・obs自体の中身/後続処理での使い方は従来と不変）。
+  const obs = new Map();
+  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
+
   // 故障（R3）: 発生は**試合中**（sim/injury.mjs）。オフは当季ログを消費して故障歴を積み・後遺を
   //   真値へ落とすだけ（旧実装のオフ1回ロールは撤去）。load の replay も同じログを渡せば同一に再構築。
   const injuries = applySeasonInjuries(league.players, seasonInjuries, cfg, year);
   const breakouts = applyBreakouts(league.players, cfg, { seed: hashSeed(masterSeed, 'breakout', yearIndex), year });
   applyAging(league.players, cfg, {
     seed: offseasonSeed(masterSeed, yearIndex), yearIndex, playerTeamId, profiles, policies: trainIvs,
+    // Q1: usageTrust=false（既定）なら applyAging 側で無視される（フラグゲート）。
+    usageStats: obs, teamGames: cfg.league.gamesPerSeason,
   });
 
   // H4: 特別指導枠選手の「キャンプ後」観測値との差（前後差＋方針）。結果は乱数次第＝お祈り。
@@ -16659,10 +16805,6 @@ function offseasonStage1(league, cfg, {
     };
   });
 
-  // 当年（完了年）の "実観測" statline を playerId で引けるようにする（放出/契約更改の入力・§12.2）。
-  //   careerStats は全年ぶんだが season==year に絞る＝live も load-replay も同一部分集合（決定論）。
-  const obs = new Map();
-  for (const s of careerStats) if (s.season === year) obs.set(s.playerId, s);
   // 当年の二軍観測 statline（F2-3: 育成→支配下の昇格判定を二軍実成績ベースへ強化・§12.1）。
   //   careerFarmStats も blob に永続される＝live と load-replay で同一部分集合（決定論）。
   const farmObs = new Map();
@@ -17783,6 +17925,8 @@ function allPlayersById(state) {
 // Q4/Q8: 殿堂/球団史ギャラリー・二つ名/記録のアルバム表示API。
 
 // Q10: 開幕前「オーナー会見」演出の表示API（既存H5-B ownerGoals/ownerTrustの見せ方を変えるだけ）。
+
+// Q1: 起用信頼度（前季観測から導出する純関数）の表示API（UI/テストが './game/index.mjs' 経由で使う）。
 
 </script>
 <script>
@@ -21181,6 +21325,15 @@ function renderModalCareer(box, p, isPitcher) {
   const cs = gs.careerStats.filter((s) => s.playerId === p.id).slice().sort((a, b) => a.season - b.season);
   const nick = nicknameFor(p, gs.careerStats, gs.cfg);
   box.append(el('div', { class: 'nickname' }, [el('span', { class: 'nickmark' }, '二つ名'), el('span', { class: 'nicktext' }, `「${nick}」`)]));
+  // Q1（信頼度・thyroxin/research…20260723 Q1）: 直近の完了シーズン観測から導出した「起用の安定度」を
+  //   コーチの見立てとして表示（層2＝観測ベースなので三層構造上そのまま表示してよい）。純関数呼び出しのみ・
+  //   保存フィールド追加なし（毎回導出）。完了シーズンがまだ無い新人等は非表示。
+  if (cs.length) {
+    const lastRow = cs[cs.length - 1];
+    const stability = usageStabilityOf(lastRow, gs.cfg.league.gamesPerSeason);
+    const trustJP = TRUST_LABELS_JP[trustLabelOf(stability)];
+    box.append(el('div', { class: 'muted', style: 'margin-top:4px' }, `コーチの見立て：起用信頼度は${trustJP}（${lastRow.season}年の起用実績から）`));
+  }
   // P7: 「物語」節（fun_theory_research_20260720 P7）— 出自/移籍歴/栄光/節目/因縁を1画面の
   //   タイムラインへ。transactionLog/awardsHistory/careerStats/在籍情報だけから毎回導出する純関数
   //   （trueAbility 非参照・保存フィールド追加なし＝§17）。既存の受賞履歴と同じ awardlist/awardrow
@@ -21759,6 +21912,7 @@ function uiConfig() {
     game: {
       interactiveDraft: true, allowFiring: true, dynamicLineup: true, interactiveManager: true,
       weeklyGoals: true, // P3: 週次目標は実プレイのみON（headless既定OFF・第6例目）
+      usageTrust: true, // Q1: 起用信頼度は実プレイのみON（headless既定OFF・第7例目）
       ...(ov.game ?? {}),
     },
     // H5-C: ファン関心→予算の連動は実プレイのみON（headless既定OFF＝多年較正の保護。config.mjs参照）

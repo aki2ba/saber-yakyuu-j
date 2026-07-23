@@ -38,6 +38,12 @@ import {
   generateWeeklyGoal,
   // P4: 戦力外・FAの感情演出（fun_theory_research P4）。
   departedPlayerFollowUpHeadlines,
+  // Q2: 育成方針の「コーチ経過報告」（thyroxin/research…20260723 Q2）。
+  coachProgressReports,
+  // Q4/Q8: 殿堂/球団史ギャラリー・二つ名/記録のアルバム（同 Q4・Q8）。
+  hallOfFamers, nicknameAlbum, recordAlbum,
+  // Q10: 開幕前「オーナー会見」演出（同 Q10）。
+  ownerPressConference,
 } from './game/index.mjs';
 // フェーズE1: チームタブ（一軍/二軍の選手一覧）。src/ui/ 配下の分割モジュール
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
@@ -1698,6 +1704,14 @@ function renderHubHome(c) {
 function renderNewsFeed(c) {
   const gs = game.gs;
   const rt = gs.rt;
+  // Q10: 開幕前「オーナー年頭会見」（フィード先頭に1回分だけ・開幕からdaysPerWeek日以内のみ表示）。
+  const presser = ownerPressConference(gs);
+  if (presser) {
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, '🎤 オーナー年頭会見'),
+      ...presser.lines.map((t) => el('div', {}, t)),
+    ]));
+  }
   const heads = weeklyDigest({
     gameLog: rt.playerGameLog,
     standings: currentStandings(rt),
@@ -1768,6 +1782,13 @@ function renderNewsTab(c) {
   if (followUps.length) {
     c.append(el('h3', { class: 'leaguename' }, '🕊 去った選手たちの今'));
     c.append(el('div', { class: 'newsfeed' }, followUps.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+  }
+  // Q2: 育成方針の「コーチ経過報告」（シーズン中盤/終盤の窓に入っているときだけ）。
+  const coachReports = coachProgressReports(gs, storyNames());
+  if (coachReports.length) {
+    c.append(el('h3', { class: 'leaguename' }, '📋 コーチ報告'));
+    c.append(el('div', { class: 'newsfeed' }, coachReports.map((r) =>
+      el('div', { class: 'newsrow ' + (r.cls || 'info') }, [playerLink(r.playerId), ' ', r.text]))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
@@ -1876,6 +1897,48 @@ function renderRecords(c) {
       ['通算セーブ', rec.careerSV, (r) => `${r.value}`],
     ]));
   }
+
+  // Q4: 殿堂（引退済み＋通算成績閾値or受賞数閾値を満たす選手。awardsHistory/careerStats/
+  //   retiredPlayersからの純関数集計・新規保存フィールド無し）。
+  const hof = hallOfFamers(gs);
+  c.append(el('h3', { class: 'leaguename' }, '🏛 殿堂'));
+  c.append(hof.length
+    ? el('div', { class: 'awardlist' }, hof.map((h) => {
+      const isPitcher = h.role === 'pitcher';
+      const line = isPitcher
+        ? `通算${h.career.w}勝${h.career.l}敗${h.career.sv}S・防御率${Number.isFinite(h.career.era) ? h.career.era.toFixed(2) : '-'}`
+        : `通算${h.career.h}安打・${h.career.hr}本塁打・打率${h.career.avg.toFixed(3)}`;
+      return el('div', { class: 'awardrow' }, [
+        el('span', { class: 'awardbadge' }, [
+          playerLink(h.playerId, h.name),
+          `（「${h.nickname}」・${h.teams.map((t) => tname(t)).join('→')}）　${line}・受賞${h.awardsCount}回`,
+        ]),
+      ]);
+    }))
+    : el('div', { class: 'muted' }, 'まだ殿堂入りの選手はいません（引退選手が通算成績/受賞数の基準に達すると殿堂入りします）。'));
+
+  // Q8: アルバム（二つ名一覧＋球団記録/リーグ記録の達成一覧。既存データの再編集・数値効果なし）。
+  c.append(el('h3', { class: 'leaguename' }, '📖 アルバム'));
+  const nicks = nicknameAlbum(gs);
+  c.append(el('div', { class: 'muted' }, `二つ名一覧（${nicks.length}件）`));
+  c.append(nicks.length
+    ? el('div', { class: 'awardlist' }, nicks.map((n) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, [playerLink(n.playerId, n.name), `「${n.nickname}」${n.status === 'retired' ? '（引退）' : ''}`]),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ二つ名は生まれていません。'));
+  const albumRec = recordAlbum(gs);
+  c.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '記録の達成一覧'));
+  c.append(albumRec.leagueTop.length
+    ? el('div', { class: 'awardlist' }, albumRec.leagueTop.map((x) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, [`${x.label}: `, playerLink(x.row.playerId, x.row.name), ` ${x.row.value}${x.row.year != null ? `（${x.row.year}年）` : ''}`]),
+    ])))
+    : el('div', { class: 'muted' }, 'まだリーグ記録はありません。'));
+  c.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '球団記録（日本一の年）'));
+  c.append(albumRec.teamTitles.length
+    ? el('div', { class: 'awardlist' }, albumRec.teamTitles.map((t) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, `${tname(t.teamId)}: ${t.years.join('・')}年（${t.years.length}回）`),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ日本一になった球団はありません。'));
 }
 
 /** 記録のトップNを複数カラムで並べる（各カテゴリ縦リスト）。 */

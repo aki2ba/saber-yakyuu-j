@@ -15378,13 +15378,78 @@ function lastCareerRow(state, playerId) {
   return best;
 }
 
-/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁→節目/栄光）。 */
-const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'milestone', 'award', 'nickname'];
+/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁/師弟→節目/栄光）。 */
+const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'mentor', 'milestone', 'award', 'nickname'];
 
 /** kind→日本語カテゴリ名（UI側の見出し/アイコン分けに使える。栄光=award/nickname を束ねる）。 */
 const STORY_KIND_LABELS = {
   origin: '出自', transfer: '移籍歴', award: '栄光', nickname: '栄光', milestone: '節目', rivalry: '因縁',
+  mentor: '師弟', // Q11: 師弟継承（ダビスタ配合ロマンの翻案・数値非関与）
 };
+
+// ============================================================================
+// Q11: 師弟継承（thyroxin/research/baseball_game_mechanics_research_20260723 Q11・ダビスタ配合
+//   ロマンの翻案・数値非関与版）。同一球団で5年以上共存し、年齢差8歳以上・通算成績（career行数=
+//   在籍シーズン数の規模）が本人より大きい「ベテラン」がいれば、若手側の物語にのみ
+//   「◯◯の背中を見て育った」を追加する（1方向のみ＝ベテラン側には何も追加しない）。
+// ============================================================================
+const MENTOR_MIN_COTENURE_YEARS = 5; // 「同一球団で共存した」とみなす最低年数
+const MENTOR_MIN_AGE_GAP = 8; // 「ベテラン」とみなす最低年齢差
+
+/**
+ * 引退/現役いずれの選手レコードからも、指定シーズン時点の年齢を復元する（aging.mjs の age++ が
+ * 年1のため線形に遡及/外挿できる＝新規保存フィールド不要）。
+ */
+function ageAtSeason(state, rec, season) {
+  if (rec.retiredAfterYear != null && rec.finalAge != null) return rec.finalAge - (rec.retiredAfterYear - season);
+  return (rec.age ?? 0) - (state.year - season);
+}
+
+/** 選手の「通算成績の規模」の粗い指標（在籍シーズン行数＝役割に依らず比較できるスカラー）。 */
+function careerMagnitude(careerStats, playerId) {
+  let n = 0;
+  for (const s of careerStats) if (s.playerId === playerId) n++;
+  return n;
+}
+
+/**
+ * Q11: 師弟候補の検出（同一球団同年のcareerStats行から共存年数・年齢差・規模差を判定）。
+ * 決定論: careerStats/playersById の純関数（乱数不使用）。複数候補は規模最大、同点はplayerId昇順。
+ * @returns {{playerId:string, lastYear:number}|null}
+ */
+function findMentor(state, playerId, playersById) {
+  const rec = playersById.get(playerId);
+  if (!rec) return null;
+  const careerStats = state.careerStats || [];
+  const mySeasonTeam = new Map();
+  for (const s of careerStats) if (s.playerId === playerId) mySeasonTeam.set(s.season, s.teamId);
+  if (!mySeasonTeam.size) return null;
+  const cotenure = new Map(); // otherId -> {count, lastYear}
+  for (const s of careerStats) {
+    if (s.playerId === playerId) continue;
+    const myTeam = mySeasonTeam.get(s.season);
+    if (myTeam == null || s.teamId !== myTeam) continue;
+    let e = cotenure.get(s.playerId);
+    if (!e) { e = { count: 0, lastYear: -Infinity }; cotenure.set(s.playerId, e); }
+    e.count++;
+    if (s.season > e.lastYear) e.lastYear = s.season;
+  }
+  const myMagnitude = careerMagnitude(careerStats, playerId);
+  let best = null;
+  for (const [otherId, info] of cotenure) {
+    if (info.count < MENTOR_MIN_COTENURE_YEARS) continue;
+    const otherRec = playersById.get(otherId);
+    if (!otherRec) continue;
+    const gap = ageAtSeason(state, otherRec, info.lastYear) - ageAtSeason(state, rec, info.lastYear);
+    if (gap < MENTOR_MIN_AGE_GAP) continue;
+    const otherMagnitude = careerMagnitude(careerStats, otherId);
+    if (!(otherMagnitude > myMagnitude)) continue;
+    if (!best || otherMagnitude > best.magnitude || (otherMagnitude === best.magnitude && otherId < best.playerId)) {
+      best = { playerId: otherId, magnitude: otherMagnitude, lastYear: info.lastYear };
+    }
+  }
+  return best ? { playerId: best.playerId, lastYear: best.lastYear } : null;
+}
 
 /**
  * P7: 選手の「物語」— その選手の歩みを時系列の出来事配列へ合成する（表示層のみ・純関数）。
@@ -15482,6 +15547,12 @@ function playerStoryOf(state, playerId, names = {}) {
   for (const r of rivalriesOf(state, playerId)) {
     if (r.type !== 'draftmate') continue;
     events.push({ year: r.year, text: `${pnameOf(r.otherPlayerId)}とは同期指名（${r.round}位）の間柄（${tnameOf(r.matchTeamId)}）`, kind: 'rivalry' });
+  }
+
+  // --- Q11: 師弟継承（同一球団5年以上共存＋年齢差8歳以上・通算成績が大きいベテランがいれば1件のみ） ---
+  const mentor = findMentor(state, playerId, playersById);
+  if (mentor) {
+    events.push({ year: mentor.lastYear, text: `${pnameOf(mentor.playerId)}の背中を見て育った`, kind: 'mentor' });
   }
 
   const yearKey = (y) => (y == null ? -Infinity : y);
@@ -15641,6 +15712,7 @@ function departedPlayerFollowUpHeadlines(state, myTeamId, names = {}) {
 
 
 
+
 /** 完了年 standings から自リーグ内順位(1起点)と勝率を返す。無ければ null。 */
 function ownerLeagueRankOf(standings, teamId) {
   if (!standings) return null;
@@ -15749,6 +15821,39 @@ function pickTransferOffer(standings, currentTeamId) {
   const cands = (standings ?? []).filter((s) => s.teamId !== currentTeamId)
     .sort((a, b) => wp(a) - wp(b) || (a.teamId < b.teamId ? -1 : 1));
   return cands.length ? cands[0].teamId : null;
+}
+
+// ============================================================================
+// Q10: 開幕前「オーナー会見」演出（thyroxin/research/baseball_game_mechanics_research_20260723 Q10・
+//   OOTP press conference 翻案）。既存 state.ownerGoals（H5-B）を「今季の球団方針」として会見調の
+//   文章へ変換するだけ（新規判定/新規保存フィールド無し・表示層のみ）。
+// ============================================================================
+
+/** 信任状況の会見テンプレ（trust帯ごとに1つ・分岐のみで乱数不使用＝決定論）。 */
+function ownerTrustLine(trust) {
+  if (trust >= 70) return 'これまでの実績には満足している。今季も期待している。';
+  if (trust >= 40) return '現状は及第点だが、更なる結果を求めたい。';
+  return '正直、フロントの評価は厳しい状況にある。今季は結果で応えてほしい。';
+}
+
+/**
+ * Q10: 開幕直後（yearIndex>=1・オーナー目標が生成済み・開幕からcfg.game.daysPerWeek日以内）のみ、
+ * 「今季の球団方針」会見カードを1回分返す（純関数・新規保存フィールド無し＝毎回窓状態から判定）。
+ * @param {Object} state GameState（playerTeamId/yearIndex/ownerGoals/ownerTrust/rt/cfg が必要）
+ * @returns {{trust:number, lines:string[]}|null} 窓外/対象外は null
+ */
+function ownerPressConference(state) {
+  if (!state.playerTeamId || state.yearIndex < 1) return null;
+  const og = state.ownerGoals;
+  if (!og || og.yearIndex !== state.yearIndex || !og.goals.length) return null;
+  const rt = state.rt;
+  if (!rt) return null;
+  if (pendingDay(rt) >= state.cfg.game.daysPerWeek) return null; // 開幕から daysPerWeek 日以内のみ
+  const lines = [
+    ownerTrustLine(state.ownerTrust),
+    ...og.goals.map((g) => `${g.priority === 'high' ? '最優先事項として' : '今季の目標のひとつとして'}「${g.label}」を掲げる。`),
+  ];
+  return { trust: state.ownerTrust, lines };
 }
 
 
@@ -15973,6 +16078,408 @@ function weeklyGoalTrustBonus(state) {
 }
 
 
+// ===== src/game/coachReports.mjs =====
+// ============================================================================
+// Q2: 育成方針の「コーチ経過報告」（thyroxin/research/baseball_game_mechanics_research_20260723 Q2・
+//   OOTP Player Development Lab 2.0 の進捗バー/中間レポート翻案）。
+//
+//   coachReportPhase(state)              … 現在dayが「全日程の1/3・2/3を跨いだ最初の週」なら
+//                                           'mid'|'late' を返す（それ以外は null）。
+//   coachProgressReports(state, names)   … その週に設定中の育成方針（自チームのみ）ぶん、コーチの
+//                                           経過報告テキストを生成する（純関数）。
+//
+// 設計原則（CLAUDE.md鉄則・タスク仕様の厳守事項）:
+//   - 観測statlineのみ: rt.playerGameLog の当日ボックス（ab/h/hr/bb/k・outs/r/bb/k/hr・出場位置）
+//     だけを使う。真値(trueAbility)・coachOverallScore（層3=スカウトの見立て）は一切参照しない
+//     （三層構造: 本ファイルは「層2＝観測成績」の推移だけを文章化する）。
+//   - 決定論: テンプレ選択は hashSeed(masterSeed,'coachreport',year,phase,axisKind,playerId) の
+//     独立座標のみ（既存の生成/進行ストリーム・他のニュース系座標と非干渉）。
+//   - サンプルが薄い（半期のAB/IP/出場試合が閾値未満）選手は「まだ判断できない」として報告を
+//     出さない（nicknameFor の「未知数」ゲートと同じ思想＝憶測を書かない）。
+//   - 新規保存フィールド無し: state.trainingPolicies（既存H4ログ）とrt.playerGameLog（当季のみ）
+//     だけから毎回その場で導出する（§17に準拠・保存データは増やさない）。
+// ============================================================================
+
+
+
+
+// バンドル同一スコープ制約のため一意名（storylines.mjs の idAsc と衝突回避）。
+const idAscCr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** playerGameLog の1試合分から、指定playerIdの打者/投手ボックス行を探す（無ければnull）。 */
+function findBatterLine(rec, playerId) {
+  const box = rec.box;
+  if (!box) return null;
+  return (box.batters?.home ?? []).find((b) => b.pid === playerId)
+    ?? (box.batters?.away ?? []).find((b) => b.pid === playerId)
+    ?? null;
+}
+function findPitcherLine(rec, playerId) {
+  const box = rec.box;
+  if (!box) return null;
+  return (box.pitchers?.home ?? []).find((p) => p.pid === playerId)
+    ?? (box.pitchers?.away ?? []).find((p) => p.pid === playerId)
+    ?? null;
+}
+
+/**
+ * 現在の経過日を「前半／後半」に二分し、その選手の当季ぶんの打撃ボックスを両半へ積む
+ * （playerGameLog は自チーム試合のみ・§17=当該シーズンのみの生存データ）。
+ * @returns {{early:Object, late:Object}} 各半期 {ab,h,hr,bb,games,posCount:Map<pos,count>}
+ */
+function battingHalfSplit(state, playerId) {
+  const rt = state.rt;
+  const elapsed = pendingDay(rt);
+  const mid = elapsed / 2;
+  const mk = () => ({ ab: 0, h: 0, hr: 0, bb: 0, games: 0, posCount: new Map() });
+  const early = mk();
+  const late = mk();
+  for (const rec of rt.playerGameLog) {
+    const line = findBatterLine(rec, playerId);
+    if (!line) continue;
+    const bucket = rec.day < mid ? early : late;
+    bucket.ab += line.ab || 0;
+    bucket.h += line.h || 0;
+    bucket.hr += line.hr || 0;
+    bucket.bb += line.bb || 0;
+    bucket.games += 1;
+    if (line.pos) bucket.posCount.set(line.pos, (bucket.posCount.get(line.pos) || 0) + 1);
+  }
+  return { early, late };
+}
+
+/** 同・投手ボックス版（outs/h/r/bb/k/hr）。 */
+function pitchingHalfSplit(state, playerId) {
+  const rt = state.rt;
+  const elapsed = pendingDay(rt);
+  const mid = elapsed / 2;
+  const mk = () => ({ outs: 0, r: 0, bb: 0, k: 0, hr: 0, games: 0 });
+  const early = mk();
+  const late = mk();
+  for (const rec of rt.playerGameLog) {
+    const line = findPitcherLine(rec, playerId);
+    if (!line) continue;
+    const bucket = rec.day < mid ? early : late;
+    bucket.outs += line.outs || 0;
+    bucket.r += line.r || 0;
+    bucket.bb += line.bb || 0;
+    bucket.k += line.k || 0;
+    bucket.hr += line.hr || 0;
+    bucket.games += 1;
+  }
+  return { early, late };
+}
+
+const fmtAvgCr = (v) => v.toFixed(3).replace(/^0\./, '.').replace(/^-0\./, '-.');
+const pctFmt = (v) => `${(v * 100).toFixed(1)}%`;
+
+const MIN_AB_PER_HALF = 15; // 打撃トレンド判定の最低打数（半期あたり）
+const AVG_UP_DELTA = 0.02; // 打率が上向いたとみなす差
+const HR_RATE_UP_DELTA = 0.015; // 本塁打/打数 が上向いたとみなす差
+
+/** 打撃方針の観測トレンド（打率・本塁打ペースの前半/後半比較）。サンプル不足はnull。 */
+function battingTrend(early, late) {
+  if (early.ab < MIN_AB_PER_HALF || late.ab < MIN_AB_PER_HALF) return null;
+  const avgE = early.h / early.ab;
+  const avgL = late.h / late.ab;
+  const hrRE = early.hr / early.ab;
+  const hrRL = late.hr / late.ab;
+  const avgDelta = avgL - avgE;
+  const hrDelta = hrRL - hrRE;
+  const up = avgDelta >= AVG_UP_DELTA || hrDelta >= HR_RATE_UP_DELTA;
+  return { bucket: up ? 'up' : 'flat', avgE, avgL, hrRE, hrRL };
+}
+function battingDescr(t) {
+  return `打率${fmtAvgCr(t.avgE)}→${fmtAvgCr(t.avgL)}、本塁打ペース${pctFmt(t.hrRE)}→${pctFmt(t.hrRL)}`;
+}
+
+const MIN_OUTS_PER_HALF = 30; // 半期あたり最低10イニング相当
+const ERA_UP_DELTA = 0.7; // 目安防御率（自責点近似=r）が改善したとみなす差（低いほど良い）
+const K9_UP_DELTA = 0.8; // 9回換算奪三振が向上したとみなす差
+
+/** 投手の観測トレンド（目安防御率・9回換算奪三振の前半/後半比較）。サンプル不足はnull。 */
+function pitchingTrend(early, late) {
+  if (early.outs < MIN_OUTS_PER_HALF || late.outs < MIN_OUTS_PER_HALF) return null;
+  const ipE = early.outs / 3;
+  const ipL = late.outs / 3;
+  const eraE = (early.r * 9) / ipE;
+  const eraL = (late.r * 9) / ipL;
+  const k9E = (early.k * 9) / ipE;
+  const k9L = (late.k * 9) / ipL;
+  const up = eraL - eraE <= -ERA_UP_DELTA || k9L - k9E >= K9_UP_DELTA;
+  return { bucket: up ? 'up' : 'flat', eraE, eraL, k9E, k9L };
+}
+function pitchingDescr(t) {
+  return `目安防御率${t.eraE.toFixed(2)}→${t.eraL.toFixed(2)}、奪三振ペース${t.k9E.toFixed(1)}→${t.k9L.toFixed(1)}（9回換算）`;
+}
+
+const MIN_GAMES_PER_HALF = 3; // 出場機会トレンド判定の最低試合数（半期あたり）
+const POS_SHARE_UP_DELTA = 0.2; // コンバート先ポジションの出場比率が定着してきたとみなす差
+
+/** コンバート方針: 対象ポジションでの出場比率の前半/後半比較。サンプル不足はnull。 */
+function convertTrend(early, late, pos) {
+  if (early.games < MIN_GAMES_PER_HALF || late.games < MIN_GAMES_PER_HALF) return null;
+  const shareE = (early.posCount.get(pos) || 0) / early.games;
+  const shareL = (late.posCount.get(pos) || 0) / late.games;
+  return { bucket: shareL - shareE >= POS_SHARE_UP_DELTA ? 'up' : 'flat', shareE, shareL };
+}
+function convertDescr(t, posLabel) {
+  return `${posLabel}での出場比率${pctFmt(t.shareE)}→${pctFmt(t.shareL)}`;
+}
+
+/** 守備/走塁/休養/バランス方針のフォールバック: 出場機会（試合数）の前半/後半比較。 */
+function usageTrend(early, late) {
+  if (early.games < MIN_GAMES_PER_HALF || late.games < MIN_GAMES_PER_HALF) return null;
+  return { bucket: late.games - early.games >= 1 ? 'up' : 'flat', gE: early.games, gL: late.games };
+}
+function usageDescr(t) {
+  return `出場${t.gE}試合→${t.gL}試合`;
+}
+
+const REPORT_CLOSERS = {
+  up: [
+    '方針の効果が出てきているようです。',
+    '狙い通りの成長曲線に見えます。',
+  ],
+  flat: [
+    'まだ目に見える成果は出ていません。',
+    '効果が数字に表れるのはこれからかもしれません。',
+  ],
+};
+
+/** テンプレ選択＋整形（hashSeed独立座標＝表示文言のみ・結果に非干渉）。 */
+function finalizeReport(state, playerId, axisKind, phase, bucket, descr, policyLabel, special) {
+  const r = makeRng(hashSeed(state.masterSeed, 'coachreport', state.year, phase, axisKind, playerId));
+  const closers = REPORT_CLOSERS[bucket];
+  const closer = closers[r.int(closers.length)];
+  const specialTag = special ? '（特別指導）' : '';
+  return {
+    playerId, axisKind, phase, bucket,
+    text: `【${policyLabel}${specialTag}】${descr}。${closer}`,
+    cls: bucket === 'up' ? 'good' : 'info',
+  };
+}
+
+/** 選手1名ぶんの経過報告を組む（役割/方針の種類で対象トレンドを切り替える）。サンプル不足はnull。 */
+function buildCoachReport(state, p, tp, phase, posLabelOf) {
+  const parsed = parsePolicy(tp.policy);
+  if (!parsed) return null;
+  const policyLabel = parsed.kind === 'convert' ? `コンバート（${posLabelOf(parsed.pos)}）` : (TRAINING_LABELS[parsed.kind] ?? parsed.kind);
+
+  if (p.role === 'pitcher') {
+    const { early, late } = pitchingHalfSplit(state, p.id);
+    const t = pitchingTrend(early, late);
+    if (!t) return null;
+    return finalizeReport(state, p.id, 'pitching', phase, t.bucket, pitchingDescr(t), policyLabel, tp.special);
+  }
+  if (parsed.kind === 'batting') {
+    const { early, late } = battingHalfSplit(state, p.id);
+    const t = battingTrend(early, late);
+    if (!t) return null;
+    return finalizeReport(state, p.id, 'batting', phase, t.bucket, battingDescr(t), policyLabel, tp.special);
+  }
+  if (parsed.kind === 'convert') {
+    const { early, late } = battingHalfSplit(state, p.id);
+    const t = convertTrend(early, late, parsed.pos);
+    if (!t) return null;
+    return finalizeReport(state, p.id, 'convert', phase, t.bucket, convertDescr(t, posLabelOf(parsed.pos)), policyLabel, tp.special);
+  }
+  // defense/speed/rest/balanced: 打席ボックスから拾える具体指標が無いため、観測できる唯一の事実
+  //   （出場機会の推移）を報告する。
+  const { early, late } = battingHalfSplit(state, p.id);
+  const t = usageTrend(early, late);
+  if (!t) return null;
+  return finalizeReport(state, p.id, parsed.kind, phase, t.bucket, usageDescr(t), policyLabel, tp.special);
+}
+
+/**
+ * 現在dayが「全日程の1/3・2/3を跨いだ最初の週」なら 'mid'|'late' を返す（研究レポートQ2の
+ * 「シーズン中盤・終盤」トリガー）。週の幅は cfg.game.daysPerWeek（既存P3週次目標と同じ境界）。
+ * @param {Object} state GameState（state.rt が必要）
+ * @returns {'mid'|'late'|null}
+ */
+function coachReportPhase(state) {
+  const rt = state.rt;
+  if (!rt || rt.finalDay == null || rt.finalDay < 0) return null;
+  const elapsed = pendingDay(rt);
+  const span = state.cfg.game.daysPerWeek;
+  const total = rt.finalDay + 1;
+  const midDay = Math.floor(total / 3);
+  const lateDay = Math.floor((total * 2) / 3);
+  if (elapsed >= midDay && elapsed < midDay + span) return 'mid';
+  if (elapsed >= lateDay && elapsed < lateDay + span) return 'late';
+  return null;
+}
+
+/**
+ * Q2: 育成方針の「コーチ経過報告」一覧（自チーム・当年ぶんの state.trainingPolicies のみ対象）。
+ * coachReportPhase が null（中盤/終盤の窓の外）のときは常に空配列。
+ * @param {Object} state GameState
+ * @param {{posLabelOf?:Function}} names posLabelOf: 守備位置コード→表示ラベル（既定は識別子そのまま）
+ * @returns {Array<{playerId:string, axisKind:string, phase:string, bucket:'up'|'flat', text:string, cls:string}>}
+ */
+function coachProgressReports(state, names = {}) {
+  const phase = coachReportPhase(state);
+  if (!phase || !state.rt) return [];
+  const { posLabelOf = (pos) => pos } = names;
+  const rows = (state.trainingPolicies || []).filter((tp) => tp.yearIndex === state.yearIndex);
+  const out = [];
+  for (const tp of rows) {
+    const p = state.league.players.find((x) => x.id === tp.playerId && x.teamId === state.playerTeamId);
+    if (!p) continue;
+    const rep = buildCoachReport(state, p, tp, phase, posLabelOf);
+    if (rep) out.push(rep);
+  }
+  out.sort((a, b) => idAscCr(a.playerId, b.playerId));
+  return out;
+}
+
+
+// ===== src/game/gallery.mjs =====
+// ============================================================================
+// Q4/Q8: 殿堂/球団史ギャラリー・二つ名/記録の「アルバム」
+//   （thyroxin/research/baseball_game_mechanics_research_20260723 Q4・Q8・
+//    OOTP Hall of Fame / プロスピA称号・Diamond Dynasty コレクションの翻案・ガチャなし）。
+//
+//   hallOfFamers(state)     … 引退済み＋通算成績閾値（安打/本塁打/勝利/セーブ/奪三振）または
+//                             受賞数閾値を満たす引退選手を集計する（Q4）。
+//   nicknameAlbum(state)    … これまで生まれた二つ名の一覧（現役+引退選手にnicknameForを適用し
+//                             「未知数」を除外して集計。Q8前半）。
+//   recordAlbum(state)      … 球団記録（優勝年一覧）/リーグ記録（現保持者）の再編集（Q8後半）。
+//
+// 設計原則（CLAUDE.md鉄則・タスク仕様の厳守事項）:
+//   - 表示層のみ: awardsHistory/careerStats/retiredPlayers/teamHistory（既存の永続データ）だけの
+//     純関数集計。新規保存フィールドは追加しない。真値(trueAbility)は一切参照しない。
+//   - 決定論: 乱数を一切使わない（並び順は数値降順→playerId昇順のタイブレークのみ）。
+// ============================================================================
+
+
+// バンドルは全エンジンモジュールを同一スコープへconcatするため、トップレベル名は全モジュールで一意にする
+// （storylines.mjs の idAsc と衝突しないようリネーム）。
+const idAscGal = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** 殿堂入り基準（関数内定数・研究レポートの目安どおり）。いずれか1つでも満たせば殿堂。 */
+const HOF_THRESHOLDS = {
+  hits: 2000, // 通算安打
+  homeRuns: 200, // 通算本塁打
+  wins: 150, // 通算勝利
+  saves: 150, // 通算セーブ
+  strikeouts: 1500, // 通算奪三振
+  minAwards: 5, // 受賞数（MVP/新人王/タイトル/ベストナイン/守備の栄誉賞の合計）
+};
+
+/** playerId が careerStats 上で在籍した球団（初出順・重複無し）。 */
+function tenureTeams(careerStats, playerId) {
+  const teams = [];
+  for (const s of careerStats) {
+    if (s.playerId !== playerId) continue;
+    if (!teams.includes(s.teamId)) teams.push(s.teamId);
+  }
+  return teams;
+}
+
+/**
+ * Q4: 殿堂入り基準（引退済み＋通算成績閾値いずれか、または受賞数閾値）を満たす引退選手を集計する。
+ * state.retiredPlayers（§17集計値サマリ）＋state.careerStats/awardsHistoryのみを参照する純関数
+ * （新規保存フィールド不要）。
+ * @param {Object} state GameState（retiredPlayers/careerStats/teamHistory/awardsHistory/cfg が必要）
+ * @returns {Array<{playerId,name,role,primaryPos,finalAge,retiredAfterYear,nickname,career,awardsCount,teams}>}
+ *   通算成績降順（引退年降順→playerId昇順の決定論タイブレーク）
+ */
+function hallOfFamers(state) {
+  const cfg = state.cfg;
+  const careerStats = state.careerStats || [];
+  const playersById = new Map((state.retiredPlayers ?? []).map((r) => [r.id, r]));
+  const out = [];
+  for (const r of state.retiredPlayers ?? []) {
+    const isPitcher = r.role === 'pitcher';
+    const bat = isPitcher ? null : careerBatting(careerStats, r.id);
+    const pit = isPitcher ? careerPitching(careerStats, r.id) : null;
+    const hist = playerAwardHistory(r.id, {
+      careerStats, teamHistory: state.teamHistory || [], playersById, cfg, awardsHistory: state.awardsHistory || [],
+    });
+    const meetsStat = isPitcher
+      ? (pit.w >= HOF_THRESHOLDS.wins || pit.sv >= HOF_THRESHOLDS.saves || pit.so >= HOF_THRESHOLDS.strikeouts)
+      : (bat.h >= HOF_THRESHOLDS.hits || bat.hr >= HOF_THRESHOLDS.homeRuns);
+    const meetsAwards = hist.length >= HOF_THRESHOLDS.minAwards;
+    if (!meetsStat && !meetsAwards) continue;
+    out.push({
+      playerId: r.id,
+      name: r.name,
+      role: r.role,
+      primaryPos: r.primaryPos,
+      finalAge: r.finalAge,
+      retiredAfterYear: r.retiredAfterYear,
+      nickname: nicknameFor(r, careerStats, cfg),
+      career: isPitcher ? pit : bat,
+      awardsCount: hist.length,
+      teams: tenureTeams(careerStats, r.id),
+    });
+  }
+  out.sort((a, b) => b.retiredAfterYear - a.retiredAfterYear || idAscGal(a.playerId, b.playerId));
+  return out;
+}
+
+/**
+ * Q8前半: これまで生まれた二つ名の一覧（現役+育成+引退選手へ nicknameFor を適用し「未知数」を除外）。
+ * 新規保存フィールド不要（既存 league.players/farm/retiredPlayers + careerStats からの純関数集計）。
+ * @param {Object} state GameState
+ * @returns {Array<{playerId,name,nickname,role,status:'active'|'retired'}>} playerId昇順
+ */
+function nicknameAlbum(state) {
+  const cfg = state.cfg;
+  const careerStats = state.careerStats || [];
+  const out = [];
+  const seen = new Set();
+  const consider = (p, status) => {
+    if (!p || seen.has(p.id)) return;
+    seen.add(p.id);
+    const nick = nicknameFor(p, careerStats, cfg);
+    if (nick === '未知数') return;
+    out.push({ playerId: p.id, name: p.name, nickname: nick, role: p.role, status });
+  };
+  for (const p of state.league?.players ?? []) consider(p, 'active');
+  for (const p of state.league?.farm ?? []) consider(p, 'active');
+  for (const p of state.retiredPlayers ?? []) consider(p, 'retired');
+  out.sort((a, b) => idAscGal(a.playerId, b.playerId));
+  return out;
+}
+
+/** リーグ記録アルバムの表示カテゴリ定義（leagueRecordsのキー→見出し）。 */
+const RECORD_ALBUM_CATS = [
+  ['seasonHR', 'シーズン本塁打記録'], ['seasonH', 'シーズン安打記録'], ['seasonSB', 'シーズン盗塁記録'],
+  ['seasonW', 'シーズン勝利記録'], ['seasonSO', 'シーズン奪三振記録'], ['seasonSV', 'シーズンセーブ記録'],
+  ['careerHR', '通算本塁打記録'], ['careerH', '通算安打記録'], ['careerSB', '通算盗塁記録'],
+  ['careerW', '通算勝利記録'], ['careerSO', '通算奪三振記録'], ['careerSV', '通算セーブ記録'],
+];
+
+/**
+ * Q8後半: 球団記録（優勝年一覧）/リーグ記録（現保持者トップ1）の再編集アルバム。
+ * 既存 leagueRecords/teamRecords（awards.mjs）の見せ方を変えるだけ（新規集計ロジック無し）。
+ * @param {Object} state GameState
+ * @returns {{leagueTop:Array<{key,label,row}>, teamTitles:Array<{teamId,years:number[]}>}}
+ */
+function recordAlbum(state) {
+  const byId = new Map();
+  for (const p of state.league?.players ?? []) byId.set(p.id, p);
+  for (const p of state.league?.farm ?? []) if (!byId.has(p.id)) byId.set(p.id, p);
+  for (const p of state.retiredPlayers ?? []) if (!byId.has(p.id)) byId.set(p.id, p);
+  const rec = leagueRecords({ careerStats: state.careerStats || [], playersById: byId, cfg: state.cfg });
+  const leagueTop = RECORD_ALBUM_CATS
+    .map(([key, label]) => ({ key, label, row: (rec[key] && rec[key][0]) || null }))
+    .filter((x) => x.row);
+
+  const teamTitles = [];
+  for (const t of state.league?.teams ?? []) {
+    const th = teamRecords(state.teamHistory || [], t.id);
+    const years = th.filter((r) => r.champion).map((r) => r.year);
+    if (years.length) teamTitles.push({ teamId: t.id, years });
+  }
+  teamTitles.sort((a, b) => b.years.length - a.years.length || idAscGal(a.teamId, b.teamId));
+  return { leagueTop, teamTitles };
+}
+
+
 // ===== src/game/index.mjs =====
 // ============================================================================
 // フェーズC1a: ヘッドレス・ゲームループAPI（UI非依存・node --test でキャリアを回せる）
@@ -16015,9 +16522,13 @@ function weeklyGoalTrustBonus(state) {
 // H4: 育成方針・キャンプ（phaseH_fun_spec H4）。方針の意味論(parsePolicy)・AI自動方針・
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 
- // H5-B
+ // H5-B/Q10
 // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
 //   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
+
+// Q2（thyroxin/research…20260723 Q2）: 育成方針の「コーチ経過報告」。表示層のみ・純関数。
+
+// Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
 
 
 
@@ -17266,6 +17777,12 @@ function allPlayersById(state) {
 // P3: 週次目標の表示API（UI/テストが './game/index.mjs' 経由で使う。状態を書き換える
 //   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
 //   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
+
+// Q2: 育成方針の「コーチ経過報告」表示API（UI/テストが './game/index.mjs' 経由で使う）。
+
+// Q4/Q8: 殿堂/球団史ギャラリー・二つ名/記録のアルバム表示API。
+
+// Q10: 開幕前「オーナー会見」演出の表示API（既存H5-B ownerGoals/ownerTrustの見せ方を変えるだけ）。
 
 </script>
 <script>
@@ -21514,6 +22031,14 @@ function renderHubHome(c) {
 function renderNewsFeed(c) {
   const gs = game.gs;
   const rt = gs.rt;
+  // Q10: 開幕前「オーナー年頭会見」（フィード先頭に1回分だけ・開幕からdaysPerWeek日以内のみ表示）。
+  const presser = ownerPressConference(gs);
+  if (presser) {
+    c.append(el('div', { class: 'card' }, [
+      el('div', { class: 'muted' }, '🎤 オーナー年頭会見'),
+      ...presser.lines.map((t) => el('div', {}, t)),
+    ]));
+  }
   const heads = weeklyDigest({
     gameLog: rt.playerGameLog,
     standings: currentStandings(rt),
@@ -21584,6 +22109,13 @@ function renderNewsTab(c) {
   if (followUps.length) {
     c.append(el('h3', { class: 'leaguename' }, '🕊 去った選手たちの今'));
     c.append(el('div', { class: 'newsfeed' }, followUps.map((h) => el('div', { class: 'newsrow ' + (h.cls || 'info') }, h.text))));
+  }
+  // Q2: 育成方針の「コーチ経過報告」（シーズン中盤/終盤の窓に入っているときだけ）。
+  const coachReports = coachProgressReports(gs, storyNames());
+  if (coachReports.length) {
+    c.append(el('h3', { class: 'leaguename' }, '📋 コーチ報告'));
+    c.append(el('div', { class: 'newsfeed' }, coachReports.map((r) =>
+      el('div', { class: 'newsrow ' + (r.cls || 'info') }, [playerLink(r.playerId), ' ', r.text]))));
   }
   // F2-4: 昇格・降格（出場登録の入替・F2-3 rosterMoves）。自チーム優先＋リーグ全体の直近。
   //   選手名は playerLink（→詳細モーダル）。育成→支配下の昇格はオフシーズンダイジェストに出る
@@ -21692,6 +22224,48 @@ function renderRecords(c) {
       ['通算セーブ', rec.careerSV, (r) => `${r.value}`],
     ]));
   }
+
+  // Q4: 殿堂（引退済み＋通算成績閾値or受賞数閾値を満たす選手。awardsHistory/careerStats/
+  //   retiredPlayersからの純関数集計・新規保存フィールド無し）。
+  const hof = hallOfFamers(gs);
+  c.append(el('h3', { class: 'leaguename' }, '🏛 殿堂'));
+  c.append(hof.length
+    ? el('div', { class: 'awardlist' }, hof.map((h) => {
+      const isPitcher = h.role === 'pitcher';
+      const line = isPitcher
+        ? `通算${h.career.w}勝${h.career.l}敗${h.career.sv}S・防御率${Number.isFinite(h.career.era) ? h.career.era.toFixed(2) : '-'}`
+        : `通算${h.career.h}安打・${h.career.hr}本塁打・打率${h.career.avg.toFixed(3)}`;
+      return el('div', { class: 'awardrow' }, [
+        el('span', { class: 'awardbadge' }, [
+          playerLink(h.playerId, h.name),
+          `（「${h.nickname}」・${h.teams.map((t) => tname(t)).join('→')}）　${line}・受賞${h.awardsCount}回`,
+        ]),
+      ]);
+    }))
+    : el('div', { class: 'muted' }, 'まだ殿堂入りの選手はいません（引退選手が通算成績/受賞数の基準に達すると殿堂入りします）。'));
+
+  // Q8: アルバム（二つ名一覧＋球団記録/リーグ記録の達成一覧。既存データの再編集・数値効果なし）。
+  c.append(el('h3', { class: 'leaguename' }, '📖 アルバム'));
+  const nicks = nicknameAlbum(gs);
+  c.append(el('div', { class: 'muted' }, `二つ名一覧（${nicks.length}件）`));
+  c.append(nicks.length
+    ? el('div', { class: 'awardlist' }, nicks.map((n) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, [playerLink(n.playerId, n.name), `「${n.nickname}」${n.status === 'retired' ? '（引退）' : ''}`]),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ二つ名は生まれていません。'));
+  const albumRec = recordAlbum(gs);
+  c.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '記録の達成一覧'));
+  c.append(albumRec.leagueTop.length
+    ? el('div', { class: 'awardlist' }, albumRec.leagueTop.map((x) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, [`${x.label}: `, playerLink(x.row.playerId, x.row.name), ` ${x.row.value}${x.row.year != null ? `（${x.row.year}年）` : ''}`]),
+    ])))
+    : el('div', { class: 'muted' }, 'まだリーグ記録はありません。'));
+  c.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '球団記録（日本一の年）'));
+  c.append(albumRec.teamTitles.length
+    ? el('div', { class: 'awardlist' }, albumRec.teamTitles.map((t) => el('div', { class: 'awardrow' }, [
+      el('span', { class: 'awardbadge' }, `${tname(t.teamId)}: ${t.years.join('・')}年（${t.years.length}回）`),
+    ])))
+    : el('div', { class: 'muted' }, 'まだ日本一になった球団はありません。'));
 }
 
 /** 記録のトップNを複数カラムで並べる（各カテゴリ縦リスト）。 */

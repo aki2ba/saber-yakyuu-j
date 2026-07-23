@@ -699,13 +699,78 @@ function lastCareerRow(state, playerId) {
   return best;
 }
 
-/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁→節目/栄光）。 */
-const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'milestone', 'award', 'nickname'];
+/** playerStoryOf のタイムライン内での同年tie-break順（出自→移籍/因縁/師弟→節目/栄光）。 */
+const STORY_KIND_ORDER = ['origin', 'transfer', 'rivalry', 'mentor', 'milestone', 'award', 'nickname'];
 
 /** kind→日本語カテゴリ名（UI側の見出し/アイコン分けに使える。栄光=award/nickname を束ねる）。 */
 export const STORY_KIND_LABELS = {
   origin: '出自', transfer: '移籍歴', award: '栄光', nickname: '栄光', milestone: '節目', rivalry: '因縁',
+  mentor: '師弟', // Q11: 師弟継承（ダビスタ配合ロマンの翻案・数値非関与）
 };
+
+// ============================================================================
+// Q11: 師弟継承（thyroxin/research/baseball_game_mechanics_research_20260723 Q11・ダビスタ配合
+//   ロマンの翻案・数値非関与版）。同一球団で5年以上共存し、年齢差8歳以上・通算成績（career行数=
+//   在籍シーズン数の規模）が本人より大きい「ベテラン」がいれば、若手側の物語にのみ
+//   「◯◯の背中を見て育った」を追加する（1方向のみ＝ベテラン側には何も追加しない）。
+// ============================================================================
+const MENTOR_MIN_COTENURE_YEARS = 5; // 「同一球団で共存した」とみなす最低年数
+const MENTOR_MIN_AGE_GAP = 8; // 「ベテラン」とみなす最低年齢差
+
+/**
+ * 引退/現役いずれの選手レコードからも、指定シーズン時点の年齢を復元する（aging.mjs の age++ が
+ * 年1のため線形に遡及/外挿できる＝新規保存フィールド不要）。
+ */
+function ageAtSeason(state, rec, season) {
+  if (rec.retiredAfterYear != null && rec.finalAge != null) return rec.finalAge - (rec.retiredAfterYear - season);
+  return (rec.age ?? 0) - (state.year - season);
+}
+
+/** 選手の「通算成績の規模」の粗い指標（在籍シーズン行数＝役割に依らず比較できるスカラー）。 */
+function careerMagnitude(careerStats, playerId) {
+  let n = 0;
+  for (const s of careerStats) if (s.playerId === playerId) n++;
+  return n;
+}
+
+/**
+ * Q11: 師弟候補の検出（同一球団同年のcareerStats行から共存年数・年齢差・規模差を判定）。
+ * 決定論: careerStats/playersById の純関数（乱数不使用）。複数候補は規模最大、同点はplayerId昇順。
+ * @returns {{playerId:string, lastYear:number}|null}
+ */
+function findMentor(state, playerId, playersById) {
+  const rec = playersById.get(playerId);
+  if (!rec) return null;
+  const careerStats = state.careerStats || [];
+  const mySeasonTeam = new Map();
+  for (const s of careerStats) if (s.playerId === playerId) mySeasonTeam.set(s.season, s.teamId);
+  if (!mySeasonTeam.size) return null;
+  const cotenure = new Map(); // otherId -> {count, lastYear}
+  for (const s of careerStats) {
+    if (s.playerId === playerId) continue;
+    const myTeam = mySeasonTeam.get(s.season);
+    if (myTeam == null || s.teamId !== myTeam) continue;
+    let e = cotenure.get(s.playerId);
+    if (!e) { e = { count: 0, lastYear: -Infinity }; cotenure.set(s.playerId, e); }
+    e.count++;
+    if (s.season > e.lastYear) e.lastYear = s.season;
+  }
+  const myMagnitude = careerMagnitude(careerStats, playerId);
+  let best = null;
+  for (const [otherId, info] of cotenure) {
+    if (info.count < MENTOR_MIN_COTENURE_YEARS) continue;
+    const otherRec = playersById.get(otherId);
+    if (!otherRec) continue;
+    const gap = ageAtSeason(state, otherRec, info.lastYear) - ageAtSeason(state, rec, info.lastYear);
+    if (gap < MENTOR_MIN_AGE_GAP) continue;
+    const otherMagnitude = careerMagnitude(careerStats, otherId);
+    if (!(otherMagnitude > myMagnitude)) continue;
+    if (!best || otherMagnitude > best.magnitude || (otherMagnitude === best.magnitude && otherId < best.playerId)) {
+      best = { playerId: otherId, magnitude: otherMagnitude, lastYear: info.lastYear };
+    }
+  }
+  return best ? { playerId: best.playerId, lastYear: best.lastYear } : null;
+}
 
 /**
  * P7: 選手の「物語」— その選手の歩みを時系列の出来事配列へ合成する（表示層のみ・純関数）。
@@ -803,6 +868,12 @@ export function playerStoryOf(state, playerId, names = {}) {
   for (const r of rivalriesOf(state, playerId)) {
     if (r.type !== 'draftmate') continue;
     events.push({ year: r.year, text: `${pnameOf(r.otherPlayerId)}とは同期指名（${r.round}位）の間柄（${tnameOf(r.matchTeamId)}）`, kind: 'rivalry' });
+  }
+
+  // --- Q11: 師弟継承（同一球団5年以上共存＋年齢差8歳以上・通算成績が大きいベテランがいれば1件のみ） ---
+  const mentor = findMentor(state, playerId, playersById);
+  if (mentor) {
+    events.push({ year: mentor.lastYear, text: `${pnameOf(mentor.playerId)}の背中を見て育った`, kind: 'mentor' });
   }
 
   const yearKey = (y) => (y == null ? -Infinity : y);

@@ -46,10 +46,14 @@ import { appendTransactionLog, retirementCeremonies } from './storylines.mjs';
 // H4: 育成方針・キャンプ（phaseH_fun_spec H4）。方針の意味論(parsePolicy)・AI自動方針・
 //   「コーチの見立て」観測スカラー(coachOverallScore・キャンプ成果の前後差に使う)。
 import { parsePolicy, coachOverallScore, TRAINING_LABELS, TRAINING_KINDS } from './training.mjs';
-import { generateOwnerGoals, evaluateOwnerGoals, trustDelta, pickTransferOffer } from './owner.mjs'; // H5-B
+import { generateOwnerGoals, evaluateOwnerGoals, trustDelta, pickTransferOffer, ownerPressConference } from './owner.mjs'; // H5-B/Q10
 // P3（fun_theory_research_20260720 P3）: 週次目標（短期目標の階層）。cfg.game.weeklyGoals ゲート内
 //   でのみ状態を書き換える（advanceDay・evaluateOwnerYear）。フラグOFF時は完全非干渉。
 import { recordCompletedWeeklyGoals, weeklyGoalTrustBonus } from './goals.mjs';
+// Q2（thyroxin/research…20260723 Q2）: 育成方針の「コーチ経過報告」。表示層のみ・純関数。
+import { coachProgressReports, coachReportPhase } from './coachReports.mjs';
+// Q4/Q8（同 Q4・Q8）: 殿堂/球団史ギャラリー・二つ名/記録のアルバム。表示層のみ・純関数。
+import { hallOfFamers, nicknameAlbum, recordAlbum } from './gallery.mjs';
 import { clamp } from '../model/util.mjs';
 
 /** セーブスキーマ版（構造/オフシーズン意味論の変更時にインクリメント。load の互換判定に使う）。
@@ -1313,3 +1317,9 @@ export { TRAINING_LABELS, TRAINING_KINDS, parsePolicy, coachOverallScore };
 //   recordCompletedWeeklyGoals/weeklyGoalTrustBonus はゲート済みの advanceDay/evaluateOwnerYear
 //   だけが呼ぶ内部API＝ここでは再エクスポートしない）。
 export { generateWeeklyGoal, evaluateWeeklyGoal } from './goals.mjs';
+// Q2: 育成方針の「コーチ経過報告」表示API（UI/テストが './game/index.mjs' 経由で使う）。
+export { coachProgressReports, coachReportPhase };
+// Q4/Q8: 殿堂/球団史ギャラリー・二つ名/記録のアルバム表示API。
+export { hallOfFamers, nicknameAlbum, recordAlbum };
+// Q10: 開幕前「オーナー会見」演出の表示API（既存H5-B ownerGoals/ownerTrustの見せ方を変えるだけ）。
+export { ownerPressConference };

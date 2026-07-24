@@ -162,6 +162,16 @@ for (const col of ['犠打', '敬遠', '代打']) {
 const pitchingTab = tabs.find((t) => textOf(t) === '投手');
 pitchingTab._onclick();
 colGroupBtn('全列')?._onclick();
+// P0-3（ページング）追随: 上位30行に先発/救援の両役割が揃うとは限らないため、
+// 「▼ さらに表示」を全て展開してから役割セルを検証する（アサーションの意図=両役割の描画確認は不変）。
+{
+  let moreGuard = 0;
+  let moreBtn;
+  while ((moreBtn = walk(appDiv).find((n) => n.tag === 'button' && textOf(n).startsWith('▼ さらに表示')))) {
+    assert.ok(moreGuard++ < 20, 'P0-3: さらに表示の展開が収束しない');
+    moreBtn._onclick();
+  }
+}
 nodes = walk(appDiv);
 const pitThs = nodes.filter((n) => n.tag === 'th').map(textOf);
 assert.ok(pitThs.some((t) => t.startsWith('役割')), '投手表に役割列');
@@ -281,6 +291,14 @@ assert.ok(btnByText('ニューゲーム'), 'タイトルにニューゲームボ
 btnByText('ニューゲーム')._onclick();
 const teamCards = allClass('teamcard');
 assert.equal(teamCards.length, 12, `12球団のカードが出る (got ${teamCards.length})`);
+// P1-8（thyroxin/reviews/game_review_20260724.md 観点5）: 球団カードに特色1行（本拠地傾向/監督タイプ/資金力）
+for (const card of teamCards) {
+  const feat = walk(card).find((n) => (n.className || '').includes('tcfeature'));
+  assert.ok(feat, `球団カードに特色1行(.tcfeature)がある (${textOf(card)})`);
+  const t = textOf(feat);
+  assert.ok(/(打者有利|投手有利|中立)/.test(t) && /(機動力重視|強攻型|標準)/.test(t) && /資金力(潤沢|標準|緊縮)/.test(t),
+    `特色1行に本拠地傾向/監督タイプ/資金力が含まれる (got "${t}")`);
+}
 teamCards[0]._onclick();
 let hubHead = hasClass('header');
 assert.ok(hubHead && textOf(hubHead).includes('2026年'), 'シーズンハブに年が表示される');
@@ -524,7 +542,11 @@ allClass('wtab').find((n) => textOf(n) === '対戦')._onclick();
   assert.ok(/EV\d+km\/h/.test(sub) && /\d+m/.test(sub), `EV/飛距離が表示される (${sub})`);
 }
 // §16) 打席ごとの指標変化: 「▼ 指標の変化」折りたたみ（UI刷新2/4: 既定は閉＝速報タブの主役は打席結果。
-//   summaryクリックで開閉し w.mdOpen で再描画をまたいで保持）＋矢印/差分の表記
+//   summaryクリックで開閉し w.mdOpen で再描画をまたいで保持）＋矢印/差分の表記。
+// P1-6（thyroxin/reviews/game_review_20260724.md 観点11）: 極小サンプル（当季10打席/10イニング未満）
+//   は個別値でなく「参考値までもう少し」の案内に差し替わる（開幕第1戦は全打者/全投手が必ず
+//   閾値未満＝好適な検証機会。小サンプルのERA27.00等は計算バグではなく正当な値のため隠さず枠づける）。
+//   ＋打席が進むと自動で畳む（略語の常時露出を避ける・w.mdOpenAbで判定）。
 // .curabresult/.metricdelta は速報タブの現在の打席ボックス内にあるため速報タブへ戻す。
 allClass('wtab').find((n) => textOf(n) === '速報')._onclick();
 {
@@ -536,22 +558,17 @@ allClass('wtab').find((n) => textOf(n) === '速報')._onclick();
   summary._onclick(); // 開く（w.mdOpen=true で再描画）
   md = hasClass('metricdelta');
   assert.ok(md && 'open' in md.attrs, 'summaryクリックで開く（open属性が付く・w.mdOpenで保持）');
-  summary = walk(md).find((n) => n.tag === 'summary');
   const mdRows = allClass('mdrow').map(textOf);
   assert.ok(mdRows.length >= 1, `指標変化の行が出る (${mdRows.join(' | ')})`);
-  assert.ok(mdRows.every((t) => /→.+（[+-]/.test(t)), `矢印(→)＋差分(+/-)の表記形式 (${mdRows.join(' | ')})`);
-  // 安打の打席まで1打席ずつ進めて、AVG/SLG等の打者側変化行が出ることを確認（守備側にはOAA/UZR行が出る打席もある）
-  let hitCr = hasClass('curabresult');
-  let isHit = hitCr && /ev-hit|ev-hr/.test(hitCr.className || '');
-  for (let k = 0; k < 150 && !isHit && btnByText('1打席'); k++) {
-    btnByText('1打席')._onclick();
-    hitCr = hasClass('curabresult');
-    isHit = hitCr && /ev-hit|ev-hr/.test(hitCr.className || '');
-  }
-  assert.ok(isHit, '安打の打席まで進められる');
-  const hitRows = allClass('mdrow').map(textOf);
-  assert.ok(hitRows.some((t) => t.startsWith('AVG')), `安打の打席でAVG変化行が出る (${hitRows.join(' | ')})`);
-  assert.ok(hitRows.some((t) => t.startsWith('SLG') || t.startsWith('OPS')), `安打の打席でSLG/OPS変化行も出る (${hitRows.join(' | ')})`);
+  const isDeltaFmt = (t) => /→.+（[+-]/.test(t);
+  const isGateFmt = (t) => t.includes('参考値までもう少し');
+  assert.ok(mdRows.every((t) => isDeltaFmt(t) || isGateFmt(t)),
+    `行は矢印差分形式かサンプル不足案内のいずれか (${mdRows.join(' | ')})`);
+  assert.ok(mdRows.some(isGateFmt), `開幕第1戦は打者/投手が当季サンプル不足＝「参考値までもう少し」の案内が出る (${mdRows.join(' | ')})`);
+  // P1-6: 打席ごとに自動で畳む — 次の打席へ進むと mdOpen が自動でfalseへ戻る。
+  btnByText('1打席')._onclick();
+  const mdAfterNextAb = hasClass('metricdelta');
+  assert.ok(mdAfterNextAb && !('open' in mdAfterNextAb.attrs), '次の打席に進むと指標変化パネルが自動で畳まれる（P1-6）');
 }
 // E2改c) 畳み表示の結果行: [N回表/裏] プレフィックス＋選手名リンク
 {
@@ -629,6 +646,16 @@ while (hasClass('mgrdecision')) {
   const candidate = allClass('mgrcandidate')[0];
   const fallback = btnByText('そのまま打たせる') || btnByText('続投');
   assert.ok(candidate || fallback, 'P1: 采配モーダルに候補ボタンか「そのまま/続投」がある');
+  // P0-1（game_review_20260724 P0-1）: 候補行があるときは判断材料（当季成績の簡潔表記）が
+  // 必ず1行以上含まれる（「打席なし」「登板なし」フォールバック込みで必ず何かは出る＝憶測でなく
+  // データ欠如の明示）。候補が無い（そのまま/続投のみ）試合はこのアサーションを課さない。
+  if (candidate) {
+    const candRows = allClass('mgrcandrow').map(textOf);
+    assert.ok(
+      candRows.some((t) => /\.\d{3}\s\d+本|防\d+\.\d{2}\sK-BB|打席なし|登板なし/.test(t)),
+      `P0-1: 采配モーダルの候補行に当季成績の表記が含まれる (${JSON.stringify(candRows)})`,
+    );
+  }
   (candidate || fallback)._onclick();
 }
 assert.ok(!hasClass('mgrdecision'), 'P1: 全介入点を解決すると采配モーダルが消える');
@@ -656,6 +683,14 @@ while (hasClass('mgrdecision')) {
   const candidate = allClass('mgrcandidate')[0];
   const fallback = btnByText('そのまま打たせる') || btnByText('続投');
   assert.ok(candidate || fallback, 'Q9: 采配モーダルに候補ボタンか「そのまま/続投」がある');
+  // P0-1: Q9（山場のみ介入）でも候補行の判断材料表記は同じ経路で出る。
+  if (candidate) {
+    const candRows = allClass('mgrcandrow').map(textOf);
+    assert.ok(
+      candRows.some((t) => /\.\d{3}\s\d+本|防\d+\.\d{2}\sK-BB|打席なし|登板なし/.test(t)),
+      `P0-1: Q9の采配モーダルの候補行に当季成績の表記が含まれる (${JSON.stringify(candRows)})`,
+    );
+  }
   (candidate || fallback)._onclick();
 }
 assert.ok(!hasClass('mgrdecision'), 'Q9: 全介入点を解決すると采配モーダルが消える');
@@ -694,15 +729,29 @@ assert.ok(awardText.includes('ベストナイン') || textOf(hasClass('awardpane
 const awardHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
 assert.ok(awardHeads.some((t) => t.includes('表彰')), '表彰見出しが出る');
 
-// C4b) 記録タブ（球団史／リーグ記録）— リザルトから「成績を見る」→ハブ→記録タブ
+// C4b) 記録タブ（球団史／リーグ記録／殿堂・アルバム）— リザルトから「成績を見る」→ハブ→記録タブ
+// P0-2（thyroxin/reviews/game_review_20260724.md 観点10）: 6セクション→3サブタブ化。トップレベルの
+// 「記録」タブ文言は既存のまま（smoke規約）＝サブタブを開いて各セクションを検証する。
 btnByText('成績を見る')._onclick();
 const recTab = btnByText('記録');
 assert.ok(recTab, 'ハブに「記録」タブがある');
 recTab._onclick();
-const recHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
-assert.ok(recHeads.some((t) => t.includes('球団史')), '記録タブに球団史がある');
-assert.ok(recHeads.some((t) => t.includes('リーグ記録')), '記録タブにリーグ記録がある');
-assert.ok(allClass('reccol').length >= 4, `リーグ記録が複数カテゴリのカラムで出る (got ${allClass('reccol').length})`);
+assert.ok(btnByText('球団史') && btnByText('リーグ記録') && btnByText('殿堂・アルバム'), '記録タブに3サブタブ（球団史/リーグ記録/殿堂・アルバム）がある');
+{
+  // 既定サブタブ=球団史
+  const histHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(histHeads.some((t) => t.includes('球団史')), '記録タブ「球団史」サブタブ（既定）に球団史が出る');
+  btnByText('リーグ記録')._onclick();
+  const lgHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(lgHeads.some((t) => t.includes('リーグ記録')), '「リーグ記録」サブタブにリーグ記録が出る');
+  assert.ok(allClass('reccol').length >= 4, `リーグ記録が複数カテゴリのカラムで出る (got ${allClass('reccol').length})`);
+  assert.ok(!lgHeads.some((t) => t.includes('球団史')), '「リーグ記録」サブタブには球団史セクションが無い（分割されている）');
+  btnByText('殿堂・アルバム')._onclick();
+  const hofHeads = walk(appDiv).filter((n) => (n.className || '').includes('leaguename')).map(textOf);
+  assert.ok(hofHeads.some((t) => t.includes('殿堂')), '「殿堂・アルバム」サブタブに殿堂が出る');
+  assert.ok(hofHeads.some((t) => t.includes('アルバム')), '「殿堂・アルバム」サブタブにアルバムが出る');
+  btnByText('球団史')._onclick(); // 既定へ戻す（後続テストへ影響させない）
+}
 
 // ============================================================================
 // フェーズE4: 日程・結果タブ（月別区切り/勝敗/先発）→試合クリック→簡易ボックススコア／ニュースタブ
@@ -777,6 +826,34 @@ btnByText('打撃')._onclick();
   }
   colGroupBtn('基本')._onclick(); // 既定(basic)へ戻す
 }
+// P0-3（thyroxin/reviews/game_review_20260724.md 観点10）: 成績タブの行ページング（上位30件＋さらに表示）。
+// シーズン終了済＝規定到達者が30人超いる前提（当スモークのフィクスチャで成立）。
+{
+  const clickableRows = () => walk(appDiv).filter((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
+  const moreBtnOf = () => {
+    const wrap = allClass('statmore')[0];
+    return wrap ? walk(wrap).find((n) => n.tag === 'button' && n._onclick) : null;
+  };
+  const rows1 = clickableRows();
+  assert.ok(rows1.length > 0 && rows1.length <= 30, `打撃タブ既定は上位30行まで (got ${rows1.length})`);
+  const more1 = moreBtnOf();
+  assert.ok(more1, `打撃タブに「さらに表示」ボタンがある（規定到達者30人超の前提。got ${rows1.length}行）`);
+  more1._onclick();
+  const rows2 = clickableRows();
+  assert.ok(rows2.length > rows1.length && rows2.length <= 60, `「さらに表示」クリックで行が最大+30増える (${rows1.length}→${rows2.length})`);
+  // ソート変更（列見出しクリック）でページングが1ページ目へリセットされる
+  const thWar = walk(appDiv).find((n) => n.tag === 'th' && textOf(n).startsWith('WAR'));
+  assert.ok(thWar, 'WAR列見出しがある');
+  thWar._onclick();
+  const rows3 = clickableRows();
+  assert.ok(rows3.length <= 30, `ソート変更（列見出しクリック）でページングが1ページ目にリセットされる (got ${rows3.length})`);
+  thWar._onclick(); // 既定の並びへ戻す（後続テストへ影響させない）
+  // 列グループ切替でもページングが1ページ目へリセットされる
+  colGroupBtn('全列')._onclick();
+  const rows4 = clickableRows();
+  assert.ok(rows4.length <= 30, `列グループ切替でもページングが1ページ目にリセットされる (got ${rows4.length})`);
+  colGroupBtn('基本')._onclick(); // 既定(basic)へ戻す
+}
 btnByText('投手')._onclick();
 {
   const pitBasicThs = walk(appDiv).filter((n) => n.tag === 'th').map(textOf);
@@ -791,6 +868,19 @@ btnByText('投手')._onclick();
     assert.ok(pitAllThs.some((t) => t.startsWith(col)), `投手タブ「全列」に${col}列 (${pitAllThs.join(',')})`);
   }
   colGroupBtn('基本')._onclick(); // 既定(basic)へ戻す
+}
+// P0-3: WARサブタブ（.warlist・全選手対象＝規定到達に依らずさらに多い）にも同じページングが効く。
+btnByText('WAR')._onclick();
+{
+  const warCards = () => allClass('warcard');
+  const c1 = warCards();
+  assert.ok(c1.length > 0 && c1.length <= 30, `WARタブ既定は上位30件まで (got ${c1.length})`);
+  const wrap = allClass('statmore')[0];
+  assert.ok(wrap, `WARタブに「さらに表示」ボタンがある (got ${c1.length}件)`);
+  const moreBtn = walk(wrap).find((n) => n.tag === 'button' && n._onclick);
+  moreBtn._onclick();
+  const c2 = warCards();
+  assert.ok(c2.length > c1.length && c2.length <= 60, `WARタブ「さらに表示」で+30件増える (${c1.length}→${c2.length})`);
 }
 btnByText('打撃')._onclick(); // 以降のcRow取得のため打撃タブへ戻す（基本群のまま＝name/team/pos/war等は残る）
 const cRow = walk(appDiv).find((n) => n.tag === 'tr' && (n.className || '').includes('clickable') && n._onclick);
@@ -1123,7 +1213,7 @@ console.log('UI smoke OK (E3編成): リザルト→ストーブリーグ(FA市�
 console.log('UI smoke OK (H4秋季キャンプ): 秋季キャンプタブ(自チーム一覧→編集→方針ボタン/コンバート先/特別指導トグル)→方針変更でラベル即時反映→オフダイジェスト合流、例外なし');
 console.log('UI smoke OK (H2対話ドラフト): オフ処理→自チームの指名番でドラフト会議室に中断(スカウトレポート列一式=等級/ツール/伸びしろ/経歴/評判)→指名ボタンで解決(競合くじ敗退→再指名を含む)→全ラウンド完了でオフダイジェストへ合流、例外なし');
 
-console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
+console.log('UI smoke OK (C4演出): シーズンリザルト表彰パネル(MVP/タイトル/ベストナイン/守備賞)→記録タブ(球団史/リーグ記録/殿堂・アルバムの3サブタブ)→選手モーダル「経歴」(二つ名/年度別/成長曲線/受賞履歴)、例外なし');
 
 console.log('UI smoke OK: setup→simulate→6タブ描画→モーダル%d回(タブ化)→打球SVG %d要素→2リーグ順位表+PS+SH/IBB/PH+役割列+新指標列(ツールチップ)+モーダルタブ(打球/スプリット/文脈/守備)+チーム集計、例外なし', modalsOpened, svgCount);
 console.log('UI smoke OK (ゲームシェルC1b): タイトル→ニューゲーム(12球団)→ハブ(全statタブ)→采配介入→観戦1試合(スコアバー/盤面/実況/残量)→セーブ/ロード継続→月末進行→シーズン終了(日本一)、例外なし');

@@ -57,13 +57,19 @@ import {
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
 import { renderTeamTab } from './ui/team.mjs';
 // フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
-import { renderWatchScreen } from './ui/watch.mjs';
+import {
+  renderWatchScreen,
+  // P0-1（thyroxin/reviews/game_review_20260724.md）: 采配モーダルの候補行に判断材料を添える純関数。
+  mgrBatSeasonText, mgrPitSeasonText, mgrPlatoonTag, mgrRoleTag, mgrRestTag,
+} from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
 // Wave C（gm_analytics_spec.md）: stoveGotoTrade はGMボードの「トレードの窓」サジェストから
 // 既存トレードタブへ導線するためのヘルパー（team.mjs へ teamTabDeps() 経由で渡す）。
 import { renderStoveScreen, renderOffseasonDigestScreen, stoveGotoTrade } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
 import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel, schedWpaParts } from './ui/schedule.mjs';
+// P1-5（thyroxin/reviews/game_review_20260724.md）: WPA勝因/敗因×介入ログの接続（⚡タグ判定）。
+import { wpaIsAfterIntervention } from './game/wpaSummary.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
 import { renderDraftRoomScreen } from './ui/draft.mjs';
 
@@ -248,20 +254,36 @@ function renderWAR(c) {
       const w = hitterWAR(s, state.cfg, state.lc);
       return { id: s.playerId, name: p.name, team: state.teamName.get(s.teamId) || s.teamId, role: primaryPos(p), war: w.war, detail: `打${w.wraa.toFixed(0)} 走${w.bsr.toFixed(0)} 守${w.uzr.toFixed(0)} 位${w.posAdj.toFixed(0)}` };
     })
-    .sort((a, b) => b.war - a.war)
-    .slice(0, 50);
+    .sort((a, b) => b.war - a.war);
   c.append(el('div', { class: 'muted', style: 'margin:4px 0' }, 'WAR = 打撃(wRAA)＋走塁(BsR)＋守備(UZR)＋位置補正 の総合。行タップで詳細。'));
-  const navIds = rows.map((r) => r.id); // G9: モーダルの前後ナビ用
-  c.append(el('div', { class: 'warlist' }, rows.map((r, i) =>
-    el('div', { class: 'warcard clickable', onclick: () => openModal(r.id, navIds) }, [
-      el('span', { class: 'warrank' }, String(i + 1)),
-      el('span', { class: 'warval' }, r.war.toFixed(1)),
-      el('span', { class: 'warname' }, [
-        el('div', { class: 'wn1' }, r.name),
-        el('div', { class: 'muted' }, `${r.team} / ${r.role}　${r.detail}`),
+  // P0-3（観点10）: statTableと同じ「上位30件＋さらに表示」パターン（WARリストは.warlistカードのため
+  //   statTable本体は使わないが、共通のpaginate()で挙動を揃える）。
+  const listWrap = el('div');
+  c.append(listWrap);
+  let page = 1;
+  const draw = () => {
+    listWrap.innerHTML = '';
+    const { count, hasMore, remaining } = paginate(rows.length, page);
+    const shown = rows.slice(0, count);
+    const navIds = shown.map((r) => r.id); // G9: モーダルの前後ナビ用
+    listWrap.append(el('div', { class: 'warlist' }, shown.map((r, i) =>
+      el('div', { class: 'warcard clickable', onclick: () => openModal(r.id, navIds) }, [
+        el('span', { class: 'warrank' }, String(i + 1)),
+        el('span', { class: 'warval' }, r.war.toFixed(1)),
+        el('span', { class: 'warname' }, [
+          el('div', { class: 'wn1' }, r.name),
+          el('div', { class: 'muted' }, `${r.team} / ${r.role}　${r.detail}`),
+        ]),
       ]),
-    ]),
-  )));
+    )));
+    if (hasMore) {
+      listWrap.append(el('div', { class: 'statmore' }, [
+        el('button', { class: 'link', onclick: () => { page += 1; draw(); } },
+          `▼ さらに表示（+${Math.min(STAT_PAGE_SIZE, remaining)}・残り${remaining}件）`),
+      ]));
+    }
+  };
+  draw();
 }
 
 // G5b: 順位表の詳細列トグル（UIローカル状態・null=未初期化）。
@@ -510,6 +532,22 @@ function renderFielding(c) {
 }
 
 // --- 汎用ソート可能テーブル ------------------------------------------------
+// P0-3（thyroxin/reviews/game_review_20260724.md 観点10）: 100行一括描画（3.6〜4.2画面）の解消。
+//   上位30行＋「さらに表示」（+30/クリック）へ分割する。純関数のページング判定はテスト可能な
+//   形に切り出す（test/ui_pure_helpers.test.mjs）。ソート/列グループ変更で1ページ目へリセット
+//   （呼び出し側=statTable/renderWAR が page をリセットする）。
+export const STAT_PAGE_SIZE = 30;
+/**
+ * ページング判定（純関数）。total件中、page(1始まり)ページ目までに見せる件数と「まだ続きがあるか」を返す。
+ * @returns {{count:number, hasMore:boolean, remaining:number}}
+ */
+export function paginate(total, page, pageSize = STAT_PAGE_SIZE) {
+  const safeTotal = Math.max(0, total | 0);
+  const safePage = Math.max(1, page | 0);
+  const count = Math.min(safeTotal, safePage * pageSize);
+  return { count, hasMore: safeTotal > count, remaining: safeTotal - count };
+}
+
 // UI刷新4: opts.heat = {列キー: +1|-1}（+1=高いほど良い/-1=低いほど良い）を渡すと、
 //   規定到達者全体（dataの全行・表示100行制限より広い母集団）でのリーグ内百分位を
 //   セル背景のヒート（heat0..6・FanGraphs流の赤=良/青=悪）で表示する。表示のみ・決定論。
@@ -541,6 +579,8 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     const list = g ? g[2] : null;
     return list ? list.map((k) => cols.find(([ck]) => ck === k)).filter(Boolean) : cols; // 第3要素null='全列'
   };
+  // P0-3: 表示ページ（1始まり）。ソート変更/列グループ変更で1へリセット（onclick側で行う）。
+  let page = 1;
   const render = () => {
     wrap.innerHTML = '';
     if (!data.length) { wrap.append(el('div', { class: 'emptybox' }, emptyMsg || '対象データがありません。')); return; }
@@ -548,13 +588,15 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     // 現在の表示列に無いキーでソート中なら既定ソートへフォールバック（グループ切替直後の不整合防止）。
     if (!curCols.some(([k]) => k === state.sort.key)) state.sort = { key: defaultSort, dir: defaultSort === 'era' || defaultSort === 'fip' ? 1 : -1 };
     const { key, dir } = state.sort;
-    const sorted = [...data].sort((a, b) => {
+    const sortedAll = [...data].sort((a, b) => {
       const av = a[key]; const bv = b[key];
       if (typeof av === 'string') return dir * av.localeCompare(bv);
       return dir * ((av ?? 0) - (bv ?? 0));
-    }).slice(0, 100);
+    });
+    const { count, hasMore, remaining } = paginate(sortedAll.length, page);
+    const sorted = sortedAll.slice(0, count);
     const head = el('tr', {}, curCols.map(([k, label, align]) =>
-      el('th', { class: (align || '') + (state.sort.key === k ? ' sorted' : ''), title: TIP[k] || '', onclick: () => { state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : -1 }; render(); } }, label + (state.sort.key === k ? (dir < 0 ? ' ▼' : ' ▲') : '')),
+      el('th', { class: (align || '') + (state.sort.key === k ? ' sorted' : ''), title: TIP[k] || '', onclick: () => { state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : -1 }; page = 1; render(); } }, label + (state.sort.key === k ? (dir < 0 ? ' ▼' : ' ▲') : '')),
     ));
     // G9: 表示中テーブルのソート済みID配列をモーダルの前後ナビに渡す。
     const navIds = sorted.map((d) => d.id);
@@ -580,6 +622,13 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
       return el('td', { class: (align || '') + heatCls }, String(v));
     })));
     wrap.append(el('table', { class: 'stat' }, [el('thead', {}, head), el('tbody', {}, rows)]));
+    // P0-3: 上位30行＋「さらに表示」（観点10・全行一括描画によるスクロール過多の解消）。
+    if (hasMore) {
+      wrap.append(el('div', { class: 'statmore' }, [
+        el('button', { class: 'link', onclick: () => { page += 1; render(); } },
+          `▼ さらに表示（+${Math.min(STAT_PAGE_SIZE, remaining)}・残り${remaining}件）`),
+      ]));
+    }
   };
   state.sort = { key: defaultSort, dir: defaultSort === 'era' || defaultSort === 'fip' ? 1 : -1 };
   render();
@@ -590,7 +639,7 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     barWrap.innerHTML = '';
     barWrap.append(...groups.map(([k, label]) => el('button', {
       class: 'colgroup' + (getGroup() === k ? ' active' : ''),
-      onclick: () => { setGroup(k); render(); renderBar(); },
+      onclick: () => { setGroup(k); page = 1; render(); renderBar(); },
     }, label)));
   };
   renderBar();
@@ -1437,6 +1486,49 @@ function renderTitle() {
   }).catch(() => {});
 }
 
+// P1-8（thyroxin/reviews/game_review_20260724.md 観点5）: チーム選択カードに、観測可能な公開情報
+// （球場ジオメトリ・監督プロファイル・年俸予算）だけから作る特色1行を添える。真値の能力値は使わない。
+// 純関数＝test/ui_pure_helpers.test.mjs で直接検証する。
+
+/** 本拠地パークの傾向。球場ジオメトリ（両翼/中堅の距離＋フェンス高）を中立値と比較する簡易合成指標。
+ *  距離が近い/フェンスが低いほど打者有利、逆は投手有利（§11.2のパークファクター生成と同じ幾何量を使う）。 */
+export function parkFactorLabel(park, cfg) {
+  const P = cfg.tuning.park;
+  const lf = park.lfLineM ?? park.lineDistM ?? P.baseLine;
+  const rf = park.rfLineM ?? park.lineDistM ?? P.baseLine;
+  const center = park.centerDistM ?? P.baseCenter;
+  const avgDist = (lf + rf + center) / 3;
+  const baseAvg = (P.baseLine * 2 + P.baseCenter) / 3;
+  const heightDiff = (park.fenceHeightM ?? P.baseHeight) - P.baseHeight;
+  // 距離1mの近さ ≈ フェンス高1.5mの低さ、というラフな等価換算（表示用の目安であり較正値ではない）。
+  const score = (baseAvg - avgDist) - heightDiff * 1.5;
+  if (score > 1.0) return '打者有利';
+  if (score < -1.0) return '投手有利';
+  return '中立';
+}
+
+/** 監督タイプ。犠打/盗塁への好み(buntTend/stealTend・20-80スケール・50=平均)の平均偏差から判定。 */
+export function managerTypeLabel(manager) {
+  const dev = ((manager.buntTend - 50) + (manager.stealTend - 50)) / 2;
+  if (dev > 8) return '機動力重視';
+  if (dev < -8) return '強攻型';
+  return '標準';
+}
+
+/** 資金力。年俸予算(finance.budget)をリーグの生成分布(economy.budget.mean/sd)の±0.5SDで3段階化。 */
+export function budgetLabel(finance, cfg) {
+  const B = cfg.tuning.economy.budget;
+  const dev = (finance.budget - B.mean) / (B.sd || 1);
+  if (dev > 0.5) return '潤沢';
+  if (dev < -0.5) return '緊縮';
+  return '標準';
+}
+
+/** チームカード用の特色1行（本拠地の傾向・監督タイプ・資金力を1行に凝縮）。 */
+export function teamFeatureLine(team, cfg) {
+  return `${parkFactorLabel(team.park, cfg)}の本拠地・${managerTypeLabel(team.manager)}の監督・資金力${budgetLabel(team.finance, cfg)}`;
+}
+
 function renderNewGame() {
   const root = document.getElementById('app');
   root.innerHTML = '';
@@ -1458,6 +1550,8 @@ function renderNewGame() {
       }, [
         el('div', { class: 'tcname' }, t.name),
         el('div', { class: 'muted' }, `${leagueNameOf(cfg, t.league)}`),
+        // P1-8（観点5）: 公開情報だけで作る特色1行（本拠地傾向・監督タイプ・資金力）。真値は使わない。
+        el('div', { class: 'tcfeature muted', style: 'font-size:11px' }, teamFeatureLine(t, cfg)),
       ]));
     }
   };
@@ -1539,6 +1633,8 @@ function finishNewGame(seed, teamId, cfg, burnIn) {
   pitColGroup = null;
   // G5b: 順位表の詳細トグルも同様にキャリアモード既定(OFF)へ巻き戻す。
   standingsDetail = null;
+  // P0-2: 記録タブのサブタブも新規ゲームでは既定（球団史）へ巻き戻す。
+  recordsSub = 'history';
   autoSave();
   renderHub();
 }
@@ -1936,11 +2032,31 @@ function teamSeasonStar(rt, teamId) {
 }
 
 // --- 記録タブ（C4・球団史／リーグ記録／マイルストーン） -----------------------------
+// P0-2（thyroxin/reviews/game_review_20260724.md 観点10・実測12.87画面）: 記録タブの6セクション
+// （球団史/マイルストーン/リーグ記録シーズン/通算/殿堂/アルバム）をサブタブ3分割する。
+// トップレベルの「記録」タブのボタン文言は変えない（smoke規約）。team.mjs と同じ .subtabs パターン。
+let recordsSub = 'history'; // 'history'=球団史 | 'league'=リーグ記録 | 'hof'=殿堂・アルバム
+const RECORDS_SUBTABS = [
+  ['history', '球団史'], ['league', 'リーグ記録'], ['hof', '殿堂・アルバム'],
+];
 function renderRecords(c) {
+  c.append(el('div', { class: 'subtabs' }, RECORDS_SUBTABS.map(([k, label]) =>
+    el('button', {
+      class: 'subtab' + (recordsSub === k ? ' active' : ''),
+      onclick: () => { recordsSub = k; renderHub('records'); },
+    }, label))));
+  const body = el('div');
+  c.append(body);
+  if (recordsSub === 'league') renderRecordsLeague(body);
+  else if (recordsSub === 'hof') renderRecordsHof(body);
+  else renderRecordsHistory(body);
+}
+
+/** 記録サブタブ「球団史」: 自チームの年度別順位・日本一＋当年マイルストーン。 */
+function renderRecordsHistory(c) {
   const gs = game.gs;
   // 全時代byId（現役＋引退者サマリ）: 引退選手を通算記録/マイルストーンから落とさない（C4検証修正）
   const byId = allPlayersById(gs);
-  // 球団史（自チームの年度別順位・日本一）
   c.append(el('h3', { class: 'leaguename' }, `球団史 — ${tname(gs.playerTeamId)}`));
   const th = teamRecords(gs.teamHistory, gs.playerTeamId);
   if (th.length) {
@@ -1964,25 +2080,36 @@ function renderRecords(c) {
       ]))));
     }
   }
-  // リーグ記録（シーズン/通算トップN）
-  if (gs.careerStats.length) {
-    const rec = leagueRecords({ careerStats: gs.careerStats, playersById: byId, cfg: gs.cfg });
-    c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（シーズン）'));
-    c.append(recordColumns([
-      ['本塁打', rec.seasonHR, (r) => `${r.value}（${r.year}）`],
-      ['安打', rec.seasonH, (r) => `${r.value}（${r.year}）`],
-      ['勝利', rec.seasonW, (r) => `${r.value}（${r.year}）`],
-      ['奪三振', rec.seasonSO, (r) => `${r.value}（${r.year}）`],
-    ]));
-    c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（通算）'));
-    c.append(recordColumns([
-      ['通算本塁打', rec.careerHR, (r) => `${r.value}`],
-      ['通算安打', rec.careerH, (r) => `${r.value}`],
-      ['通算勝利', rec.careerW, (r) => `${r.value}`],
-      ['通算セーブ', rec.careerSV, (r) => `${r.value}`],
-    ]));
-  }
+}
 
+/** 記録サブタブ「リーグ記録」: シーズン/通算トップNのリーダーボード。 */
+function renderRecordsLeague(c) {
+  const gs = game.gs;
+  const byId = allPlayersById(gs);
+  if (!gs.careerStats.length) {
+    c.append(el('div', { class: 'muted' }, 'まだリーグ記録はありません（今季終了後に記録が刻まれます）。'));
+    return;
+  }
+  const rec = leagueRecords({ careerStats: gs.careerStats, playersById: byId, cfg: gs.cfg });
+  c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（シーズン）'));
+  c.append(recordColumns([
+    ['本塁打', rec.seasonHR, (r) => `${r.value}（${r.year}）`],
+    ['安打', rec.seasonH, (r) => `${r.value}（${r.year}）`],
+    ['勝利', rec.seasonW, (r) => `${r.value}（${r.year}）`],
+    ['奪三振', rec.seasonSO, (r) => `${r.value}（${r.year}）`],
+  ]));
+  c.append(el('h3', { class: 'leaguename' }, 'リーグ記録（通算）'));
+  c.append(recordColumns([
+    ['通算本塁打', rec.careerHR, (r) => `${r.value}`],
+    ['通算安打', rec.careerH, (r) => `${r.value}`],
+    ['通算勝利', rec.careerW, (r) => `${r.value}`],
+    ['通算セーブ', rec.careerSV, (r) => `${r.value}`],
+  ]));
+}
+
+/** 記録サブタブ「殿堂・アルバム」: Q4殿堂＋Q8アルバム（二つ名一覧・記録の達成一覧）。 */
+function renderRecordsHof(c) {
+  const gs = game.gs;
   // Q4: 殿堂（引退済み＋通算成績閾値or受賞数閾値を満たす選手。awardsHistory/careerStats/
   //   retiredPlayersからの純関数集計・新規保存フィールド無し）。
   const hof = hallOfFamers(gs);
@@ -2427,11 +2554,66 @@ function pitcherMoodComment(gs, situ) {
 }
 
 /**
+ * P0-1（thyroxin/reviews/game_review_20260724.md・p1_interactive_manager_spec §4）:
+ * 采配モーダルの1候補（または現在の打者/投手）ぶんの判断材料をまとめる純関数。
+ * 観測成績（state.res.statsById＝rt.stats由来）とロスター公開情報（bats/throws・depth chartの
+ * 役割割当・usage.pitchedByDay）だけを使う。真値(trueAbility)・能力値レーティングは非参照（鉄則3）。
+ * @returns {{pid, p, statText, platoon?, formArrow?, role?, rest?, sortKey}}
+ */
+function mgrCandidateInfo(gs, decision, pid) {
+  const p = state.byId.get(pid);
+  const statsById = state.res ? state.res.statsById : null;
+  if (decision.kind === 'ph') {
+    const bs = statsById ? statsById.get(pid) : null;
+    const oppP = decision.situ.oppPitcherId ? state.byId.get(decision.situ.oppPitcherId) : null;
+    const { tier } = playerFormOf(gs, pid);
+    const hasPa = bs && bs.batting && bs.batting.ab > 0;
+    return {
+      pid,
+      p,
+      statText: mgrBatSeasonText(bs, state.lc),
+      platoon: p && oppP ? mgrPlatoonTag(p.bats, oppP.throws) : '',
+      formArrow: tier === 'hot' ? '▲' : tier === 'cold' ? '▼' : '',
+      sortKey: hasPa ? playerBatting(bs, state.lc).ops : -1,
+    };
+  }
+  const ps = statsById ? statsById.get(pid) : null;
+  const usage = gs.rt.usageByTeam.get(gs.playerTeamId);
+  const chart = usage ? usage.charts.dh : null;
+  const pitchedByDay = usage ? usage.pitchedByDay.get(pid) : null;
+  const hasIp = ps && ps.pitching && ps.pitching.outs > 0;
+  return {
+    pid,
+    p,
+    statText: mgrPitSeasonText(ps, state.lc),
+    role: mgrRoleTag(chart, pid),
+    rest: mgrRestTag(pitchedByDay, decision.day),
+    sortKey: hasIp ? playerPitching(ps, state.lc).era : Infinity,
+  };
+}
+
+/** P0-1: 候補1行分のDOM（左=名前+判断材料、右=選択ボタン。1候補1行に収める・観点11）。 */
+function mgrCandidateRow(c, submit, isPitcherKind) {
+  const { pid, p } = c;
+  const handTxt = p ? (isPitcherKind ? handLabel(p.throws) + '投' : `${posJP(primaryPos(p))}${handLabel(p.bats)}打`) : '';
+  const tags = isPitcherKind ? [c.role, c.rest].filter(Boolean) : [c.platoon, c.formArrow].filter(Boolean);
+  const infoText = `${pname(pid)}（${handTxt}） ${c.statText}${tags.length ? '　' + tags.join(' ') : ''}`;
+  return el('div', { class: 'mgrcandrow' }, [
+    el('span', { class: 'mgrcandinfo' }, infoText),
+    el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, '選択'),
+  ]);
+}
+
+/**
  * P1: 采配モーダル（代打/継投の意思決定）。§4。
- * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
- * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * kind='ph': 打席の選手（当季成績/対左右/フォーム▲▼込み）＋ベンチ候補一覧（同項目・成績順）＋
+ *   「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧（当季防御率/K-BB%・役割タグ・連投状態・
+ *   利き腕・防御率順）＋「続投」。
  * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
  * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ * P0-1: 候補の判断材料（観測成績とロスター公開情報のみ・真値非参照）を追加。並び順はUI表示時の
+ * ソートのみ（ログのpick対象はplayerIdなので順序変更はシム結果に非干渉）。
  */
 function showManagerDecisionModal(decision) {
   const gs = game.gs;
@@ -2449,23 +2631,19 @@ function showManagerDecisionModal(decision) {
   ]));
   if (kind === 'ph') {
     const batter = state.byId.get(situ.batterId);
-    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
-    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
-      const p = state.byId.get(pid);
-      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
-      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
-    })));
+    const cur = mgrCandidateInfo(gs, decision, situ.batterId);
+    const curTags = [cur.platoon, cur.formArrow].filter(Boolean);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打） ${cur.statText}${curTags.length ? '　' + curTags.join(' ') : ''}`));
+    const rows = candidates.map((pid) => mgrCandidateInfo(gs, decision, pid)).sort((a, b) => b.sortKey - a.sortKey);
+    box.append(el('div', { class: 'mgrcandlist' }, rows.map((c) => mgrCandidateRow(c, submit, false))));
     box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
   } else {
     const pit = state.byId.get(situ.pitcherId);
     box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
     // Q9: 投手心情コメント（当季観測のみ・hashSeed独立座標のテンプレ・乱数消費/シム結果に非干渉）。
     box.append(el('p', { class: 'muted' }, `💬 ${pitcherMoodComment(gs, situ)}`));
-    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
-      const p = state.byId.get(pid);
-      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
-      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
-    })));
+    const rows = candidates.map((pid) => mgrCandidateInfo(gs, decision, pid)).sort((a, b) => a.sortKey - b.sortKey);
+    box.append(el('div', { class: 'mgrcandlist' }, rows.map((c) => mgrCandidateRow(c, submit, true))));
     box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
   }
   box.append(el('div', { class: 'row' }, [
@@ -2568,12 +2746,17 @@ function showAdvanceDigest(gs, snap) {
     box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
   }
   // P2: 直近試合の勝因/敗因カード（旧セーブ等で box.wpaTop/wpaBottom が無ければ additive にスキップ）。
-  const lastBox = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1].box : null;
+  // P1-5: ⚡タグ（自分の采配指示の直後のプレー）を介入ログと突き合わせて判定する。
+  const lastRec = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1] : null;
+  const lastBox = lastRec ? lastRec.box : null;
   if (lastBox?.wpaTop && lastBox?.wpaBottom) {
+    const lastIv = (gs.gameInterventions || []).filter((x) => x.year === gs.year && x.day === lastRec.day);
+    const topTag = wpaIsAfterIntervention(lastBox.wpaTop, lastIv, lastBox);
+    const bottomTag = wpaIsAfterIntervention(lastBox.wpaBottom, lastIv, lastBox);
     box.append(el('h3', { class: 'leaguename' }, '⚔ 直近試合の勝因/敗因'));
     box.append(el('div', { class: 'newsfeed' }, [
-      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
-      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
+      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps(), topTag)]),
+      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps(), bottomTag)]),
     ]));
   }
   // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。

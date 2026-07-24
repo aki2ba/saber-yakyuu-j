@@ -281,6 +281,26 @@ function mdRow(label, before, after, fmtAbs, fmtDelta, invert) {
   return { label, cls: good > 0 ? 'mdup' : 'mddown', text: `${label} ${fmtAbs(before)}→${fmtAbs(after)}（${fmtDelta(delta)}）` };
 }
 
+// P1-6（thyroxin/reviews/game_review_20260724.md 観点11）: 「指標の変化」パネルは極小サンプル
+// （当季10打席未満/10イニング未満）だとAVG/ERA等が極端値（ERA27.00やkwERA系の負値等）になる。
+// これは計算バグではなく正当な値（ユーザー確認済み）だが、初見には数式のバグに見える＝
+// 「サンプル不足の参考値」と正しく枠づける（値を隠すのではなく文脈を添える）。純関数＝直接テスト可能。
+export const METRIC_DELTA_MIN_PA = 10; // 打者: 当季10打席未満はゲート
+export const METRIC_DELTA_MIN_IP = 10; // 投手: 当季10イニング未満はゲート
+
+/** 打者側ゲート判定。当季打席(pa)が閾値未満なら案内文、十分なら null（＝通常表示）。 */
+export function battingSampleGateMessage(paSeason, min = METRIC_DELTA_MIN_PA) {
+  if (paSeason >= min) return null;
+  return `参考値までもう少し（${paSeason}打席）`;
+}
+
+/** 投手側ゲート判定。当季投球回(ip)が閾値未満なら案内文、十分なら null（＝通常表示）。 */
+export function pitchingSampleGateMessage(ipSeason, min = METRIC_DELTA_MIN_IP) {
+  if (ipSeason >= min) return null;
+  const ipText = Number.isFinite(ipSeason) ? ipSeason.toFixed(1) : '0.0';
+  return `参考値までもう少し（${ipText}回）`;
+}
+
 /**
  * 1つの pa/bunt イベントの指標変化一式（打者/投手/守備）を組み立てつつ、ctx の累積Mapを更新する。
  * 変化した(非ゼロ)行だけを積む（§16 ユーザー要望）。何も変化がなければ null。
@@ -300,17 +320,23 @@ function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
   bumpCounts(gameBat, e.batterId, bd);
   const after = {}; const soFarAfter = gameBat.get(e.batterId) || {};
   for (const k of Object.keys(bZero)) after[k] = (bg[k] || 0) + (soFarAfter[k] || 0);
-  const sBefore = watchSlash(before, lc); const sAfter = watchSlash(after, lc);
-  for (const [label, key] of [['AVG', 'avg'], ['OBP', 'obp'], ['SLG', 'slg'], ['OPS', 'ops']]) {
-    const r = mdRow(label, sBefore[key], sAfter[key], u.fmt3, fmtSigned3, false);
-    if (r) rows.batting.push(r);
+  // P1-6: 当季打席が極小なら個別指標を出さず「参考値までもう少し」に差し替える（値は隠さず枠づけ）。
+  const batGate = battingSampleGateMessage(after.pa);
+  if (batGate) {
+    rows.batting.push({ label: 'gate', cls: 'mdinfo', text: batGate });
+  } else {
+    const sBefore = watchSlash(before, lc); const sAfter = watchSlash(after, lc);
+    for (const [label, key] of [['AVG', 'avg'], ['OBP', 'obp'], ['SLG', 'slg'], ['OPS', 'ops']]) {
+      const r = mdRow(label, sBefore[key], sAfter[key], u.fmt3, fmtSigned3, false);
+      if (r) rows.batting.push(r);
+    }
+    const rWraa = mdRow('wRAA', sBefore.wraa, sAfter.wraa, fmt1Abs, fmtSigned1, false);
+    if (rWraa) rows.batting.push(rWraa);
+    const rWrcPlus = mdRow('wRC+', sBefore.wrcPlus, sAfter.wrcPlus, fmtIntAbs, fmtSignedInt, false);
+    if (rWrcPlus) rows.batting.push(rWrcPlus);
+    const rHard = mdRow('Hard%', sBefore.hardHitPct, sAfter.hardHitPct, fmtPct1Abs, fmtSignedPct1, false);
+    if (rHard) rows.batting.push(rHard);
   }
-  const rWraa = mdRow('wRAA', sBefore.wraa, sAfter.wraa, fmt1Abs, fmtSigned1, false);
-  if (rWraa) rows.batting.push(rWraa);
-  const rWrcPlus = mdRow('wRC+', sBefore.wrcPlus, sAfter.wrcPlus, fmtIntAbs, fmtSignedInt, false);
-  if (rWrcPlus) rows.batting.push(rWrcPlus);
-  const rHard = mdRow('Hard%', sBefore.hardHitPct, sAfter.hardHitPct, fmtPct1Abs, fmtSignedPct1, false);
-  if (rHard) rows.batting.push(rHard);
   // --- 投手（この打席の対戦投手・失点は簡易に自責点扱い＝失策絡みの非自責化までは近似しない） ---
   const runs = watchRunsOnPlay(e, lastScore);
   lastScore.set(e.batTeam, e.batScore);
@@ -326,17 +352,24 @@ function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
     });
     const afterP = {}; const soFarPAfter = gamePit.get(pitcherId) || {};
     for (const k of Object.keys(pZero)) afterP[k] = (bgP[k] || 0) + (soFarPAfter[k] || 0);
-    const lBefore = watchPitchLine(beforeP, lc, cfg); const lAfter = watchPitchLine(afterP, lc, cfg);
-    const rEra = mdRow('ERA', lBefore.era, lAfter.era, u.f2, fmtSigned2, true);
-    if (rEra) rows.pitching.push(rEra);
-    const rWhip = mdRow('WHIP', lBefore.whip, lAfter.whip, u.f2, fmtSigned2, true);
-    if (rWhip) rows.pitching.push(rWhip);
-    const rXfip = mdRow('xFIP', lBefore.xfip, lAfter.xfip, u.f2, fmtSigned2, true);
-    if (rXfip) rows.pitching.push(rXfip);
-    const rKwera = mdRow('kwERA', lBefore.kwera, lAfter.kwera, u.f2, fmtSigned2, true);
-    if (rKwera) rows.pitching.push(rKwera);
-    const rKbb = mdRow('K-BB%', lBefore.kbbPct, lAfter.kbbPct, fmtPct1Abs, fmtSignedPct1, false);
-    if (rKbb) rows.pitching.push(rKbb);
+    // P1-6: 当季投球回が極小なら個別指標を出さず「参考値までもう少し」に差し替える
+    //   （小サンプルのERA27.00やkwERA系の負値は計算バグではなく正当な値・隠すのではなく枠づける）。
+    const pitGate = pitchingSampleGateMessage(afterP.outs / 3);
+    if (pitGate) {
+      rows.pitching.push({ label: 'gate', cls: 'mdinfo', text: pitGate });
+    } else {
+      const lBefore = watchPitchLine(beforeP, lc, cfg); const lAfter = watchPitchLine(afterP, lc, cfg);
+      const rEra = mdRow('ERA', lBefore.era, lAfter.era, u.f2, fmtSigned2, true);
+      if (rEra) rows.pitching.push(rEra);
+      const rWhip = mdRow('WHIP', lBefore.whip, lAfter.whip, u.f2, fmtSigned2, true);
+      if (rWhip) rows.pitching.push(rWhip);
+      const rXfip = mdRow('xFIP', lBefore.xfip, lAfter.xfip, u.f2, fmtSigned2, true);
+      if (rXfip) rows.pitching.push(rXfip);
+      const rKwera = mdRow('kwERA', lBefore.kwera, lAfter.kwera, u.f2, fmtSigned2, true);
+      if (rKwera) rows.pitching.push(rKwera);
+      const rKbb = mdRow('K-BB%', lBefore.kbbPct, lAfter.kbbPct, fmtPct1Abs, fmtSignedPct1, false);
+      if (rKbb) rows.pitching.push(rKbb);
+    }
   }
   // --- 守備（打球を処理した野手のみ・§16手順1で追加した fielderPos/fielderId） ---
   const fd = watchFieldingDelta(e, cfg);
@@ -359,7 +392,11 @@ function metricDeltaForEvent(e, outsBeforeThis, pitcherId, ctx) {
 
 /** 「▼ 指標の変化」セクション（現在の打席で変化した指標のみ）。何も無ければ null。
  *  既定は閉じる（速報タブの主役は打席の結果＝一球速報/スポナビ流。数字の壁で結果を埋めない）。
- *  一球ごとに全再描画されるため、開閉は w.mdOpen（UIローカル状態・セーブ外）で保持する。 */
+ *  一球ごとに全再描画されるため、開閉は w.mdOpen（UIローカル状態・セーブ外）で保持する。
+ *  P1-6（thyroxin/reviews/game_review_20260724.md 観点11）: 一度開くと以後の打席でも展開されたまま
+ *  だと、略語十数個（打者/投手/守備の指標が同時に変化した場合）が常時露出し続けて混乱の原因になる。
+ *  「打席ごとに自動で畳む」を採用: w.mdOpenAb（開いた時点のv.abIndex）を覚え、打席が進んで
+ *  abIndexが変わったら自動的に閉じる（同じ打席内の1球ごとの再描画では開いたまま維持される）。 */
 function watchMetricDeltaBox(v, u) {
   const { el, pname, game } = u;
   const md = v.metricDelta;
@@ -371,12 +408,13 @@ function watchMetricDeltaBox(v, u) {
   if (md.fielding.length) groups.push(el('div', { class: 'mdgroup' }, [el('span', { class: 'mdname' }, `守 ${pname(md.fielderId)}`), ...md.fielding.map(rowEl)]));
   if (!groups.length) return null;
   const w = game.watch;
+  if (w && w.mdOpen && w.mdOpenAb !== v.abIndex) w.mdOpen = false; // P1-6: 打席が進んだら自動で畳む
   const open = !!(w && w.mdOpen);
   const attrs = { class: 'metricdelta' };
   if (open) attrs.open = '';
   const summary = el('summary', {
     // ネイティブの details 開閉に任せると次の一球の再描画で状態が消えるため、自前でトグル＋再描画。
-    onclick: (ev) => { if (ev && ev.preventDefault) ev.preventDefault(); if (w) { w.mdOpen = !open; renderWatchScreen(u); } },
+    onclick: (ev) => { if (ev && ev.preventDefault) ev.preventDefault(); if (w) { w.mdOpen = !open; w.mdOpenAb = v.abIndex; renderWatchScreen(u); } },
   }, '▼ 指標の変化');
   return el('details', attrs, [summary, ...groups]);
 }
@@ -1092,4 +1130,73 @@ function watchLineupTab(root, v, u) {
   }
   body.append(bb);
   root.append(body);
+}
+
+// ============================================================================
+// P0-1（thyroxin/reviews/game_review_20260724.md）: 采配モーダル（ui.mjs showManagerDecisionModal）
+//   の候補行に判断材料を添える純関数群。観測成績（playerSeason・rt.stats由来）とロスター公開情報
+//   （bats/throws・depth chartの役割割当・pitchedByDay）だけを使い、真値(trueAbility)は一切参照
+//   しない。DOM(document)非依存＝node --testで直接ユニットテストできる（watch_label.test.mjsと同型）。
+// ============================================================================
+
+const mgrFmt3 = (v) => (v < 1 ? '.' + Math.round(v * 1000).toString().padStart(3, '0') : v.toFixed(3));
+
+/** 打者候補の当季観測成績（打率+HR・簡潔表記）。playerSeason.batting.ab=0なら「打席なし」。 */
+export function mgrBatSeasonText(bs, lc) {
+  if (!bs || !bs.batting || !(bs.batting.ab > 0)) return '打席なし';
+  const bm = playerBatting(bs, lc);
+  return `${mgrFmt3(bm.avg)} ${bm.hr}本`;
+}
+
+/** 投手候補の当季観測成績（防御率+K-BB%・簡潔表記）。playerSeason.pitching.outs=0なら「登板なし」。 */
+export function mgrPitSeasonText(ps, lc) {
+  if (!ps || !ps.pitching || !(ps.pitching.outs > 0)) return '登板なし';
+  const pm = playerPitching(ps, lc);
+  const kbb = (pm.kPct - pm.bbPct) * 100;
+  return `防${pm.era.toFixed(2)} K-BB${kbb.toFixed(1)}%`;
+}
+
+/**
+ * 対左右プラトーン表示（打者bats×投手throws。公開情報のみ・観測splits非使用＝小標本ノイズを避ける）。
+ * 両打(S)は常に相手と逆側の打席に立てる＝「両打」とだけ示す（有利/不利を断定しない）。
+ * @returns {string} '有利(逆投)' | '不利(同投)' | '両打' | ''（情報不足）
+ */
+export function mgrPlatoonTag(bats, throws) {
+  if (!bats || !throws) return '';
+  if (bats === 'S') return '両打';
+  return bats === throws ? '不利(同投)' : '有利(逆投)';
+}
+
+/**
+ * 継投候補の役割タグ（先発/クローザー/セットアップ/ロング/中継ぎ）。
+ * chart=usageByTeam.get(teamId).charts.dh（buildDepthChartの出力・rotation/bullpenRoles）。
+ * 役割の割当自体は編成時評価（trueAbility込み）で決まるが、ここで見せるのはカテゴリタグのみ
+ * （数値レーティングは一切出さない＝「うちの守護神は誰か」という公開のチーム編成情報の域）。
+ */
+export function mgrRoleTag(chart, pid) {
+  if (!chart || !pid) return '';
+  if (chart.rotation && chart.rotation.includes(pid)) return '先発';
+  const r = chart.bullpenRoles;
+  if (!r) return '';
+  if (r.closer === pid) return 'クローザー';
+  if (r.setup8 === pid) return 'セットアップ(8)';
+  if (r.setup7 === pid) return 'セットアップ(7)';
+  if (r.long === pid) return 'ロング';
+  if (r.middle && r.middle.includes(pid)) return '中継ぎ';
+  return '';
+}
+
+/**
+ * 連投/疲労の簡易表示（usage.pitchedByDay=Map<pid,Map<day,pitches>>から取れる範囲のみ）。
+ * @param {?Map} pitchedByDay その投手の登板日→球数（無登板日は無エントリ）
+ * @param {number} day 当該試合のday（介入モーダルのsitu/decisionが持つ座標）
+ * @returns {string} '連投3日目' | '連投(前日n球)' | '連投' | ''（前日前々日とも無登板）
+ */
+export function mgrRestTag(pitchedByDay, day) {
+  if (!pitchedByDay || day == null) return '';
+  const y1 = pitchedByDay.get(day - 1) || 0;
+  const y2 = pitchedByDay.get(day - 2) || 0;
+  if (y1 > 0 && y2 > 0) return '連投3日目';
+  if (y1 > 0) return `連投(前日${Math.round(y1)}球)`;
+  return '';
 }

@@ -1,5 +1,5 @@
 node_modules/
 *.log
-.claude/settings.local.json
-.claude/
+.claude/*
+!.claude/skills/
 thyroxin/research/external_refs/

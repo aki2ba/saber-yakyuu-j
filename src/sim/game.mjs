@@ -1306,6 +1306,9 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, bat
       scoreDiff: batting.score - fielding.score,
       batterId,
       onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
+      // P0-1（表示専用・乱数非消費）: 現在の相手投手id。代打候補の対左右プラトーン表示に使う
+      // （UIが state.byId から throws を引く）。判断ロジック・候補集合・ログ形式には一切影響しない。
+      oppPitcherId: fielding.curPid,
     };
     pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench, cfg);
   }

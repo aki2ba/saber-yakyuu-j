@@ -132,11 +132,11 @@ test('Q3-同期対決: カード2戦目（初戦でない）は検出されな�
   assert.equal(out.filter((d) => d.kind === 'rivalry').length, 0, '初戦(day0)は既に消化済みなので検出されない');
 });
 
-test('Q3-首位攻防戦: ゲーム差が僅少（1.5以内）の同リーグ相手とのカード初戦を検出する', () => {
+test('Q3-首位攻防戦(P1-4): 自チームが首位そのもの（首位差0）なら検出される', () => {
   const st = fakeState({
     schedule: [{ day: 0, home: 'T1', away: 'T2' }],
     cursor: 0,
-    // gamesBehind(T1,T2) = ((50-49)+(46-45))/2 = 1.0 <= 1.5
+    // T1が首位（w-l=5 > T2のw-l=3）。gamesBehind(T1,T1)=0 <= 1.5 ＝自チームが首位。
     standRows: [standRow('T1', 'L1', 50, 45), standRow('T2', 'L1', 49, 46)],
   });
   const out = specialDaysOf(st, names);
@@ -145,15 +145,41 @@ test('Q3-首位攻防戦: ゲーム差が僅少（1.5以内）の同リーグ相
   assert.equal(hit.day, 0);
 });
 
-test('Q3-首位攻防戦: ゲーム差が閾値を超えると検出されない／別リーグの相手は対象外', () => {
-  const farRows = fakeState({
+test('Q3-首位攻防戦(P1-4): 相手が首位と僅差なら、自チームが首位から遠くても検出される', () => {
+  const st = fakeState({
     schedule: [{ day: 0, home: 'T1', away: 'T2' }],
     cursor: 0,
-    // gamesBehind = ((50-40)+(55-45))/2 = 10 > 1.5
-    standRows: [standRow('T1', 'L1', 50, 45), standRow('T2', 'L1', 40, 55)],
+    // T3が首位（別カードの相手・今日の対戦相手ではない）。T2は首位差0.5（pennantMaxGb=0.5の帯内・
+    // 12seed sweepで月2.8回に較正した最終値）・T1は首位差20（遠い）。
+    standRows: [
+      standRow('T3', 'L1', 70, 25),
+      standRow('T1', 'L1', 50, 45),
+      standRow('T2', 'L1', 69, 25),
+    ],
   });
-  assert.equal(specialDaysOf(farRows, names).filter((d) => d.kind === 'pennant').length, 0);
+  const out = specialDaysOf(st, names);
+  const hit = out.find((d) => d.kind === 'pennant');
+  assert.ok(hit, '相手（T2）が首位と僅差なら、自チーム視点で遠くても首位攻防戦になる');
+});
 
+test('Q3-首位攻防戦(P1-4・希少化の核心): 自分も相手も首位から遠い凡戦は検出されない', () => {
+  // レビュー実測（30.8%発火）の原因: 旧定義は「相手との直接ゲーム差」のみを見ていたため、
+  // 下位同士（T1 vs T2）が互いに接近しているだけで「首位攻防」になっていた。
+  // T3が独走首位、T1・T2はともにT3から20ゲーム差＝どちらも首位攻防の当事者ではない。
+  const st = fakeState({
+    schedule: [{ day: 0, home: 'T1', away: 'T2' }],
+    cursor: 0,
+    standRows: [
+      standRow('T3', 'L1', 70, 25),
+      standRow('T1', 'L1', 50, 45), // T3から20差
+      standRow('T2', 'L1', 49, 46), // T3から19.5差（互いには僅少差だが両者とも首位から遠い）
+    ],
+  });
+  assert.equal(specialDaysOf(st, names).filter((d) => d.kind === 'pennant').length, 0,
+    '自分・相手とも首位と僅差でない凡戦は「首位攻防戦」から除外されるべき（P1-4の核心）');
+});
+
+test('Q3-首位攻防戦: 別リーグの相手は対象外', () => {
   const otherLeague = fakeState({
     schedule: [{ day: 0, home: 'T1', away: 'T4' }],
     cursor: 0,
@@ -162,7 +188,18 @@ test('Q3-首位攻防戦: ゲーム差が閾値を超えると検出されない
   assert.equal(specialDaysOf(otherLeague, names).filter((d) => d.kind === 'pennant').length, 0, '別リーグは首位攻防戦の対象外');
 });
 
-test('Q3-首位攻防戦: 開幕直後（消化試合数がガード未満）は誤発火しない', () => {
+test('Q3-首位攻防戦(P1-4): シーズン1/3未消化のうちは（首位差0でも）検出されない', () => {
+  const st = fakeState({
+    schedule: [{ day: 0, home: 'T1', away: 'T2' }],
+    cursor: 0,
+    // 既定 gamesPerSeason=143 の1/3=約47.7試合未満はガード対象（T1が首位でも発火させない）。
+    standRows: [standRow('T1', 'L1', 25, 20, 45), standRow('T2', 'L1', 20, 25, 45)],
+  });
+  assert.equal(specialDaysOf(st, names).filter((d) => d.kind === 'pennant').length, 0,
+    'シーズン序盤（1/3消化未満）は首位差0でも誤発火しないはず');
+});
+
+test('Q3-首位攻防戦: 開幕直後（g=0）は誤発火しない（進捗ガードの境界）', () => {
   const st = fakeState({
     schedule: [{ day: 0, home: 'T1', away: 'T2' }],
     cursor: 0,

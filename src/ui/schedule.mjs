@@ -9,6 +9,11 @@
 //   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同一<script>へ前置concat。ui.mjs のヘルパーは
 //     deps オブジェクト u（ui.mjs の scheduleDeps()）で受け取る（トップレベル名は sched プレフィクス）。
 // ============================================================================
+// P1-5（thyroxin/reviews/game_review_20260724.md）: WPA勝因/敗因×介入ログの接続。エンジン側
+// （game/wpaSummary.mjs）の純関数を直接importする（watch.mjsがgame/boxscore.mjsを直接importする
+// のと同じ流儀＝ui.mjs経由にしない）。ビルド時はimport文がstripされ、既に先行<script>(engine)に
+// 展開済みのグローバル関数を参照する。
+import { wpaIsAfterIntervention } from '../game/wpaSummary.mjs';
 
 // 月ラベル（NPB風: 開幕3月末〜10月・daysPerMonth=26 で約6分割）。
 const SCHED_MONTHS = ['3・4月', '5月', '6月', '7月', '8月', '9月', '10月'];
@@ -44,10 +49,24 @@ const schedWpaVal = (v) => (v > 0 ? '+' : '') + (v ?? 0).toFixed(2);
  * P2: 勝因/敗因カード（1行ぶんの表示パーツ）。box.wpaTop/wpaBottom（wpaSummary.mjs が
  * additive に付与する要約 {pid,inning,half,desc,wpa}）から組む純関数。旧セーブ等で
  * box.wpaTop/wpaBottom が無い試合は呼び出し側で丸ごとスキップする（additive・鉄則の後方互換）。
+ * P1-5: tagged=true で先頭に⚡（あなたの継投/代打の直後のプレー）を付す
+ * （wpaIsAfterIntervention の判定結果を呼び出し側が渡す・本関数自体は判定ロジックを持たない）。
  */
-export function schedWpaParts(item, u) {
-  const { playerLink } = u;
-  return [`${item.inning}回${SCHED_HALF_JP[item.half] ?? ''} `, playerLink(item.pid), `の${item.desc}（WPA ${schedWpaVal(item.wpa)}）`];
+export function schedWpaParts(item, u, tagged = false) {
+  const { playerLink, el } = u;
+  const parts = [`${item.inning}回${SCHED_HALF_JP[item.half] ?? ''} `, playerLink(item.pid), `の${item.desc}（WPA ${schedWpaVal(item.wpa)}）`];
+  if (tagged) parts.unshift(el('span', { title: 'あなたの継投/代打の直後のプレー' }, '⚡'), ' ');
+  return parts;
+}
+
+/** P1-5: box.wpaTop/wpaBottom それぞれの⚡タグ判定（当該試合ぶんの介入ログに絞ってから判定）。 */
+function schedWpaTags(u, day, box) {
+  const gs = u.game.gs;
+  const iv = (gs.gameInterventions || []).filter((x) => x.year === gs.year && x.day === day);
+  return {
+    top: wpaIsAfterIntervention(box.wpaTop, iv, box),
+    bottom: wpaIsAfterIntervention(box.wpaBottom, iv, box),
+  };
 }
 
 /** 自チーム視点の勝敗（'w'|'l'|'t'）。 */
@@ -187,10 +206,12 @@ function schedOpenBox(rec, u) {
     box.append(el('div', { class: 'muted' }, 'この試合のボックススコアは記録されていません（旧セーブの試合）。'));
   } else {
     // P2: 勝因/敗因カード（冒頭表示）。旧セーブの box には wpaTop/wpaBottom が無いので additive にスキップ。
+    // P1-5: ⚡タグ（自分の采配指示の直後のプレー）を介入ログと突き合わせて判定する。
     if (b.wpaTop && b.wpaBottom) {
+      const tags = schedWpaTags(u, rec.day, b);
       box.append(el('div', { class: 'newsfeed', style: 'margin-bottom:8px' }, [
-        el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(b.wpaTop, u)]),
-        el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(b.wpaBottom, u)]),
+        el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(b.wpaTop, u, tags.top)]),
+        el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(b.wpaBottom, u, tags.bottom)]),
       ]));
     }
     box.append(schedLineScore(rec, b, u));

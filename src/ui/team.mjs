@@ -24,7 +24,7 @@ import { coachOverallScore } from '../game/training.mjs';
 import { playerFormOf, teamFormMap } from '../game/form.mjs';
 // Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）。
 //   すべて純関数・観測statline/farmStatsのみ（真値非参照）。表示はチームタブの「GM」サブタブ。
-import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, GB_POSITIONS, gbPosLabel } from '../game/gmBoard.mjs';
+import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, ownDepthSolutions, GB_POSITIONS, gbPosLabel } from '../game/gmBoard.mjs';
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -359,7 +359,9 @@ function gmHeatBand(pctl) {
   return 0;
 }
 
-/** 位置別戦力ヒート表の1セル（既存 heat トークン=table.stat td.heatN を流用）。★=飽和マーク。 */
+/** 位置別戦力ヒート表の1セル（既存 heat トークン=table.stat td.heatN を流用）。
+ *  ★=飽和（真のサプラス）・↺=起用のねじれ（misallocated・監査修正a/c/d）。両者は意味が異なるため
+ *  別マークにする（misallocatedはトレード材料には使わない＝★とは独立の注意喚起）。 */
 function gmHeatCell(u, cell) {
   const { el } = u;
   if (!cell || cell.value == null) return el('td', { class: 'gmcell muted' }, '-');
@@ -369,8 +371,10 @@ function gmHeatCell(u, cell) {
   const titleParts = [`百分位${pctTxt}`];
   if (cell.weak) titleParts.push('弱点（下位20%）');
   if (cell.saturated) titleParts.push('飽和（同水準以上の控えが同ポジションに在籍）');
+  if (cell.misallocated) titleParts.push('起用のねじれ（控えの観測が上回っています——スタメン変更で強化できる可能性）');
   return el('td', { class: cls, title: titleParts.join('・') }, [
     cell.saturated ? el('span', { class: 'gmsatmark', title: '飽和' }, '★') : '',
+    cell.misallocated ? el('span', { class: 'gmmisallocmark', title: '起用のねじれ——控えの観測が上回っています' }, '↺') : '',
     pctTxt,
   ]);
 }
@@ -395,10 +399,12 @@ function renderGmPositionTable(c, u, psm, myId) {
   c.append(el('div', { class: 'tablewrap' }, [el('table', { class: 'stat' }, [el('thead', {}, head), el('tbody', {}, rows)])]));
 }
 
-/** 「狙い目の他球団若手」節（prospectWatch・行クリックで選手モーダル）。 */
+/** 「狙い目の他球団若手」節（prospectWatch・行クリックで選手モーダル）。上限件数に達した場合は
+ *  見出しに「他にも該当あり」を注記する（小修正5・list.truncatedはprospectWatchが付与）。 */
 function renderGmProspectList(c, u, list) {
   const { el, game } = u;
-  c.append(el('h3', { class: 'leaguename' }, `狙い目の他球団若手（${list.length}人）`));
+  const suffix = list.truncated ? '・他にも該当あり' : '';
+  c.append(el('h3', { class: 'leaguename' }, `狙い目の他球団若手（上位${list.length}人${suffix}）`));
   if (!list.length) {
     c.append(el('div', { class: 'muted' }, '現時点で該当する選手はいません（条件: 25歳以下・観測百分位が高い・出場機会が薄い）。'));
     return;
@@ -408,6 +414,23 @@ function renderGmProspectList(c, u, list) {
     class: 'awardrow clickable', onclick: () => u.openModal(p.playerId),
   }, [
     el('span', {}, [u.playerLink(p.playerId), ` （${tname(p.teamId)}・${p.age}歳・${p.pos}・${p.source === 'farm' ? '二軍' : '一軍'}）`]),
+    el('span', { class: 'muted' }, `　${p.text}`),
+  ]))));
+}
+
+/** 「自軍の答え（格上げ候補）」節（ownDepthSolutions・監査修正で新設）。一軍の弱点位置を自軍の
+ *  控え/二軍で埋められないかを、トレードを検討する前にまず提示する。行クリックで選手モーダル。 */
+function renderGmOwnDepth(c, u, list) {
+  const { el } = u;
+  c.append(el('h3', { class: 'leaguename' }, `自軍の答え（格上げ候補・${list.length}人）`));
+  if (!list.length) {
+    c.append(el('div', { class: 'muted' }, '現時点で一軍の弱点位置を自軍の控え/二軍だけで埋められる候補はいません。'));
+    return;
+  }
+  c.append(el('div', { class: 'awardlist' }, list.map((p) => el('div', {
+    class: 'awardrow clickable', onclick: () => u.openModal(p.playerId),
+  }, [
+    el('span', {}, [u.playerLink(p.playerId), ` （${gbPosLabel(p.weakPos)}の弱点へ・${p.source === 'farm' ? '二軍' : '一軍控え'}）`]),
     el('span', { class: 'muted' }, `　${p.text}`),
   ]))));
 }
@@ -427,8 +450,9 @@ function renderGmTradeSuggestions(c, u, list) {
 }
 
 /**
- * 「GM」サブタブ本体（Wave C）。gmBoard.mjs の3純関数の結果をそのまま表示する（保存なし・
- * 毎回その場で導出）。 c=コンテンツ要素・u=teamTabDeps()。
+ * 「GM」サブタブ本体（Wave C）。gmBoard.mjs の純関数の結果をそのまま表示する（保存なし・
+ * 毎回その場で導出）。表示順は弱点ヒート→自軍の答え（内部解を先に）→狙い目の他球団若手→
+ * トレードの窓（監査修正・GM定説「まず自軍を見る」）。 c=コンテンツ要素・u=teamTabDeps()。
  */
 function renderGmSubtab(c, u) {
   const { el, game } = u;
@@ -436,9 +460,12 @@ function renderGmSubtab(c, u) {
   const myId = gs.playerTeamId;
   c.append(el('div', { class: 'muted', style: 'margin:4px 0' },
     '観測成績（wOBA/K-BB%/FIP）のリーグ内百分位に基づく位置別戦力表。自チームの行を先頭に固定。'
-    + '弱点=下位20%（青系ヒート）・★=飽和（同水準以上の控えが同ポジションに在籍）。能力値そのものではなく観測結果です。'));
+    + '弱点=下位20%（青系ヒート）・★=飽和（真のサプラス。同水準以上の控えが同ポジションに在籍）・'
+    + '↺=起用のねじれ（控えの観測がレギュラーを上回っています——スタメン変更で強化できる可能性）。'
+    + '能力値そのものではなく観測結果です。'));
   const psm = positionStrengthMap(gs);
   renderGmPositionTable(c, u, psm, myId);
+  renderGmOwnDepth(c, u, ownDepthSolutions(gs));
   renderGmProspectList(c, u, prospectWatch(gs));
   renderGmTradeSuggestions(c, u, tradeTargetSuggestions(gs));
 }

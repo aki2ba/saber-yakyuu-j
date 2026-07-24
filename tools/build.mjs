@@ -348,9 +348,11 @@ const html = `<!DOCTYPE html>
     padding:4px 8px; border-radius:4px; background:var(--inset); }
   .mgrcandinfo { font-size:12px; }
   .mgrcandrow .mgrcandidate { flex:none; padding:3px 10px; font-size:12px; }
-  /* Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 自チーム行の強調・飽和マーク・ヒート表セル */
+  /* Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 自チーム行の強調・飽和/ねじれマーク・ヒート表セル */
   tr.gmminerow td { font-weight:700; background:var(--inset); }
   .gmsatmark { margin-right:3px; color:var(--clay); }
+  /* 監査修正a/c/d: misallocated（起用のねじれ）は saturated（★=真のサプラス）と別マーク・別色にする */
+  .gmmisallocmark { margin-right:3px; color:var(--gold); }
   td.gmcell { text-align:center; }
   .farmstandings { margin-top:14px; }
   .plink { color:var(--hit); cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }

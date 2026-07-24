@@ -239,6 +239,8 @@ const html = `<!DOCTYPE html>
   .teamcard { text-align:left; padding:10px 12px; }
   .teamcard:hover { background:var(--hover); }
   .tcname { font-weight:700; font-size:14px; }
+  /* P1-8（レビュー観点5）: チーム選択カードの特色1行（本拠地傾向・監督タイプ・資金力） */
+  .tcfeature { margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .nextcard { border:1px solid var(--line2); border-left:4px solid var(--clay); border-radius:8px;
               padding:8px 12px; margin:8px 0; background:var(--panel); box-shadow:0 1px 3px var(--shadow); }
   .nextmatch { font-size:15px; font-weight:700; }
@@ -327,6 +329,9 @@ const html = `<!DOCTYPE html>
   .colgroups { display:flex; gap:4px; margin:4px 0 8px; flex-wrap:wrap; }
   .colgroup { padding:3px 10px; font-size:11px; border-radius:999px; border:1px solid var(--line2); background:none; color:var(--muted); }
   .colgroup.active { border-color:var(--clay); color:var(--clay); font-weight:700; }
+  /* P0-3（レビュー観点10）: statTable/WARリストの「さらに表示」（上位30件＋ページング） */
+  .statmore { text-align:center; margin:8px 0 4px; }
+  .statmore button { font-size:12px; padding:6px 16px; }
   /* F2-4: 二軍サブタブの育成契約バッジ・二軍順位の折りたたみ */
   .devbadge { margin-left:5px; font-size:10px; color:var(--clay-ink); background:var(--clay); border-radius:4px; padding:0 4px; font-weight:700; vertical-align:1px; }
   /* Wave B（gm_analytics_spec.md）: チーム一覧のフォーム判定バッジ（好調▲/不調▼・ホバーで根拠） */
@@ -387,6 +392,8 @@ const html = `<!DOCTYPE html>
   .mdrow { font-size:12px; padding:1px 0 1px 4px; color:var(--chalk); }
   .mdrow.mdup { color:var(--pos); }
   .mdrow.mddown { color:var(--neg); }
+  /* P1-6（レビュー観点11）: サンプル不足の「参考値までもう少し」案内行（色反転なし＝muted） */
+  .mdrow.mdinfo { color:var(--muted); }
   .pbphead { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
   .lineupbody { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; align-items:flex-start; }
   .lineupcol { flex:1; min-width:230px; }

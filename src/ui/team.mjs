@@ -36,10 +36,11 @@ const teamTabView = {
 };
 
 // 列定義 [key, label, align]（phaseE_spec E1 の列構成）。
+// ★ユーザー指摘「走塁指標も指標のとこに出てない」対応: WAR列の隣にBsR列（走塁の総合run換算）を追加。
 const TEAM_BAT_COLS = [
   ['name', '選手', 'left'], ['pos', '位置', 'left'], ['age', '年齢'], ['pa', '打席'],
   ['avg', '打率'], ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['hr', '本'], ['rbi', '打点'], ['sb', '盗塁'],
-  ['wrcPlus', 'wRC+'], ['war', 'WAR'], ['grade', '等級'], ['status', '状態', 'left'],
+  ['wrcPlus', 'wRC+'], ['war', 'WAR'], ['bsr', 'BsR'], ['grade', '等級'], ['status', '状態', 'left'],
 ];
 const TEAM_PIT_COLS = [
   ['name', '選手', 'left'], ['prole', '役割', 'left'], ['age', '年齢'], ['g', '登板'], ['ip', '回'],
@@ -64,7 +65,7 @@ const FARM_PIT_COLS = [
 // セル書式（キー別）。無観測（null）は '-'。
 const TEAM_COL_FMT3 = new Set(['avg', 'obp', 'slg', 'ops']);
 const TEAM_COL_F2 = new Set(['era', 'fip', 'whip']);
-const TEAM_COL_F1 = new Set(['uzr', 'bsr']); // R4: 二軍の守備/走塁（得点値・小数1桁）
+const TEAM_COL_F1 = new Set(['uzr', 'bsr']); // R4: 二軍の守備/走塁 ＋ 一軍のBsR（得点値・小数1桁）
 const TEAM_COL_PCT = new Set(['kbbPct']);
 const TEAM_COL_ASC = new Set(['era', 'fip', 'whip', 'age']); // クリック時に昇順が自然な列
 
@@ -202,6 +203,7 @@ function buildTeamRosterRows(players, u, formMap = null, gs = null) {
         hr: m ? m.hr : null, rbi: m ? m.rbi : null, sb: m ? m.sb : null,
         wrcPlus: m ? finiteOrNull(m.wrcPlus) : null,
         war: has ? finiteOrNull(hitterWAR(s, state.cfg, state.lc).war) : null,
+        bsr: has ? finiteOrNull(playerBaserunning(s, state.cfg, state.lc).bsr) : null,
         grade, status,
       });
     }

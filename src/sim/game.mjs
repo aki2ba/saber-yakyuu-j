@@ -505,7 +505,8 @@ function baseBits(bases) {
 
 /**
  * 盗塁の試行・成否（§6 wSB）。走者Steal/Speed × 投手Hold × 捕手Arm。outs を返す。
- * S2: 監督stealTend×状況の采配ゲート（大差では走らない・2死×強打者では自重）を乗せる。
+ * S2: 監督stealTend×状況の采配ゲート（大差では走らない・2死×強打者では自重・
+ * §tactics_re: RE損益分岐を大きく下回れば自重）を乗せる。
  */
 function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning, half) {
   if (!bases[0] || bases[1]) return outs; // 一塁走者かつ二塁が空いている時のみ
@@ -514,12 +515,25 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning,
   const br = runner.trueAbility.baserunning;
   const sp = runner.trueAbility.common.speed;
 
+  // 成功確率（走者Steal/Speed↑、投手Hold↑・捕手Arm↑で↓）: §tactics_re の損益分岐ゲートが
+  // 試行判断にも使うため乱数を消費せず先に算出する（後段の成否判定と同じ式を再利用＝rng消費地点は不変）。
+  const pitcher = fielding.byId.get(fielding.curPid);
+  const catcher = fielding.byId.get(fielding.defense.C);
+  const succ = expit(
+    logit(s.successBase) +
+      ratingDelta(br.steal, s.stealSlope) +
+      ratingDelta(sp, s.stealSlope * 0.6) -
+      ratingDelta(pitcher.trueAbility.pitching.hold, s.holdSlope) -
+      ratingDelta(catcher ? catcher.trueAbility.common.arm : 50, s.armSlope),
+  );
+
   // 采配ゲート（§S2-6）: 打者の強弱は観測wOBA（三層構造: 真値は見ない）
   const batterId = batting.slots[batting.orderIdx].playerId;
   const situ = {
     scoreDiff: batting.score - fielding.score,
     outs,
     batterWoba: observedWoba(statFor(batterId, batting.teamId).batting, cfg),
+    estSuccessProb: succ, // §tactics_re: 損益分岐サニティゲート用
   };
 
   // 試行判断: 走者のSteal/Speedが高いほど走る × 監督ゲート
@@ -530,17 +544,6 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning,
       stealLogitAdjust(batting.manager, situ, cfg),
   );
   if (rng.next() >= aggr) return outs;
-
-  // 成功確率: 走者Steal/Speed↑、投手Hold↑・捕手Arm↑で↓
-  const pitcher = fielding.byId.get(fielding.curPid);
-  const catcher = fielding.byId.get(fielding.defense.C);
-  const succ = expit(
-    logit(s.successBase) +
-      ratingDelta(br.steal, s.stealSlope) +
-      ratingDelta(sp, s.stealSlope * 0.6) -
-      ratingDelta(pitcher.trueAbility.pitching.hold, s.holdSlope) -
-      ratingDelta(catcher ? catcher.trueAbility.common.arm : 50, s.armSlope),
-  );
 
   const rStat = statFor(bases[0], batting.teamId);
   const catcherId = fielding.defense.C; // rSB（捕手盗塁阻止run・§B3b）の帰属先
@@ -781,6 +784,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const batterIsPitcher = batting.orderIdx === batting.pitcherSlot && batterId === batting.curPid;
     const nextIdx = (batting.orderIdx + 1) % 9;
     const nextIsPitcher = nextIdx === batting.pitcherSlot && batting.slots[nextIdx].playerId === batting.curPid;
+    const nextBatterId = batting.slots[nextIdx].playerId; // §tactics_re: バントのnextAdj用（次打者の観測wOBA）
     batting.orderIdx = nextIdx;
     const batter = batting.byId.get(batterId);
     const pitcher = fielding.byId.get(fielding.curPid);
@@ -788,6 +792,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const bStat = statFor(batterId, batting.teamId);
     const pStat = statFor(fielding.curPid, fielding.teamId);
     const batterWoba = observedWoba(bStat.batting, cfg); // 采配用の観測評価（真値は見ない）
+    // §tactics_re: 次打者の観測wOBA（バントのnextAdj。次打者が投手なら統計上ほぼ確実に低wOBA）
+    const nextBatterWoba = nextBatterId ? observedWoba(statFor(nextBatterId, batting.teamId).batting, cfg) : cfg.tuning.mgr.wobaPrior;
 
     // 観戦実況（E2・乱数非消費）: 打席開始＝「◇ 打者 対 投手」行と盤面（走者/アウト/カウント初期化）の素データ。
     if (fielding.onEvent) {
@@ -838,7 +844,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           scoreDiff: batting.score - fielding.score,
           batterWoba,
           isPitcher: batterIsPitcher,
-          nextIsPitcher, // 采配妥当性（原則②）: 次打者が投手なら野手に送らせない（8番バント根絶）
+          nextIsPitcher, // 采配妥当性の保険ゲート（原則②）: 次打者が投手なら野手に送らせない（8番バント根絶）
+          nextBatterWoba, // §tactics_re: RE比較のnextAdj（次打者へ渡す得点圏の価値）
         },
         cfg,
       );
@@ -1359,7 +1366,7 @@ function maybeDefensiveSub(side, oppScore, inning, cfg) {
  * 内野安打=全員セーフ（AB・H計上）。走者三塁は試行条件で除外済み＝犠打から得点は発生しない。
  * @returns {{outs:number, dab:number, dh:number, d1:number}} 新outs＋スプリット計上用の打席デルタ（§B3b）。
  */
-function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat) {
+export function resolveBunt(batting, fielding, bases, outs, cfg, rng, batterId, bStat, pStat) {
   const t = cfg.tuning.bunt;
   const pc = t.pitches;
   fielding.cur.pitches += pc;

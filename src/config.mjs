@@ -352,6 +352,8 @@ export const TUNING_DEFAULT = {
   },
 
   // 犠打（S2 maybeBunt が消費。§S2-4）: 試行判断・結果テーブル。2ストライク概念はフェーズB。
+  // §tactics_re（2026-07-23）: attemptProb は RE(得点期待値)比較の decisionScore で駆動する
+  // （buntDecisionScore・manager.mjs）。attemptBase は decisionScore=0 相当時の基準率として残す。
   bunt: {
     successProb: 0.78, // 成功（走者進塁・打者アウト・sh++・ABなし）
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
@@ -365,6 +367,10 @@ export const TUNING_DEFAULT = {
     pitcherMaxScoreDiff: 6, // 投手はこの点差以内でのみバント（大差では打たせる。野手より広い）
     weakBatterWoba: 0.3, // 「非強打者」の目安（観測wOBAがこれ未満）※S2予備調整
     pitches: 2.5, // バント打席の投球数近似（S2）
+    // --- §tactics_re: RE(得点期待値)比較の重み ---
+    reScale: 4.4, // ΔRE(runs)→logit変換スケール ※tactics_re較正
+    npbBias: 0.75, // NPBの監督はRE最適より多く送る（セ寄りの犠打文化）へ寄せる加算logit ※tactics_re較正
+    nextBatterW: 0.55, // 次打者観測wOBAの寄与重み（バントが次打者へ渡す得点圏の価値の按分）
   },
 
   // 敬遠（S2 maybeIBB が消費。§S2-5）: 一塁空き×2死or一死×終盤接戦×強打者（or次打者が投手）。
@@ -375,6 +381,50 @@ export const TUNING_DEFAULT = {
     maxScoreDiff: 2, // 接戦のみ
     strongBatterWoba: 0.36, // 「強打者」の目安（観測wOBA上位）
     pitches: 4, // 敬遠の投球数（ボール4球）
+  },
+
+  // §tactics_re（2026-07-23・ユーザー指示「得点期待値を考えて比較。プログラムでできるはず」）:
+  // 「監督の頭の中のRE表」＝ 24状態(塁8×アウト3)の得点期待値。バント/敬遠のRE比較判断
+  // （manager.mjs buntAttemptProb/buntDecisionScore・ibbProb）と盗塁の損益分岐ゲート
+  // （stealLogitAdjust）が参照する。実際の監督も現在シーズンの途中経過から毎回RE表を
+  // 再計算はしない＝固定較正値として持たせる（鉄則2「config集約」＝この表もtuningの一部）。
+  //
+  // 【導出手順（再導出可能性の担保）】この表自体がバント/敬遠/盗塁の判断に使われる＝RE表を
+  // 変えると採る戦術が変わりゲーム内乱数消費列も変わる自己参照構造のため、単一seedでは希少状態
+  // （0死3塁単独・0死満塁など年間数百例の状態）の推定が振れる。8seed平均で実測→config反映→
+  // 再実測を数周（今回3周）繰り返して収束させた（残差 |diff| は概ね<0.05・最大でも<0.15）:
+  //   const SEEDS = [2026,2027,2028,2029,2030,2031,2032,2033];
+  //   const cfg = createConfig({}); // その時点のconfig（reTableは前回値）を使って参照走行
+  //   const sums = new Array(24).fill(0);
+  //   for (const seed of SEEDS) {
+  //     const lg = generateLeague(seed, cfg);
+  //     const res = simulateSeason(lg, cfg, { season: 2026, seed, postseason: false, context: true });
+  //     for (let i = 0; i < 24; i++) sums[i] += res.contextTables.re[i];
+  //   }
+  //   const avg = sums.map((x) => Math.round((x / SEEDS.length) * 1000) / 1000); // → 下記reTableへ貼る
+  //   // これを新しいreTableとしてconfigへ反映し、収束するまで再実行（今回3周）。
+  // 【導出時seed】2026-2033（上記8シード平均・季節=2026固定）。
+  // 【実測値（2026-07-23 導出・3周収束後）】
+  //   outs=0: [0.461, 0.816, 1.004, 1.390, 1.225, 1.602, 1.827, 2.217]
+  //   outs=1: [0.249, 0.480, 0.647, 0.856, 0.813, 1.051, 1.262, 1.486]
+  //   outs=2: [0.096, 0.211, 0.313, 0.439, 0.384, 0.482, 0.597, 0.789]
+  //   （breakeven盗塁成功率が0.71〜0.75前後と算出され、既存 steal.successBase=0.72 の
+  //     「損益分岐~70%近辺」という設計コメントと自然に一致＝この参照RE表がシムの内部整合性と
+  //     噛み合っている根拠。test/tactics_re.test.mjs も同じ8seed平均で近似一致±0.15を検証）。
+  tactics: {
+    reTable: [
+      0.461, 0.816, 1.004, 1.390, 1.225, 1.602, 1.827, 2.217,
+      0.249, 0.480, 0.647, 0.856, 0.813, 1.051, 1.262, 1.486,
+      0.096, 0.211, 0.313, 0.439, 0.384, 0.482, 0.597, 0.789,
+    ],
+    // IBBによるRE増（=守備側のRE損）がこれを超える局面は禁止。ibbProbの成立条件（bases[0]空き
+    // ×得点圏あり）では、この engine の IBB は定義上つねに満塁化を伴う（1塁を歩かせて埋める）ため、
+    // 「満塁化=つねに発生する通常ケース」であって「例外的にRE損が大きすぎる異常値」ではない。
+    // よって閾値は実測ΔRE（一死: 二塁単独0.209/二三塁0.224/三塁単独0.238・二死: 0.126/0.192/0.098）
+    // の最大値より十分高く取り、通常運用では作動しない「軽いサニティゲート」（既存の較正済み
+    // 敬遠帯[10,40]/球団を壊さない・保険専用）として持たせる。RE表が将来大きく動いた場合や、
+    // ibbProbのゲート条件が緩和された場合の異常値だけを弾く安全弁。
+    ibbMaxReLoss: 0.30,
   },
 
   // 交代（S2 代打/代走/守備固め。§S2-3）
@@ -613,6 +663,9 @@ export const TUNING_DEFAULT = {
     gateBigDiff: 5, // 大差の目安（±この点差以上では走らない）
     gateBigDiffLogit: 1.6, // 大差時の試行logit減
     gateStrong2OutLogit: 0.8, // 2死×強打者（観測wOBA上位）での自重logit減
+    // --- §tactics_re: 損益分岐サニティゲート（stealLogitAdjust。全面置換ではなく追加のロジット減点） ---
+    breakevenGapGate: 0.05, // breakeven−推定成功率 がこれを超えたら減点開始（僅差は無視）
+    breakevenLogit: 3.5, // gate超過分1.0あたりのlogit減点（実際の超過幅は0〜0.3程度・下記reTable参照）
   },
   // 走塁 run値（§6）。NPB寄り: SB≈+0.19 / CS≈−0.38。UBRは走者Speed/IQで進塁確率を上下（2-5）。
   // ubr系はS5較正（BsR裾）。runUBR1t3b/runUBRTakerTagは§req_20260708新設シナリオの

@@ -59,17 +59,98 @@ export function availableRelievers(side) {
   return side.bullpen.filter((pid) => !side.usedPitchers.has(pid) && !side.retired.has(pid));
 }
 
+// --- RE（得点期待値）表 §tactics_re -------------------------------------------
+//
+// 「監督の頭の中のRE表」（cfg.tuning.tactics.reTable・24状態=塁8×アウト3・導出手順は
+// config.mjs のコメント参照）を使い、バント/敬遠/盗塁の戦術判断をRE比較で駆動する。
+// index式は context.mjs の ctxReIndex (outs*8+base) と完全に一致させる（import循環回避の
+// ため自前定義。test/tactics_re.test.mjs で context.deriveTables の実測と近似一致を検証）。
+
+/** RE表のインデックス（塁ビット0..7 × アウト0..2）。context.mjs ctxReIndex と同一式。 */
+function tacticsReIndex(base, outs) {
+  return outs * 8 + base;
+}
+
+/** RE表から値を引く（範囲外アウト=3アウト後=回終了はRE0として扱う）。 */
+function reAt(reTable, base, outs) {
+  if (outs >= 3) return 0;
+  return reTable[tacticsReIndex(base, outs)] ?? 0;
+}
+
+/** situ.bases（[1B,2B,3B]の走者id/null配列）→ 塁状況ビット（game.mjs baseBits と同一規則）。 */
+export function tacticsBaseBits(bases) {
+  return (bases[0] ? 1 : 0) | (bases[1] ? 2 : 0) | (bases[2] ? 4 : 0);
+}
+
+/**
+ * 犠打3遷移（成功/失敗/内野安打）後の塁状況ビットを、resolveBunt（sim/game.mjs）の実挙動と
+ * 一致させて返す。バント局面は三塁走者なし=bits∈{1,2,3}のみ（buntAttemptProbの成立条件で保証）。
+ *   成功: 全走者が1つずつ進塁・打者アウト（resolveBuntのsuccessProb分岐と一致）
+ *   失敗: R1がいればフォースで先頭の強制走者アウト・打者は一塁生還（FC）。R2単独はフォース
+ *     不成立＝打者が普通にアウトになるだけで走者は動かない（resolveBuntのfailProb分岐と一致）
+ *   内野安打: 全走者1つ進塁＋打者一塁（resolveBuntのhitProb分岐と一致）
+ * export: test/tactics_re.test.mjs が resolveBunt（sim/game.mjs）の実挙動と突き合わせて検証する。
+ */
+export function buntTransitionBits(bits) {
+  const success = bits === 1 ? 2 : bits === 2 ? 4 : bits === 3 ? 6 : bits;
+  const fail = bits === 1 ? 1 : bits === 2 ? 2 : bits === 3 ? 3 : bits;
+  const hit = bits === 1 ? 3 : bits === 2 ? 5 : bits === 3 ? 7 : bits;
+  return { success, fail, hit };
+}
+
+/**
+ * 犠打のRE比較 decisionScore（§tactics_re タスク2）。正で「送った方が得点期待価値が高い」。
+ * gate系（2死/強打者/投手打席/大差 等）は buntAttemptProb 側で処理済みの生の値＝テスト用に公開。
+ *   ΔRE_bunt = Σ_outcome prob×[RE(遷移先) − RE(now)]（resolveBuntの遷移と一致・buntTransitionBits）
+ *   ΔRE_swing = (batterWoba−wobaPrior)/wobaScale相当（打者が打席に立つ場合の期待run価値の近似）
+ *   nextAdj  = (nextBatterWoba−wobaPrior)/wobaScale相当 × nextBatterW（次打者へ渡す得点圏の価値。
+ *     nextIsPitcherはこの項で自然に強い減点になる＝投手の観測wOBAは極端に低い）
+ * @param {number} bits 現在の塁状況ビット（1=1B,2=2B,4=3B）
+ * @param {number} outs 現在アウト数（0 or 1）
+ * @param {number} batterWoba 打者の観測wOBA
+ * @param {number} nextBatterWoba 次打者の観測wOBA
+ */
+export function buntDecisionScore(bits, outs, batterWoba, nextBatterWoba, cfg) {
+  const t = cfg.tuning.bunt;
+  const m = cfg.tuning.mgr;
+  const reTable = cfg.tuning.tactics.reTable;
+  const reNow = reAt(reTable, bits, outs);
+  const trans = buntTransitionBits(bits);
+  const dReBunt =
+    t.successProb * (reAt(reTable, trans.success, outs + 1) - reNow) +
+    t.failProb * (reAt(reTable, trans.fail, outs + 1) - reNow) +
+    t.hitProb * (reAt(reTable, trans.hit, outs) - reNow);
+  const dReSwing = (batterWoba - m.wobaPrior) / m.wobaScale;
+  const nextAdj = ((nextBatterWoba - m.wobaPrior) / m.wobaScale) * t.nextBatterW;
+  return dReBunt - dReSwing + nextAdj;
+}
+
 // --- 盗塁の采配ゲート（§S2-6） ----------------------------------------------
 
 /**
  * 盗塁試行への監督ゲート（logit加算値）。stealTend の個性＋状況ゲート:
- * 大差（±gateBigDiff以上）では走らない / 2死×強打者では自重。
+ * 大差（±gateBigDiff以上）では走らない / 2死×強打者では自重 / §tactics_re タスク3:
+ * 損益分岐サニティゲート＝推定成功率(situ.estSuccessProb)がRE損益分岐を大きく下回れば自重
+ * （breakeven = [RE(now)−RE(失敗後)] / [RE(成功後)−RE(失敗後)]。盗塁の試行/成否モデル自体は
+ * 全面置換しない＝発現帯を壊さない追加のロジット減点のみ）。
  */
 export function stealLogitAdjust(manager, situ, cfg) {
   const s = cfg.tuning.steal;
   let adj = ratingDelta(manager.stealTend, s.tendW);
   if (Math.abs(situ.scoreDiff) >= s.gateBigDiff) adj -= s.gateBigDiffLogit;
   if (situ.outs === 2 && situ.batterWoba >= cfg.tuning.ibb.strongBatterWoba) adj -= s.gateStrong2OutLogit;
+  if (situ.estSuccessProb != null) {
+    const reTable = cfg.tuning.tactics.reTable;
+    const reNow = reAt(reTable, 1, situ.outs); // 一塁走者のみ（盗塁の成立条件）
+    const reSucc = reAt(reTable, 2, situ.outs); // 成功=二塁へ
+    const reFail = reAt(reTable, 0, situ.outs + 1); // 失敗=走者アウト・アウト+1
+    const denom = reSucc - reFail;
+    if (denom > 0) {
+      const breakeven = (reNow - reFail) / denom;
+      const gap = breakeven - situ.estSuccessProb - s.breakevenGapGate;
+      if (gap > 0) adj -= s.breakevenLogit * gap;
+    }
+  }
   return adj;
 }
 
@@ -77,13 +158,13 @@ export function stealLogitAdjust(manager, situ, cfg) {
 
 /**
  * 犠打の試行確率。局面不成立（2死/三塁走者あり/走者なし）は0。
- * 投手打席はほぼ必ずバント。野手は接戦×非強打者（観測wOBA）×監督buntTend。
- * 采配妥当性ゲート（原則②・ユーザー指摘 2026-07-23「一死二塁で投手の前の打者が送りバント」）:
- *   - 一死×二塁単独: 野手には送らせない。成功しても二死三塁（RE24 ≈0.68→0.35）で犠飛も使えず
- *     ほぼ常に得点期待の損＝実NPBでもまず見ない采配。無死二塁（→一死三塁・犠飛/内野ゴロで
- *     生還可能）は従来どおり許可。投手打席は従来どおり（打たせても期待値が低く実NPBでも見る）。
- *   - 次打者が投手: 野手には送らせない。得点圏を作っても次が投手では敬遠or凡退がオチで、
- *     「投手の前の8番に送らせる」は実NPBで批判される典型的な悪手（送るなら9番=投手自身の打席）。
+ * 投手打席はほぼ必ずバント。野手は接戦×非強打者（観測wOBA）×監督buntTend×RE比較（§tactics_re）。
+ * 采配妥当性の保険ゲート（原則②・ユーザー指摘 2026-07-23「一死二塁で投手の前の打者が送りバント」）:
+ *   - 一死×二塁単独: 野手には送らせない。成功しても二死三塁でほぼ常に得点期待の損＝実NPBでも
+ *     まず見ない采配。無死二塁は従来どおり許可。投手打席は従来どおり。
+ *   - 次打者が投手: 野手には送らせない（「投手の前の8番に送らせる」悪手の根絶）。
+ *   両ゲートとも buntDecisionScore のRE比較だけで自然に負（送らない）へ寄ることを
+ *   test/tactics_re.test.mjs で検証済み＝ここでは計算コスト削減と保険を兼ねた明示的早期returnとして残す。
  */
 export function buntAttemptProb(situ, cfg) {
   const t = cfg.tuning.bunt;
@@ -93,11 +174,16 @@ export function buntAttemptProb(situ, cfg) {
     // 投手は野手より広い点差でバントするが、大差では打たせる（点差ゲートを先に評価）
     return Math.abs(situ.scoreDiff) > t.pitcherMaxScoreDiff ? 0 : t.pitcherAttempt;
   }
-  if (!situ.bases[0] && situ.bases[1] && situ.outs >= 1) return 0; // 一死×二塁単独（上記ゲート）
-  if (situ.nextIsPitcher) return 0; // 次打者が投手（上記ゲート）
+  if (!situ.bases[0] && situ.bases[1] && situ.outs >= 1) return 0; // 一死×二塁単独（保険ゲート・上記）
+  if (situ.nextIsPitcher) return 0; // 次打者が投手（保険ゲート・上記）
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (situ.batterWoba >= t.weakBatterWoba) return 0; // 強打者にはバントさせない
-  return expit(logit(t.attemptBase) + ratingDelta(situ.manager.buntTend, t.tendW));
+  const bits = tacticsBaseBits(situ.bases);
+  const nextWoba = situ.nextBatterWoba ?? cfg.tuning.mgr.wobaPrior;
+  const decisionScore = buntDecisionScore(bits, situ.outs, situ.batterWoba, nextWoba, cfg);
+  return expit(
+    logit(t.attemptBase) + t.reScale * decisionScore + t.npbBias + ratingDelta(situ.manager.buntTend, t.tendW),
+  );
 }
 
 // --- 敬遠（§S2-5） -----------------------------------------------------------
@@ -105,6 +191,10 @@ export function buntAttemptProb(situ, cfg) {
 /**
  * 敬遠の実施確率（守備側監督の判断）。一塁空き×一死or二死×終盤接戦×
  * （強打者 or 次打者が投手）でのみ正の値。
+ * §tactics_re タスク3: RE損益のサニティゲート（軽量・既存条件は維持）。IBBは常にRE損
+ * （走者を無償で増やす＝一塁を歩かせて埋める＝この関数の成立条件上つねに満塁化を伴う）。
+ * ibbMaxReLoss はこのRE損の異常値だけを弾く保険（通常の較正済み運用では作動しない・
+ * config.mjs のコメント参照）。既存の強打者/終盤接戦などの条件は維持。
  */
 export function ibbProb(situ, cfg) {
   const t = cfg.tuning.ibb;
@@ -114,6 +204,10 @@ export function ibbProb(situ, cfg) {
   if (!situ.bases[1] && !situ.bases[2]) return 0; // 得点圏に走者がいる時のみ
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (!(situ.batterWoba >= t.strongBatterWoba || situ.nextIsPitcher)) return 0;
+  const tt = cfg.tuning.tactics;
+  const bits = tacticsBaseBits(situ.bases);
+  const dRE = reAt(tt.reTable, bits | 1, situ.outs) - reAt(tt.reTable, bits, situ.outs);
+  if (dRE > tt.ibbMaxReLoss) return 0; // RE損の異常値のみ禁止（保険）
   return expit(logit(t.base) + ratingDelta(situ.manager.ibbTend, t.tendW));
 }
 

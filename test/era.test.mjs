@@ -272,8 +272,7 @@ test('D3: 記録の時代補正 +指標 — 同一成績でも投高時代ほど
 // 正典: sabermetrics_glossary.md §7.1 / §7.3 / §10.5
 // ============================================================================
 test('D3: 野手の代替勝利は時代（得点環境）に対して厳密に不変', () => {
-  const seed = 11;
-  const measure = (delta) => {
+  const measure = (seed, delta) => {
     const c = eraSeasonConfig(createConfig(), { evBaseDelta: delta });
     const lg = generateLeague(seed, c);
     const res = simulateSeason(lg, c, { season: 2026, seed, postseason: false });
@@ -290,13 +289,11 @@ test('D3: 野手の代替勝利は時代（得点環境）に対して厳密に�
     }
     return { war, replWins, rpw: lc.rpw, replTotal: lc.replHitterWinsTotal };
   };
-  const hi = measure(+0.8); // 打高
-  const lo = measure(-0.8); // 投高
 
-  // 得点環境は実際に動いている（テストが空振りしていないことの確認）
-  assert.ok(hi.rpw - lo.rpw > 0.2, `rpw が時代で動いている (${hi.rpw.toFixed(3)} vs ${lo.rpw.toFixed(3)})`);
-
-  // 【厳密な不変量】野手の代替勝利の総量は得点環境に依存しない。
+  // 【厳密な不変量】野手の代替勝利の総量は得点環境に依存しない（seed=11で検証。repl/rpwの
+  // 代数的恒等式＝乱数消費の並びには依存しない構造的性質）。
+  const hi = measure(11, +0.8); // 打高
+  const lo = measure(11, -0.8); // 投高
   // 旧実装は repl を run 固定で持ち rpw で割っていたため、投高の年ほど代替勝利が膨らんでいた
   // （2.037 → 2.146 wins/600PA）。
   assert.ok(Math.abs(hi.replWins - lo.replWins) < 1e-9, `野手の代替勝利が時代で動く (${hi.replWins} vs ${lo.replWins})`);
@@ -305,4 +302,14 @@ test('D3: 野手の代替勝利は時代（得点環境）に対して厳密に�
   // 総WARの時代ドリフトも小さい（旧実装は打高↔投高で約11 WAR 動いていた。単一シードのノイズを見込む）
   const drift = Math.abs(hi.war - lo.war);
   assert.ok(drift < 6, `総WARの時代ドリフト ${drift.toFixed(2)} WAR < 6（旧実装は約11）`);
+
+  // 得点環境は実際に動いている（テストが空振りしていないことの確認）。evBaseDelta±0.8は era.mjs の
+  // offenseAmpKmh(実際の時代振幅の最大値)そのものなのでこれ以上は拡げられない一方、単一シードの
+  // ロスター/試合展開ノイズ(コメント記載の±0.15 R/G相当)がこの僅差の判定に乗ることがある
+  // （§tactics_re 采配のRE駆動化＝乱数消費列の変化で seed=11 単独が閾値を僅かに割った実例）
+  // →3シード平均で頑健化する（ブロッキング/rSB・ARM×肩相関と同じ前例踏襲。個別シードのrpwは
+  // 上の厳密不変量チェックには使わない＝そちらは代数的恒等式なのでノイズの影響を受けない）。
+  const seeds = [11, 12, 13];
+  const rpwDiffAvg = seeds.reduce((a, s) => a + (measure(s, +0.8).rpw - measure(s, -0.8).rpw), 0) / seeds.length;
+  assert.ok(rpwDiffAvg > 0.2, `rpw が時代で動いている（3シード平均 diff=${rpwDiffAvg.toFixed(3)}）`);
 });

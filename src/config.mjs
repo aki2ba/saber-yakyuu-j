@@ -1694,8 +1694,13 @@ export const TUNING_DEFAULT = {
       // 節目リーチ: 現在の通算値からこの本数/勝数以内で次のマイルストーン（awards.milestones）に
       //   届く選手がいれば、自チームの次の未消化試合を「節目リーチ」の特別デーにする。
       milestoneReach: { hits: 5, homeRuns: 3, wins: 2, saves: 2, strikeouts: 5 },
-      pennantMaxGb: 1.5, // 首位攻防戦: 自チームとの直接のゲーム差がこれ以内の相手とのカード初戦
-      pennantMinGamesPlayed: 5, // 開幕直後（全球団横並び）の誤発火防止ガード（news.mjs rankAndGbと同型）
+      // P1-4（thyroxin/reviews/game_review_20260724.md）: 旧定義「相手との直接ゲーム差1.5以内」は
+      //   下位同士の凡戦も拾って試合日の30.8%で発火した（均衡設計下では下位球団同士も接近しがち）。
+      //   「自分または相手が首位と僅差」＝真の首位争いに限定する定義へ変更（希少化）。
+      //   12seed sweep実測（2026-07-24）: 1.5×1/3では依然発火過多。0.5×0.6で月2.8回＝レビュー目標
+      //   「月1-3回」帯に収束（「首位攻防はシーズン終盤の物語」という意味論にも合致）。
+      pennantMaxGb: 0.5, // 首位攻防戦: 自チームまたは相手が首位とこのゲーム差以内（同リーグ）
+      pennantMinProgress: 0.6, // 首位攻防戦: シーズンをこの消化率（自チーム試合数/gamesPerSeason）以降のみ判定（終盤の優勝争いに限定）
     },
     // R1+R7+R8（thyroxin/research…データストーリーテリング調査）:「アナリストコラム」
     //   （game/analystColumn.mjs が消費）。観測成績(rt.stats)のみの純関数・表示層のみ・エンジン非干渉。

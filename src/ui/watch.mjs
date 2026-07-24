@@ -1093,3 +1093,72 @@ function watchLineupTab(root, v, u) {
   body.append(bb);
   root.append(body);
 }
+
+// ============================================================================
+// P0-1（thyroxin/reviews/game_review_20260724.md）: 采配モーダル（ui.mjs showManagerDecisionModal）
+//   の候補行に判断材料を添える純関数群。観測成績（playerSeason・rt.stats由来）とロスター公開情報
+//   （bats/throws・depth chartの役割割当・pitchedByDay）だけを使い、真値(trueAbility)は一切参照
+//   しない。DOM(document)非依存＝node --testで直接ユニットテストできる（watch_label.test.mjsと同型）。
+// ============================================================================
+
+const mgrFmt3 = (v) => (v < 1 ? '.' + Math.round(v * 1000).toString().padStart(3, '0') : v.toFixed(3));
+
+/** 打者候補の当季観測成績（打率+HR・簡潔表記）。playerSeason.batting.ab=0なら「打席なし」。 */
+export function mgrBatSeasonText(bs, lc) {
+  if (!bs || !bs.batting || !(bs.batting.ab > 0)) return '打席なし';
+  const bm = playerBatting(bs, lc);
+  return `${mgrFmt3(bm.avg)} ${bm.hr}本`;
+}
+
+/** 投手候補の当季観測成績（防御率+K-BB%・簡潔表記）。playerSeason.pitching.outs=0なら「登板なし」。 */
+export function mgrPitSeasonText(ps, lc) {
+  if (!ps || !ps.pitching || !(ps.pitching.outs > 0)) return '登板なし';
+  const pm = playerPitching(ps, lc);
+  const kbb = (pm.kPct - pm.bbPct) * 100;
+  return `防${pm.era.toFixed(2)} K-BB${kbb.toFixed(1)}%`;
+}
+
+/**
+ * 対左右プラトーン表示（打者bats×投手throws。公開情報のみ・観測splits非使用＝小標本ノイズを避ける）。
+ * 両打(S)は常に相手と逆側の打席に立てる＝「両打」とだけ示す（有利/不利を断定しない）。
+ * @returns {string} '有利(逆投)' | '不利(同投)' | '両打' | ''（情報不足）
+ */
+export function mgrPlatoonTag(bats, throws) {
+  if (!bats || !throws) return '';
+  if (bats === 'S') return '両打';
+  return bats === throws ? '不利(同投)' : '有利(逆投)';
+}
+
+/**
+ * 継投候補の役割タグ（先発/クローザー/セットアップ/ロング/中継ぎ）。
+ * chart=usageByTeam.get(teamId).charts.dh（buildDepthChartの出力・rotation/bullpenRoles）。
+ * 役割の割当自体は編成時評価（trueAbility込み）で決まるが、ここで見せるのはカテゴリタグのみ
+ * （数値レーティングは一切出さない＝「うちの守護神は誰か」という公開のチーム編成情報の域）。
+ */
+export function mgrRoleTag(chart, pid) {
+  if (!chart || !pid) return '';
+  if (chart.rotation && chart.rotation.includes(pid)) return '先発';
+  const r = chart.bullpenRoles;
+  if (!r) return '';
+  if (r.closer === pid) return 'クローザー';
+  if (r.setup8 === pid) return 'セットアップ(8)';
+  if (r.setup7 === pid) return 'セットアップ(7)';
+  if (r.long === pid) return 'ロング';
+  if (r.middle && r.middle.includes(pid)) return '中継ぎ';
+  return '';
+}
+
+/**
+ * 連投/疲労の簡易表示（usage.pitchedByDay=Map<pid,Map<day,pitches>>から取れる範囲のみ）。
+ * @param {?Map} pitchedByDay その投手の登板日→球数（無登板日は無エントリ）
+ * @param {number} day 当該試合のday（介入モーダルのsitu/decisionが持つ座標）
+ * @returns {string} '連投3日目' | '連投(前日n球)' | '連投' | ''（前日前々日とも無登板）
+ */
+export function mgrRestTag(pitchedByDay, day) {
+  if (!pitchedByDay || day == null) return '';
+  const y1 = pitchedByDay.get(day - 1) || 0;
+  const y2 = pitchedByDay.get(day - 2) || 0;
+  if (y1 > 0 && y2 > 0) return '連投3日目';
+  if (y1 > 0) return `連投(前日${Math.round(y1)}球)`;
+  return '';
+}

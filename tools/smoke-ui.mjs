@@ -629,6 +629,16 @@ while (hasClass('mgrdecision')) {
   const candidate = allClass('mgrcandidate')[0];
   const fallback = btnByText('そのまま打たせる') || btnByText('続投');
   assert.ok(candidate || fallback, 'P1: 采配モーダルに候補ボタンか「そのまま/続投」がある');
+  // P0-1（game_review_20260724 P0-1）: 候補行があるときは判断材料（当季成績の簡潔表記）が
+  // 必ず1行以上含まれる（「打席なし」「登板なし」フォールバック込みで必ず何かは出る＝憶測でなく
+  // データ欠如の明示）。候補が無い（そのまま/続投のみ）試合はこのアサーションを課さない。
+  if (candidate) {
+    const candRows = allClass('mgrcandrow').map(textOf);
+    assert.ok(
+      candRows.some((t) => /\.\d{3}\s\d+本|防\d+\.\d{2}\sK-BB|打席なし|登板なし/.test(t)),
+      `P0-1: 采配モーダルの候補行に当季成績の表記が含まれる (${JSON.stringify(candRows)})`,
+    );
+  }
   (candidate || fallback)._onclick();
 }
 assert.ok(!hasClass('mgrdecision'), 'P1: 全介入点を解決すると采配モーダルが消える');
@@ -656,6 +666,14 @@ while (hasClass('mgrdecision')) {
   const candidate = allClass('mgrcandidate')[0];
   const fallback = btnByText('そのまま打たせる') || btnByText('続投');
   assert.ok(candidate || fallback, 'Q9: 采配モーダルに候補ボタンか「そのまま/続投」がある');
+  // P0-1: Q9（山場のみ介入）でも候補行の判断材料表記は同じ経路で出る。
+  if (candidate) {
+    const candRows = allClass('mgrcandrow').map(textOf);
+    assert.ok(
+      candRows.some((t) => /\.\d{3}\s\d+本|防\d+\.\d{2}\sK-BB|打席なし|登板なし/.test(t)),
+      `P0-1: Q9の采配モーダルの候補行に当季成績の表記が含まれる (${JSON.stringify(candRows)})`,
+    );
+  }
   (candidate || fallback)._onclick();
 }
 assert.ok(!hasClass('mgrdecision'), 'Q9: 全介入点を解決すると采配モーダルが消える');

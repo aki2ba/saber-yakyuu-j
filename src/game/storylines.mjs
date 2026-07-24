@@ -982,22 +982,39 @@ function specialRivalryDays(state, seriesFirsts, unresolvedDays, myId, pnameOf, 
   return out;
 }
 
-/** 首位攻防戦: カード初戦時点で自チームとのゲーム差が僅少（同リーグのみ）の相手との対決。 */
+/** 自リーグの首位チーム（勝差最大＝news.mjs rankAndGbと同じソート規則）。 */
+function leagueLeaderRow(standRows, leagueId) {
+  const lg = standRows.filter((r) => r.league === leagueId);
+  if (!lg.length) return null;
+  return lg.slice().sort((a, b) => (b.w - b.l) - (a.w - a.l) || (b.rs - b.ra) - (a.rs - a.ra))[0];
+}
+
+/**
+ * 首位攻防戦（P1-4・希少化）: カード初戦時点で「自チームまたは相手」が首位と僅差（同リーグのみ）
+ * ＋シーズン一定消化率以降。旧定義（自チームとの直接ゲーム差のみ）は下位同士の凡戦も拾ってしまう
+ * （均衡設計下では下位球団同士も接近しがち＝レビュー実測30.8%発火）ため、真の首位争いに限定する。
+ */
 function specialPennantDays(state, seriesFirsts, unresolvedDays, myId, tnameOf) {
   const rt = state.rt;
   const sd = state.cfg.tuning.storylines.specialDays;
+  const fullG = state.cfg.league.gamesPerSeason;
   const myRow = rt.standings.get(myId);
-  if (!myRow || myRow.g < sd.pennantMinGamesPlayed) return [];
+  if (!myRow || !fullG || myRow.g / fullG < sd.pennantMinProgress) return [];
+  const standRows = [...rt.standings.values()];
   const out = [];
   for (const g of seriesFirsts) {
     if (!unresolvedDays.has(g.day)) continue;
     const oppId = g.home === myId ? g.away : g.home;
     const oppRow = rt.standings.get(oppId);
     if (!oppRow || oppRow.league !== myRow.league) continue;
-    const gb = Math.abs(gamesBehind(myRow, oppRow));
-    if (gb <= sd.pennantMaxGb) {
-      out.push({ day: g.day, kind: 'pennant', oppId, label: `首位攻防、${tnameOf(oppId)}とのゲーム差${gb.toFixed(1)}` });
-    }
+    const leader = leagueLeaderRow(standRows, myRow.league);
+    if (!leader) continue;
+    const gbMe = gamesBehind(leader, myRow);
+    const gbOpp = gamesBehind(leader, oppRow);
+    if (gbMe > sd.pennantMaxGb && gbOpp > sd.pennantMaxGb) continue; // 自分も相手も首位から遠い＝凡戦
+    const gb = Math.min(gbMe, gbOpp);
+    const who = gbMe <= gbOpp ? '自チーム' : tnameOf(oppId);
+    out.push({ day: g.day, kind: 'pennant', oppId, label: `首位攻防、${tnameOf(oppId)}戦（${who}が首位まで${gb.toFixed(1)}差）` });
   }
   return out;
 }

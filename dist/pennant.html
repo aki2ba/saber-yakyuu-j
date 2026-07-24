@@ -242,6 +242,12 @@
   .formnote { font-size:12px; margin-top:2px; padding:4px 8px; border-radius:4px; background:var(--inset); }
   .formnote.good { color:var(--pos); }
   .formnote.bad { color:var(--neg); }
+  /* P0-1（game_review_20260724）: 采配モーダルの候補一覧（1候補1行・判断材料+選択ボタン） */
+  .mgrcandlist { display:flex; flex-direction:column; gap:2px; margin:6px 0; max-height:40vh; overflow-y:auto; }
+  .mgrcandrow { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:4px 8px; border-radius:4px; background:var(--inset); }
+  .mgrcandinfo { font-size:12px; }
+  .mgrcandrow .mgrcandidate { flex:none; padding:3px 10px; font-size:12px; }
   /* Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 自チーム行の強調・飽和マーク・ヒート表セル */
   tr.gmminerow td { font-weight:700; background:var(--inset); }
   .gmsatmark { margin-right:3px; color:var(--clay); }
@@ -2882,8 +2888,13 @@ const TUNING_DEFAULT = {
       // 節目リーチ: 現在の通算値からこの本数/勝数以内で次のマイルストーン（awards.milestones）に
       //   届く選手がいれば、自チームの次の未消化試合を「節目リーチ」の特別デーにする。
       milestoneReach: { hits: 5, homeRuns: 3, wins: 2, saves: 2, strikeouts: 5 },
-      pennantMaxGb: 1.5, // 首位攻防戦: 自チームとの直接のゲーム差がこれ以内の相手とのカード初戦
-      pennantMinGamesPlayed: 5, // 開幕直後（全球団横並び）の誤発火防止ガード（news.mjs rankAndGbと同型）
+      // P1-4（thyroxin/reviews/game_review_20260724.md）: 旧定義「相手との直接ゲーム差1.5以内」は
+      //   下位同士の凡戦も拾って試合日の30.8%で発火した（均衡設計下では下位球団同士も接近しがち）。
+      //   「自分または相手が首位と僅差」＝真の首位争いに限定する定義へ変更（希少化）。
+      //   12seed sweep実測（2026-07-24）: 1.5×1/3では依然発火過多。0.5×0.6で月2.8回＝レビュー目標
+      //   「月1-3回」帯に収束（「首位攻防はシーズン終盤の物語」という意味論にも合致）。
+      pennantMaxGb: 0.5, // 首位攻防戦: 自チームまたは相手が首位とこのゲーム差以内（同リーグ）
+      pennantMinProgress: 0.6, // 首位攻防戦: シーズンをこの消化率（自チーム試合数/gamesPerSeason）以降のみ判定（終盤の優勝争いに限定）
     },
     // R1+R7+R8（thyroxin/research…データストーリーテリング調査）:「アナリストコラム」
     //   （game/analystColumn.mjs が消費）。観測成績(rt.stats)のみの純関数・表示層のみ・エンジン非干渉。
@@ -7869,6 +7880,9 @@ function maybePinchHit(batting, fielding, bases, inning, cfg, statFor, outs, bat
       scoreDiff: batting.score - fielding.score,
       batterId,
       onDeckId: batting.slots[onDeckIdx]?.playerId ?? null,
+      // P0-1（表示専用・乱数非消費）: 現在の相手投手id。代打候補の対左右プラトーン表示に使う
+      // （UIが state.byId から throws を引く）。判断ロジック・候補集合・ログ形式には一切影響しない。
+      oppPitcherId: fielding.curPid,
     };
     pick = resolveIntervention(mgrInterv, 'ph', situ, pick, batting.bench, cfg);
   }
@@ -13780,6 +13794,48 @@ function computeWpaHighlights(events, tables, cfg, playerTeamId) {
   return { top: summarize(best, playerTeamId), bottom: summarize(worst, playerTeamId) };
 }
 
+// ============================================================================
+// P1-5（thyroxin/reviews/game_review_20260724.md 観点6/8）: WPA勝因/敗因プレー×介入ログの接続。
+//
+//   wpaIsAfterIntervention(highlight, gameInterventions, box) … computeWpaHighlights の
+//     top/bottom 1件が、自分の采配指示（gameInterventions・P1）の直後の結果かどうかを判定する
+//     純関数。判定材料はすべて既に永続化済みのデータのみ（新規の保存フィールドは追加しない・
+//     §17生イベント非永続の原則を維持）:
+//       - highlight.pid が、その試合の gameInterventions（kind='ph'|'relief'）の choice.pick と
+//         一致する（＝そのプレーの選手は自分が明示的に指示して起用した選手そのもの。
+//         「おまかせ」はログに積まれないため＝P1データモデル§1、AIが自律判断した交代は
+//         この一致条件を満たさない）。
+//       - box（rec.box・buildBoxScore の出力）で、その選手が実際にその起用経路で入った痕跡を
+//         裏取りする（ph=打者行のpos==='打'＝代打で入った証跡／relief=試合の先発投手ではない
+//         ＝救援で入った証跡）。
+//     box には交代のイニングまでは残らない（§17）ため、判定の粒度は「その起用で入った選手自身の
+//     プレーか」までであり、厳密な「同一イニング」までは見ない（継投で入った投手がその後何回か
+//     投げ続けた末のプレーも対象に含みうる＝その継投判断が生んだ投手のプレーという帰属としては
+//     成立するため誤りではない）。対応する介入ログが無い/box裏取りに失敗した場合は必ず false
+//     （曖昧なら付けない・レビュー「誤タグは信頼を壊す」への配慮）。
+// ============================================================================
+
+/**
+ * WPA勝因/敗因プレー（wpaTop/wpaBottomの1件）が、自分の采配指示の直後の結果かを判定する。
+ * @param {?{pid:string,inning:number,half:string,desc:string,wpa:number}} highlight box.wpaTop/wpaBottomの1件
+ * @param {Array} gameInterventions 当該試合ぶんに絞り込んだ介入ログ（呼び出し側で year/day一致フィルタ済みのもの）
+ * @param {?Object} box rec.box（buildBoxScore の出力・starters/batters を使う）
+ * @returns {boolean} true=⚡采配直後タグを付けてよい
+ */
+function wpaIsAfterIntervention(highlight, gameInterventions, box) {
+  if (!highlight || !box || !gameInterventions || !gameInterventions.length) return false;
+  const hit = gameInterventions.find((iv) =>
+    iv && iv.choice && iv.choice.pick === highlight.pid && (iv.kind === 'ph' || iv.kind === 'relief'));
+  if (!hit) return false;
+  if (hit.kind === 'ph') {
+    const row = (box.batters?.home ?? []).find((b) => b.pid === highlight.pid)
+      ?? (box.batters?.away ?? []).find((b) => b.pid === highlight.pid);
+    return !!row && row.pos === '打'; // 代打で入った打者にのみ付く打順スロット表記（boxscore.mjs sub処理）
+  }
+  // kind==='relief': 先発投手（そのイニングの登板開始ではなく試合の先発）でなければ救援で入った証跡とみなす。
+  return highlight.pid !== box.starters?.home && highlight.pid !== box.starters?.away;
+}
+
 
 // ===== src/game/season_runtime.mjs =====
 // ============================================================================
@@ -16717,22 +16773,39 @@ function specialRivalryDays(state, seriesFirsts, unresolvedDays, myId, pnameOf, 
   return out;
 }
 
-/** 首位攻防戦: カード初戦時点で自チームとのゲーム差が僅少（同リーグのみ）の相手との対決。 */
+/** 自リーグの首位チーム（勝差最大＝news.mjs rankAndGbと同じソート規則）。 */
+function leagueLeaderRow(standRows, leagueId) {
+  const lg = standRows.filter((r) => r.league === leagueId);
+  if (!lg.length) return null;
+  return lg.slice().sort((a, b) => (b.w - b.l) - (a.w - a.l) || (b.rs - b.ra) - (a.rs - a.ra))[0];
+}
+
+/**
+ * 首位攻防戦（P1-4・希少化）: カード初戦時点で「自チームまたは相手」が首位と僅差（同リーグのみ）
+ * ＋シーズン一定消化率以降。旧定義（自チームとの直接ゲーム差のみ）は下位同士の凡戦も拾ってしまう
+ * （均衡設計下では下位球団同士も接近しがち＝レビュー実測30.8%発火）ため、真の首位争いに限定する。
+ */
 function specialPennantDays(state, seriesFirsts, unresolvedDays, myId, tnameOf) {
   const rt = state.rt;
   const sd = state.cfg.tuning.storylines.specialDays;
+  const fullG = state.cfg.league.gamesPerSeason;
   const myRow = rt.standings.get(myId);
-  if (!myRow || myRow.g < sd.pennantMinGamesPlayed) return [];
+  if (!myRow || !fullG || myRow.g / fullG < sd.pennantMinProgress) return [];
+  const standRows = [...rt.standings.values()];
   const out = [];
   for (const g of seriesFirsts) {
     if (!unresolvedDays.has(g.day)) continue;
     const oppId = g.home === myId ? g.away : g.home;
     const oppRow = rt.standings.get(oppId);
     if (!oppRow || oppRow.league !== myRow.league) continue;
-    const gb = Math.abs(gamesBehind(myRow, oppRow));
-    if (gb <= sd.pennantMaxGb) {
-      out.push({ day: g.day, kind: 'pennant', oppId, label: `首位攻防、${tnameOf(oppId)}とのゲーム差${gb.toFixed(1)}` });
-    }
+    const leader = leagueLeaderRow(standRows, myRow.league);
+    if (!leader) continue;
+    const gbMe = gamesBehind(leader, myRow);
+    const gbOpp = gamesBehind(leader, oppRow);
+    if (gbMe > sd.pennantMaxGb && gbOpp > sd.pennantMaxGb) continue; // 自分も相手も首位から遠い＝凡戦
+    const gb = Math.min(gbMe, gbOpp);
+    const who = gbMe <= gbOpp ? '自チーム' : tnameOf(oppId);
+    out.push({ day: g.day, kind: 'pennant', oppId, label: `首位攻防、${tnameOf(oppId)}戦（${who}が首位まで${gb.toFixed(1)}差）` });
   }
   return out;
 }
@@ -20015,6 +20088,8 @@ function handlePick(u, prospectId) {
 //   - バンドル: build.mjs が src/ui/*.mjs を ui.mjs と同一<script>へ前置concat。ui.mjs のヘルパーは
 //     deps オブジェクト u（ui.mjs の scheduleDeps()）で受け取る（トップレベル名は sched プレフィクス）。
 // ============================================================================
+// P1-5（thyroxin/reviews/game_review_20260724.md）: WPA勝因/敗因×介入ログの接続。エンジン側
+// （game/wpaSummary.mjs）の純関数を直接
 
 // 月ラベル（NPB風: 開幕3月末〜10月・daysPerMonth=26 で約6分割）。
 const SCHED_MONTHS = ['3・4月', '5月', '6月', '7月', '8月', '9月', '10月'];
@@ -20050,10 +20125,24 @@ const schedWpaVal = (v) => (v > 0 ? '+' : '') + (v ?? 0).toFixed(2);
  * P2: 勝因/敗因カード（1行ぶんの表示パーツ）。box.wpaTop/wpaBottom（wpaSummary.mjs が
  * additive に付与する要約 {pid,inning,half,desc,wpa}）から組む純関数。旧セーブ等で
  * box.wpaTop/wpaBottom が無い試合は呼び出し側で丸ごとスキップする（additive・鉄則の後方互換）。
+ * P1-5: tagged=true で先頭に⚡（あなたの継投/代打の直後のプレー）を付す
+ * （wpaIsAfterIntervention の判定結果を呼び出し側が渡す・本関数自体は判定ロジックを持たない）。
  */
-function schedWpaParts(item, u) {
-  const { playerLink } = u;
-  return [`${item.inning}回${SCHED_HALF_JP[item.half] ?? ''} `, playerLink(item.pid), `の${item.desc}（WPA ${schedWpaVal(item.wpa)}）`];
+function schedWpaParts(item, u, tagged = false) {
+  const { playerLink, el } = u;
+  const parts = [`${item.inning}回${SCHED_HALF_JP[item.half] ?? ''} `, playerLink(item.pid), `の${item.desc}（WPA ${schedWpaVal(item.wpa)}）`];
+  if (tagged) parts.unshift(el('span', { title: 'あなたの継投/代打の直後のプレー' }, '⚡'), ' ');
+  return parts;
+}
+
+/** P1-5: box.wpaTop/wpaBottom それぞれの⚡タグ判定（当該試合ぶんの介入ログに絞ってから判定）。 */
+function schedWpaTags(u, day, box) {
+  const gs = u.game.gs;
+  const iv = (gs.gameInterventions || []).filter((x) => x.year === gs.year && x.day === day);
+  return {
+    top: wpaIsAfterIntervention(box.wpaTop, iv, box),
+    bottom: wpaIsAfterIntervention(box.wpaBottom, iv, box),
+  };
 }
 
 /** 自チーム視点の勝敗（'w'|'l'|'t'）。 */
@@ -20193,10 +20282,12 @@ function schedOpenBox(rec, u) {
     box.append(el('div', { class: 'muted' }, 'この試合のボックススコアは記録されていません（旧セーブの試合）。'));
   } else {
     // P2: 勝因/敗因カード（冒頭表示）。旧セーブの box には wpaTop/wpaBottom が無いので additive にスキップ。
+    // P1-5: ⚡タグ（自分の采配指示の直後のプレー）を介入ログと突き合わせて判定する。
     if (b.wpaTop && b.wpaBottom) {
+      const tags = schedWpaTags(u, rec.day, b);
       box.append(el('div', { class: 'newsfeed', style: 'margin-bottom:8px' }, [
-        el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(b.wpaTop, u)]),
-        el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(b.wpaBottom, u)]),
+        el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(b.wpaTop, u, tags.top)]),
+        el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(b.wpaBottom, u, tags.bottom)]),
       ]));
     }
     box.append(schedLineScore(rec, b, u));
@@ -22595,6 +22686,75 @@ function watchLineupTab(root, v, u) {
   root.append(body);
 }
 
+// ============================================================================
+// P0-1（thyroxin/reviews/game_review_20260724.md）: 采配モーダル（ui.mjs showManagerDecisionModal）
+//   の候補行に判断材料を添える純関数群。観測成績（playerSeason・rt.stats由来）とロスター公開情報
+//   （bats/throws・depth chartの役割割当・pitchedByDay）だけを使い、真値(trueAbility)は一切参照
+//   しない。DOM(document)非依存＝node --testで直接ユニットテストできる（watch_label.test.mjsと同型）。
+// ============================================================================
+
+const mgrFmt3 = (v) => (v < 1 ? '.' + Math.round(v * 1000).toString().padStart(3, '0') : v.toFixed(3));
+
+/** 打者候補の当季観測成績（打率+HR・簡潔表記）。playerSeason.batting.ab=0なら「打席なし」。 */
+function mgrBatSeasonText(bs, lc) {
+  if (!bs || !bs.batting || !(bs.batting.ab > 0)) return '打席なし';
+  const bm = playerBatting(bs, lc);
+  return `${mgrFmt3(bm.avg)} ${bm.hr}本`;
+}
+
+/** 投手候補の当季観測成績（防御率+K-BB%・簡潔表記）。playerSeason.pitching.outs=0なら「登板なし」。 */
+function mgrPitSeasonText(ps, lc) {
+  if (!ps || !ps.pitching || !(ps.pitching.outs > 0)) return '登板なし';
+  const pm = playerPitching(ps, lc);
+  const kbb = (pm.kPct - pm.bbPct) * 100;
+  return `防${pm.era.toFixed(2)} K-BB${kbb.toFixed(1)}%`;
+}
+
+/**
+ * 対左右プラトーン表示（打者bats×投手throws。公開情報のみ・観測splits非使用＝小標本ノイズを避ける）。
+ * 両打(S)は常に相手と逆側の打席に立てる＝「両打」とだけ示す（有利/不利を断定しない）。
+ * @returns {string} '有利(逆投)' | '不利(同投)' | '両打' | ''（情報不足）
+ */
+function mgrPlatoonTag(bats, throws) {
+  if (!bats || !throws) return '';
+  if (bats === 'S') return '両打';
+  return bats === throws ? '不利(同投)' : '有利(逆投)';
+}
+
+/**
+ * 継投候補の役割タグ（先発/クローザー/セットアップ/ロング/中継ぎ）。
+ * chart=usageByTeam.get(teamId).charts.dh（buildDepthChartの出力・rotation/bullpenRoles）。
+ * 役割の割当自体は編成時評価（trueAbility込み）で決まるが、ここで見せるのはカテゴリタグのみ
+ * （数値レーティングは一切出さない＝「うちの守護神は誰か」という公開のチーム編成情報の域）。
+ */
+function mgrRoleTag(chart, pid) {
+  if (!chart || !pid) return '';
+  if (chart.rotation && chart.rotation.includes(pid)) return '先発';
+  const r = chart.bullpenRoles;
+  if (!r) return '';
+  if (r.closer === pid) return 'クローザー';
+  if (r.setup8 === pid) return 'セットアップ(8)';
+  if (r.setup7 === pid) return 'セットアップ(7)';
+  if (r.long === pid) return 'ロング';
+  if (r.middle && r.middle.includes(pid)) return '中継ぎ';
+  return '';
+}
+
+/**
+ * 連投/疲労の簡易表示（usage.pitchedByDay=Map<pid,Map<day,pitches>>から取れる範囲のみ）。
+ * @param {?Map} pitchedByDay その投手の登板日→球数（無登板日は無エントリ）
+ * @param {number} day 当該試合のday（介入モーダルのsitu/decisionが持つ座標）
+ * @returns {string} '連投3日目' | '連投(前日n球)' | '連投' | ''（前日前々日とも無登板）
+ */
+function mgrRestTag(pitchedByDay, day) {
+  if (!pitchedByDay || day == null) return '';
+  const y1 = pitchedByDay.get(day - 1) || 0;
+  const y2 = pitchedByDay.get(day - 2) || 0;
+  if (y1 > 0 && y2 > 0) return '連投3日目';
+  if (y1 > 0) return `連投(前日${Math.round(y1)}球)`;
+  return '';
+}
+
 
 // ===== src/ui.mjs =====
 // ============================================================================
@@ -22614,6 +22774,8 @@ function watchLineupTab(root, v, u) {
 // 既存トレードタブへ導線するためのヘルパー（team.mjs へ teamTabDeps() 経由で渡す）。
 
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
+
+// P1-5（thyroxin/reviews/game_review_20260724.md）: WPA勝因/敗因×介入ログの接続（⚡タグ判定）。
 
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
 
@@ -24978,11 +25140,66 @@ function pitcherMoodComment(gs, situ) {
 }
 
 /**
+ * P0-1（thyroxin/reviews/game_review_20260724.md・p1_interactive_manager_spec §4）:
+ * 采配モーダルの1候補（または現在の打者/投手）ぶんの判断材料をまとめる純関数。
+ * 観測成績（state.res.statsById＝rt.stats由来）とロスター公開情報（bats/throws・depth chartの
+ * 役割割当・usage.pitchedByDay）だけを使う。真値(trueAbility)・能力値レーティングは非参照（鉄則3）。
+ * @returns {{pid, p, statText, platoon?, formArrow?, role?, rest?, sortKey}}
+ */
+function mgrCandidateInfo(gs, decision, pid) {
+  const p = state.byId.get(pid);
+  const statsById = state.res ? state.res.statsById : null;
+  if (decision.kind === 'ph') {
+    const bs = statsById ? statsById.get(pid) : null;
+    const oppP = decision.situ.oppPitcherId ? state.byId.get(decision.situ.oppPitcherId) : null;
+    const { tier } = playerFormOf(gs, pid);
+    const hasPa = bs && bs.batting && bs.batting.ab > 0;
+    return {
+      pid,
+      p,
+      statText: mgrBatSeasonText(bs, state.lc),
+      platoon: p && oppP ? mgrPlatoonTag(p.bats, oppP.throws) : '',
+      formArrow: tier === 'hot' ? '▲' : tier === 'cold' ? '▼' : '',
+      sortKey: hasPa ? playerBatting(bs, state.lc).ops : -1,
+    };
+  }
+  const ps = statsById ? statsById.get(pid) : null;
+  const usage = gs.rt.usageByTeam.get(gs.playerTeamId);
+  const chart = usage ? usage.charts.dh : null;
+  const pitchedByDay = usage ? usage.pitchedByDay.get(pid) : null;
+  const hasIp = ps && ps.pitching && ps.pitching.outs > 0;
+  return {
+    pid,
+    p,
+    statText: mgrPitSeasonText(ps, state.lc),
+    role: mgrRoleTag(chart, pid),
+    rest: mgrRestTag(pitchedByDay, decision.day),
+    sortKey: hasIp ? playerPitching(ps, state.lc).era : Infinity,
+  };
+}
+
+/** P0-1: 候補1行分のDOM（左=名前+判断材料、右=選択ボタン。1候補1行に収める・観点11）。 */
+function mgrCandidateRow(c, submit, isPitcherKind) {
+  const { pid, p } = c;
+  const handTxt = p ? (isPitcherKind ? handLabel(p.throws) + '投' : `${posJP(primaryPos(p))}${handLabel(p.bats)}打`) : '';
+  const tags = isPitcherKind ? [c.role, c.rest].filter(Boolean) : [c.platoon, c.formArrow].filter(Boolean);
+  const infoText = `${pname(pid)}（${handTxt}） ${c.statText}${tags.length ? '　' + tags.join(' ') : ''}`;
+  return el('div', { class: 'mgrcandrow' }, [
+    el('span', { class: 'mgrcandinfo' }, infoText),
+    el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, '選択'),
+  ]);
+}
+
+/**
  * P1: 采配モーダル（代打/継投の意思決定）。§4。
- * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
- * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * kind='ph': 打席の選手（当季成績/対左右/フォーム▲▼込み）＋ベンチ候補一覧（同項目・成績順）＋
+ *   「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧（当季防御率/K-BB%・役割タグ・連投状態・
+ *   利き腕・防御率順）＋「続投」。
  * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
  * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ * P0-1: 候補の判断材料（観測成績とロスター公開情報のみ・真値非参照）を追加。並び順はUI表示時の
+ * ソートのみ（ログのpick対象はplayerIdなので順序変更はシム結果に非干渉）。
  */
 function showManagerDecisionModal(decision) {
   const gs = game.gs;
@@ -25000,23 +25217,19 @@ function showManagerDecisionModal(decision) {
   ]));
   if (kind === 'ph') {
     const batter = state.byId.get(situ.batterId);
-    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
-    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
-      const p = state.byId.get(pid);
-      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
-      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
-    })));
+    const cur = mgrCandidateInfo(gs, decision, situ.batterId);
+    const curTags = [cur.platoon, cur.formArrow].filter(Boolean);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打） ${cur.statText}${curTags.length ? '　' + curTags.join(' ') : ''}`));
+    const rows = candidates.map((pid) => mgrCandidateInfo(gs, decision, pid)).sort((a, b) => b.sortKey - a.sortKey);
+    box.append(el('div', { class: 'mgrcandlist' }, rows.map((c) => mgrCandidateRow(c, submit, false))));
     box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
   } else {
     const pit = state.byId.get(situ.pitcherId);
     box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
     // Q9: 投手心情コメント（当季観測のみ・hashSeed独立座標のテンプレ・乱数消費/シム結果に非干渉）。
     box.append(el('p', { class: 'muted' }, `💬 ${pitcherMoodComment(gs, situ)}`));
-    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
-      const p = state.byId.get(pid);
-      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
-      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
-    })));
+    const rows = candidates.map((pid) => mgrCandidateInfo(gs, decision, pid)).sort((a, b) => a.sortKey - b.sortKey);
+    box.append(el('div', { class: 'mgrcandlist' }, rows.map((c) => mgrCandidateRow(c, submit, true))));
     box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
   }
   box.append(el('div', { class: 'row' }, [
@@ -25119,12 +25332,17 @@ function showAdvanceDigest(gs, snap) {
     box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
   }
   // P2: 直近試合の勝因/敗因カード（旧セーブ等で box.wpaTop/wpaBottom が無ければ additive にスキップ）。
-  const lastBox = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1].box : null;
+  // P1-5: ⚡タグ（自分の采配指示の直後のプレー）を介入ログと突き合わせて判定する。
+  const lastRec = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1] : null;
+  const lastBox = lastRec ? lastRec.box : null;
   if (lastBox?.wpaTop && lastBox?.wpaBottom) {
+    const lastIv = (gs.gameInterventions || []).filter((x) => x.year === gs.year && x.day === lastRec.day);
+    const topTag = wpaIsAfterIntervention(lastBox.wpaTop, lastIv, lastBox);
+    const bottomTag = wpaIsAfterIntervention(lastBox.wpaBottom, lastIv, lastBox);
     box.append(el('h3', { class: 'leaguename' }, '⚔ 直近試合の勝因/敗因'));
     box.append(el('div', { class: 'newsfeed' }, [
-      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
-      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
+      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps(), topTag)]),
+      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps(), bottomTag)]),
     ]));
   }
   // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。

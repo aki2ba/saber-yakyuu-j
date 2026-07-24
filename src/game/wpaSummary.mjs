@@ -254,3 +254,45 @@ export function computeWpaHighlights(events, tables, cfg, playerTeamId) {
   if (!best || !worst) return null;
   return { top: summarize(best, playerTeamId), bottom: summarize(worst, playerTeamId) };
 }
+
+// ============================================================================
+// P1-5（thyroxin/reviews/game_review_20260724.md 観点6/8）: WPA勝因/敗因プレー×介入ログの接続。
+//
+//   wpaIsAfterIntervention(highlight, gameInterventions, box) … computeWpaHighlights の
+//     top/bottom 1件が、自分の采配指示（gameInterventions・P1）の直後の結果かどうかを判定する
+//     純関数。判定材料はすべて既に永続化済みのデータのみ（新規の保存フィールドは追加しない・
+//     §17生イベント非永続の原則を維持）:
+//       - highlight.pid が、その試合の gameInterventions（kind='ph'|'relief'）の choice.pick と
+//         一致する（＝そのプレーの選手は自分が明示的に指示して起用した選手そのもの。
+//         「おまかせ」はログに積まれないため＝P1データモデル§1、AIが自律判断した交代は
+//         この一致条件を満たさない）。
+//       - box（rec.box・buildBoxScore の出力）で、その選手が実際にその起用経路で入った痕跡を
+//         裏取りする（ph=打者行のpos==='打'＝代打で入った証跡／relief=試合の先発投手ではない
+//         ＝救援で入った証跡）。
+//     box には交代のイニングまでは残らない（§17）ため、判定の粒度は「その起用で入った選手自身の
+//     プレーか」までであり、厳密な「同一イニング」までは見ない（継投で入った投手がその後何回か
+//     投げ続けた末のプレーも対象に含みうる＝その継投判断が生んだ投手のプレーという帰属としては
+//     成立するため誤りではない）。対応する介入ログが無い/box裏取りに失敗した場合は必ず false
+//     （曖昧なら付けない・レビュー「誤タグは信頼を壊す」への配慮）。
+// ============================================================================
+
+/**
+ * WPA勝因/敗因プレー（wpaTop/wpaBottomの1件）が、自分の采配指示の直後の結果かを判定する。
+ * @param {?{pid:string,inning:number,half:string,desc:string,wpa:number}} highlight box.wpaTop/wpaBottomの1件
+ * @param {Array} gameInterventions 当該試合ぶんに絞り込んだ介入ログ（呼び出し側で year/day一致フィルタ済みのもの）
+ * @param {?Object} box rec.box（buildBoxScore の出力・starters/batters を使う）
+ * @returns {boolean} true=⚡采配直後タグを付けてよい
+ */
+export function wpaIsAfterIntervention(highlight, gameInterventions, box) {
+  if (!highlight || !box || !gameInterventions || !gameInterventions.length) return false;
+  const hit = gameInterventions.find((iv) =>
+    iv && iv.choice && iv.choice.pick === highlight.pid && (iv.kind === 'ph' || iv.kind === 'relief'));
+  if (!hit) return false;
+  if (hit.kind === 'ph') {
+    const row = (box.batters?.home ?? []).find((b) => b.pid === highlight.pid)
+      ?? (box.batters?.away ?? []).find((b) => b.pid === highlight.pid);
+    return !!row && row.pos === '打'; // 代打で入った打者にのみ付く打順スロット表記（boxscore.mjs sub処理）
+  }
+  // kind==='relief': 先発投手（そのイニングの登板開始ではなく試合の先発）でなければ救援で入った証跡とみなす。
+  return highlight.pid !== box.starters?.home && highlight.pid !== box.starters?.away;
+}

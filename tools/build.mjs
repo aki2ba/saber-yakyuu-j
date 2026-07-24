@@ -337,6 +337,12 @@ const html = `<!DOCTYPE html>
   .formnote { font-size:12px; margin-top:2px; padding:4px 8px; border-radius:4px; background:var(--inset); }
   .formnote.good { color:var(--pos); }
   .formnote.bad { color:var(--neg); }
+  /* P0-1（game_review_20260724）: 采配モーダルの候補一覧（1候補1行・判断材料+選択ボタン） */
+  .mgrcandlist { display:flex; flex-direction:column; gap:2px; margin:6px 0; max-height:40vh; overflow-y:auto; }
+  .mgrcandrow { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:4px 8px; border-radius:4px; background:var(--inset); }
+  .mgrcandinfo { font-size:12px; }
+  .mgrcandrow .mgrcandidate { flex:none; padding:3px 10px; font-size:12px; }
   /* Wave C（gm_analytics_spec.md）: 「GM」サブタブ — 自チーム行の強調・飽和マーク・ヒート表セル */
   tr.gmminerow td { font-weight:700; background:var(--inset); }
   .gmsatmark { margin-right:3px; color:var(--clay); }

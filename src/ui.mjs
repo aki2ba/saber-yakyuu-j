@@ -57,13 +57,19 @@ import {
 // （build.mjs が同一<script>へ前置concat＝バンドルでは import が剥がれ同一スコープ参照）。
 import { renderTeamTab } from './ui/team.mjs';
 // フェーズE2: スポナビ風観戦画面（ラインスコア/フィールド盤面/対戦カード/一球速報/進行切替）。
-import { renderWatchScreen } from './ui/watch.mjs';
+import {
+  renderWatchScreen,
+  // P0-1（thyroxin/reviews/game_review_20260724.md）: 采配モーダルの候補行に判断材料を添える純関数。
+  mgrBatSeasonText, mgrPitSeasonText, mgrPlatoonTag, mgrRoleTag, mgrRestTag,
+} from './ui/watch.mjs';
 // フェーズE3: ストーブリーグ（FA市場/トレード/育成昇格）＋オフシーズンダイジェスト。
 // Wave C（gm_analytics_spec.md）: stoveGotoTrade はGMボードの「トレードの窓」サジェストから
 // 既存トレードタブへ導線するためのヘルパー（team.mjs へ teamTabDeps() 経由で渡す）。
 import { renderStoveScreen, renderOffseasonDigestScreen, stoveGotoTrade } from './ui/stove.mjs';
 // フェーズE4: 日程・結果タブ（月別日程＋簡易ボックススコア）＋選手の活躍ニュース見出し。
 import { renderScheduleTab, schedPlayerHeadlines, schedDateLabel, schedWpaParts } from './ui/schedule.mjs';
+// P1-5（thyroxin/reviews/game_review_20260724.md）: WPA勝因/敗因×介入ログの接続（⚡タグ判定）。
+import { wpaIsAfterIntervention } from './game/wpaSummary.mjs';
 // H2: プレイヤー参加型ドラフト会議室（phaseH_fun_spec H2）。
 import { renderDraftRoomScreen } from './ui/draft.mjs';
 
@@ -2427,11 +2433,66 @@ function pitcherMoodComment(gs, situ) {
 }
 
 /**
+ * P0-1（thyroxin/reviews/game_review_20260724.md・p1_interactive_manager_spec §4）:
+ * 采配モーダルの1候補（または現在の打者/投手）ぶんの判断材料をまとめる純関数。
+ * 観測成績（state.res.statsById＝rt.stats由来）とロスター公開情報（bats/throws・depth chartの
+ * 役割割当・usage.pitchedByDay）だけを使う。真値(trueAbility)・能力値レーティングは非参照（鉄則3）。
+ * @returns {{pid, p, statText, platoon?, formArrow?, role?, rest?, sortKey}}
+ */
+function mgrCandidateInfo(gs, decision, pid) {
+  const p = state.byId.get(pid);
+  const statsById = state.res ? state.res.statsById : null;
+  if (decision.kind === 'ph') {
+    const bs = statsById ? statsById.get(pid) : null;
+    const oppP = decision.situ.oppPitcherId ? state.byId.get(decision.situ.oppPitcherId) : null;
+    const { tier } = playerFormOf(gs, pid);
+    const hasPa = bs && bs.batting && bs.batting.ab > 0;
+    return {
+      pid,
+      p,
+      statText: mgrBatSeasonText(bs, state.lc),
+      platoon: p && oppP ? mgrPlatoonTag(p.bats, oppP.throws) : '',
+      formArrow: tier === 'hot' ? '▲' : tier === 'cold' ? '▼' : '',
+      sortKey: hasPa ? playerBatting(bs, state.lc).ops : -1,
+    };
+  }
+  const ps = statsById ? statsById.get(pid) : null;
+  const usage = gs.rt.usageByTeam.get(gs.playerTeamId);
+  const chart = usage ? usage.charts.dh : null;
+  const pitchedByDay = usage ? usage.pitchedByDay.get(pid) : null;
+  const hasIp = ps && ps.pitching && ps.pitching.outs > 0;
+  return {
+    pid,
+    p,
+    statText: mgrPitSeasonText(ps, state.lc),
+    role: mgrRoleTag(chart, pid),
+    rest: mgrRestTag(pitchedByDay, decision.day),
+    sortKey: hasIp ? playerPitching(ps, state.lc).era : Infinity,
+  };
+}
+
+/** P0-1: 候補1行分のDOM（左=名前+判断材料、右=選択ボタン。1候補1行に収める・観点11）。 */
+function mgrCandidateRow(c, submit, isPitcherKind) {
+  const { pid, p } = c;
+  const handTxt = p ? (isPitcherKind ? handLabel(p.throws) + '投' : `${posJP(primaryPos(p))}${handLabel(p.bats)}打`) : '';
+  const tags = isPitcherKind ? [c.role, c.rest].filter(Boolean) : [c.platoon, c.formArrow].filter(Boolean);
+  const infoText = `${pname(pid)}（${handTxt}） ${c.statText}${tags.length ? '　' + tags.join(' ') : ''}`;
+  return el('div', { class: 'mgrcandrow' }, [
+    el('span', { class: 'mgrcandinfo' }, infoText),
+    el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, '選択'),
+  ]);
+}
+
+/**
  * P1: 采配モーダル（代打/継投の意思決定）。§4。
- * kind='ph': 打席の選手＋ベンチ候補一覧＋「そのまま打たせる」。
- * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧＋「続投」。
+ * kind='ph': 打席の選手（当季成績/対左右/フォーム▲▼込み）＋ベンチ候補一覧（同項目・成績順）＋
+ *   「そのまま打たせる」。
+ * kind='relief': 現投手（球数/失点）＋可用ブルペン一覧（当季防御率/K-BB%・役割タグ・連投状態・
+ *   利き腕・防御率順）＋「続投」。
  * 「以後おまかせ」: 以降この試合は決定を求めない（UIローカル・ログには積まない＝§1）。
  * 選択肢はクリックのみ・決定は取り消し不可（ログ＝歴史・§4）。
+ * P0-1: 候補の判断材料（観測成績とロスター公開情報のみ・真値非参照）を追加。並び順はUI表示時の
+ * ソートのみ（ログのpick対象はplayerIdなので順序変更はシム結果に非干渉）。
  */
 function showManagerDecisionModal(decision) {
   const gs = game.gs;
@@ -2449,23 +2510,19 @@ function showManagerDecisionModal(decision) {
   ]));
   if (kind === 'ph') {
     const batter = state.byId.get(situ.batterId);
-    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打）`));
-    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
-      const p = state.byId.get(pid);
-      const label = `${pname(pid)}（${p ? posJP(primaryPos(p)) : ''}${p ? handLabel(p.bats) : ''}打）`;
-      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
-    })));
+    const cur = mgrCandidateInfo(gs, decision, situ.batterId);
+    const curTags = [cur.platoon, cur.formArrow].filter(Boolean);
+    box.append(el('p', {}, `打席: ${pname(situ.batterId)}（${batter ? posJP(primaryPos(batter)) : ''}${batter ? handLabel(batter.bats) : ''}打） ${cur.statText}${curTags.length ? '　' + curTags.join(' ') : ''}`));
+    const rows = candidates.map((pid) => mgrCandidateInfo(gs, decision, pid)).sort((a, b) => b.sortKey - a.sortKey);
+    box.append(el('div', { class: 'mgrcandlist' }, rows.map((c) => mgrCandidateRow(c, submit, false))));
     box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, 'そのまま打たせる')]));
   } else {
     const pit = state.byId.get(situ.pitcherId);
     box.append(el('p', {}, `現投手: ${pname(situ.pitcherId)}（${situ.pitches}球 ${situ.runs}失点）${pit ? handLabel(pit.throws) + '投' : ''}`));
     // Q9: 投手心情コメント（当季観測のみ・hashSeed独立座標のテンプレ・乱数消費/シム結果に非干渉）。
     box.append(el('p', { class: 'muted' }, `💬 ${pitcherMoodComment(gs, situ)}`));
-    box.append(el('div', { class: 'row', style: 'flex-wrap:wrap' }, candidates.map((pid) => {
-      const p = state.byId.get(pid);
-      const label = `${pname(pid)}（${p ? handLabel(p.throws) + '投' : ''}）`;
-      return el('button', { class: 'mgrcandidate', onclick: () => submit(pid) }, label);
-    })));
+    const rows = candidates.map((pid) => mgrCandidateInfo(gs, decision, pid)).sort((a, b) => a.sortKey - b.sortKey);
+    box.append(el('div', { class: 'mgrcandlist' }, rows.map((c) => mgrCandidateRow(c, submit, true))));
     box.append(el('div', { class: 'row' }, [el('button', { class: 'primary', onclick: () => submit(null) }, '続投')]));
   }
   box.append(el('div', { class: 'row' }, [
@@ -2568,12 +2625,17 @@ function showAdvanceDigest(gs, snap) {
     box.append(el('div', {}, `順位: ${snap.rank.rank}位 → ${after.rank}位（${after.total}球団中）`));
   }
   // P2: 直近試合の勝因/敗因カード（旧セーブ等で box.wpaTop/wpaBottom が無ければ additive にスキップ）。
-  const lastBox = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1].box : null;
+  // P1-5: ⚡タグ（自分の采配指示の直後のプレー）を介入ログと突き合わせて判定する。
+  const lastRec = rt.playerGameLog.length ? rt.playerGameLog[rt.playerGameLog.length - 1] : null;
+  const lastBox = lastRec ? lastRec.box : null;
   if (lastBox?.wpaTop && lastBox?.wpaBottom) {
+    const lastIv = (gs.gameInterventions || []).filter((x) => x.year === gs.year && x.day === lastRec.day);
+    const topTag = wpaIsAfterIntervention(lastBox.wpaTop, lastIv, lastBox);
+    const bottomTag = wpaIsAfterIntervention(lastBox.wpaBottom, lastIv, lastBox);
     box.append(el('h3', { class: 'leaguename' }, '⚔ 直近試合の勝因/敗因'));
     box.append(el('div', { class: 'newsfeed' }, [
-      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps())]),
-      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps())]),
+      el('div', { class: 'newsrow good' }, ['勝因: ', ...schedWpaParts(lastBox.wpaTop, scheduleDeps(), topTag)]),
+      el('div', { class: 'newsrow bad' }, ['敗因: ', ...schedWpaParts(lastBox.wpaBottom, scheduleDeps(), bottomTag)]),
     ]));
   }
   // P3: この進行で新たに確定した週次目標の達成/失敗（即時フィードバック）。

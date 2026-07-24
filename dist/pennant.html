@@ -1476,10 +1476,11 @@ const TUNING_DEFAULT = {
     twoStrikeSwingW: 0.20, // 2ストライクの保護スイング増（全帯・B1較正: 0.11→0.20。当てにいく→ファウル粘り）
     threeOhTakeW: 0.42, // 3-0での自重（スイング率減）
     // --- スイング時の空振り ---
-    whiffZoneBase: 0.181, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。0.9.1: →0.185。
+    whiffZoneBase: 0.1825, // ゾーン内スイングの空振り基準（B1較正: 0.095→0.175。0.9.1: →0.185。
     //   帯再配分で空振りの多いchase swingが減った分をゾーン内で補い Contact%[75,81] を維持。
     //   F2-5: whiffPitchW引上げ(0.006→0.008)が選抜後の上澄みリーグでK%を押し上げるため基準3本を引下げて相殺。
-    //   苗字プール拡張較正（2026-07-20）: zoneBase引上げでContact%が0.811と帯上限を微超過→+0.002で相殺）
+    //   苗字プール拡張較正（2026-07-20）: zoneBase引上げでContact%が0.811と帯上限を微超過→+0.002で相殺。
+    //   采配妥当性ゲート較正（2026-07-23）: バント2ゲートの引き直しでContact%が0.810と帯上端を微超過→+0.0015で相殺）
     whiffBorderBase: 0.303, // ボーダー帯スイングの空振り基準（B1較正: 0.16→0.27。0.9.1: →0.32。F2-5: →0.303・同上）
     whiffOBase: 0.417, // ボール球スイング（chase）の空振り基準（B1較正: 0.26→0.38。0.9.1: →0.44。F2-5: →0.417・同上）
     whiffPitchW: 0.008, // 球種whiff(50中心)→空振り増（F2-5: 0.006→0.008。29人選抜でエースの相対K優位が
@@ -1539,6 +1540,8 @@ const TUNING_DEFAULT = {
   },
 
   // 犠打（S2 maybeBunt が消費。§S2-4）: 試行判断・結果テーブル。2ストライク概念はフェーズB。
+  // §tactics_re（2026-07-23）: attemptProb は RE(得点期待値)比較の decisionScore で駆動する
+  // （buntDecisionScore・manager.mjs）。attemptBase は decisionScore=0 相当時の基準率として残す。
   bunt: {
     successProb: 0.78, // 成功（走者進塁・打者アウト・sh++・ABなし）
     failProb: 0.12, // 失敗（先頭走者アウト）。残り＝内野安打
@@ -1552,6 +1555,10 @@ const TUNING_DEFAULT = {
     pitcherMaxScoreDiff: 6, // 投手はこの点差以内でのみバント（大差では打たせる。野手より広い）
     weakBatterWoba: 0.3, // 「非強打者」の目安（観測wOBAがこれ未満）※S2予備調整
     pitches: 2.5, // バント打席の投球数近似（S2）
+    // --- §tactics_re: RE(得点期待値)比較の重み ---
+    reScale: 4.4, // ΔRE(runs)→logit変換スケール ※tactics_re較正
+    npbBias: 0.75, // NPBの監督はRE最適より多く送る（セ寄りの犠打文化）へ寄せる加算logit ※tactics_re較正
+    nextBatterW: 0.55, // 次打者観測wOBAの寄与重み（バントが次打者へ渡す得点圏の価値の按分）
   },
 
   // 敬遠（S2 maybeIBB が消費。§S2-5）: 一塁空き×2死or一死×終盤接戦×強打者（or次打者が投手）。
@@ -1562,6 +1569,50 @@ const TUNING_DEFAULT = {
     maxScoreDiff: 2, // 接戦のみ
     strongBatterWoba: 0.36, // 「強打者」の目安（観測wOBA上位）
     pitches: 4, // 敬遠の投球数（ボール4球）
+  },
+
+  // §tactics_re（2026-07-23・ユーザー指示「得点期待値を考えて比較。プログラムでできるはず」）:
+  // 「監督の頭の中のRE表」＝ 24状態(塁8×アウト3)の得点期待値。バント/敬遠のRE比較判断
+  // （manager.mjs buntAttemptProb/buntDecisionScore・ibbProb）と盗塁の損益分岐ゲート
+  // （stealLogitAdjust）が参照する。実際の監督も現在シーズンの途中経過から毎回RE表を
+  // 再計算はしない＝固定較正値として持たせる（鉄則2「config集約」＝この表もtuningの一部）。
+  //
+  // 【導出手順（再導出可能性の担保）】この表自体がバント/敬遠/盗塁の判断に使われる＝RE表を
+  // 変えると採る戦術が変わりゲーム内乱数消費列も変わる自己参照構造のため、単一seedでは希少状態
+  // （0死3塁単独・0死満塁など年間数百例の状態）の推定が振れる。8seed平均で実測→config反映→
+  // 再実測を数周（今回3周）繰り返して収束させた（残差 |diff| は概ね<0.05・最大でも<0.15）:
+  //   const SEEDS = [2026,2027,2028,2029,2030,2031,2032,2033];
+  //   const cfg = createConfig({}); // その時点のconfig（reTableは前回値）を使って参照走行
+  //   const sums = new Array(24).fill(0);
+  //   for (const seed of SEEDS) {
+  //     const lg = generateLeague(seed, cfg);
+  //     const res = simulateSeason(lg, cfg, { season: 2026, seed, postseason: false, context: true });
+  //     for (let i = 0; i < 24; i++) sums[i] += res.contextTables.re[i];
+  //   }
+  //   const avg = sums.map((x) => Math.round((x / SEEDS.length) * 1000) / 1000); // → 下記reTableへ貼る
+  //   // これを新しいreTableとしてconfigへ反映し、収束するまで再実行（今回3周）。
+  // 【導出時seed】2026-2033（上記8シード平均・季節=2026固定）。
+  // 【実測値（2026-07-23 導出・3周収束後）】
+  //   outs=0: [0.461, 0.816, 1.004, 1.390, 1.225, 1.602, 1.827, 2.217]
+  //   outs=1: [0.249, 0.480, 0.647, 0.856, 0.813, 1.051, 1.262, 1.486]
+  //   outs=2: [0.096, 0.211, 0.313, 0.439, 0.384, 0.482, 0.597, 0.789]
+  //   （breakeven盗塁成功率が0.71〜0.75前後と算出され、既存 steal.successBase=0.72 の
+  //     「損益分岐~70%近辺」という設計コメントと自然に一致＝この参照RE表がシムの内部整合性と
+  //     噛み合っている根拠。test/tactics_re.test.mjs も同じ8seed平均で近似一致±0.15を検証）。
+  tactics: {
+    reTable: [
+      0.461, 0.816, 1.004, 1.390, 1.225, 1.602, 1.827, 2.217,
+      0.249, 0.480, 0.647, 0.856, 0.813, 1.051, 1.262, 1.486,
+      0.096, 0.211, 0.313, 0.439, 0.384, 0.482, 0.597, 0.789,
+    ],
+    // IBBによるRE増（=守備側のRE損）がこれを超える局面は禁止。ibbProbの成立条件（bases[0]空き
+    // ×得点圏あり）では、この engine の IBB は定義上つねに満塁化を伴う（1塁を歩かせて埋める）ため、
+    // 「満塁化=つねに発生する通常ケース」であって「例外的にRE損が大きすぎる異常値」ではない。
+    // よって閾値は実測ΔRE（一死: 二塁単独0.209/二三塁0.224/三塁単独0.238・二死: 0.126/0.192/0.098）
+    // の最大値より十分高く取り、通常運用では作動しない「軽いサニティゲート」（既存の較正済み
+    // 敬遠帯[10,40]/球団を壊さない・保険専用）として持たせる。RE表が将来大きく動いた場合や、
+    // ibbProbのゲート条件が緩和された場合の異常値だけを弾く安全弁。
+    ibbMaxReLoss: 0.30,
   },
 
   // 交代（S2 代打/代走/守備固め。§S2-3）
@@ -1800,6 +1851,9 @@ const TUNING_DEFAULT = {
     gateBigDiff: 5, // 大差の目安（±この点差以上では走らない）
     gateBigDiffLogit: 1.6, // 大差時の試行logit減
     gateStrong2OutLogit: 0.8, // 2死×強打者（観測wOBA上位）での自重logit減
+    // --- §tactics_re: 損益分岐サニティゲート（stealLogitAdjust。全面置換ではなく追加のロジット減点） ---
+    breakevenGapGate: 0.05, // breakeven−推定成功率 がこれを超えたら減点開始（僅差は無視）
+    breakevenLogit: 3.5, // gate超過分1.0あたりのlogit減点（実際の超過幅は0〜0.3程度・下記reTable参照）
   },
   // 走塁 run値（§6）。NPB寄り: SB≈+0.19 / CS≈−0.38。UBRは走者Speed/IQで進塁確率を上下（2-5）。
   // ubr系はS5較正（BsR裾）。runUBR1t3b/runUBRTakerTagは§req_20260708新設シナリオの
@@ -1860,7 +1914,9 @@ const TUNING_DEFAULT = {
     //   0.022 で UZR上位≈+15（FanGraphs のゴールドグラブ級）かつ |xwOBA−wOBA| ≤ 0.003 に収まる。
     //   R2再較正: 0.022→0.019。年齢構造の導入で守備素材(reaction/hands)の分散が広がり、
     //   |xwOBA−wOBA| が恒等の帯(0.003)を割ったぶんを個人差側で吸収する（UZR帯は余裕あり）。
-    smaxPerRating: 0.019,
+    //   采配妥当性ゲート導入（2026-07-23 バント2ゲート＝乱数列の引き直し）で 0.0033 と帯端を
+    //   1割超過→0.019→0.018（同じ機序の1ノッチ・UZR帯は依然余裕）。
+    smaxPerRating: 0.018,
     width: 1.05, // 到達ロジスティックの幅 m/s。小さいほど p が両極化する ※較正対象
     reactionS: 0.3, // 初動までの反応時間 s
     reachM: 1.7, // グラブ＋ダイブの到達半径 m
@@ -5879,17 +5935,98 @@ function availableRelievers(side) {
   return side.bullpen.filter((pid) => !side.usedPitchers.has(pid) && !side.retired.has(pid));
 }
 
+// --- RE（得点期待値）表 §tactics_re -------------------------------------------
+//
+// 「監督の頭の中のRE表」（cfg.tuning.tactics.reTable・24状態=塁8×アウト3・導出手順は
+// config.mjs のコメント参照）を使い、バント/敬遠/盗塁の戦術判断をRE比較で駆動する。
+// index式は context.mjs の ctxReIndex (outs*8+base) と完全に一致させる（import循環回避の
+// ため自前定義。test/tactics_re.test.mjs で context.deriveTables の実測と近似一致を検証）。
+
+/** RE表のインデックス（塁ビット0..7 × アウト0..2）。context.mjs ctxReIndex と同一式。 */
+function tacticsReIndex(base, outs) {
+  return outs * 8 + base;
+}
+
+/** RE表から値を引く（範囲外アウト=3アウト後=回終了はRE0として扱う）。 */
+function reAt(reTable, base, outs) {
+  if (outs >= 3) return 0;
+  return reTable[tacticsReIndex(base, outs)] ?? 0;
+}
+
+/** situ.bases（[1B,2B,3B]の走者id/null配列）→ 塁状況ビット（game.mjs baseBits と同一規則）。 */
+function tacticsBaseBits(bases) {
+  return (bases[0] ? 1 : 0) | (bases[1] ? 2 : 0) | (bases[2] ? 4 : 0);
+}
+
+/**
+ * 犠打3遷移（成功/失敗/内野安打）後の塁状況ビットを、resolveBunt（sim/game.mjs）の実挙動と
+ * 一致させて返す。バント局面は三塁走者なし=bits∈{1,2,3}のみ（buntAttemptProbの成立条件で保証）。
+ *   成功: 全走者が1つずつ進塁・打者アウト（resolveBuntのsuccessProb分岐と一致）
+ *   失敗: R1がいればフォースで先頭の強制走者アウト・打者は一塁生還（FC）。R2単独はフォース
+ *     不成立＝打者が普通にアウトになるだけで走者は動かない（resolveBuntのfailProb分岐と一致）
+ *   内野安打: 全走者1つ進塁＋打者一塁（resolveBuntのhitProb分岐と一致）
+ * export: test/tactics_re.test.mjs が resolveBunt（sim/game.mjs）の実挙動と突き合わせて検証する。
+ */
+function buntTransitionBits(bits) {
+  const success = bits === 1 ? 2 : bits === 2 ? 4 : bits === 3 ? 6 : bits;
+  const fail = bits === 1 ? 1 : bits === 2 ? 2 : bits === 3 ? 3 : bits;
+  const hit = bits === 1 ? 3 : bits === 2 ? 5 : bits === 3 ? 7 : bits;
+  return { success, fail, hit };
+}
+
+/**
+ * 犠打のRE比較 decisionScore（§tactics_re タスク2）。正で「送った方が得点期待価値が高い」。
+ * gate系（2死/強打者/投手打席/大差 等）は buntAttemptProb 側で処理済みの生の値＝テスト用に公開。
+ *   ΔRE_bunt = Σ_outcome prob×[RE(遷移先) − RE(now)]（resolveBuntの遷移と一致・buntTransitionBits）
+ *   ΔRE_swing = (batterWoba−wobaPrior)/wobaScale相当（打者が打席に立つ場合の期待run価値の近似）
+ *   nextAdj  = (nextBatterWoba−wobaPrior)/wobaScale相当 × nextBatterW（次打者へ渡す得点圏の価値。
+ *     nextIsPitcherはこの項で自然に強い減点になる＝投手の観測wOBAは極端に低い）
+ * @param {number} bits 現在の塁状況ビット（1=1B,2=2B,4=3B）
+ * @param {number} outs 現在アウト数（0 or 1）
+ * @param {number} batterWoba 打者の観測wOBA
+ * @param {number} nextBatterWoba 次打者の観測wOBA
+ */
+function buntDecisionScore(bits, outs, batterWoba, nextBatterWoba, cfg) {
+  const t = cfg.tuning.bunt;
+  const m = cfg.tuning.mgr;
+  const reTable = cfg.tuning.tactics.reTable;
+  const reNow = reAt(reTable, bits, outs);
+  const trans = buntTransitionBits(bits);
+  const dReBunt =
+    t.successProb * (reAt(reTable, trans.success, outs + 1) - reNow) +
+    t.failProb * (reAt(reTable, trans.fail, outs + 1) - reNow) +
+    t.hitProb * (reAt(reTable, trans.hit, outs) - reNow);
+  const dReSwing = (batterWoba - m.wobaPrior) / m.wobaScale;
+  const nextAdj = ((nextBatterWoba - m.wobaPrior) / m.wobaScale) * t.nextBatterW;
+  return dReBunt - dReSwing + nextAdj;
+}
+
 // --- 盗塁の采配ゲート（§S2-6） ----------------------------------------------
 
 /**
  * 盗塁試行への監督ゲート（logit加算値）。stealTend の個性＋状況ゲート:
- * 大差（±gateBigDiff以上）では走らない / 2死×強打者では自重。
+ * 大差（±gateBigDiff以上）では走らない / 2死×強打者では自重 / §tactics_re タスク3:
+ * 損益分岐サニティゲート＝推定成功率(situ.estSuccessProb)がRE損益分岐を大きく下回れば自重
+ * （breakeven = [RE(now)−RE(失敗後)] / [RE(成功後)−RE(失敗後)]。盗塁の試行/成否モデル自体は
+ * 全面置換しない＝発現帯を壊さない追加のロジット減点のみ）。
  */
 function stealLogitAdjust(manager, situ, cfg) {
   const s = cfg.tuning.steal;
   let adj = ratingDelta(manager.stealTend, s.tendW);
   if (Math.abs(situ.scoreDiff) >= s.gateBigDiff) adj -= s.gateBigDiffLogit;
   if (situ.outs === 2 && situ.batterWoba >= cfg.tuning.ibb.strongBatterWoba) adj -= s.gateStrong2OutLogit;
+  if (situ.estSuccessProb != null) {
+    const reTable = cfg.tuning.tactics.reTable;
+    const reNow = reAt(reTable, 1, situ.outs); // 一塁走者のみ（盗塁の成立条件）
+    const reSucc = reAt(reTable, 2, situ.outs); // 成功=二塁へ
+    const reFail = reAt(reTable, 0, situ.outs + 1); // 失敗=走者アウト・アウト+1
+    const denom = reSucc - reFail;
+    if (denom > 0) {
+      const breakeven = (reNow - reFail) / denom;
+      const gap = breakeven - situ.estSuccessProb - s.breakevenGapGate;
+      if (gap > 0) adj -= s.breakevenLogit * gap;
+    }
+  }
   return adj;
 }
 
@@ -5897,7 +6034,13 @@ function stealLogitAdjust(manager, situ, cfg) {
 
 /**
  * 犠打の試行確率。局面不成立（2死/三塁走者あり/走者なし）は0。
- * 投手打席はほぼ必ずバント。野手は接戦×非強打者（観測wOBA）×監督buntTend。
+ * 投手打席はほぼ必ずバント。野手は接戦×非強打者（観測wOBA）×監督buntTend×RE比較（§tactics_re）。
+ * 采配妥当性の保険ゲート（原則②・ユーザー指摘 2026-07-23「一死二塁で投手の前の打者が送りバント」）:
+ *   - 一死×二塁単独: 野手には送らせない。成功しても二死三塁でほぼ常に得点期待の損＝実NPBでも
+ *     まず見ない采配。無死二塁は従来どおり許可。投手打席は従来どおり。
+ *   - 次打者が投手: 野手には送らせない（「投手の前の8番に送らせる」悪手の根絶）。
+ *   両ゲートとも buntDecisionScore のRE比較だけで自然に負（送らない）へ寄ることを
+ *   test/tactics_re.test.mjs で検証済み＝ここでは計算コスト削減と保険を兼ねた明示的早期returnとして残す。
  */
 function buntAttemptProb(situ, cfg) {
   const t = cfg.tuning.bunt;
@@ -5907,9 +6050,16 @@ function buntAttemptProb(situ, cfg) {
     // 投手は野手より広い点差でバントするが、大差では打たせる（点差ゲートを先に評価）
     return Math.abs(situ.scoreDiff) > t.pitcherMaxScoreDiff ? 0 : t.pitcherAttempt;
   }
+  if (!situ.bases[0] && situ.bases[1] && situ.outs >= 1) return 0; // 一死×二塁単独（保険ゲート・上記）
+  if (situ.nextIsPitcher) return 0; // 次打者が投手（保険ゲート・上記）
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (situ.batterWoba >= t.weakBatterWoba) return 0; // 強打者にはバントさせない
-  return expit(logit(t.attemptBase) + ratingDelta(situ.manager.buntTend, t.tendW));
+  const bits = tacticsBaseBits(situ.bases);
+  const nextWoba = situ.nextBatterWoba ?? cfg.tuning.mgr.wobaPrior;
+  const decisionScore = buntDecisionScore(bits, situ.outs, situ.batterWoba, nextWoba, cfg);
+  return expit(
+    logit(t.attemptBase) + t.reScale * decisionScore + t.npbBias + ratingDelta(situ.manager.buntTend, t.tendW),
+  );
 }
 
 // --- 敬遠（§S2-5） -----------------------------------------------------------
@@ -5917,6 +6067,10 @@ function buntAttemptProb(situ, cfg) {
 /**
  * 敬遠の実施確率（守備側監督の判断）。一塁空き×一死or二死×終盤接戦×
  * （強打者 or 次打者が投手）でのみ正の値。
+ * §tactics_re タスク3: RE損益のサニティゲート（軽量・既存条件は維持）。IBBは常にRE損
+ * （走者を無償で増やす＝一塁を歩かせて埋める＝この関数の成立条件上つねに満塁化を伴う）。
+ * ibbMaxReLoss はこのRE損の異常値だけを弾く保険（通常の較正済み運用では作動しない・
+ * config.mjs のコメント参照）。既存の強打者/終盤接戦などの条件は維持。
  */
 function ibbProb(situ, cfg) {
   const t = cfg.tuning.ibb;
@@ -5926,6 +6080,10 @@ function ibbProb(situ, cfg) {
   if (!situ.bases[1] && !situ.bases[2]) return 0; // 得点圏に走者がいる時のみ
   if (Math.abs(situ.scoreDiff) > t.maxScoreDiff) return 0;
   if (!(situ.batterWoba >= t.strongBatterWoba || situ.nextIsPitcher)) return 0;
+  const tt = cfg.tuning.tactics;
+  const bits = tacticsBaseBits(situ.bases);
+  const dRE = reAt(tt.reTable, bits | 1, situ.outs) - reAt(tt.reTable, bits, situ.outs);
+  if (dRE > tt.ibbMaxReLoss) return 0; // RE損の異常値のみ禁止（保険）
   return expit(logit(t.base) + ratingDelta(situ.manager.ibbTend, t.tendW));
 }
 
@@ -6910,7 +7068,8 @@ function baseBits(bases) {
 
 /**
  * 盗塁の試行・成否（§6 wSB）。走者Steal/Speed × 投手Hold × 捕手Arm。outs を返す。
- * S2: 監督stealTend×状況の采配ゲート（大差では走らない・2死×強打者では自重）を乗せる。
+ * S2: 監督stealTend×状況の采配ゲート（大差では走らない・2死×強打者では自重・
+ * §tactics_re: RE損益分岐を大きく下回れば自重）を乗せる。
  */
 function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning, half) {
   if (!bases[0] || bases[1]) return outs; // 一塁走者かつ二塁が空いている時のみ
@@ -6919,12 +7078,25 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning,
   const br = runner.trueAbility.baserunning;
   const sp = runner.trueAbility.common.speed;
 
+  // 成功確率（走者Steal/Speed↑、投手Hold↑・捕手Arm↑で↓）: §tactics_re の損益分岐ゲートが
+  // 試行判断にも使うため乱数を消費せず先に算出する（後段の成否判定と同じ式を再利用＝rng消費地点は不変）。
+  const pitcher = fielding.byId.get(fielding.curPid);
+  const catcher = fielding.byId.get(fielding.defense.C);
+  const succ = expit(
+    logit(s.successBase) +
+      ratingDelta(br.steal, s.stealSlope) +
+      ratingDelta(sp, s.stealSlope * 0.6) -
+      ratingDelta(pitcher.trueAbility.pitching.hold, s.holdSlope) -
+      ratingDelta(catcher ? catcher.trueAbility.common.arm : 50, s.armSlope),
+  );
+
   // 采配ゲート（§S2-6）: 打者の強弱は観測wOBA（三層構造: 真値は見ない）
   const batterId = batting.slots[batting.orderIdx].playerId;
   const situ = {
     scoreDiff: batting.score - fielding.score,
     outs,
     batterWoba: observedWoba(statFor(batterId, batting.teamId).batting, cfg),
+    estSuccessProb: succ, // §tactics_re: 損益分岐サニティゲート用
   };
 
   // 試行判断: 走者のSteal/Speedが高いほど走る × 監督ゲート
@@ -6935,17 +7107,6 @@ function attemptSteal(batting, fielding, bases, outs, statFor, cfg, rng, inning,
       stealLogitAdjust(batting.manager, situ, cfg),
   );
   if (rng.next() >= aggr) return outs;
-
-  // 成功確率: 走者Steal/Speed↑、投手Hold↑・捕手Arm↑で↓
-  const pitcher = fielding.byId.get(fielding.curPid);
-  const catcher = fielding.byId.get(fielding.defense.C);
-  const succ = expit(
-    logit(s.successBase) +
-      ratingDelta(br.steal, s.stealSlope) +
-      ratingDelta(sp, s.stealSlope * 0.6) -
-      ratingDelta(pitcher.trueAbility.pitching.hold, s.holdSlope) -
-      ratingDelta(catcher ? catcher.trueAbility.common.arm : 50, s.armSlope),
-  );
 
   const rStat = statFor(bases[0], batting.teamId);
   const catcherId = fielding.defense.C; // rSB（捕手盗塁阻止run・§B3b）の帰属先
@@ -7186,6 +7347,7 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const batterIsPitcher = batting.orderIdx === batting.pitcherSlot && batterId === batting.curPid;
     const nextIdx = (batting.orderIdx + 1) % 9;
     const nextIsPitcher = nextIdx === batting.pitcherSlot && batting.slots[nextIdx].playerId === batting.curPid;
+    const nextBatterId = batting.slots[nextIdx].playerId; // §tactics_re: バントのnextAdj用（次打者の観測wOBA）
     batting.orderIdx = nextIdx;
     const batter = batting.byId.get(batterId);
     const pitcher = fielding.byId.get(fielding.curPid);
@@ -7193,6 +7355,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
     const bStat = statFor(batterId, batting.teamId);
     const pStat = statFor(fielding.curPid, fielding.teamId);
     const batterWoba = observedWoba(bStat.batting, cfg); // 采配用の観測評価（真値は見ない）
+    // §tactics_re: 次打者の観測wOBA（バントのnextAdj。次打者が投手なら統計上ほぼ確実に低wOBA）
+    const nextBatterWoba = nextBatterId ? observedWoba(statFor(nextBatterId, batting.teamId).batting, cfg) : cfg.tuning.mgr.wobaPrior;
 
     // 観戦実況（E2・乱数非消費）: 打席開始＝「◇ 打者 対 投手」行と盤面（走者/アウト/カウント初期化）の素データ。
     if (fielding.onEvent) {
@@ -7243,6 +7407,8 @@ function playHalf(batting, fielding, cfg, rng, statFor, park, walkoff, onBattedB
           scoreDiff: batting.score - fielding.score,
           batterWoba,
           isPitcher: batterIsPitcher,
+          nextIsPitcher, // 采配妥当性の保険ゲート（原則②）: 次打者が投手なら野手に送らせない（8番バント根絶）
+          nextBatterWoba, // §tactics_re: RE比較のnextAdj（次打者へ渡す得点圏の価値）
         },
         cfg,
       );
@@ -20924,10 +21090,11 @@ const teamTabView = {
 };
 
 // 列定義 [key, label, align]（phaseE_spec E1 の列構成）。
+// ★ユーザー指摘「走塁指標も指標のとこに出てない」対応: WAR列の隣にBsR列（走塁の総合run換算）を追加。
 const TEAM_BAT_COLS = [
   ['name', '選手', 'left'], ['pos', '位置', 'left'], ['age', '年齢'], ['pa', '打席'],
   ['avg', '打率'], ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['hr', '本'], ['rbi', '打点'], ['sb', '盗塁'],
-  ['wrcPlus', 'wRC+'], ['war', 'WAR'], ['grade', '等級'], ['status', '状態', 'left'],
+  ['wrcPlus', 'wRC+'], ['war', 'WAR'], ['bsr', 'BsR'], ['grade', '等級'], ['status', '状態', 'left'],
 ];
 const TEAM_PIT_COLS = [
   ['name', '選手', 'left'], ['prole', '役割', 'left'], ['age', '年齢'], ['g', '登板'], ['ip', '回'],
@@ -20952,7 +21119,7 @@ const FARM_PIT_COLS = [
 // セル書式（キー別）。無観測（null）は '-'。
 const TEAM_COL_FMT3 = new Set(['avg', 'obp', 'slg', 'ops']);
 const TEAM_COL_F2 = new Set(['era', 'fip', 'whip']);
-const TEAM_COL_F1 = new Set(['uzr', 'bsr']); // R4: 二軍の守備/走塁（得点値・小数1桁）
+const TEAM_COL_F1 = new Set(['uzr', 'bsr']); // R4: 二軍の守備/走塁 ＋ 一軍のBsR（得点値・小数1桁）
 const TEAM_COL_PCT = new Set(['kbbPct']);
 const TEAM_COL_ASC = new Set(['era', 'fip', 'whip', 'age']); // クリック時に昇順が自然な列
 
@@ -21090,6 +21257,7 @@ function buildTeamRosterRows(players, u, formMap = null, gs = null) {
         hr: m ? m.hr : null, rbi: m ? m.rbi : null, sb: m ? m.sb : null,
         wrcPlus: m ? finiteOrNull(m.wrcPlus) : null,
         war: has ? finiteOrNull(hitterWAR(s, state.cfg, state.lc).war) : null,
+        bsr: has ? finiteOrNull(playerBaserunning(s, state.cfg, state.lc).bsr) : null,
         grade, status,
       });
     }
@@ -22492,6 +22660,9 @@ const TIP = {
   barrelPct: 'Barrel%: 最も安打/長打になりやすいEV×角度帯に入った打球の割合。強打者ほど高い。',
   hardHitPct: 'HardHit%: 打球速度152km/h(約95mph)以上の割合＝強い打球を打つ頻度。',
   bsr: 'BsR: 走塁の総合得点貢献（盗塁wSB＋進塁UBR＋併殺回避wGDP）。0が平均。',
+  cs: '盗塁死(CS): 盗塁を試みて刺殺された回数。',
+  sbPct: '盗塁%: 盗塁企図(SB+CS)のうち成功した割合。企図が無い選手は「-」。',
+  xbt: 'XBT%（追加進塁率）: 走者として先の塁を狙える場面で、実際に一つ先まで進めた割合（advTaken/advOpp）。Spd指標のような守備位置ルックアップは使わない一次観測値。',
   wpa: 'WPA: 各打席で動いた勝利確率の累計。勝負所での貢献が大きく効く文脈指標。',
   clutch: 'Clutch: 場面の重み(LI)を除いた勝負強さ。プラスで大事な局面に強い。',
   bbPct: 'BB%: 四球÷打席。選球眼の指標。',
@@ -22775,11 +22946,13 @@ function renderPostseasonPanel(c) {
 // --- 打撃 -----------------------------------------------------------------
 const BAT_COLS = [
   ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['pos', '守', 'left'],
-  ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'],
+  ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'], ['cs', '盗塁死'],
   ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['woba', 'wOBA'], ['xwoba', 'xwOBA'],
   ['wrcPlus', 'wRC+'], ['wrcPlusPF', 'wRC+PF'], ['opsPlus', 'OPS+'], ['iso', 'ISO'],
   ['barrelPct', 'Barrel%'], ['hardHitPct', 'HardHit%'],
-  ['bsr', 'BsR'], ['wpa', 'WPA'], ['clutch', 'Clutch'], ['bbPct', 'BB%'], ['kPct', 'K%'],
+  // 走塁指標（ユーザー指摘「走塁指標も指標のとこに出てない」への対応）: 盗塁成功率・XBT%（追加進塁率）・BsR。
+  ['bsr', 'BsR'], ['sbPct', '盗塁%'], ['xbt', 'XBT%'],
+  ['wpa', 'WPA'], ['clutch', 'Clutch'], ['bbPct', 'BB%'], ['kPct', 'K%'],
   ['sh', '犠打'], ['ibb', '敬遠'], ['ph', '代打'], // S4: 采配の発現（SH/IBB/PH）
 ];
 // G3: 規定ライン（NPB: 打席=試合数×3.1 / 投球回=試合数×1.0）。シーズン途中は消化試合に比例させ、
@@ -22800,6 +22973,9 @@ const QUALIFY_EMPTY_MSG = '規定到達者がまだいません（規定打席=�
 const BAT_COL_GROUPS = [
   ['basic', '基本', ['name', 'team', 'pos', 'war', 'pa', 'avg', 'hr', 'rbi', 'sb', 'obp', 'slg', 'ops']],
   ['saber', 'セイバー', ['name', 'team', 'woba', 'xwoba', 'wrcPlus', 'wrcPlusPF', 'opsPlus', 'iso', 'bsr', 'war']],
+  // 走塁（ユーザー指摘対応）: 打撃サブタブに専用の列グループとして追加（打者専用の指標のため打撃タブに同居させるのが自然。
+  // G5a の既存列グループ流儀をそのまま踏襲＝新規サブタブは作らない）。
+  ['run', '走塁', ['name', 'team', 'sb', 'cs', 'sbPct', 'xbt', 'bsr', 'war']],
   ['batted', '打球', ['name', 'team', 'barrelPct', 'hardHitPct', 'bbPct', 'kPct']],
   ['ctx', '文脈', ['name', 'team', 'wpa', 'clutch', 'sh', 'ibb', 'ph']],
   ['all', '全列', null], // null=BAT_COLS全体をそのまま使う
@@ -22822,14 +22998,19 @@ function renderBatting(c) {
       const m = playerBatting(s, state.lc);
       const p = state.byId.get(s.playerId);
       const war = p.role === 'fielder' ? hitterWAR(s, state.cfg, state.lc).war : 0;
-      const bsr = playerBaserunning(s, state.cfg, state.lc).bsr;
+      // 走塁指標（playerBaserunning。§6・観測集計のみ＝真値非参照）: BsRに加えCS/盗塁成功率/XBT%も表へ出す。
+      const br = playerBaserunning(s, state.cfg, state.lc);
       const b = s.batting;
-      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, teamId: s.teamId, pos: primaryPos(p), war, bsr, sh: b.sh, ibb: b.ibb, ph: b.ph, ...m };
+      return {
+        id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, teamId: s.teamId, pos: primaryPos(p), war,
+        bsr: br.bsr, cs: br.cs, sbPct: (br.sb + br.cs) > 0 ? br.sbPct : null, xbt: br.advOpp > 0 ? br.xbt : null,
+        sh: b.sh, ibb: b.ibb, ph: b.ph, ...m,
+      };
     });
-  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct'], 'war', 1, {
+  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct', 'sbPct', 'xbt'], 'war', 1, {
     emptyMsg: QUALIFY_EMPTY_MSG, groups: BAT_COL_GROUPS, getGroup: () => batColGroup, setGroup: (k) => { batColGroup = k; },
     // UI刷新4: リーグ内百分位ヒート（FanGraphs流）。K%のみ低いほど良い
-    heat: { war: 1, avg: 1, obp: 1, slg: 1, ops: 1, woba: 1, xwoba: 1, wrcPlus: 1, wrcPlusPF: 1, opsPlus: 1, iso: 1, barrelPct: 1, hardHitPct: 1, bsr: 1, wpa: 1, bbPct: 1, kPct: -1 },
+    heat: { war: 1, avg: 1, obp: 1, slg: 1, ops: 1, woba: 1, xwoba: 1, wrcPlus: 1, wrcPlusPF: 1, opsPlus: 1, iso: 1, barrelPct: 1, hardHitPct: 1, bsr: 1, sbPct: 1, xbt: 1, wpa: 1, bbPct: 1, kPct: -1 },
   }));
 }
 
@@ -22931,6 +23112,8 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id, navIds) }, curCols.map(([k, , align]) => {
       if (k === 'team') return teamCell(d, align); // G5a: 略称チップ（teamIdが無ければ文字列フォールバック）
       let v = d[k];
+      // 走塁XBT%/盗塁%等: 機会0（無観測）は0%ではなく null で来る＝'-'表示（0除算由来の誤解を避ける）。
+      if (v == null) return el('td', { class: align || '' }, '-');
       // ヒート帯の判定は生値で行う（表示用フォーマット前）
       let heatCls = '';
       if (heat && heat[k] && typeof v === 'number' && Number.isFinite(v)) {
@@ -23091,6 +23274,16 @@ function renderModalBasic(box, p, s, isPitcher) {
     const w = hitterWAR(s, state.cfg, state.lc);
     box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `WAR ${w.war.toFixed(1)} 内訳`));
     box.append(kv([['打wRAA', w.wraa.toFixed(1)], ['走BsR', w.bsr.toFixed(1)], ['守UZR', w.uzr.toFixed(1)], ['位置', w.posAdj.toFixed(1)], ['OAA', centeredOAAOuts(s, state.lc).toFixed(1)]]));
+    // 走塁節（ユーザー指摘「走塁指標も指標のとこに出てない」対応）: 当季のSB/CS・盗塁成功率・
+    // XBT%（追加進塁率）・BsRをまとめて表示。playerBaserunning は観測集計のみ（真値非参照・§三層構造）。
+    const br = playerBaserunning(s, state.cfg, state.lc);
+    box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '走塁'));
+    box.append(kv([
+      ['盗塁企図(SB-CS)', `${br.sb}-${br.cs}`],
+      ['盗塁成功率', (br.sb + br.cs) > 0 ? pct(br.sbPct) : '-'],
+      ['XBT%（追加進塁率）', br.advOpp > 0 ? pct(br.xbt) : '-'],
+      ['BsR', br.bsr.toFixed(1)],
+    ]));
     const vf = s.batting.vsFastball;
     const vb = s.batting.vsBreaking;
     const avgOf = (x) => (x.ab ? fmt3(x.h / x.ab) : '-');
@@ -23311,7 +23504,7 @@ function renderModalCareer(box, p, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '年度別成績（一軍/二軍）'));
     const head = isPitcher
       ? ['年', '球団', '軍', '登板', '勝', '敗', 'S', '防御率', 'WAR']
-      : ['年', '球団', '軍', '打席', '打率', '本', '点', '盗', 'WAR'];
+      : ['年', '球団', '軍', '打席', '打率', '本', '点', '盗', 'BsR', 'WAR'];
     box.append(table(head, allRows.map((r) => el('tr', {}, r.cells.map((c, i) => td(c, i === 1 ? 'left' : ''))))));
     // 成長曲線は一軍WARのみ（二軍はリーグ水準が異なりWAR非表示・混ぜると曲線が歪む）。
     if (yearRows.length) box.append(growthCurveSVG(yearRows));
@@ -23370,9 +23563,15 @@ function yearStatRow(s, p, isPitcher, lc, mil = '一軍') {
   const ev = evalSeason(s, p, game.gs.cfg, lc);
   const team = state.teamName.get(s.teamId) || s.teamId;
   const warCell = mil === '一軍' && Number.isFinite(ev.war) ? ev.war.toFixed(1) : '-';
-  const cells = isPitcher
-    ? [String(s.season), team, mil, ev.g, ev.w, ev.l, ev.sv, Number.isFinite(ev.era) ? f2(ev.era) : '-', warCell]
-    : [String(s.season), team, mil, ev.pa, Number.isFinite(ev.avg) ? fmt3(ev.avg) : '-', ev.hr, ev.rbi, ev.sb, warCell];
+  if (isPitcher) {
+    const cells = [String(s.season), team, mil, ev.g, ev.w, ev.l, ev.sv, Number.isFinite(ev.era) ? f2(ev.era) : '-', warCell];
+    return { cells, war: ev.war, season: s.season, mil };
+  }
+  // BsR列（年度別成績表への追加）: WARと同様、lcは当年一軍リーグ全体から導出した値を渡している。
+  // 二軍行(mil='二軍')は当年の一軍lcを流用すると水準不整合になるため、WARと同じく非表示('-')に揃える。
+  const bsr = mil === '一軍' ? playerBaserunning(s, game.gs.cfg, lc).bsr : NaN;
+  const bsrCell = mil === '一軍' && Number.isFinite(bsr) ? bsr.toFixed(1) : '-';
+  const cells = [String(s.season), team, mil, ev.pa, Number.isFinite(ev.avg) ? fmt3(ev.avg) : '-', ev.hr, ev.rbi, ev.sb, bsrCell, warCell];
   return { cells, war: ev.war, season: s.season, mil };
 }
 

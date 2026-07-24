@@ -65,6 +65,18 @@ test('buntAttemptProb: 投手はほぼ必ず・強打者/2死/三塁走者は0�
   assert.ok(hi > p0 && p0 > lo, 'buntTendで単調');
 });
 
+test('buntAttemptProb: 采配妥当性ゲート（一死×二塁単独・次打者が投手）— ユーザー指摘 2026-07-23', () => {
+  // 一死×二塁単独: 野手には送らせない（成功しても二死三塁=RE24損・実NPBでも見ない采配）。
+  const second1out = { manager: mgr, bases: [null, 'r2', null], outs: 1, scoreDiff: 0, batterWoba: 0.25, isPitcher: false };
+  assert.equal(buntAttemptProb(second1out, cfg), 0, '一死×二塁単独は野手バント禁止');
+  assert.ok(buntAttemptProb({ ...second1out, outs: 0 }, cfg) > 0, '無死二塁は従来どおり許可（→一死三塁は犠飛圏）');
+  assert.equal(buntAttemptProb({ ...second1out, isPitcher: true }, cfg), cfg.tuning.bunt.pitcherAttempt, '投手打席は従来どおり');
+  // 次打者が投手: 野手には送らせない（「投手の前の8番に送らせる」悪手の根絶）。
+  const beforePitcher = { manager: mgr, bases: ['r1', null, null], outs: 0, scoreDiff: 0, batterWoba: 0.25, isPitcher: false, nextIsPitcher: true };
+  assert.equal(buntAttemptProb(beforePitcher, cfg), 0, '次打者が投手なら野手バント禁止');
+  assert.ok(buntAttemptProb({ ...beforePitcher, nextIsPitcher: false }, cfg) > 0, '次打者が野手なら従来どおり');
+});
+
 test('ibbProb: 一塁空き×一死/二死×終盤接戦×強打者（or次打者が投手）のみ正（S2敬遠）', () => {
   const base = {
     manager: mgr,

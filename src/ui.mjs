@@ -109,6 +109,9 @@ const TIP = {
   barrelPct: 'Barrel%: 最も安打/長打になりやすいEV×角度帯に入った打球の割合。強打者ほど高い。',
   hardHitPct: 'HardHit%: 打球速度152km/h(約95mph)以上の割合＝強い打球を打つ頻度。',
   bsr: 'BsR: 走塁の総合得点貢献（盗塁wSB＋進塁UBR＋併殺回避wGDP）。0が平均。',
+  cs: '盗塁死(CS): 盗塁を試みて刺殺された回数。',
+  sbPct: '盗塁%: 盗塁企図(SB+CS)のうち成功した割合。企図が無い選手は「-」。',
+  xbt: 'XBT%（追加進塁率）: 走者として先の塁を狙える場面で、実際に一つ先まで進めた割合（advTaken/advOpp）。Spd指標のような守備位置ルックアップは使わない一次観測値。',
   wpa: 'WPA: 各打席で動いた勝利確率の累計。勝負所での貢献が大きく効く文脈指標。',
   clutch: 'Clutch: 場面の重み(LI)を除いた勝負強さ。プラスで大事な局面に強い。',
   bbPct: 'BB%: 四球÷打席。選球眼の指標。',
@@ -392,11 +395,13 @@ function renderPostseasonPanel(c) {
 // --- 打撃 -----------------------------------------------------------------
 const BAT_COLS = [
   ['name', '選手', 'left'], ['team', 'ﾁｰﾑ', 'left'], ['pos', '守', 'left'],
-  ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'],
+  ['war', 'WAR'], ['pa', '打席'], ['avg', '打率'], ['hr', '本'], ['rbi', '点'], ['sb', '盗'], ['cs', '盗塁死'],
   ['obp', '出塁'], ['slg', '長打'], ['ops', 'OPS'], ['woba', 'wOBA'], ['xwoba', 'xwOBA'],
   ['wrcPlus', 'wRC+'], ['wrcPlusPF', 'wRC+PF'], ['opsPlus', 'OPS+'], ['iso', 'ISO'],
   ['barrelPct', 'Barrel%'], ['hardHitPct', 'HardHit%'],
-  ['bsr', 'BsR'], ['wpa', 'WPA'], ['clutch', 'Clutch'], ['bbPct', 'BB%'], ['kPct', 'K%'],
+  // 走塁指標（ユーザー指摘「走塁指標も指標のとこに出てない」への対応）: 盗塁成功率・XBT%（追加進塁率）・BsR。
+  ['bsr', 'BsR'], ['sbPct', '盗塁%'], ['xbt', 'XBT%'],
+  ['wpa', 'WPA'], ['clutch', 'Clutch'], ['bbPct', 'BB%'], ['kPct', 'K%'],
   ['sh', '犠打'], ['ibb', '敬遠'], ['ph', '代打'], // S4: 采配の発現（SH/IBB/PH）
 ];
 // G3: 規定ライン（NPB: 打席=試合数×3.1 / 投球回=試合数×1.0）。シーズン途中は消化試合に比例させ、
@@ -417,6 +422,9 @@ const QUALIFY_EMPTY_MSG = '規定到達者がまだいません（規定打席=�
 const BAT_COL_GROUPS = [
   ['basic', '基本', ['name', 'team', 'pos', 'war', 'pa', 'avg', 'hr', 'rbi', 'sb', 'obp', 'slg', 'ops']],
   ['saber', 'セイバー', ['name', 'team', 'woba', 'xwoba', 'wrcPlus', 'wrcPlusPF', 'opsPlus', 'iso', 'bsr', 'war']],
+  // 走塁（ユーザー指摘対応）: 打撃サブタブに専用の列グループとして追加（打者専用の指標のため打撃タブに同居させるのが自然。
+  // G5a の既存列グループ流儀をそのまま踏襲＝新規サブタブは作らない）。
+  ['run', '走塁', ['name', 'team', 'sb', 'cs', 'sbPct', 'xbt', 'bsr', 'war']],
   ['batted', '打球', ['name', 'team', 'barrelPct', 'hardHitPct', 'bbPct', 'kPct']],
   ['ctx', '文脈', ['name', 'team', 'wpa', 'clutch', 'sh', 'ibb', 'ph']],
   ['all', '全列', null], // null=BAT_COLS全体をそのまま使う
@@ -439,14 +447,19 @@ function renderBatting(c) {
       const m = playerBatting(s, state.lc);
       const p = state.byId.get(s.playerId);
       const war = p.role === 'fielder' ? hitterWAR(s, state.cfg, state.lc).war : 0;
-      const bsr = playerBaserunning(s, state.cfg, state.lc).bsr;
+      // 走塁指標（playerBaserunning。§6・観測集計のみ＝真値非参照）: BsRに加えCS/盗塁成功率/XBT%も表へ出す。
+      const br = playerBaserunning(s, state.cfg, state.lc);
       const b = s.batting;
-      return { id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, teamId: s.teamId, pos: primaryPos(p), war, bsr, sh: b.sh, ibb: b.ibb, ph: b.ph, ...m };
+      return {
+        id: s.playerId, name: p ? p.name : s.playerId, team: state.teamName.get(s.teamId) || s.teamId, teamId: s.teamId, pos: primaryPos(p), war,
+        bsr: br.bsr, cs: br.cs, sbPct: (br.sb + br.cs) > 0 ? br.sbPct : null, xbt: br.advOpp > 0 ? br.xbt : null,
+        sh: b.sh, ibb: b.ibb, ph: b.ph, ...m,
+      };
     });
-  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct'], 'war', 1, {
+  c.append(statTable(data, BAT_COLS, ['avg', 'obp', 'slg', 'ops', 'woba', 'xwoba', 'iso'], ['bbPct', 'kPct', 'barrelPct', 'hardHitPct', 'sbPct', 'xbt'], 'war', 1, {
     emptyMsg: QUALIFY_EMPTY_MSG, groups: BAT_COL_GROUPS, getGroup: () => batColGroup, setGroup: (k) => { batColGroup = k; },
     // UI刷新4: リーグ内百分位ヒート（FanGraphs流）。K%のみ低いほど良い
-    heat: { war: 1, avg: 1, obp: 1, slg: 1, ops: 1, woba: 1, xwoba: 1, wrcPlus: 1, wrcPlusPF: 1, opsPlus: 1, iso: 1, barrelPct: 1, hardHitPct: 1, bsr: 1, wpa: 1, bbPct: 1, kPct: -1 },
+    heat: { war: 1, avg: 1, obp: 1, slg: 1, ops: 1, woba: 1, xwoba: 1, wrcPlus: 1, wrcPlusPF: 1, opsPlus: 1, iso: 1, barrelPct: 1, hardHitPct: 1, bsr: 1, sbPct: 1, xbt: 1, wpa: 1, bbPct: 1, kPct: -1 },
   }));
 }
 
@@ -548,6 +561,8 @@ function statTable(data, cols, fmtDec3, fmtPct, defaultSort, dec = 0, opts = {})
     const rows = sorted.map((d) => el('tr', { class: 'clickable', onclick: () => openModal(d.id, navIds) }, curCols.map(([k, , align]) => {
       if (k === 'team') return teamCell(d, align); // G5a: 略称チップ（teamIdが無ければ文字列フォールバック）
       let v = d[k];
+      // 走塁XBT%/盗塁%等: 機会0（無観測）は0%ではなく null で来る＝'-'表示（0除算由来の誤解を避ける）。
+      if (v == null) return el('td', { class: align || '' }, '-');
       // ヒート帯の判定は生値で行う（表示用フォーマット前）
       let heatCls = '';
       if (heat && heat[k] && typeof v === 'number' && Number.isFinite(v)) {
@@ -708,6 +723,16 @@ function renderModalBasic(box, p, s, isPitcher) {
     const w = hitterWAR(s, state.cfg, state.lc);
     box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, `WAR ${w.war.toFixed(1)} 内訳`));
     box.append(kv([['打wRAA', w.wraa.toFixed(1)], ['走BsR', w.bsr.toFixed(1)], ['守UZR', w.uzr.toFixed(1)], ['位置', w.posAdj.toFixed(1)], ['OAA', centeredOAAOuts(s, state.lc).toFixed(1)]]));
+    // 走塁節（ユーザー指摘「走塁指標も指標のとこに出てない」対応）: 当季のSB/CS・盗塁成功率・
+    // XBT%（追加進塁率）・BsRをまとめて表示。playerBaserunning は観測集計のみ（真値非参照・§三層構造）。
+    const br = playerBaserunning(s, state.cfg, state.lc);
+    box.append(el('div', { class: 'muted', style: 'margin-top:8px' }, '走塁'));
+    box.append(kv([
+      ['盗塁企図(SB-CS)', `${br.sb}-${br.cs}`],
+      ['盗塁成功率', (br.sb + br.cs) > 0 ? pct(br.sbPct) : '-'],
+      ['XBT%（追加進塁率）', br.advOpp > 0 ? pct(br.xbt) : '-'],
+      ['BsR', br.bsr.toFixed(1)],
+    ]));
     const vf = s.batting.vsFastball;
     const vb = s.batting.vsBreaking;
     const avgOf = (x) => (x.ab ? fmt3(x.h / x.ab) : '-');
@@ -928,7 +953,7 @@ function renderModalCareer(box, p, isPitcher) {
     box.append(el('div', { class: 'muted', style: 'margin-top:10px' }, '年度別成績（一軍/二軍）'));
     const head = isPitcher
       ? ['年', '球団', '軍', '登板', '勝', '敗', 'S', '防御率', 'WAR']
-      : ['年', '球団', '軍', '打席', '打率', '本', '点', '盗', 'WAR'];
+      : ['年', '球団', '軍', '打席', '打率', '本', '点', '盗', 'BsR', 'WAR'];
     box.append(table(head, allRows.map((r) => el('tr', {}, r.cells.map((c, i) => td(c, i === 1 ? 'left' : ''))))));
     // 成長曲線は一軍WARのみ（二軍はリーグ水準が異なりWAR非表示・混ぜると曲線が歪む）。
     if (yearRows.length) box.append(growthCurveSVG(yearRows));
@@ -987,9 +1012,15 @@ function yearStatRow(s, p, isPitcher, lc, mil = '一軍') {
   const ev = evalSeason(s, p, game.gs.cfg, lc);
   const team = state.teamName.get(s.teamId) || s.teamId;
   const warCell = mil === '一軍' && Number.isFinite(ev.war) ? ev.war.toFixed(1) : '-';
-  const cells = isPitcher
-    ? [String(s.season), team, mil, ev.g, ev.w, ev.l, ev.sv, Number.isFinite(ev.era) ? f2(ev.era) : '-', warCell]
-    : [String(s.season), team, mil, ev.pa, Number.isFinite(ev.avg) ? fmt3(ev.avg) : '-', ev.hr, ev.rbi, ev.sb, warCell];
+  if (isPitcher) {
+    const cells = [String(s.season), team, mil, ev.g, ev.w, ev.l, ev.sv, Number.isFinite(ev.era) ? f2(ev.era) : '-', warCell];
+    return { cells, war: ev.war, season: s.season, mil };
+  }
+  // BsR列（年度別成績表への追加）: WARと同様、lcは当年一軍リーグ全体から導出した値を渡している。
+  // 二軍行(mil='二軍')は当年の一軍lcを流用すると水準不整合になるため、WARと同じく非表示('-')に揃える。
+  const bsr = mil === '一軍' ? playerBaserunning(s, game.gs.cfg, lc).bsr : NaN;
+  const bsrCell = mil === '一軍' && Number.isFinite(bsr) ? bsr.toFixed(1) : '-';
+  const cells = [String(s.season), team, mil, ev.pa, Number.isFinite(ev.avg) ? fmt3(ev.avg) : '-', ev.hr, ev.rbi, ev.sb, bsrCell, warCell];
   return { cells, war: ev.war, season: s.season, mil };
 }
 

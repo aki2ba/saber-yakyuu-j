@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateLeague, generatePitcher, generateFielder, TEAM_COLORS, TEAM_ABBR, innateKindOf, identityBodyRng } from '../src/generate.mjs';
 import { validatePlayer } from '../src/model/player.mjs';
-import { makeRng } from '../src/rng.mjs';
+import { makeRng, hashSeed } from '../src/rng.mjs';
 import { createConfig } from '../src/config.mjs';
-import { FIELD_POSITIONS } from '../src/model/positions.mjs';
+import { FIELD_POSITIONS, spectrumDistance } from '../src/model/positions.mjs';
 import { applyAging } from '../src/game/aging.mjs';
 import { clamp } from '../src/model/util.mjs';
 
@@ -334,6 +334,60 @@ test('各守備位置が主ポジ選手で埋まる', () => {
   for (const pos of FIELD_POSITIONS) {
     const hasStarter = roster.some((p) => p.trueAbility.fielding.positionProf[pos] >= 50);
     assert.ok(hasStarter, `${pos} を主守備にする選手がいない`);
+  }
+});
+
+// --- 案C: 生成時の隣接ポジ優先ブースト（thyroxin/research/position_versatility_research_20260724.md
+//   Part2「案C」節・spectrumDistance は src/model/positions.mjs） -----------------------------------
+
+/** primaryPos固定で大量に生成し、35%ユーティリティブーストの alt が乗った他ポジの positionProf
+ *  平均を「隣接(spectrumDistance===1)」「非隣接（Cを除く）」「C」の3群に分けて返す（統計検証用）。 */
+function sampleAltPositionProfs(cfg, primaryPos, n, seedTag) {
+  const adj = [];
+  const nonAdj = [];
+  const cVals = [];
+  for (let i = 0; i < n; i++) {
+    const rng = makeRng(i * 7919 + seedTag);
+    const p = generateFielder(rng, `AB${i}`, primaryPos, null, cfg);
+    const prof = p.trueAbility.fielding.positionProf;
+    for (const pos of FIELD_POSITIONS) {
+      if (pos === primaryPos) continue;
+      if (pos === 'C') { cVals.push(prof[pos]); continue; }
+      (spectrumDistance(primaryPos, pos) === 1 ? adj : nonAdj).push(prof[pos]);
+    }
+  }
+  const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  return { adjAvg: avg(adj), nonAdjAvg: avg(nonAdj), cAvg: avg(cVals) };
+}
+
+test('案C: 隣接ポジ優先ブースト有効時（既定）は隣接ポジのpositionProf平均が非隣接より高い', () => {
+  // primaryPos='SS' の隣接(spectrumDistance===1)は 2B/3B（内野トライアングル）。
+  const { adjAvg, nonAdjAvg } = sampleAltPositionProfs(cfg, 'SS', 3000, 1);
+  assert.ok(adjAvg > nonAdjAvg + 1.0, `隣接平均${adjAvg.toFixed(2)} が非隣接平均${nonAdjAvg.toFixed(2)}+1.0を上回る`);
+});
+
+test('案C: Cは孤立クラスタ（alt抽選プールから常に除外）→ C の positionProf 平均はベース(24)近辺で頭打ち', () => {
+  // primaryPos='SS' でCが隣接扱いされるとC平均が跳ね上がるはず（隣接ブースト量48近辺）。
+  // 除外できていれば、C平均はフラットベース draw(rng,24,5) の水準（~24-26）に留まる。
+  const { cAvg } = sampleAltPositionProfs(cfg, 'SS', 3000, 2);
+  assert.ok(cAvg < 27, `C平均${cAvg.toFixed(2)}がベース水準（~24）に留まる（隣接ブーストがCに乗らない）`);
+});
+
+test('案C: cfg.tuning.generate.adjacentPosBoost.enabled=false で旧来の一様抽選分布に戻る', () => {
+  const cfgOff = createConfig();
+  cfgOff.tuning.generate.adjacentPosBoost.enabled = false;
+  const { adjAvg, nonAdjAvg } = sampleAltPositionProfs(cfgOff, 'SS', 3000, 3);
+  // 旧実装は隣接性を考慮しない一様抽選＝隣接/非隣接の平均差は誤差程度（統計的に無視できる）。
+  assert.ok(Math.abs(adjAvg - nonAdjAvg) < 1.0, `フラグOFF: 隣接${adjAvg.toFixed(2)} vs 非隣接${nonAdjAvg.toFixed(2)}の差が小さい（旧分布）`);
+});
+
+test('案C: cfg省略時のフォールバックはconfig既定値（enabled:true）と一致する（generateRookieのcfg=null経路等の安全性）', () => {
+  for (let i = 0; i < 50; i++) {
+    const rngA = makeRng(hashSeed(i, 'fallback-check'));
+    const rngB = makeRng(hashSeed(i, 'fallback-check'));
+    const pOmitted = generateFielder(rngA, `FB${i}`, 'SS', null); // cfg省略（generateFielderのcfg=null既定）
+    const pExplicitDefault = generateFielder(rngB, `FB${i}`, 'SS', null, cfg); // 明示的にconfig既定値
+    assert.deepEqual(pOmitted.trueAbility.fielding.positionProf, pExplicitDefault.trueAbility.fielding.positionProf);
   }
 });
 

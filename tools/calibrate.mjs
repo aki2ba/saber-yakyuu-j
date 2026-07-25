@@ -7,6 +7,8 @@
 // 判定基準は config.mjs の CALIBRATION_TARGETS（12球団143試合2リーグ制）。
 //   - セ・パ得点差は「試合のDH規則単位」= res.runSplit で見る（所属リーグ単位は
 //     球団戦力ノイズで符号が反転しうる・S3引き継ぎ）。
+//     2026-07-25「全リーグDH制」化により DH無リーグが存在しない構成では自動的にスキップする
+//     （runSplit.dh/noDh の両方に試合がある場合のみ計算・一般化済み）。
 //   - WAR下限（200PA野手のmin）は全シードの最悪値で判定（「WAR-6の根絶」保証のため）。
 //   - ポストシーズンは較正対象外につき省略（opts.postseason=false で高速化）。
 // ============================================================================
@@ -40,16 +42,23 @@ function runOnce(seed) {
   const summary = leagueSummary(res, numTeams);
 
   // --- セ・パ得点差（DH規則単位: 得点/チーム/試合 の DH有−DH無） ---
+  // 2026-07-25「全リーグDH制」化: DH無リーグが存在しない構成では runSplit.noDh.games===0 になるため、
+  // DH有/無の両方に試合がある場合のみ計算する（無い場合は null＝較正表示側でスキップ）。
   const rpg = (sp) => (sp.games ? sp.runs / sp.games / 2 : 0);
-  const runDiffDh = rpg(res.runSplit.dh) - rpg(res.runSplit.noDh);
+  const hasDhContrast = res.runSplit.dh.games > 0 && res.runSplit.noDh.games > 0;
+  const runDiffDh = hasDhContrast ? rpg(res.runSplit.dh) - rpg(res.runSplit.noDh) : null;
 
-  // --- リーグ別（犠打のセパ差・情報表示用の得点環境） ---
+  // --- リーグ別（犠打/球団・情報表示用の得点環境）: 全リーグ共通のshPerTeam帯で判定する
+  //     （旧: DH有/無の2区分固定 → 全リーグDH制化に伴いリーグを一般的に走査する形へ一般化）。
   const byLeague = leagueSummaryByLeague(res, lg.teams);
-  const dhL = cfg.league.leagues.find((l) => l.dh);
-  const noDhL = cfg.league.leagues.find((l) => !l.dh);
   const teamsPerLeague = numTeams / cfg.league.leagues.length;
-  const shPerTeamDh = byLeague[dhL.id].batting.sh / teamsPerLeague;
-  const shPerTeamNoDh = byLeague[noDhL.id].batting.sh / teamsPerLeague;
+  const shByLeague = {};
+  const rpgByLeague = {};
+  for (const l of cfg.league.leagues) {
+    const b = byLeague[l.id];
+    shByLeague[l.id] = b ? b.batting.sh / teamsPerLeague : 0;
+    rpgByLeague[l.id] = b ? b.runsPerTeamPerGame : 0;
+  }
   const ibbPerTeam = summary.batting.ibb / numTeams;
 
   // --- 打撃リーダー（分布の裾。規定打席 = G×3.1 = 443） ---
@@ -189,11 +198,9 @@ function runOnce(seed) {
   return {
     summary,
     runDiffDh,
-    shPerTeamDh,
-    shPerTeamNoDh,
+    shByLeague,
+    rpgByLeague,
     ibbPerTeam,
-    rpgDhLeague: byLeague[dhL.id].runsPerTeamPerGame,
-    rpgNoDhLeague: byLeague[noDhL.id].runsPerTeamPerGame,
     champAvg,
     hrLeader,
     rbiLeader,
@@ -272,6 +279,7 @@ function runContext(seed) {
 
 // 複数シードの平均（WAR下限のみ最悪値=minで判定）
 const runs = SEEDS.map(runOnce);
+const cfg0 = createConfig(OVERRIDES); // リーグ一覧の参照用（犠打/球団・R/G のリーグ別表示に使う）
 const sums = runs.map((r) => r.summary);
 const avg = (fn) => sums.reduce((a, s) => a + fn(s), 0) / sums.length;
 const avgR = (fn) => runs.reduce((a, r) => a + fn(r), 0) / runs.length;
@@ -327,9 +335,18 @@ console.log(row('ERA', m.era, T.pitching.era, 2));
 console.log(row('runs/tm/g', m.runsPTG, T.batting.runsPerTeamPerGame, 2));
 console.log('');
 console.log('--- セ・パ得点差（DH規則単位: DH有 − DH無 の R/チーム/試合） ---');
-console.log(row('セパ得点差', avgR((r) => r.runDiffDh), T.batting.runDiffDhMinusNoDh, 3));
-console.log(row('R/G(DH有Lg)', avgR((r) => r.rpgDhLeague), null, 2));
-console.log(row('R/G(DH無Lg)', avgR((r) => r.rpgNoDhLeague), null, 2));
+{
+  const dhContrastRuns = runs.filter((r) => r.runDiffDh !== null);
+  if (dhContrastRuns.length && T.batting.runDiffDhMinusNoDh) {
+    const v = dhContrastRuns.reduce((a, r) => a + r.runDiffDh, 0) / dhContrastRuns.length;
+    console.log(row('セパ得点差', v, T.batting.runDiffDhMinusNoDh, 3));
+  } else {
+    console.log('      (全リーグDH制のためDH無リーグが存在せず対象外＝スキップ。2026-07-25)');
+  }
+  for (const l of cfg0.league.leagues) {
+    console.log(row(`R/G(${l.name})`, avgR((r) => r.rpgByLeague[l.id] ?? 0), null, 2));
+  }
+}
 console.log('');
 console.log('--- 打撃リーダー（分布の裾） ---');
 console.log(row('打率王', avgR((r) => r.champAvg), T.leaders.avg));
@@ -343,9 +360,10 @@ console.log(row('登板数王(救援)', avgR((r) => r.reliefGLeader), T.leaders.
 console.log(row('SV王', avgR((r) => r.svLeader), T.leaders.sv, 1));
 console.log(row('HLD王', avgR((r) => r.hldLeader), T.leaders.hld, 1));
 console.log('');
-console.log('--- 采配の発現（犠打のセパ差・敬遠・完投） ---');
-console.log(row('犠打/球団(セ系)', avgR((r) => r.shPerTeamNoDh), T.tactics.shPerTeamNoDh, 1));
-console.log(row('犠打/球団(パ系)', avgR((r) => r.shPerTeamDh), T.tactics.shPerTeamDh, 1));
+console.log('--- 采配の発現（犠打・敬遠・完投） ---');
+for (const l of cfg0.league.leagues) {
+  console.log(row(`犠打/球団(${l.name})`, avgR((r) => r.shByLeague[l.id] ?? 0), T.tactics.shPerTeam, 1));
+}
 console.log(row('敬遠/球団', avgR((r) => r.ibbPerTeam), T.tactics.ibbPerTeam, 1));
 console.log(row('完投(リーグ計)', avgR((r) => r.cgLeague), T.tactics.cgLeague, 1));
 console.log('');

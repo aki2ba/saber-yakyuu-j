@@ -118,8 +118,10 @@ assert.ok(standTab, '順位表タブが存在');
 standTab._onclick();
 let nodes = walk(appDiv);
 const leagueHeads = nodes.filter((n) => (n.className || '').includes('leaguename')).map(textOf);
-assert.ok(leagueHeads.filter((t) => t.includes('リーグ')).length >= 2, `2リーグの見出しが描画される (${leagueHeads.join('/')})`);
-assert.ok(leagueHeads.some((t) => t.includes('DH有')) && leagueHeads.some((t) => t.includes('DH無')), 'DH規則の表記');
+const leagueTitleHeads = leagueHeads.filter((t) => t.includes('リーグ'));
+assert.ok(leagueTitleHeads.length >= 2, `2リーグの見出しが描画される (${leagueHeads.join('/')})`);
+// 2026-07-25 全リーグDH制化: 一軍は全リーグDH有りなので「DH無」表記は出ない。
+assert.ok(leagueTitleHeads.every((t) => t.includes('DH有')) && !leagueHeads.some((t) => t.includes('DH無')), 'DH規則の表記（全リーグDH有）');
 // G8: ポストシーズンパネル(.pspanel)が日本シリーズ戦績を table 化したため、appDiv全体の<table>数には
 // 順位表2つに加えてそのtableも含まれうる（quicksimも postseason を含む）。順位表そのものは
 // .pspanel より前（document順）に描かれる2テーブルなので、pspanel出現位置より前に絞って数える。

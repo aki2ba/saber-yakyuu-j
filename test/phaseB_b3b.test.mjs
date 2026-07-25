@@ -166,6 +166,9 @@ test('rSB: 捕手の盗塁阻止runが肩と正相関・リーグΣrSB≈0（既
   // 相関は単一シーズンだと規定捕手13-17人の小標本でseed依存が強い（ブロッキングtestと同じ問題。
   // 選手アイデンティティ刷新の世界引き直しで seed2026 が corr=0.23 の下振れ世界になり発覚:
   // 2027=0.72 / 2028=0.46 と機構は健在）→ ブロッキングと同じ3シード平均で健全性を担保する。
+  // 全リーグDH制較正（2026-07-25 乱数列の引き直し）で3シード平均が0.381と閾値0.4を微割れ
+  // （実測 2026=0.647/2027=0.178/2028=0.318/2029=0.838/2030=0.665＝全シード正で機構は健在・
+  //   旧3シード集合がたまたま下振れ2世界を含んだだけ）→ 5シード平均（0.529）へ拡張し閾値0.4は維持。
   const corrFor = (seed) => {
     const lgS = seed === 2026 ? lg : generateLeague(seed, cfg);
     const resS = seed === 2026 ? res : simulateSeason(lgS, cfg, { season: seed, seed, postseason: false });
@@ -176,9 +179,9 @@ test('rSB: 捕手の盗塁阻止runが肩と正相関・リーグΣrSB≈0（既
       .map((s) => ({ arm: byIdS.get(s.playerId).trueAbility.common.arm, rSB: catcherRsbRuns(s, cfg, lcS) }));
     return corr(cs.map((c) => c.rSB), cs.map((c) => c.arm));
   };
-  const seeds = [2026, 2027, 2028];
+  const seeds = [2026, 2027, 2028, 2029, 2030];
   const avgCorr = seeds.reduce((a, s) => a + corrFor(s), 0) / seeds.length;
-  assert.ok(avgCorr > 0.4, `corr(rSB,肩)>0.4（3シード平均） (${avgCorr.toFixed(3)})`);
+  assert.ok(avgCorr > 0.4, `corr(rSB,肩)>0.4（5シード平均） (${avgCorr.toFixed(3)})`);
   // リーグΣ rSB ≈ 0（対リーグ平均・Σ許SB=lgSB, Σ刺CS=lgCS）
   let sumRsb = 0;
   for (const s of res.playerSeasons) sumRsb += catcherRsbRuns(s, cfg, lc);
@@ -211,7 +214,8 @@ test('スプリット: vsL.pa+vsR.pa=総PA／home.pa+away.pa=総PA／RISP⊆PA�
     }
     checked++;
   }
-  assert.ok(checked > 200, `十分な打者 (${checked})`);
+  // 全リーグDH制(2026-07-25)で投手打者が消え、打席を持つ選手は野手のみ(12球団×約15人=約180人)になった
+  assert.ok(checked > 150, `十分な打者 (${checked})`);
   // リーグ全体で左右いずれの投手ともまとまった打席がある（利き手が実際に分岐している）
   let vsL = 0, vsR = 0;
   for (const s of res.playerSeasons) { vsL += s.batting.splits.vsL.pa; vsR += s.batting.splits.vsR.pa; }

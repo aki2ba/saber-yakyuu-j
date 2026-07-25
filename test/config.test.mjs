@@ -26,14 +26,15 @@ test('createConfig は overrides を深くマージする', () => {
   assert.equal(cfg.league.numTeams, 12, '未指定はデフォルト維持');
 });
 
-test('リーグ設定は 12球団143試合・2リーグ制（L1=DH無/L2=DH有）・ローテ6（フェーズA S1）', () => {
+test('リーグ設定は 12球団143試合・2リーグ制（全リーグDH制）・ローテ6（フェーズA S1）', () => {
   const cfg = createConfig();
   assert.equal(cfg.league.numTeams, 12);
   assert.equal(cfg.league.gamesPerSeason, 143);
   assert.equal(cfg.league.rotationSize, 6);
   assert.equal(cfg.league.dh, undefined, "旧 dh:'all' は廃止（試合のDH有無=ホーム球団のリーグ規則）");
   assert.equal(cfg.league.leagues.length, 2);
-  assert.equal(cfg.league.leagues[0].dh, false, 'L1（セ系）はDH無し');
+  // 全リーグDH制（2026-07-25投手打席廃止のユーザー決定）: L1/L2とも dh:true。
+  assert.equal(cfg.league.leagues[0].dh, true, 'L1は全リーグDH制でDH有り');
   assert.equal(cfg.league.leagues[1].dh, true, 'L2（パ系）はDH有り');
   for (const lg of cfg.league.leagues) {
     assert.ok(!/セントラル|パシフィック/.test(lg.name), 'リーグ名は完全架空の造語');
@@ -52,13 +53,17 @@ test('新tuningノブ（platoon/bunt/ibb/sub/rest/fatigue/usage/depth）が揃�
   assert.equal(t.usage.reviewInterval, 25, '観測ベース見直しは25試合ごと（S3が消費）');
 });
 
-test('較正目標は古典寄り（打率.255-.262・ERA3.5-3.9・HR110-130）＋フェーズA新目標', () => {
+test('較正目標は古典寄り（打率.255-.262・ERA3.6-4.0・HR110-130）＋フェーズA新目標', () => {
   assert.deepEqual(CALIBRATION_TARGETS.batting.avg, [0.255, 0.262]);
-  assert.deepEqual(CALIBRATION_TARGETS.pitching.era, [3.5, 3.9]);
+  // ERA帯は全リーグDH制(2026-07-25)で[3.5,3.9]→[3.6,4.0]へ再アンカー（投手打席の自動アウト消滅で+0.1）
+  assert.deepEqual(CALIBRATION_TARGETS.pitching.era, [3.6, 4.0]);
   assert.deepEqual(CALIBRATION_TARGETS.batting.hrPerTeam, [110, 130]);
-  // フェーズA: セ・パ得点差 / 犠打セ>パ / WAR下限 / 正捕手出場（S4 calibrate が消費）
-  assert.deepEqual(CALIBRATION_TARGETS.batting.runDiffDhMinusNoDh, [0.1, 0.45]);
-  assert.ok(CALIBRATION_TARGETS.tactics.shPerTeamNoDh[0] > CALIBRATION_TARGETS.tactics.shPerTeamDh[0], '犠打はセ系>パ系');
+  // フェーズA: 犠打 / WAR下限 / 正捕手出場（S4 calibrate が消費）
+  // 2026-07-25 全リーグDH制化により runDiffDhMinusNoDh（セパ得点差）/ shPerTeamNoDh は削除済み
+  // （DH無リーグが存在しなくなり概念が消滅。犠打は全リーグ共通の shPerTeam 帯で判定する）。
+  assert.equal(CALIBRATION_TARGETS.batting.runDiffDhMinusNoDh, undefined, 'DH有無の対比リーグが無く概念が消滅');
+  assert.ok(CALIBRATION_TARGETS.tactics.shPerTeam, '犠打は全リーグ共通帯');
+  assert.equal(CALIBRATION_TARGETS.tactics.shPerTeamNoDh, undefined, '全リーグDH制でDH無区分は消滅');
   // WAR下限は2本立て（破局min>-4.0 ＋ 典型mean>-2.5）で「WAR-6の根絶」を判定
   assert.equal(CALIBRATION_TARGETS.war.floorCatastrophe, -4.0);
   assert.equal(CALIBRATION_TARGETS.war.floorTypical, -2.5);

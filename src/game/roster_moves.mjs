@@ -11,14 +11,21 @@
 // 設計原則（req_1/req_2・厳守）:
 //   - 三層構造: 判定は 観測statline（一軍 rt.stats / 二軍 rt.farm.stats）＋スカウト評価
 //     （scoutSeed・球団評価プロファイル由来の決定論ノイズ）のみ。trueAbility の直接参照は
-//     編成の初期値の再構築（buildDepthChart/createUsageState）だけに閉じる（既存の原則と同輪）。
+//     編成の初期値の再構築（buildDepthChart/createUsageState）と、callupScore の跨ぎ昇格フィット
+//     減点（obsTool でスカウトノイズを通してからしか使わない＝evaluateProspect の prof 算出と
+//     全く同じ経路。案B・thyroxin/research/position_versatility_research_20260724.md）だけに閉じる。
 //   - 決定論: 乱数の共有ストリームを一切消費しない（評価は hashSeed 派生の独立RNG or 乱数非使用。
 //     同点は id 昇順で解決）。load の replay は同一観測から同一の入替を再現する（verifyStandings が門番）。
 //   - 1年目シム不変（鉄則7）: startYear が yearIndex>=1 でのみ enableMoves を立てる。
 //     1年目のゲームランナーは simulateSeason（一括）と bit 同一のまま（較正53指標に非干渉）。
-//   - 構成恒常: 入替は 野手=同 primaryPos／投手=同 role の1:1＝登録・二軍双方のポジション構成が
-//     シーズンを通じて不変（両軍デプスチャート成立の保証）。育成(rosterStatus='minor')はシーズン中
-//     は登録しない（支配下70枠の管理。育成→支配下はオフの C3a 強化判定＝market.runMarket のみ）。
+//   - 構成恒常: 入替は 野手=同一クラスタ(spectrumDistance<=1)／投手=同 role の1:1＝登録・二軍双方の
+//     ポジション構成が「クラスタ単位」でシーズンを通じて不変（両軍デプスチャート成立の保証）。
+//     案B（cfg.tuning.moves.crossPosPromotion・既定true）: 旧来は野手=同一primaryPos完全一致
+//     だった（監査結論: 隣接ポジションの当たり選手が候補プールに一切入らないミスマッチを誘発）。
+//     SS-2B-3B内野トライアングル・LF-CF-RF外野トライアングル・1B-3B/1B-LF/1B-RFの橋渡しの内側
+//     での枠移動は許容し、一軍内の実配置（どのポジで守るか）は既存どおり usage.mjs に一任する。
+//     育成(rosterStatus='minor')はシーズン中は登録しない（支配下70枠の管理。育成→支配下はオフの
+//     C3a 強化判定＝market.runMarket のみ）。
 //   - ニュース: 入替は rt.rosterMoves に記録され step.rosterMoves でも返る（週次ダイジェスト/
 //     ハブの素材。§17: 集計値・当該シーズンのみ＝save 非対象、replay で再構築）。
 // ============================================================================
@@ -29,12 +36,29 @@ import { observedWoba } from '../sim/manager.mjs';
 import { deriveLeagueConstants } from '../sim/leagueConstants.mjs';
 import { uzrRuns, totalFieldInnings } from '../sim/fielding.mjs';
 import { playerBaserunning } from '../sim/metrics.mjs';
-import { teamEvalProfile, evaluateProspect, overallRating, farmPerfBonus } from './market.mjs';
+import { teamEvalProfile, evaluateProspect, overallRating, farmPerfBonus, obsTool } from './market.mjs';
 import { releaseScore } from './transactions.mjs';
+import { spectrumDistance } from '../model/positions.mjs';
 
 /** id 昇順の安定比較（決定論・順序非依存の走査に使う）。 */
 function byId(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+// ============================================================================
+// 案B（thyroxin/research/position_versatility_research_20260724.md Part2）:
+// 昇格・降格の候補選定を「野手=primaryPos完全一致」から「spectrumDistance<=1（同一クラスタ）」へ
+// 拡張する。監査結論: 全昇格経路が primaryPos 完全一致ゲートのため、隣接ポジション
+// （SS-2B-3B内野トライアングル・LF-CF-RF外野トライアングル・1B-3B/1B-LF/1B-RFの橋渡し）の
+// 当たり選手が候補プールに一切入らなかった（60チーム年中38でミスマッチ発生）。
+// cfg.tuning.moves.crossPosPromotion で全面ゲート（既定true・falseで旧来の完全一致に戻す）。
+// ============================================================================
+
+/** 野手の昇格/降格が許容されるポジション対か（投手は role 一致のみで primaryPos 概念が無い）。 */
+function positionEligible(cfg, role, posA, posB) {
+  if (role === 'pitcher') return true;
+  if (posA === posB) return true;
+  return !!cfg.tuning.moves.crossPosPromotion && spectrumDistance(posA, posB) <= 1;
 }
 
 // ============================================================================
@@ -121,11 +145,18 @@ function inCooldown(rt, pid, day) {
  * IL補充の球団AI評価（観測＋スカウト）: evaluateProspect（観測ツール=真値＋球団固有ノイズ・
  * 球団の癖の重み）を土台に、二軍の観測statline（wOBA/RA9）を信頼度加重で加点する。
  * 三層構造: 真値の直接参照はない（evaluateProspect がスカウト観測を模す既存の球団AI評価）。
+ * @param {?string} targetPos 埋めたい枠のポジション（省略時はフィット減点なし）。
+ *   evaluateProspect の内部 prof 項は常に p.primaryPos の適性しか見ないため（他ポジション枠を
+ *   埋める候補として評価する際は別途ここで targetPos の適性を評価する必要がある）、
+ *   targetPos が primaryPos と異なる＝spectrumDistance<=1 での跨ぎ候補のときだけ、
+ *   対象ポジションの観測適性（obsTool＝スカウトノイズ込み。evaluateProspect の prof 算出と
+ *   全く同じ経路＝三層構造のスカウト評価の範囲内）でフィット減点を加える（案B・研究レポート）。
  */
-function callupScore(rt, teamId, p, cfg) {
+function callupScore(rt, teamId, p, cfg, targetPos = null) {
   const mv = cfg.tuning.moves;
   const ctx = { masterSeed: rt.moves.scoutSeed, yearIndex: rt.season, teamId };
-  let score = evaluateProspect(profileOf(rt, teamId), p, cfg, ctx);
+  const profile = profileOf(rt, teamId);
+  let score = evaluateProspect(profile, p, cfg, ctx);
   if (p.role === 'fielder') {
     const b = rt.farm.stats.getBat(p.id);
     if (b.pa > 0) {
@@ -135,6 +166,13 @@ function callupScore(rt, teamId, p, cfg) {
     // ★R4: 二軍の守備・走塁の観測も査定に入れる（旧実装は打撃だけを見ていた＝守備の上手い
     //   二軍野手が永遠に上がってこなかった）。UZR＋BsR の得点をそのまま評価点へ換算する。
     score += mv.callupDefW * obsDefRunRuns(rt.farm.stats.stats.get(p.id), cfg, rt.moves.farmLc);
+    // ★案B: 跨ぎ昇格の守備フィット減点（監査の案C相当）。距離1の跨ぎ候補は、同ポジ候補より
+    //   明確な優位（打撃/総合の差）があるときだけこの減点を超えて勝てる＝
+    //   「守れなくはないが本職ではない」の一段落ちを再現する。
+    if (mv.crossPosPromotion && targetPos && targetPos !== p.primaryPos) {
+      const crossFit = obsTool(p.trueAbility.fielding.positionProf[targetPos] ?? 20, profile, ctx, 'crossFit', p.id);
+      score -= mv.crossPosFitW * Math.max(0, mv.crossPosFitRef - crossFit);
+    }
   } else {
     const ra9 = obsRA9(rt.farm.stats.getPitch(p.id));
     if (ra9 != null) {
@@ -228,14 +266,28 @@ function logMove(rt, out, { day, teamId, type, up, down }) {
   return mv;
 }
 
-/** 同型（野手=同 primaryPos／投手=同 role）の二軍昇格候補（育成・離脱中・クールダウン中は除外）。 */
+/**
+ * 同型（野手=spectrumDistance<=1／投手=同 role）の二軍昇格候補（育成・離脱中・クールダウン中は
+ * 除外）。案B: 野手は primaryPos 完全一致に加え、cfg.tuning.moves.crossPosPromotion 有効時は
+ * スペクトラム隣接（SS-2B-3B・LF-CF-RF・1B-3B・1B-LF・1B-RF）も候補に含める。
+ */
 function farmCandidates(rt, teamId, like, day) {
   const fu = rt.farm.usageByTeam.get(teamId);
-  return rt.farm.rosterByTeam.get(teamId).filter(
+  const fr = rt.farm.rosterByTeam.get(teamId);
+  // 跨ぎ昇格の残置ガード（F2-2不変量「各主ポジに farmKeepPerPos 人残す」を守る）:
+  //   同ポジ入替は down が同クラスタで補充されるため人数が動かないが、primaryPos 不一致の
+  //   跨ぎ昇格は候補の元ポジから1人減らす。引き抜いた後も farmKeepPerPos 人残る場合のみ許容。
+  const keep = rt.cfg.tuning.roster.farmKeepPerPos ?? 0;
+  const posCount = new Map();
+  for (const p of fr) {
+    if (p.role === 'fielder') posCount.set(p.primaryPos, (posCount.get(p.primaryPos) ?? 0) + 1);
+  }
+  return fr.filter(
     (q) =>
       q.rosterStatus !== 'minor' && // 育成はシーズン中は登録できない（支配下70枠・オフのC3aのみ）
       q.role === like.role &&
-      (like.role === 'pitcher' || q.primaryPos === like.primaryPos) &&
+      positionEligible(rt.cfg, like.role, q.primaryPos, like.primaryPos) &&
+      (like.role !== 'fielder' || q.primaryPos === like.primaryPos || (posCount.get(q.primaryPos) ?? 0) - 1 >= keep) &&
       !isInjured(fu, q.id, day) &&
       !inCooldown(rt, q.id, day),
   );
@@ -271,7 +323,7 @@ function processIlReturns(rt, teamId, day, out) {
     let down = rt.moves.byId.get(swap.subId);
     if (!down || !reg.has(swap.subId)) {
       const cands = activeRosterOf(rt, teamId).filter(
-        (q) => q.role === p.role && (p.role === 'pitcher' || q.primaryPos === p.primaryPos) && !isInjured(u, q.id, day),
+        (q) => q.role === p.role && positionEligible(rt.cfg, p.role, q.primaryPos, p.primaryPos) && !isInjured(u, q.id, day),
       );
       down = p.role === 'pitcher'
         ? bestBy(cands, (q) => obsRA9(rt.stats.getPitch(q.id)) ?? rt.cfg.tuning.moves.callupRa9Ref) // RA9最悪
@@ -293,7 +345,7 @@ function processIlReplacements(rt, teamId, day, out) {
     if (until <= day) continue; // 離脱していない
     if (until - day < mv.ilMinDays) continue; // 残り離脱が短い＝登録を動かさない
     if (rt.moves.ilSwaps.has(p.id)) continue; // 補充済み（登録に残らないため通常は来ない）
-    const best = bestBy(farmCandidates(rt, teamId, p, day), (q) => callupScore(rt, teamId, q, cfg));
+    const best = bestBy(farmCandidates(rt, teamId, p, day), (q) => callupScore(rt, teamId, q, cfg, p.primaryPos));
     if (!best) continue; // 同型候補が枯れている→起用AIのベンチ運用に任せる
     swapRegistration(rt, teamId, best, p, day);
     // 降格した離脱者は二軍でも出場不可（IL選手が二軍戦に出る矛盾の防止）
@@ -323,7 +375,7 @@ function processPerfSwaps(rt, teamId, day, out) {
   //   スカウト評価で選ぶ）。昇格側の下限標本を外し、callupScore（真値を見ないスカウト観測＋
   //   二軍成績の加点）で選ぶ。
   const bestFarmFor = (p, extra) =>
-    bestBy(farmCandidates(rt, teamId, p, day), (q) => callupScore(rt, teamId, q, cfg) + (extra ? extra(q) : 0));
+    bestBy(farmCandidates(rt, teamId, p, day), (q) => callupScore(rt, teamId, q, cfg, p.primaryPos) + (extra ? extra(q) : 0));
   const doSwap = (up, down) => {
     swapRegistration(rt, teamId, up, down, day);
     logMove(rt, out, { day, teamId, type: 'perfSwap', up, down });
@@ -416,10 +468,12 @@ function processFarmPromotions(rt, teamId, day, out) {
 
   // 交換相手: 同型(role,primaryPos)の支配下・一軍登録外（登録メンバー構成は乱さない）で
   // 当季観測が最も振るわない選手（transactions.mjs releaseScore と同じ物差し・当季観測のみ）。
+  // 案B: 降格側（枠を空ける相手）も spectrumDistance<=1 まで許容する（監査結論「入替の相手方も
+  // 距離1まで許容」＝CF余り×LF穴のようなミスマッチをここでも解消する）。
   const reg = rt.registeredByTeam.get(teamId);
   const sameType = rt.league.players.filter(
     (p) => p.teamId === teamId && !reg.has(p.id) && p.role === best.role &&
-      (best.role === 'pitcher' || p.primaryPos === best.primaryPos) && !inCooldown(rt, p.id, day) &&
+      positionEligible(cfg, best.role, p.primaryPos, best.primaryPos) && !inCooldown(rt, p.id, day) &&
       // ★R3: 故障でIL入替中の選手を育成落ちさせない。旧実装は「登録外＋当季観測が不振」だけで選ぶため、
       //   **故障で登録を外れた選手が（出場が少ないので観測が不振に見え）育成契約へ落とされ**、
       //   IL明けの再登録（processIlReturns）で **育成選手が一軍登録に混ざる** 不変量違反を起こした。

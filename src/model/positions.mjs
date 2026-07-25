@@ -39,6 +39,56 @@ export const POSITION_ADJUST_PER_162G = {
 /** 守備難易度の序列（難→易）。§9/§13。コンバート成否・延命判定に流用。 */
 export const POSITION_DIFFICULTY = ['C', 'SS', 'CF', '2B', '3B', 'RF', 'LF', '1B'];
 
+// ============================================================================
+// ポジション適性のスペクトラム距離（案B・thyroxin/research/position_versatility_research_20260724.md
+// Part2「設計方針の共通基盤」「案B」節）。
+//
+// POSITION_DIFFICULTY の1次元序列をそのまま距離に流用しない（研究レポートPart1の実証:
+// SS-2B-3Bは最頻出の共起トライアングルで、SSと2Bの間にCFが挟まる1次元順序ではその近さを
+// 過小評価してしまう／CF-LF-RFの外野トライアングルもほぼ完全代替可能）。代わりに実証済みの
+// 共起クラスタを**明示テーブル**で定義する（1次元順序の代数だけに頼らない・研究レポートの結論通り）。
+//
+//   距離0: 同一ポジション
+//   距離1（相互適合）:
+//     - 内野トライアングル: SS-2B / 2B-3B / SS-3B（最頻出の共起。肩の強さがSS-2B/3Bの分水嶺）
+//     - 外野トライアングル: LF-CF / CF-RF / LF-RF（外野内はほぼ完全代替可能という定説）
+//     - コーナー内野橋: 1B-3B（3B→1Bへの片道コンバートが典型的に頻出）
+//     - コーナー外野橋: 1B-LF / 1B-RF（OF→1Bの加齢コンバートの典型経路）
+//   距離Infinity（適合外）: 上記以外の全組み合わせ。Cが絡む組み合わせは常に適合外
+//     （捕手は「代わりになれるのは捕手だけ」という孤立クラスタ＝実証1.5%程度の兼任率）。
+//     DHは守備適格の概念自体が無い打撃専念枠のため同様に適合外。
+// ============================================================================
+const SPECTRUM_ADJACENT_PAIRS = [
+  ['SS', '2B'],
+  ['2B', '3B'],
+  ['SS', '3B'],
+  ['LF', 'CF'],
+  ['CF', 'RF'],
+  ['LF', 'RF'],
+  ['1B', '3B'],
+  ['1B', 'LF'],
+  ['1B', 'RF'],
+];
+const SPECTRUM_ADJACENT = new Set();
+for (const [a, b] of SPECTRUM_ADJACENT_PAIRS) {
+  SPECTRUM_ADJACENT.add(`${a}|${b}`);
+  SPECTRUM_ADJACENT.add(`${b}|${a}`);
+}
+
+/**
+ * ポジション間のスペクトラム距離（純関数・決定論・引数順不同）。
+ * 0=同一ポジション／1=相互適合（上記の明示クラスタ）／Infinity=適合外（C・DHはこの関数の中で
+ * 常にInfinity・自分自身との比較を除く）。
+ * @param {string} posA
+ * @param {string} posB
+ * @returns {number} 0 | 1 | Infinity
+ */
+export function spectrumDistance(posA, posB) {
+  if (posA === posB) return 0;
+  if (posA === 'C' || posB === 'C' || posA === 'DH' || posB === 'DH') return Infinity;
+  return SPECTRUM_ADJACENT.has(`${posA}|${posB}`) ? 1 : Infinity;
+}
+
 /** 球種（§2.4）。各投手はこの一部を保有する。 */
 export const PITCH_TYPES = [
   'fastball', // ストレート

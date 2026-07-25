@@ -26,6 +26,7 @@ import { createBattingLine } from '../src/model/statline.mjs';
 import { newGame, advanceTo, advanceYear, save, load, rosterMoveHeadline } from '../src/game/index.mjs';
 import { startSeasonRuntime, advanceRuntimeDay, pendingDay } from '../src/game/season_runtime.mjs';
 import { runMarket } from '../src/game/market.mjs';
+import { spectrumDistance } from '../src/model/positions.mjs';
 
 const SEED = 20260705;
 
@@ -94,7 +95,12 @@ test('F2-3: IL補充 — 開幕ILの登録者が二軍の同型と入替され�
   const rep = step0.rosterMoves.find((m) => m.type === 'ilReplace' && m.downId === victim.id);
   assert.ok(rep, '離脱者のIL補充が初日に発生する');
   assert.equal(rep.teamId, 'T1');
-  assert.equal(rep.upPos, victim.primaryPos, '補充は同ポジション');
+  // 案B: 補充は同一クラスタ（同primaryPos一致が原則だが、スペクトラム隣接の跨ぎ候補が
+  // 守備フィット減点を超えて明確に優れる場合はそちらが選ばれうる＝spectrumDistance<=1で検証）。
+  assert.ok(
+    spectrumDistance(rep.upPos, victim.primaryPos) <= 1,
+    `補充は同一クラスタ（${rep.upPos}↔${victim.primaryPos}）`,
+  );
   const reg = rt.registeredByTeam.get('T1');
   assert.equal(reg.size, c.league.rosterActive, '登録は29人のまま');
   assert.ok(!reg.has(victim.id) && reg.has(rep.upId), '登録の入替が反映される');
@@ -133,12 +139,23 @@ test('F2-3: 成績入替 — 不振降格/好調昇格が野手・投手の双�
   assert.ok(played.length / perf.length > 0.5, '昇格者の過半が一軍成績を持つ');
 });
 
-test('F2-3: 入替は同型1:1（構成恒常）でクールダウン（10日ルール簡略）を破らない', () => {
+test('F2-3: 入替は同一クラスタ1:1（構成恒常・案B）でクールダウン（10日ルール簡略）を破らない', () => {
+  // 案B（thyroxin/research/position_versatility_research_20260724.md）: 昇格/降格の適格判定は
+  // 「野手=同primaryPos完全一致」から「spectrumDistance<=1（同一クラスタ）」へ拡張された。
+  // 構成恒常の意図（ポジション構成がシーズンを通じて壊れない）自体は変わらず、内野トライアングル
+  // (SS-2B-3B)・外野トライアングル(LF-CF-RF)・コーナー橋(1B-3B/1B-LF/1B-RF)の内側での枠移動を
+  // 許容する形に緩めた（一軍内の実配置はusage.mjsに一任・ここでは登録/二軍双方の型が
+  // 「同一クラスタ」を保つことだけを検証する）。
   for (const MOVES of [MOVES_Y2, ST.rt.rosterMoves]) {
     for (const m of MOVES) {
-      // 投手は同role・野手は同primaryPos（登録・二軍双方のポジション構成が不変）
+      // 投手は同role・野手は同一クラスタ（登録・二軍双方のポジション構成が不変）
       assert.equal(m.upPos === 'P', m.downPos === 'P', `${m.type}: role一致`);
-      if (m.upPos !== 'P') assert.equal(m.upPos, m.downPos, `${m.type}: 同ポジション`);
+      if (m.upPos !== 'P') {
+        assert.ok(
+          spectrumDistance(m.upPos, m.downPos) <= 1,
+          `${m.type}: 同一クラスタ（${m.upPos}↔${m.downPos}）`,
+        );
+      }
     }
     // クールダウン: 成績入替は直近の移動から swapCooldownDays 未満では起きない（IL入替は強制で対象外）
     const lastDay = new Map();

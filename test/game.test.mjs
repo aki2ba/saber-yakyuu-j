@@ -342,14 +342,15 @@ test('シーズン: 一球生カウントの打者=投手恒等（Σ打者==Σ�
   assert.ok(b.pitches - b.lumpedPitches > 0 && b.lumpedPitches < b.pitches, '機械球数が正');
 });
 
-test('シーズン: 投手打席はDH無しリーグ主催の試合で発現し、L1球団の投手PAがL2球団より多い（S2）', () => {
+test('シーズン: 全リーグDH制（2026-07-25投手打席廃止）で投手打席は一切発生しない（S2）', () => {
+  // 旧テストは「投手打席はDH無しリーグ主催の試合で発現しL1に集中する」不変量だったが、
+  // 全リーグDH制化（L1もdh:true）により反転: 投手PAは両リーグとも厳密に0。
   const leagueOf = new Map(lg.teams.map((t) => [t.id, t.league]));
   const pa = { L1: 0, L2: 0 };
   for (const s of seasonRes.playerSeasons) {
     if (byId.get(s.playerId).role !== 'pitcher') continue;
     pa[leagueOf.get(s.teamId)] += s.batting.pa;
   }
-  assert.ok(pa.L1 > 0 && pa.L2 > 0, `両リーグの投手が（主催規則に応じて）打席に立つ (${pa.L1}/${pa.L2})`);
-  // L1球団はホーム全試合＋L1同士のビジターで投手が打つ＝L2球団の~2.5倍
-  assert.ok(pa.L1 > pa.L2 * 1.5, `投手打席がL1球団に集中 (L1=${pa.L1} L2=${pa.L2})`);
+  assert.equal(pa.L1, 0, `L1の投手打席は0 (${pa.L1})`);
+  assert.equal(pa.L2, 0, `L2の投手打席は0 (${pa.L2})`);
 });

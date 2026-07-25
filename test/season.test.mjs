@@ -267,9 +267,11 @@ test('リーグ別集計（leagueSummaryByLeague）とDH規則別の得点集計
     for (let i = 1; i < rows.length; i++) assert.ok(winPct(rows[i - 1]) >= winPct(rows[i]), `${l} 勝率降順`);
   }
   // runSplit: セパ得点差は「試合のDH規則単位」で集計する（S4較正が消費。所属リーグ単位はノイズが乗る）
+  // 2026-07-25 全リーグDH制化: 全試合がDH有側に計上され、noDh側は0試合になる。
   assert.equal(res.runSplit.dh.games + res.runSplit.noDh.games, 858, '全試合が二分される');
-  assert.equal(res.runSplit.dh.games, 429, 'DH有試合 = L2主催429試合');
-  assert.ok(res.runSplit.dh.runs > 0 && res.runSplit.noDh.runs > 0);
+  assert.equal(res.runSplit.dh.games, 858, '全リーグDH制で全試合がDH有側');
+  assert.equal(res.runSplit.noDh.games, 0, '全リーグDH制でDH無試合は0');
+  assert.ok(res.runSplit.dh.runs > 0 && res.runSplit.noDh.runs === 0);
 });
 
 test('gamesBehind: 首位との勝敗差の平均・同率0・首位nullで0', () => {

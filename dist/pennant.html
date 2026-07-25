@@ -1779,7 +1779,14 @@ const TUNING_DEFAULT = {
     // R3再較正: 0.085→0.070。試合中の故障を導入したことで正捕手が年に数試合〜数十試合を
     //   故障で欠くようになり、休養と故障の二重取りで先発数が帯(100-135)の下限を割った。
     //   「休ませる」ぶんを減らし、欠場の主因を休養から故障へ移す（現実の正捕手に近い）。
-    catcherRestProb: 0.068, // 捕手の休養基本率/試合 ※S5較正（正捕手100-135試合へ。名前プール確定較正: 99.8試合と帯下限を掠めたため微減）
+    // 2026-07-25 案C再較正: 0.068→0.064。generate.mjs の隣接ポジ優先ブースト導入で生成の
+    //   rng消費列が変わり全シード世界が引き直しになった影響で 正捕手先発試合 が99.2へ
+    //   （帯[100,135]の下限を割る・旧基準は101.5）。0.068→0.060まで一気に下げると
+    //   HR王(39.8<40)・|xwOBA−wOBA|(0.00315>0.003) という別の際どい指標を新たに割ってしまった
+    //   （この2指標は旧基準でもHR王43.3/xwOBA差0.00290と余裕が薄く、休養AIの発現量の変化が
+    //   出場選手の入れ替わり経由で波及した）ため、0.064という小刻みな値に戻して61指標全green
+    //   （HR王44.0・正捕手101.9・xwOBA差0.00276）を確認した。帯そのものは一切緩めていない。
+    catcherRestProb: 0.064, // 捕手の休養基本率/試合 ※S5較正（正捕手100-135試合へ。案C再較正で0.068→0.064）
     fielderRestProb: 0.026, // 野手の休養基本率/試合 ※S5較正
     streakW: 0.004, // 連続出場1試合ごとの休養率加算
     benchWoba: 0.295, // 不振ベンチの発動水準（観測ベース混合評価＋レンジ項がこれ未満・S5較正）
@@ -1872,6 +1879,29 @@ const TUNING_DEFAULT = {
     activePitchers: 14, // 登録29人中の投手数（ローテ6+救援8。NPBの13-15人帯の中庸。残り15人=野手）
     activeBackupCatchers: 1, // 守備8ポジ充足後に必ず確保する控え捕手数（正捕手+1＝捕手2人体制）
     farmKeepPerPos: 2, // 登録選抜が各主ポジションに二軍へ残す最低野手数（二軍のデプスチャート成立を保証）
+  },
+
+  // 選手生成（generate.mjs generateFielder）のポジション適性ノブ。
+  //   案C（thyroxin/research/position_versatility_research_20260724.md Part2「案C」節）:
+  //   案B（roster_moves.mjs の isEligible 判定＝spectrumDistance<=1）を土台に、生成段階でも
+  //   隣接ポジション（SS-2B-3B・LF-CF-RF・1B-3B・1B-LF/RF等・model/positions.mjs の
+  //   spectrumDistance===1）の相関を持たせる「非破壊的」拡張。現行の35%ユーティリティブースト
+  //   抽選（`FIELD_POSITIONS`から完全一様に1ポジを選ぶ）を、隣接ポジに重みを乗せた抽選へ変更する。
+  //   ベースのフラット適性(draw(rng,24,5))・ブースト当選確率(35%)・ブースト量(draw(rng,48,8))は
+  //   一切変更しない＝「どのポジに35%の当たりが乗りやすいか」という**内訳の偏り**のみを変える設計
+  //   （研究レポート比較表: 較正53指標への影響「小・UZR系のWATCH確認のみ必要」の前提を維持するため）。
+  generate: {
+    adjacentPosBoost: {
+      // false=旧来の完全一様抽選（FIELD_POSITIONSから等確率で1ポジ）に即時ロールバック。
+      //   較正/realismが収束しない場合の避難路（案Bのみの状態＝生成不変に戻る）。
+      enabled: true,
+      // 隣接ポジ(spectrumDistance===1)の相対重み。非隣接（Infinity・Cを除く）は常に重み1。
+      //   Cは孤立クラスタ（研究レポートPart1§4: 1B経験者の捕手兼任率1.5%程度）としてalt抽選
+      //   プールから常に除外（primaryPosがCの選手・alt候補としてのC、両方向）＝重みではなく
+      //   候補から物理的に排除する。weight=4はSS-2B-3B/外野トライアングルの実例頻度（Part1§2の
+      //   共起ペア定性ランキング1位・2位）を「最頻出」として一様抽選比の4倍に置いた初期値。
+      weight: 4,
+    },
   },
 
   // シーズン中の出場登録入替（F2-3 roster_moves.mjs・phaseF_spec F2-3）。
@@ -4094,6 +4124,38 @@ function draw(rng, mean = 50, sd = 10) {
   return clampRating(rng.normal(mean, sd));
 }
 
+// ============================================================================
+// 案C（thyroxin/research/position_versatility_research_20260724.md Part2「案C」節）:
+// generateFielder の35%ユーティリティブースト抽選で「どのポジに当たりが乗るか」を、
+// スペクトラム隣接（spectrumDistance===1・SS-2B-3B/LF-CF-RF/1B-3B/1B-LF/1B-RF）に
+// 重み付けする。ベースのフラット適性(draw(rng,24,5))・35%当選確率・ブースト量(draw(rng,48,8))は
+// generateFielder 側で不変のまま＝このヘルパーは「alt候補の抽選」だけを差し替える局所変更。
+//
+// cfg.tuning.generate.adjacentPosBoost.enabled===false のときは旧実装と完全に同じ
+// `FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]`（Cを含む8ポジからの一様抽選・
+// primaryPos自己選択も許容）を返す＝rng消費の型・引数まで一致させ即時ロールバックできる
+// 避難路にする。cfg省略時（generateRookieの cfg=null 経路・単体テストの直接呼び出し等）は
+// config.mjs の既定値（enabled:true, weight:4）と同じ挙動にフォールバックする。
+// ============================================================================
+function pickAltPosition(rng, primaryPos, cfg) {
+  const boost = cfg?.tuning?.generate?.adjacentPosBoost;
+  const enabled = boost?.enabled ?? true;
+  if (!enabled) return FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)];
+  // Cは孤立クラスタ（研究レポートPart1§4: 捕手兼任率1.5%程度）＝alt候補プールから常に除外
+  // （primaryPosがCの選手・alt候補としてのCの両方向）。primaryPos自身も候補から除く
+  // （自己ブーストは既に高い主ポジ適性への無駄引きになるため・研究レポートの擬似コード通り）。
+  const pool = FIELD_POSITIONS.filter((p) => p !== primaryPos && p !== 'C');
+  const adjW = boost?.weight ?? 4;
+  const weights = pool.map((p) => (spectrumDistance(primaryPos, p) === 1 ? adjW : 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = rng.int(total); // rng消費は「1回のint抽選」のまま（旧実装と型を揃える＝決定論の局所性）
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r < 0) return pool[i];
+  }
+  return pool[pool.length - 1]; // 浮動小数の丸め対策（理論上到達しない）
+}
+
 /**
  * H3-1: 性格タグを id 基準の独立シードで決定論的に引く（generatePitcher/generateFielder が
  * 呼ぶ本体のメイン乱数列は一切消費しない＝R6 durability/§B1 blocking と同じ「独立シード方式」。
@@ -4321,20 +4383,22 @@ const STEAL_PER_SPEED = 0.2636;
 const STEAL_SD = 12.17;
 
 /** 野手を1人生成（primaryPos を主守備位置に）。
- *  name を渡すと選手アイデンティティ経路（generatePitcher と同じ規約）。 */
-function generateFielder(rng, id, primaryPos, name = null) {
+ *  name を渡すと選手アイデンティティ経路（generatePitcher と同じ規約）。
+ *  cfg を渡すと案C（隣接ポジ優先ブースト）が cfg.tuning.generate.adjacentPosBoost に従う。
+ *  省略時はconfig既定値相当（enabled:true, weight:4）にフォールバック（下記 pickAltPosition）。 */
+function generateFielder(rng, id, primaryPos, name = null, cfg = null) {
   const speed = draw(rng, SPEED_BASE + (POS_SPEED_BIAS[primaryPos] ?? 0), SPEED_SD);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
   const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
   // 外れ値が野手WAR王を9.5超へ押し上げるのを抑える（打率王/HR王の裾もこのsdで同時較正）
 
-  // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13）。
+  // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13・案C=隣接ポジ優先ブースト）。
   const positionProf = {};
   for (const p of FIELD_POSITIONS) positionProf[p] = draw(rng, 24, 5);
   positionProf[primaryPos] = draw(rng, 60, 8);
   if (rng.chance(0.35)) {
-    // ユーティリティ寄り: もう1ポジ育つ
-    const alt = FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)];
+    // ユーティリティ寄り: もう1ポジ育つ（alt抽選は pickAltPosition・案C参照）
+    const alt = pickAltPosition(rng, primaryPos, cfg);
     positionProf[alt] = Math.max(positionProf[alt], draw(rng, 48, 8));
   }
 
@@ -4435,7 +4499,7 @@ function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax = 22, 
   // 選手アイデンティティ（name有）: 素質・年齢帯内の抽選も名前キー＝どの世界でも同じ初期値で指名される。
   //   世界依存で残るのは era（時代の波＝環境）と、指名後の成長・故障・王朝均衡 boost だけ。
   const rng = name ? identityBodyRng(name) : makeRng(hashSeed(seed, id));
-  const p = role === 'pitcher' ? generatePitcher(rng, id, name) : generateFielder(rng, id, primaryPos, name);
+  const p = role === 'pitcher' ? generatePitcher(rng, id, name) : generateFielder(rng, id, primaryPos, name, cfg);
   // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
   // 独立シードで引き直して上書きする（メイン列の順序は乱さない＝決定論）。
   const aRng = makeRng(name ? hashSeed('togen-id-age', name) : hashSeed(seed, id, 'age'));
@@ -4629,7 +4693,7 @@ function generateTeam(rng, teamId, cfg, alloc = null) {
   for (let i = 0; i < nFielders; i++) {
     const id = `${teamId}F${i + 1}`;
     const name = alloc ? drawUniqueName(alloc.rng, alloc.used, alloc.sur, { role: 'fielder', primaryPos: plan[i] }) : null;
-    const p = generateFielder(name ? identityBodyRng(name) : rng, id, plan[i], name);
+    const p = generateFielder(name ? identityBodyRng(name) : rng, id, plan[i], name, cfg);
     p.age = drawAgeWeighted(rng, R.ageWeights);
     roster.push(applyMaturity(p, cfg));
   }
@@ -4664,11 +4728,11 @@ function generateFarmPlayers(rng, teamId, count, cfg, alloc = null) {
       const kind = innateKindOf(name);
       p = isPitcher
         ? generatePitcher(identityBodyRng(name), id, name)
-        : generateFielder(identityBodyRng(name), id, kind.primaryPos, name);
+        : generateFielder(identityBodyRng(name), id, kind.primaryPos, name, cfg);
     } else {
       p = isPitcher
         ? generatePitcher(rng, id)
-        : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
+        : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)], null, cfg);
     }
     p.age = drawAgeWeighted(rng, R.devAgeWeights); // 育成は支配下より若い（R2）
     p.rosterStatus = 'minor';
@@ -11969,7 +12033,7 @@ function draftPreviewHeadlines(state) {
 // ============================================================================
 // Wave C（thyroxin/specs/gm_analytics_spec.md「GM分析仕様」§Wave C）: GMボード
 //
-//   positionStrengthMap(state)   … 12球団×守備位置(8)+投手2枠(先発/救援)の観測戦力ヒートマップ素材。
+//   positionStrengthMap(state)   … 12球団×守備位置(8)+DH+投手2枠(先発/救援)の観測戦力ヒートマップ素材。
 //   prospectWatch(state)         … 他球団の「塞がれている」有望若手（年齢≤25×高観測百分位×出場機会薄）。
 //   tradeTargetSuggestions(state)… 自球団の飽和位置×他球団の弱点位置のマッチング上位（トレードの窓）。
 //   ownDepthSolutions(state)     … 自軍限定「格上げ候補」（一軍弱点×自軍控え/二軍の高観測百分位）。
@@ -11983,6 +12047,19 @@ function draftPreviewHeadlines(state) {
 //   c. 救援の飽和/塞がれ判定は qualifiedIP（先発基準）ではなく役割別分母を使う。
 //   d. 自軍限定・年齢上限なしの「格上げ候補」節（ownDepthSolutions）を新設し、トレードより先に
 //     自軍内の解を提示する。
+//
+// ★2026-07-25 DH可視化＋球団並び順（前日2026-07-25の全リーグDH制統一に追随。ユーザー指摘の残課題）:
+//   e. GB_POSITIONS に 'DH' を追加（守備位置8+DH+投手2枠=11枠）。DHのレギュラーは
+//     positionOuts.DH（sim/game.mjs がDHスロットの選手へ実際に加算する動的キー・sim/fielding.mjs
+//     mainPositionが同型に拾う）が最多の選手。評価はwOBA百分位のみ（他の野手位置と同じ物差し・
+//     gbValueOfは既定でwOBAを返すため分岐追加不要）。GB_FIELD_POSITIONS = FIELD_POSITIONS+DH を
+//     「野手ポジション」として扱う箇所（候補収集・他ポジregular除外・自軍regular集合）に用いる。
+//   f. ownDepthSolutions の隣接ポジマッチ（gbAdjacentPositions）はDHを対象外のまま維持
+//     （spectrumDistanceでC/DHは隔絶＝positions.mjsの仕様通り）。ただし弱点位置がDHのときは
+//     「守備適性を問わない」という現実の性質を反映し、隣接縛りを外して自軍の非regular野手/二軍野手
+//     ならwOBA百分位が高ければ誰でも候補にする特例（gbOwnDepthDhCandidates）を入れる。
+//   g. 球団の表示順（ヒート表）を「自チーム先頭→自リーグ勝率順→他リーグ勝率順」に変更
+//     （gbTeamDisplayOrder）。観測 rt.standings のみ参照（真値不参照・三層構造準拠）。
 //
 // 設計原則（CLAUDE.md鉄則・gm_analytics_spec.md §0・タスク仕様の厳守事項）:
 //   - 観測のみ: rt.stats（当季一軍・正確値）と rt.farm.stats（当季二軍観測）だけを使う。
@@ -12006,8 +12083,11 @@ function draftPreviewHeadlines(state) {
 
 const gbIdAsc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
+/** 「野手ポジション」= 守備8位置+DH（監査e）。DHは守備アウトを持たないが、DHスロット出場は
+ *  positionOuts.DH として実際に記録される（sim/game.mjs）ため、他の野手位置と同型に扱える。 */
+const GB_FIELD_POSITIONS = [...FIELD_POSITIONS, 'DH'];
 /** 投手/救援の2枠を含めた「位置」一覧（表示順）。SP/RP は個々の投手ではなくチーム集計値。 */
-const GB_POSITIONS = [...FIELD_POSITIONS, 'SP', 'RP'];
+const GB_POSITIONS = [...GB_FIELD_POSITIONS, 'SP', 'RP'];
 const GB_POS_LABEL = { SP: '先発', RP: '救援' };
 /** 位置コード→表示ラベル（野手位置はコードそのまま＝既存UI(posJP)と同じ流儀・パススルー）。 */
 function gbPosLabel(pos) {
@@ -12078,7 +12158,7 @@ function gbBuildFarmCtx(state) {
 }
 
 // ============================================================================
-// 1. positionStrengthMap: 12球団×10枠（守備8+投手2）の観測戦力ヒートマップ素材。
+// 1. positionStrengthMap: 12球団×11枠（守備8+DH+投手2）の観測戦力ヒートマップ素材。
 // ============================================================================
 
 /**
@@ -12093,8 +12173,8 @@ function gbCollectCandidates(state, ctx) {
   const teams = state.league.teams ?? [];
   for (const t of teams) {
     const roster = (state.league.players ?? []).filter((p) => p.teamId === t.id);
-    // --- 野手8ポジション: 当季観測の守備アウト数(positionOuts)最多順 ---
-    for (const pos of FIELD_POSITIONS) {
+    // --- 野手9ポジション（守備8+DH）: 当季観測の守備アウト数/DHスロット出場(positionOuts)最多順 ---
+    for (const pos of GB_FIELD_POSITIONS) {
       const cands = [];
       for (const p of roster) {
         if (p.role !== 'fielder') continue;
@@ -12180,7 +12260,7 @@ function gbBuildPopulations(byPos, teams, ctx) {
 }
 
 /**
- * 12球団×守備位置(8)+投手2枠の観測戦力ヒートマップ素材（Wave C §1）。
+ * 12球団×守備位置(8)+DH+投手2枠の観測戦力ヒートマップ素材（Wave C §1・DHは監査e）。
  * 「レギュラー」＝当季観測の守備アウト数(野手)/投球回(投手・先発と救援を分ける)最多の選手。
  * その観測値（wOBA/K-BB%/FIP）をリーグ内(12球団)で百分位化し、弱点(下位20%)・飽和/起用のねじれ
  * フラグを立てる（監査修正a/b/c）:
@@ -12205,10 +12285,10 @@ function positionStrengthMap(state) {
   const pops = gbBuildPopulations(byPos, teams, ctx);
 
   // 監査修正b: 「同球団の他ポジションでregularになっている選手」は控え候補プールから除外する。
-  //   野手8ポジションのregularId和集合を球団ごとに先に確定する（全ポジション処理後でないと確定
-  //   しないため、セルのメインループより先に1パス回す）。
+  //   野手9ポジション（守備8+DH・監査e）のregularId和集合を球団ごとに先に確定する（全ポジション
+  //   処理後でないと確定しないため、セルのメインループより先に1パス回す）。
   const regularIdSetByTeam = new Map(teams.map((teamId) => [teamId, new Set()]));
-  for (const pos of FIELD_POSITIONS) {
+  for (const pos of GB_FIELD_POSITIONS) {
     const { regularId } = pops.get(pos);
     for (const teamId of teams) {
       const rid = regularId.get(teamId);
@@ -12527,6 +12607,8 @@ const GB_OWNDEPTH_TPL = {
  * 自軍限定・年齢上限なしの「格上げ候補」（Wave C 監査修正・新設）。一軍の弱点位置（下位20%）に対し、
  * 自軍の控え（一軍・他ポジのregularでない＝多重カウント排除と同じ考え方）または二軍選手を、
  * 同位置または隣接位置（外野相互・内野中枢SS/2B/3B相互）で観測百分位が高い順にマッチングする。
+ * 弱点がDHのとき（監査f）は守備適性を問わないため隣接縛りを外し、他ポジのregularでない野手/
+ * 二軍野手なら誰でもwOBA百分位のみで候補化する特例を使う。
  * 同一選手が複数の弱点位置に該当する場合は最良マッチのみ残す（決定論）。
  * @param {Object} state GameState
  * @returns {Array<{weakPos:string, playerId:string, age:?number, pos:string, source:'major'|'farm', pctl:number, text:string}>}
@@ -12546,12 +12628,12 @@ function ownDepthSolutions(state) {
   const playersById = new Map((state.league.players ?? []).map((p) => [p.id, p]));
 
   const myRegularSet = new Set();
-  for (const pos of FIELD_POSITIONS) {
+  for (const pos of GB_FIELD_POSITIONS) {
     const rid = pops.get(pos).regularId.get(my);
     if (rid) myRegularSet.add(rid);
   }
 
-  const weakPositions = FIELD_POSITIONS.filter((pos) => {
+  const weakPositions = GB_FIELD_POSITIONS.filter((pos) => {
     const { regularValue, sortedAsc } = pops.get(pos);
     if (sortedAsc.length < gb.minPositionPopulation) return false;
     const pctl = gbPercentile(sortedAsc, regularValue.get(my), 1);
@@ -12565,8 +12647,46 @@ function ownDepthSolutions(state) {
   const byPlayer = new Map(); // playerId -> 最良マッチ（決定論: weakPositions処理順で同点は先着優先）
   for (const weakPos of weakPositions) {
     const { sortedAsc } = pops.get(weakPos);
-    const adjSet = gbAdjacentPositions(weakPos);
     const curLabel = gbPosLabel(weakPos);
+
+    if (weakPos === 'DH') {
+      // 監査f: DHは守備適性を問わない特例。gbAdjacentPositions の隣接縛り（spectrumDistanceで
+      // C/DHは隔絶＝正典の仕様）を外し、自軍で他ポジ(DH含む)のregularでない野手なら、観測位置を
+      // 問わずwOBA百分位のみで候補化する（一軍控え/二軍とも「打てるなら誰でもDHの答えになる」）。
+      const bench = (state.league.players ?? []).filter((p) => p.teamId === my && p.role === 'fielder' && !myRegularSet.has(p.id));
+      for (const p of bench) {
+        const s = ctx.statsById.get(p.id);
+        if (!s || !s.batting || !(s.batting.pa >= gb.prospectMinPA)) continue;
+        const pctl = gbPercentile(sortedAsc, playerBatting(s, ctx.lc).woba, 1);
+        if (pctl == null || pctl < gb.prospectMinPctl) continue;
+        const cur = byPlayer.get(p.id);
+        if (cur && cur.pctl >= pctl) continue;
+        const dispPos = gbObservedPos(p, s);
+        const r = makeRng(hashSeed(state.masterSeed, 'gmBoard', 'tpl', 'owndepth', 'major', weakPos, p.id));
+        const tpl = GB_OWNDEPTH_TPL.major[r.int(GB_OWNDEPTH_TPL.major.length)];
+        const text = tpl(p.name, curLabel, gbPosLabel(dispPos), gbPct(pctl));
+        byPlayer.set(p.id, { weakPos, playerId: p.id, age: p.age, pos: dispPos, source: 'major', pctl, text });
+      }
+      if (farmCtx) {
+        const farmBench = (state.league.farm ?? []).filter((p) => p.teamId === my && p.role === 'fielder');
+        for (const p of farmBench) {
+          const s = farmCtx.statsById.get(p.id);
+          if (!s || !s.batting || !(s.batting.pa >= gb.prospectMinPA)) continue;
+          const pctl = gbPercentile(farmFielderPop, playerBatting(s, farmCtx.lc).woba, 1);
+          if (pctl == null || pctl < gb.prospectMinPctl) continue;
+          const cur = byPlayer.get(p.id);
+          if (cur && cur.pctl >= pctl) continue;
+          const obsPos = gbObservedPos(p, s);
+          const r = makeRng(hashSeed(state.masterSeed, 'gmBoard', 'tpl', 'owndepth', 'farm', weakPos, p.id));
+          const tpl = GB_OWNDEPTH_TPL.farm[r.int(GB_OWNDEPTH_TPL.farm.length)];
+          const text = tpl(p.name, curLabel, gbPosLabel(obsPos), gbPct(pctl));
+          byPlayer.set(p.id, { weakPos, playerId: p.id, age: p.age, pos: obsPos, source: 'farm', pctl, text });
+        }
+      }
+      continue;
+    }
+
+    const adjSet = gbAdjacentPositions(weakPos);
 
     // (a) 自軍の一軍控え（他ポジのregularでない・最多出場ポジがadjSet内の位置と一致）
     for (const pos of adjSet) {
@@ -12611,6 +12731,46 @@ function ownDepthSolutions(state) {
   const out = [...byPlayer.values()];
   out.sort((a, b) => b.pctl - a.pctl || GB_POSITIONS.indexOf(a.weakPos) - GB_POSITIONS.indexOf(b.weakPos) || gbIdAsc(a.playerId, b.playerId));
   return out.slice(0, gb.ownDepthMaxItems);
+}
+
+// ============================================================================
+// 5. gbTeamDisplayOrder: 球団の表示順（監査g・GMボード新設）。
+//   ヒート表・比較ビューを「自チーム先頭→自リーグを勝率順→他リーグを勝率順」に並べる。
+//   観測 rt.standings（勝敗の実カウント）のみ参照（真値不参照・三層構造準拠）。
+//   同率はteamId昇順のタイブレーク（game/owner.mjs ownerLeagueRankOf と同型の定義・決定論）。
+// ============================================================================
+
+/** チームの観測勝率（引分は分母から除く・NPB方式）。standings行が無ければ0.5（未着手シーズンの中立値）。 */
+function gbWinPct(row) {
+  if (!row) return 0.5;
+  const d = (row.w ?? 0) + (row.l ?? 0);
+  return d ? row.w / d : 0.5;
+}
+
+/**
+ * 球団の表示順（Wave C 監査g）: 自チーム→自リーグを勝率降順→他リーグを勝率降順
+ * （同率はteamId昇順の決定論タイブレーク）。GMボードのヒート表（renderGmPositionTable）で使う。
+ * @param {Object} state GameState
+ * @returns {string[]} teamId の表示順配列
+ */
+function gbTeamDisplayOrder(state) {
+  const teamObjs = new Map((state.league.teams ?? []).map((t) => [t.id, t]));
+  const teamIds = [...teamObjs.keys()].sort(gbIdAsc);
+  const my = state.playerTeamId;
+  const myLeague = my ? teamObjs.get(my)?.league ?? null : null;
+  const standByTeam = (state.rt && state.rt.standings) || new Map();
+  const wp = (id) => gbWinPct(standByTeam.get(id));
+  return teamIds.slice().sort((a, b) => {
+    if (a === my) return -1;
+    if (b === my) return 1;
+    const aMine = myLeague != null && teamObjs.get(a)?.league === myLeague;
+    const bMine = myLeague != null && teamObjs.get(b)?.league === myLeague;
+    if (aMine !== bMine) return aMine ? -1 : 1;
+    const wa = wp(a);
+    const wb = wp(b);
+    if (wa !== wb) return wb - wa;
+    return gbIdAsc(a, b);
+  });
 }
 
 
@@ -21924,14 +22084,12 @@ function gmHeatCell(u, cell) {
   ]);
 }
 
-/** 位置別戦力ヒート表（12球団×守備8位置+投手2枠）。自チームの行を先頭に固定する。 */
+/** 位置別戦力ヒート表（12球団×守備8位置+DH+投手2枠）。表示順は「自チーム先頭→自リーグ勝率順→
+ *  他リーグ勝率順」（gmBoard.mjs gbTeamDisplayOrder・監査g）。 */
 function renderGmPositionTable(c, u, psm, myId) {
   const { el, game } = u;
-  const teams = (game.gs.league.teams ?? []).slice().sort((a, b) => {
-    if (a.id === myId) return -1;
-    if (b.id === myId) return 1;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  const teamById = new Map((game.gs.league.teams ?? []).map((t) => [t.id, t]));
+  const teams = gbTeamDisplayOrder(game.gs).map((id) => teamById.get(id)).filter(Boolean);
   const cellByKey = new Map(psm.cells.map((cc) => [`${cc.teamId}|${cc.pos}`, cc]));
   const head = el('tr', {}, [el('th', { class: 'left' }, '球団'), ...GB_POSITIONS.map((pos) => el('th', {}, gbPosLabel(pos)))]);
   const rows = teams.map((t) => {

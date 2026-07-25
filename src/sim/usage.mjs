@@ -5,7 +5,10 @@
 //   selectStarter    → 中5日以上のローテ先発を選ぶ（投手可用性）
 //   bullpenAvailable → 連投制限（3連投禁止）・前日30球以上をフィルタした救援可用リスト
 //   selectLineup     → 休養（捕手は厚め・連続出場で確率↑）、相手先発の利き手プラトーン、
-//                      観測ベースの担当（regular/challenger の先発シェア）で当日スタメンを組む
+//                      観測ベースの担当（regular/challenger の先発シェア）で当日スタメンを組む。
+//                      休養日DHスライド（B-7・tuning.rest.dhSlide）: 休養判定になった野手が
+//                      DH予定者より明確に打てるなら、完全ベンチでなくDHへスライドさせる
+//                      （守備免除だがバットは残す＝実球団の支配的パターン。捕手は既定で対象外）
 //   recordGameUsage  → 出場・登板履歴を更新し、25試合ごとに reviewAssignments を回す
 //   reviewAssignments→ 観測成績ベースの見直し: 不振レギュラーの先発頻度が下がり、
 //                      好調の控えが「シェア」を上げて徐々に昇格する（急な全交代はしない。
@@ -272,6 +275,7 @@ export function bullpenAvailable(state, day, cfg, getPitch, penRng) {
 export function selectLineup(state, ctx, cfg) {
   const u = cfg.tuning.usage;
   const r = cfg.tuning.rest;
+  const ds = r.dhSlide; // 休養日DHスライド（B-7）
   const chart = ctx.dh ? state.charts.dh : state.charts.noDh;
   const byId = chart.byId;
   const fielders = [];
@@ -295,6 +299,10 @@ export function selectLineup(state, ctx, cfg) {
 
   const used = new Set(); // 今日すでにスタメンへ入れた選手
   const resting = new Set(); // 今日休養させる選手（スタメン候補から外す。代打等ベンチ待機は可）
+  // 休養日DHスライド（B-7）候補: (2)の疲労由来の休養のみを積む（(2b)の不振ベンチは含まない＝
+  //   打撃不振で外れた選手をDHへ回す動機はない）。DIFFICULTY順で先に処理される守備位置の休養者を
+  //   最後に処理するDH位置でスライド判定する（POSITION_DIFFICULTYは常にDHの手前で尽きる）。
+  const restDay = new Set();
   // 離脱中(IL)は候補から完全に除外＝担当が離脱なら控え/挑戦者が穴を埋める（C2.4/§10.5・phaseA資産）。
   const excluded = (pid) => used.has(pid) || resting.has(pid) || isInjured(state, pid, ctx.day);
   const today = {}; // pos → 当日スタメン
@@ -328,6 +336,8 @@ export function selectLineup(state, ctx, cfg) {
         (pos === 'C' ? r.catcherRestProb : r.fielderRestProb) + r.streakW * (state.consecStarts.get(pid) ?? 0);
       if (ctx.rng.next() < restP) {
         resting.add(pid);
+        // 捕手は既定で対象外（dhSlide.excludeCatcher・正捕手出場帯[100,135]の較正安定を優先）。
+        if (!(pos === 'C' && ds.excludeCatcher)) restDay.add(pid);
         pid = null;
       }
     }
@@ -360,11 +370,50 @@ export function selectLineup(state, ctx, cfg) {
         // 候補が残る通常時は一切通らない＝挙動不変。乱数非消費（決定論）。
         all.find((x) => !used.has(x) && !isInjured(state, x, ctx.day)) ??
         all.find((x) => !used.has(x));
-      if (pid != null) resting.delete(pid); // 休養解除で先発する場合は rested から外す
+      if (pid != null) {
+        resting.delete(pid); // 休養解除で先発する場合は rested から外す
+        restDay.delete(pid); // 自ポジで再出場が決まった選手はDHスライド候補からも外す（二重起用防止）
+      }
     } else if (pos !== 'C' && ctx.oppPitcher && isSameHand(byId.get(pid), ctx.oppPitcher)) {
       // (4) プラトーン: 同利きの担当に対し、実効評価（守備込み）で上回る候補がいれば当日限りの入替
       const alt = bestOf(pool.filter((x) => x !== pid));
       if (alt != null && effEval(alt, pos) - effEval(pid, pos) > u.platoonMargin) pid = alt;
+    }
+
+    // (5) 休養日DHスライド（B-7・thyroxin/research/dh_usage_research_20260725.md §2.2・§5）:
+    //   実球団の支配的パターン「守備免除だがバットは残す」の近似。今日 restDay 入りした野手の
+    //   実効評価（DHとしての当日評価・守備0点固定）が、当日のDH予定者(pid)より gainMin を超えて
+    //   明確に上なら、休養者をDHへ・DH予定者をベンチ（休養扱い）へ入替える。決定論（乱数不使用・
+    //   全 restDay を effEval で比較し最良を採るだけ）。POSITION_DIFFICULTY→DHの処理順のため、
+    //   この時点で restDay には当日の全守備位置の休養者(捕手除く)が出揃っている。
+    //   maxConsecStarts ガード（実測で発見・S3較正）: スライドは「守備免除」であって「出場免除」
+    //   ではないため、gainMinだけでは連続出場ストリークが途切れず、突出した打力の選手が
+    //   1シーズン全143試合に出場し続ける退化ケースが生じうる（実測: 12球団×1seedで2人が143/143
+    //   ＝dhSlide無効時139/135から実際に押し上げられたことを確認）。これは「休養AIの発現＝
+    //   フル出場の野手がいない」という既存不変量（S3較正の門番）を破る。streakW と同じ
+    //   consecStarts（連続出場カウンタ）を再利用し、これがこの値以上の選手はスライド対象から
+    //   除外＝その日は素直に完全ベンチへ回し、真の休養を強制する（過剰な新機構を作らず既存の
+    //   疲労管理指標を流用・実測で全ケース解消を確認）。
+    if (pos === 'DH' && ds.enabled && restDay.size) {
+      let bestPid = null;
+      let bestV = -Infinity;
+      for (const cand of restDay) {
+        // used.has: 通常は起こらない防御チェック（自ポジで再出場が決まった選手は上でrestDayから
+        //   除去済み）。二重起用（同一選手が2ポジションに入る）を構造的に禁じる最終防波堤。
+        if (used.has(cand) || (state.consecStarts.get(cand) ?? 0) >= ds.maxConsecStarts) continue;
+        const v = effEval(cand, 'DH');
+        if (v > bestV) {
+          bestV = v;
+          bestPid = cand;
+        }
+      }
+      const curV = pid != null ? effEval(pid, 'DH') : -Infinity;
+      if (bestPid != null && bestV - curV > ds.gainMin) {
+        if (pid != null) resting.add(pid); // 元のDH予定者は休養(ベンチ)扱いへ
+        resting.delete(bestPid);
+        restDay.delete(bestPid);
+        pid = bestPid;
+      }
     }
     used.add(pid);
     today[pos] = pid;

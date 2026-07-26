@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { createConfig } from '../src/config.mjs';
 import { FIELD_POSITIONS } from '../src/model/positions.mjs';
 import { createBattingLine, createPitchingLine, createBaserunningLine, createFieldingLine } from '../src/model/statline.mjs';
-import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, ownDepthSolutions, GB_POSITIONS } from '../src/game/gmBoard.mjs';
+import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, ownDepthSolutions, GB_POSITIONS, gbTeamDisplayOrder } from '../src/game/gmBoard.mjs';
 
 const cfg = createConfig();
 const gb = cfg.tuning.storylines.gmBoard;
@@ -600,6 +600,58 @@ test('Wave C ownDepthSolutions: 弱点位置が無ければ空配列', () => {
 });
 
 // ============================================================================
+// ownDepthSolutions: DH特例（2026-07-25 監査f）— 弱点がDHのとき隣接縛りを外し、守備出場が無くても
+//   打撃百分位だけで候補化する。
+// ============================================================================
+
+/** T1のDHが弱点(idx0・他7球団はidx4)。T1には (a) 1Bのregular(REG1B・高打撃だが他ポジregularなので
+ *  DH特例でも除外される対照群) と (b) 守備出場ゼロの代打専任(PINCH1・高打撃)を配置する。 */
+function buildDhOwnDepthFixture() {
+  const teams = [];
+  const players = [];
+  const seasons = [];
+  const standRows = [];
+  for (let k = 0; k < 8; k++) {
+    const tid = `T${k + 1}`;
+    teams.push({ id: tid, name: `球団${tid}` });
+    standRows.push(standRow(tid, 143));
+    const idx = tid === 'T1' ? 0 : 4;
+    const pid = `DHREG_${tid}`;
+    players.push({ id: pid, teamId: tid, role: 'fielder', age: 30, name: pid, primaryPos: 'DH' });
+    seasons.push(statRow(pid, tid, { batting: batLineIdx(idx, 400), pos: 'DH', posOuts: 400 }));
+  }
+  players.push({ id: 'REG1B', teamId: 'T1', role: 'fielder', age: 28, name: '一塁手', primaryPos: '1B' });
+  seasons.push(statRow('REG1B', 'T1', { batting: batLineIdx(12, 400), pos: '1B', posOuts: 400 }));
+  const pinchFielding = createFieldingLine(); // 全ポジション0出場（代打専任）
+  players.push({ id: 'PINCH1', teamId: 'T1', role: 'fielder', age: 27, name: '代打1', primaryPos: 'RF' });
+  seasons.push({
+    playerId: 'PINCH1', teamId: 'T1', season: 2030,
+    batting: batLineIdx(12, 200), pitching: createPitchingLine(), fielding: pinchFielding, baserunning: createBaserunningLine(),
+  });
+  const rt = {
+    stats: { stats: new Map(seasons.map((s) => [s.playerId, s])) },
+    standings: new Map(standRows.map((r) => [r.teamId, r])),
+  };
+  return { cfg, masterSeed: 4242, playerTeamId: 'T1', rt, league: { teams, players, farm: [] } };
+}
+
+test('Wave C ownDepthSolutions: DHが弱点のとき、守備出場ゼロでも打撃百分位が高ければ候補になる（監査f・DH特例）', () => {
+  const state = buildDhOwnDepthFixture();
+  const list = ownDepthSolutions(state);
+  const hit = list.find((x) => x.playerId === 'PINCH1');
+  assert.ok(hit, '代打専任(守備出場ゼロ)でもDH特例では隣接縛り無しで候補になるはず');
+  assert.equal(hit.weakPos, 'DH');
+  assert.equal(hit.source, 'major');
+});
+
+test('Wave C ownDepthSolutions: DHが弱点でも他ポジのregularはDH特例でも除外される（多重カウント排除は維持）', () => {
+  const state = buildDhOwnDepthFixture();
+  const list = ownDepthSolutions(state);
+  assert.equal(list.find((x) => x.playerId === 'REG1B'), undefined,
+    'REG1Bは1Bのregular本人＝守備不問のDH特例でも自ポジを空けられないので除外されるはず');
+});
+
+// ============================================================================
 // tradeTargetSuggestions: 自球団の飽和位置×他球団の弱点位置のマッチング
 // ============================================================================
 
@@ -685,8 +737,117 @@ test('Wave C: 決定論 — 同一input同一output・stateを変更しない（
   assert.equal(after, before, 'stateを変更しない');
 });
 
-test('Wave C: GB_POSITIONS は野手8位置+SP+RPの10枠', () => {
-  assert.equal(GB_POSITIONS.length, 10);
+test('Wave C: GB_POSITIONS は野手8位置+DH+SP+RPの11枠（2026-07-25 DH可視化）', () => {
+  assert.equal(GB_POSITIONS.length, 11);
+  assert.ok(GB_POSITIONS.includes('DH'));
   assert.ok(GB_POSITIONS.includes('SP'));
   assert.ok(GB_POSITIONS.includes('RP'));
+});
+
+// ============================================================================
+// positionStrengthMap: DH列（2026-07-25 全リーグDH制統一に伴うGMボードのDH可視化）
+//   DHは守備アウトを持たないが、sim/game.mjs がDHスロット出場を positionOuts.DH として記録するため、
+//   他の野手位置と同型（wOBA百分位のみ）で弱点/飽和/起用のねじれを判定できる。
+// ============================================================================
+
+/** N球団のDHフィクスチャ（build3bFixtureと同型・pos='DH'）。 */
+function buildDhFixture({ n = 8, mineIdx = 5, g = 143, backupPa = null, backupIdx = null } = {}) {
+  const teams = [];
+  const players = [];
+  const seasons = [];
+  const standRows = [];
+  let nextIdx = 0;
+  for (let k = 0; k < n; k++) {
+    const tid = `T${k + 1}`;
+    teams.push({ id: tid, name: `球団${tid}` });
+    standRows.push(standRow(tid, g));
+    const idx = tid === 'T1' ? mineIdx : (nextIdx === mineIdx ? ++nextIdx : nextIdx++);
+    const pid = `DH_${tid}`;
+    players.push({ id: pid, teamId: tid, role: 'fielder', age: 30, name: `指名${tid}`, primaryPos: 'DH' });
+    seasons.push(statRow(pid, tid, { batting: batLineIdx(idx), pos: 'DH', posOuts: 400 }));
+  }
+  if (backupPa != null) {
+    const bIdx = backupIdx != null ? backupIdx : mineIdx + 5;
+    players.push({ id: 'DHBK1', teamId: 'T1', role: 'fielder', age: 24, name: 'DH控え', primaryPos: 'DH' });
+    seasons.push(statRow('DHBK1', 'T1', { batting: batLineIdx(bIdx, backupPa), pos: 'DH', posOuts: 200 }));
+  }
+  const rt = {
+    stats: { stats: new Map(seasons.map((s) => [s.playerId, s])) },
+    standings: new Map(standRows.map((r) => [r.teamId, r])),
+  };
+  return { cfg, masterSeed: 888, playerTeamId: 'T1', rt, league: { teams, players, farm: [] } };
+}
+
+test('Wave C positionStrengthMap: DH列が存在し、守備アウトゼロの選手でもpositionOuts.DHで弱点判定される', () => {
+  const state = buildDhFixture({ n: 8, mineIdx: 5 });
+  const { cells } = positionStrengthMap(state);
+  const t2 = cells.find((c) => c.teamId === 'T2' && c.pos === 'DH');
+  assert.ok(t2, 'DH列のセルが存在する');
+  assert.equal(t2.pctl, 0);
+  assert.equal(t2.weak, true);
+});
+
+test('Wave C positionStrengthMap: DHの飽和判定はwOBA百分位のみで通常の野手位置と同型に動く（真の余剰=saturated）', () => {
+  const state = buildDhFixture({ n: 12, mineIdx: 11, backupPa: 250, backupIdx: 11 });
+  const { cells } = positionStrengthMap(state);
+  const mine = cells.find((c) => c.teamId === 'T1' && c.pos === 'DH');
+  assert.equal(mine.saturated, true);
+  assert.equal(mine.backupId, 'DHBK1');
+  assert.equal(mine.misallocated, false);
+});
+
+test('Wave C positionStrengthMap: DHの控えがレギュラーを大きく上回れば misallocated（起用のねじれ）', () => {
+  const state = buildDhFixture({ n: 12, mineIdx: 2, backupPa: 250, backupIdx: 11 });
+  const { cells } = positionStrengthMap(state);
+  const mine = cells.find((c) => c.teamId === 'T1' && c.pos === 'DH');
+  assert.equal(mine.saturated, false);
+  assert.equal(mine.misallocated, true);
+  assert.equal(mine.misallocBackupId, 'DHBK1');
+});
+
+// ============================================================================
+// gbTeamDisplayOrder: 球団の表示順（2026-07-25 監査g）
+//   「自チーム先頭→自リーグを勝率順→他リーグを勝率順」。観測rt.standingsのみ参照。
+// ============================================================================
+
+test('Wave C gbTeamDisplayOrder: 自チーム先頭→自リーグ勝率順→他リーグ勝率順', () => {
+  const teams = [
+    { id: 'T1', name: '球団T1', league: 'L1' },
+    { id: 'T2', name: '球団T2', league: 'L1' },
+    { id: 'T3', name: '球団T3', league: 'L1' },
+    { id: 'T4', name: '球団T4', league: 'L2' },
+    { id: 'T5', name: '球団T5', league: 'L2' },
+    { id: 'T6', name: '球団T6', league: 'L2' },
+  ];
+  const standings = new Map([
+    ['T1', { teamId: 'T1', league: 'L1', w: 50, l: 50 }], // .500（自チーム＝勝率に関わらず先頭）
+    ['T2', { teamId: 'T2', league: 'L1', w: 70, l: 30 }], // .700（自リーグ1位）
+    ['T3', { teamId: 'T3', league: 'L1', w: 30, l: 70 }], // .300（自リーグ最下位）
+    ['T4', { teamId: 'T4', league: 'L2', w: 80, l: 20 }], // .800（他リーグ1位・全体最強でも自チームより後）
+    ['T5', { teamId: 'T5', league: 'L2', w: 20, l: 80 }], // .200（他リーグ最下位）
+    ['T6', { teamId: 'T6', league: 'L2', w: 50, l: 50 }], // .500（他リーグ中位）
+  ]);
+  const state = { league: { teams }, playerTeamId: 'T1', rt: { standings } };
+  assert.deepEqual(gbTeamDisplayOrder(state), ['T1', 'T2', 'T3', 'T4', 'T6', 'T5']);
+});
+
+test('Wave C gbTeamDisplayOrder: 勝率同率はteamId昇順の決定論タイブレーク', () => {
+  const teams = [
+    { id: 'T2', name: '球団T2', league: 'L1' },
+    { id: 'T1', name: '球団T1', league: 'L1' },
+  ];
+  const standings = new Map([
+    ['T1', { teamId: 'T1', league: 'L1', w: 50, l: 50 }],
+    ['T2', { teamId: 'T2', league: 'L1', w: 50, l: 50 }],
+  ]);
+  const state = { league: { teams }, playerTeamId: null, rt: { standings } };
+  assert.deepEqual(gbTeamDisplayOrder(state), ['T1', 'T2']);
+});
+
+test('Wave C gbTeamDisplayOrder: standings未成立でもクラッシュせず全球団を返す（開幕前ガード）', () => {
+  const teams = [{ id: 'T2', name: '球団T2' }, { id: 'T1', name: '球団T1' }];
+  const state1 = { league: { teams }, playerTeamId: null, rt: null };
+  assert.deepEqual(gbTeamDisplayOrder(state1), ['T1', 'T2']);
+  const state2 = { league: { teams }, playerTeamId: 'T2', rt: { standings: new Map() } };
+  assert.deepEqual(gbTeamDisplayOrder(state2), ['T2', 'T1']);
 });

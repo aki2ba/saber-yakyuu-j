@@ -125,6 +125,121 @@ test('selectLineup: 相手先発が右なら同利きのRF正選手を左のベ�
   assert.equal(vsL.lineup.find((s) => s.pos === 'RF').playerId, 'RRF', '対左投手は右の正選手のまま');
 });
 
+// --- 単体: 休養日DHスライド（B-7・selectLineup／tuning.rest.dhSlide） -----------
+// 現実球団の支配的パターン「守備免除だがバットは残す」の近似（thyroxin/research/
+// dh_usage_research_20260725.md §2.2・§5）。休養判定になった野手の観測打力がDH予定者より
+// 明確に上ならDHへスライドし、DH予定者はベンチへ回る。捕手は既定で対象外（正捕手出場帯[100,135]保護）。
+
+/** DHスライド検証用チャート: SS/Cに強打の正選手＋控えを配置し、DH予定者(WEAKDH)は弱打にしておく。 */
+function mkDhSlideChart() {
+  const POS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'];
+  const players = POS.filter((p) => p !== 'C' && p !== 'SS').map((pos) => mkF(`R${pos}`));
+  players.push(mkF('STRONG'), mkF('BACKUP_SS'), mkF('STRONGC'), mkF('BACKUP_C'), mkF('WEAKDH'));
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const defense = { SS: 'STRONG', C: 'STRONGC' };
+  const positionRank = { SS: ['STRONG', 'BACKUP_SS'], C: ['STRONGC', 'BACKUP_C'] };
+  for (const pos of POS) {
+    if (pos === 'SS' || pos === 'C') continue;
+    defense[pos] = `R${pos}`;
+    positionRank[pos] = [`R${pos}`];
+  }
+  const lineup = [...POS.map((pos) => ({ playerId: defense[pos], pos })), { playerId: 'WEAKDH', pos: 'DH' }];
+  return { byId, defense, positionRank, lineup, rotation: [], bullpen: [] };
+}
+
+/**
+ * rng列スタブ: selectLineup は POSITION_DIFFICULTY=[C,SS,CF,2B,3B,RF,LF,1B]+DH の順に
+ * 1ポジションにつき1回だけ休養判定(2)の乱数を消費する（本テストの評価差は不振ベンチ(2b)の
+ * 閾値を割らないよう調整済み・challenger/プラトーンも未使用で消費なし）。idx番目だけ0（強制休養）、
+ * 他は0.99（休養なし）にして狙った1ポジションだけを休養させる。
+ */
+function mkRestRngAt(idx) {
+  const seq = new Array(9).fill(0.99);
+  seq[idx] = 0;
+  let i = 0;
+  return { next: () => seq[i++] };
+}
+
+test('B-7 休養日DHスライド: 休養判定になった強打の野手がDH予定者を押し退けてDHへ入る（既定enabled）', () => {
+  const cfgX = createConfig({ tuning: { usage: { scoutDefSd: 0 } } });
+  const state = createUsageState({ id: 'T' }, { dh: mkDhSlideChart(), noDh: mkDhSlideChart() }, cfgX);
+  for (const pid of state.scoutEval.keys()) state.scoutEval.set(pid, 0);
+  state.scoutEval.set('STRONG', 30); // 強打の観測（無打席＝スカウト評価のみ・三層構造）
+  state.scoutEval.set('WEAKDH', -5); // DH予定者は弱め（不振ベンチ閾値0.295は割らない程度に留める）
+
+  const res = selectLineup(
+    state,
+    { day: 0, dh: true, oppPitcher: null, rng: mkRestRngAt(1), getBat: () => createBattingLine() },
+    cfgX,
+  );
+
+  assert.equal(res.lineup.find((s) => s.pos === 'DH').playerId, 'STRONG', 'DHスライドで強打の休養者がDHへ');
+  assert.equal(res.lineup.find((s) => s.pos === 'SS').playerId, 'BACKUP_SS', 'SSは控えが埋める');
+  assert.ok(res.bench.includes('WEAKDH'), '押し退けられたDH予定者はベンチへ');
+  assert.ok(!res.bench.includes('STRONG'), 'STRONGはDHで先発しベンチにいない');
+});
+
+test('B-7 休養日DHスライド: dhSlide.enabled=false で旧挙動（休養者は完全ベンチ・DH予定者がそのまま先発）', () => {
+  const cfgX = createConfig({
+    tuning: { usage: { scoutDefSd: 0 }, rest: { dhSlide: { enabled: false } } },
+  });
+  const state = createUsageState({ id: 'T' }, { dh: mkDhSlideChart(), noDh: mkDhSlideChart() }, cfgX);
+  for (const pid of state.scoutEval.keys()) state.scoutEval.set(pid, 0);
+  state.scoutEval.set('STRONG', 30);
+  state.scoutEval.set('WEAKDH', -5);
+
+  const res = selectLineup(
+    state,
+    { day: 0, dh: true, oppPitcher: null, rng: mkRestRngAt(1), getBat: () => createBattingLine() },
+    cfgX,
+  );
+
+  assert.equal(res.lineup.find((s) => s.pos === 'DH').playerId, 'WEAKDH', 'OFF: DH予定者は入替わらない（旧挙動）');
+  assert.equal(res.lineup.find((s) => s.pos === 'SS').playerId, 'BACKUP_SS', 'SSは控えが埋める（休養自体はONと同じ）');
+  assert.ok(res.bench.includes('STRONG'), 'OFF: 休養した強打者はDHへ回らず完全ベンチ');
+});
+
+test('B-7 休養日DHスライド: excludeCatcher=true で捕手の休養はDHへスライドしない', () => {
+  const cfgX = createConfig({
+    tuning: { usage: { scoutDefSd: 0 }, rest: { dhSlide: { excludeCatcher: true } } },
+  });
+  const state = createUsageState({ id: 'T' }, { dh: mkDhSlideChart(), noDh: mkDhSlideChart() }, cfgX);
+  for (const pid of state.scoutEval.keys()) state.scoutEval.set(pid, 0);
+  state.scoutEval.set('STRONGC', 30); // 強打の捕手を休養させる
+  state.scoutEval.set('WEAKDH', -5);
+
+  const res = selectLineup(
+    state,
+    { day: 0, dh: true, oppPitcher: null, rng: mkRestRngAt(0), getBat: () => createBattingLine() },
+    cfgX,
+  );
+
+  assert.equal(res.lineup.find((s) => s.pos === 'DH').playerId, 'WEAKDH', '捕手はDHスライド対象外＝DH予定者は不変');
+  assert.equal(res.lineup.find((s) => s.pos === 'C').playerId, 'BACKUP_C', '捕手位置は控えが埋める');
+  assert.ok(res.bench.includes('STRONGC'), '休養した捕手は完全ベンチ（DHへは回らない）');
+});
+
+test('B-7 休養日DHスライド: gainMin以下の差ならスライドしない', () => {
+  // gainMinを実測差（STRONG−WEAKDHの実効wOBA差 ≈0.1225）より十分大きく設定し、
+  // 「差はあるがgainMin以下」を再現する（差ゼロでなく閾値未達のケースを検証）。
+  const cfgX = createConfig({
+    tuning: { usage: { scoutDefSd: 0 }, rest: { dhSlide: { gainMin: 5 } } },
+  });
+  const state = createUsageState({ id: 'T' }, { dh: mkDhSlideChart(), noDh: mkDhSlideChart() }, cfgX);
+  for (const pid of state.scoutEval.keys()) state.scoutEval.set(pid, 0);
+  state.scoutEval.set('STRONG', 30);
+  state.scoutEval.set('WEAKDH', -5);
+
+  const res = selectLineup(
+    state,
+    { day: 0, dh: true, oppPitcher: null, rng: mkRestRngAt(1), getBat: () => createBattingLine() },
+    cfgX,
+  );
+
+  assert.equal(res.lineup.find((s) => s.pos === 'DH').playerId, 'WEAKDH', '差がgainMin以下ならDH予定者は不変');
+  assert.ok(res.bench.includes('STRONG'), '休養した野手はDHへ回らず完全ベンチ');
+});
+
 // --- 単体: 打順の再構成（現代のラインナップ理論・orderBattingLineup） --------------
 
 test('selectLineup: dynamicLineup OFF=編成時の打順固定 / ON=観測成績で再構成（headless既定OFF・§S3-2）', () => {

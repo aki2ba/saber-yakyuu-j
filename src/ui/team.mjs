@@ -24,7 +24,7 @@ import { coachOverallScore } from '../game/training.mjs';
 import { playerFormOf, teamFormMap } from '../game/form.mjs';
 // Wave C（thyroxin/specs/gm_analytics_spec.md）: GMボード（弱点・飽和・有望若手・トレード相手サジェスト）。
 //   すべて純関数・観測statline/farmStatsのみ（真値非参照）。表示はチームタブの「GM」サブタブ。
-import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, ownDepthSolutions, GB_POSITIONS, gbPosLabel } from '../game/gmBoard.mjs';
+import { positionStrengthMap, prospectWatch, tradeTargetSuggestions, ownDepthSolutions, GB_POSITIONS, gbPosLabel, gbTeamDisplayOrder } from '../game/gmBoard.mjs';
 
 // タブ内ビュー状態（UIローカル。セーブ非対象＝ゲーム状態を一切変えない）。
 const teamTabView = {
@@ -379,14 +379,12 @@ function gmHeatCell(u, cell) {
   ]);
 }
 
-/** 位置別戦力ヒート表（12球団×守備8位置+投手2枠）。自チームの行を先頭に固定する。 */
+/** 位置別戦力ヒート表（12球団×守備8位置+DH+投手2枠）。表示順は「自チーム先頭→自リーグ勝率順→
+ *  他リーグ勝率順」（gmBoard.mjs gbTeamDisplayOrder・監査g）。 */
 function renderGmPositionTable(c, u, psm, myId) {
   const { el, game } = u;
-  const teams = (game.gs.league.teams ?? []).slice().sort((a, b) => {
-    if (a.id === myId) return -1;
-    if (b.id === myId) return 1;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  const teamById = new Map((game.gs.league.teams ?? []).map((t) => [t.id, t]));
+  const teams = gbTeamDisplayOrder(game.gs).map((id) => teamById.get(id)).filter(Boolean);
   const cellByKey = new Map(psm.cells.map((cc) => [`${cc.teamId}|${cc.pos}`, cc]));
   const head = el('tr', {}, [el('th', { class: 'left' }, '球団'), ...GB_POSITIONS.map((pos) => el('th', {}, gbPosLabel(pos)))]);
   const rows = teams.map((t) => {

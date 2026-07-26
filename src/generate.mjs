@@ -11,7 +11,7 @@
 // ============================================================================
 import { makeRng, hashSeed } from './rng.mjs';
 import { createPlayer, createTrueAbility, createPitch, PERSONALITIES } from './model/player.mjs';
-import { FIELD_POSITIONS, PITCH_TYPES } from './model/positions.mjs';
+import { FIELD_POSITIONS, PITCH_TYPES, spectrumDistance } from './model/positions.mjs';
 import { clamp, clampRating } from './model/util.mjs';
 import { createBallpark } from './model/battedball.mjs';
 import { hitScore } from './sim/team.mjs';
@@ -190,6 +190,38 @@ export const TEAM_ABBR = Object.fromEntries(TEAM_NAMES.map((n, i) => [n, TEAM_AB
 
 function draw(rng, mean = 50, sd = 10) {
   return clampRating(rng.normal(mean, sd));
+}
+
+// ============================================================================
+// 案C（thyroxin/research/position_versatility_research_20260724.md Part2「案C」節）:
+// generateFielder の35%ユーティリティブースト抽選で「どのポジに当たりが乗るか」を、
+// スペクトラム隣接（spectrumDistance===1・SS-2B-3B/LF-CF-RF/1B-3B/1B-LF/1B-RF）に
+// 重み付けする。ベースのフラット適性(draw(rng,24,5))・35%当選確率・ブースト量(draw(rng,48,8))は
+// generateFielder 側で不変のまま＝このヘルパーは「alt候補の抽選」だけを差し替える局所変更。
+//
+// cfg.tuning.generate.adjacentPosBoost.enabled===false のときは旧実装と完全に同じ
+// `FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]`（Cを含む8ポジからの一様抽選・
+// primaryPos自己選択も許容）を返す＝rng消費の型・引数まで一致させ即時ロールバックできる
+// 避難路にする。cfg省略時（generateRookieの cfg=null 経路・単体テストの直接呼び出し等）は
+// config.mjs の既定値（enabled:true, weight:4）と同じ挙動にフォールバックする。
+// ============================================================================
+function pickAltPosition(rng, primaryPos, cfg) {
+  const boost = cfg?.tuning?.generate?.adjacentPosBoost;
+  const enabled = boost?.enabled ?? true;
+  if (!enabled) return FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)];
+  // Cは孤立クラスタ（研究レポートPart1§4: 捕手兼任率1.5%程度）＝alt候補プールから常に除外
+  // （primaryPosがCの選手・alt候補としてのCの両方向）。primaryPos自身も候補から除く
+  // （自己ブーストは既に高い主ポジ適性への無駄引きになるため・研究レポートの擬似コード通り）。
+  const pool = FIELD_POSITIONS.filter((p) => p !== primaryPos && p !== 'C');
+  const adjW = boost?.weight ?? 4;
+  const weights = pool.map((p) => (spectrumDistance(primaryPos, p) === 1 ? adjW : 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = rng.int(total); // rng消費は「1回のint抽選」のまま（旧実装と型を揃える＝決定論の局所性）
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r < 0) return pool[i];
+  }
+  return pool[pool.length - 1]; // 浮動小数の丸め対策（理論上到達しない）
 }
 
 /**
@@ -419,20 +451,22 @@ const STEAL_PER_SPEED = 0.2636;
 const STEAL_SD = 12.17;
 
 /** 野手を1人生成（primaryPos を主守備位置に）。
- *  name を渡すと選手アイデンティティ経路（generatePitcher と同じ規約）。 */
-export function generateFielder(rng, id, primaryPos, name = null) {
+ *  name を渡すと選手アイデンティティ経路（generatePitcher と同じ規約）。
+ *  cfg を渡すと案C（隣接ポジ優先ブースト）が cfg.tuning.generate.adjacentPosBoost に従う。
+ *  省略時はconfig既定値相当（enabled:true, weight:4）にフォールバック（下記 pickAltPosition）。 */
+export function generateFielder(rng, id, primaryPos, name = null, cfg = null) {
   const speed = draw(rng, SPEED_BASE + (POS_SPEED_BIAS[primaryPos] ?? 0), SPEED_SD);
   const powerBias = POS_POWER_BIAS[primaryPos] ?? 0;
   const power = draw(rng, 50 + powerBias, 10); // S5較正: 打撃系sdを微圧縮（平均不変）＝5ツール重畳の
   // 外れ値が野手WAR王を9.5超へ押し上げるのを抑える（打率王/HR王の裾もこのsdで同時較正）
 
-  // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13）。
+  // 守備習熟: 主ポジ高、他は低。ユーティリティは近隣に分散（§13・案C=隣接ポジ優先ブースト）。
   const positionProf = {};
   for (const p of FIELD_POSITIONS) positionProf[p] = draw(rng, 24, 5);
   positionProf[primaryPos] = draw(rng, 60, 8);
   if (rng.chance(0.35)) {
-    // ユーティリティ寄り: もう1ポジ育つ
-    const alt = FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)];
+    // ユーティリティ寄り: もう1ポジ育つ（alt抽選は pickAltPosition・案C参照）
+    const alt = pickAltPosition(rng, primaryPos, cfg);
     positionProf[alt] = Math.max(positionProf[alt], draw(rng, 48, 8));
   }
 
@@ -533,7 +567,7 @@ export function generateRookie(seed, id, { role, primaryPos, ageMin = 18, ageMax
   // 選手アイデンティティ（name有）: 素質・年齢帯内の抽選も名前キー＝どの世界でも同じ初期値で指名される。
   //   世界依存で残るのは era（時代の波＝環境）と、指名後の成長・故障・王朝均衡 boost だけ。
   const rng = name ? identityBodyRng(name) : makeRng(hashSeed(seed, id));
-  const p = role === 'pitcher' ? generatePitcher(rng, id, name) : generateFielder(rng, id, primaryPos, name);
+  const p = role === 'pitcher' ? generatePitcher(rng, id, name) : generateFielder(rng, id, primaryPos, name, cfg);
   // 新人は若い（栄冠的な伸びしろ＝成長ドリフトの母数）。generate 内部の age 抽選結果は
   // 独立シードで引き直して上書きする（メイン列の順序は乱さない＝決定論）。
   const aRng = makeRng(name ? hashSeed('togen-id-age', name) : hashSeed(seed, id, 'age'));
@@ -727,7 +761,7 @@ export function generateTeam(rng, teamId, cfg, alloc = null) {
   for (let i = 0; i < nFielders; i++) {
     const id = `${teamId}F${i + 1}`;
     const name = alloc ? drawUniqueName(alloc.rng, alloc.used, alloc.sur, { role: 'fielder', primaryPos: plan[i] }) : null;
-    const p = generateFielder(name ? identityBodyRng(name) : rng, id, plan[i], name);
+    const p = generateFielder(name ? identityBodyRng(name) : rng, id, plan[i], name, cfg);
     p.age = drawAgeWeighted(rng, R.ageWeights);
     roster.push(applyMaturity(p, cfg));
   }
@@ -762,11 +796,11 @@ export function generateFarmPlayers(rng, teamId, count, cfg, alloc = null) {
       const kind = innateKindOf(name);
       p = isPitcher
         ? generatePitcher(identityBodyRng(name), id, name)
-        : generateFielder(identityBodyRng(name), id, kind.primaryPos, name);
+        : generateFielder(identityBodyRng(name), id, kind.primaryPos, name, cfg);
     } else {
       p = isPitcher
         ? generatePitcher(rng, id)
-        : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)]);
+        : generateFielder(rng, id, FIELD_POSITIONS[rng.int(FIELD_POSITIONS.length)], null, cfg);
     }
     p.age = drawAgeWeighted(rng, R.devAgeWeights); // 育成は支配下より若い（R2）
     p.rosterStatus = 'minor';

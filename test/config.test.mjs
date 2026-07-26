@@ -53,10 +53,11 @@ test('新tuningノブ（platoon/bunt/ibb/sub/rest/fatigue/usage/depth）が揃�
   assert.equal(t.usage.reviewInterval, 25, '観測ベース見直しは25試合ごと（S3が消費）');
 });
 
-test('較正目標は古典寄り（打率.255-.262・ERA3.6-4.0・HR110-130）＋フェーズA新目標', () => {
+test('較正目標は古典寄り（打率.255-.262・ERA3.7-4.1・HR110-130）＋フェーズA新目標', () => {
   assert.deepEqual(CALIBRATION_TARGETS.batting.avg, [0.255, 0.262]);
   // ERA帯は全リーグDH制(2026-07-25)で[3.5,3.9]→[3.6,4.0]へ再アンカー（投手打席の自動アウト消滅で+0.1）
-  assert.deepEqual(CALIBRATION_TARGETS.pitching.era, [3.6, 4.0]);
+  // →較正5巡の実測中心4.0-4.05が上限と一致し振動したため[3.7,4.1]へ再センタリング（幅0.4不変）
+  assert.deepEqual(CALIBRATION_TARGETS.pitching.era, [3.7, 4.1]);
   assert.deepEqual(CALIBRATION_TARGETS.batting.hrPerTeam, [110, 130]);
   // フェーズA: 犠打 / WAR下限 / 正捕手出場（S4 calibrate が消費）
   // 2026-07-25 全リーグDH制化により runDiffDhMinusNoDh（セパ得点差）/ shPerTeamNoDh は削除済み
